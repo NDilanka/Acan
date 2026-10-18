@@ -1,0 +1,556 @@
+[
+  {
+    "eval": "window.polishAudit = (panels) => {\n const vis = e => e && !e.hidden && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && +getComputedStyle(e).opacity > 0.05;\n const t = document.querySelector('#toast'), out = [];\n if (t.classList.contains('on') && vis(t)) {\n  const r = t.getBoundingClientRect();\n  if (r.left < 0 || r.top < 0 || r.right > innerWidth || r.bottom > innerHeight) out.push('toast offscreen');\n  for (const sel of ['.fl', '.nav', '.cbar', '.hint', '#insp.open', '.pop.open', '#rpdeck', ...panels])\n   for (const e of document.querySelectorAll(sel)) { if (!vis(e)) continue; const q = e.getBoundingClientRect(); if (q.width && q.height && r.left < q.right && r.right > q.left && r.top < q.bottom && r.bottom > q.top) out.push('toast over ' + sel); }\n }\n return out;\n}; true",
+    "expect": true
+  },
+  {
+    "eval": "window.gateAudit = () => {\n const visible = e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && +getComputedStyle(e).opacity > 0;\n const hits = (a,b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;\n const issues = [];\n for (const id of ['#gateStation','#gateCard','#gateBrief']) {\n  const e = document.querySelector(id);\n  if (e.hidden || !visible(e)) continue;\n  const r = e.getBoundingClientRect();\n  if (r.left < 0 || r.top < 0 || r.right > innerWidth || r.bottom > innerHeight) issues.push(id + ' offscreen');\n  if (e.scrollHeight > e.clientHeight + 2) issues.push(id + ' scrolls');\n }\n const st = document.querySelector('#gateStation');\n if (!st.hidden) {\n  const r = st.getBoundingClientRect();\n  if (hits(r, document.querySelector('.bl').getBoundingClientRect())) issues.push('station overlaps status panel');\n  if (hits(r, document.querySelector('#cbar').getBoundingClientRect())) issues.push('station overlaps concept bar');\n  if (hits(r, document.querySelector('.hint').getBoundingClientRect())) issues.push('station overlaps hint');\n }\n const card = document.querySelector('#gateCard'), brief = document.querySelector('#gateBrief');\n if (!card.hidden && !brief.hidden && hits(card.getBoundingClientRect(), brief.getBoundingClientRect())) issues.push('card overlaps brief');\n return issues;\n}; gateAudit()",
+    "expect": []
+  },
+  {
+    "eval": "({state:gateState,demand:document.querySelector('.gate-demand-line b').textContent,note:document.querySelector('.gate-demand-note').textContent,sections:[...document.querySelectorAll('.gate-sec')].map(e=>e.textContent),rows:document.querySelectorAll('.gate-row').length,blockedFirst:document.querySelector('.gate-row b').textContent,advisoryFirst:document.querySelectorAll('.gate-row')[1].querySelector('b').textContent,kvarm:document.querySelector('.gate-kvlog header').textContent})",
+    "expect": {
+      "state": {
+        "queueOpen": true,
+        "capacity": 40,
+        "allowanceOpen": false,
+        "away": false,
+        "backAt": null,
+        "returned": false,
+        "awayChooser": false,
+        "open": null,
+        "briefOpen": false,
+        "held": {},
+        "logOpen": false
+      },
+      "demand": "34–62 min",
+      "note": "Over allowance at the high estimate by 22 min. Slips first: Seal radar-otel. Everything stays listed.",
+      "sections": [
+        "Blocks publication · Kvarm",
+        "Advisory queue · ranked by cost of waiting",
+        "Expected, not here yet"
+      ],
+      "rows": 8,
+      "blockedFirst": "Exempt the webhook from basic auth",
+      "advisoryFirst": "Approve the paypal breaker",
+      "kvarm": "↗ git.orrery.local · 3 ops1,664 B"
+    }
+  },
+  {
+    "eval": "[document.querySelector('.egress').textContent, document.querySelector('.egress').dataset.kv]",
+    "expect": [
+      "local + kvarm · 1,664 B out",
+      "ok"
+    ]
+  },
+  {
+    "eval": "[...document.querySelectorAll('#gateStation .gate-row, #gateStation .gate-row *')].filter(e => e.scrollWidth > e.clientWidth + 1 || getComputedStyle(e).textOverflow === 'ellipsis').map(e => e.className || e.tagName).concat([...document.querySelectorAll('#gateStation .gate-row')].filter(r => !/^.+ · \\d+–\\d+ min · /.test(r.querySelector('small').textContent)).map(r => 'meta ' + r.dataset.gateItem))",
+    "expect": []
+  },
+  {
+    "eval": "(() => { const s = document.querySelector('#gateStation').getBoundingClientRect(), b = document.querySelector('.bl').getBoundingClientRect(); return s.bottom <= b.top; })()",
+    "expect": true
+  },
+  {
+    "eval": "(() => { const e = { id: 'probe-bank', kind: 'bank', x: 300, y: 300, state: 'ok', name: 'probe', mono: 'PB', reading: '', sub: '', params: {} }; SCENE.entities.push(e); ENT[e.id] = e; renderPlant(); const q = (sel) => document.querySelectorAll('.ent[data-id=probe-bank] ' + sel); const r = { cells: q('.fogcore[data-unknown=cells]').length > 0, busy: q('.fogcore[data-unknown=busy]').length, queued: q('.fogcore[data-unknown=queued]').length > 0, lamps: [...q('.lamp[data-lamp]')].map(l => l.dataset.lamp).join(',') }; SCENE.entities.splice(SCENE.entities.indexOf(e), 1); delete ENT[e.id]; renderPlant(); return r; })()",
+    "expect": {
+      "cells": true,
+      "busy": 0,
+      "queued": true,
+      "lamps": ""
+    }
+  },
+  {
+    "eval": "(() => { const e = { id: 'probe-bank', kind: 'bank', x: 300, y: 300, state: 'ok', name: 'probe', mono: 'PB', reading: '', sub: '', params: { cells: 2 } }; SCENE.entities.push(e); ENT[e.id] = e; renderPlant(); const q = (sel) => document.querySelectorAll('.ent[data-id=probe-bank] ' + sel); const r = { cells: q('.fogcore[data-unknown=cells]').length > 0, busy: q('.fogcore[data-unknown=busy]').length, queued: q('.fogcore[data-unknown=queued]').length > 0, lamps: [...q('.lamp[data-lamp]')].map(l => l.dataset.lamp).join(',') }; SCENE.entities.splice(SCENE.entities.indexOf(e), 1); delete ENT[e.id]; renderPlant(); return r; })()",
+    "expect": {
+      "cells": false,
+      "busy": 2,
+      "queued": true,
+      "lamps": "unknown,unknown"
+    }
+  },
+  {
+    "eval": "(() => { const e = { id: 'probe-bank', kind: 'bank', x: 300, y: 300, state: 'ok', name: 'probe', mono: 'PB', reading: '', sub: '', params: { cells: 2, busy: 1, queued: 3 } }; SCENE.entities.push(e); ENT[e.id] = e; renderPlant(); const q = (sel) => document.querySelectorAll('.ent[data-id=probe-bank] ' + sel); const r = { cells: q('.fogcore[data-unknown=cells]').length > 0, busy: q('.fogcore[data-unknown=busy]').length, queued: q('.fogcore[data-unknown=queued]').length > 0, lamps: [...q('.lamp[data-lamp]')].map(l => l.dataset.lamp).join(',') }; SCENE.entities.splice(SCENE.entities.indexOf(e), 1); delete ENT[e.id]; renderPlant(); return r; })()",
+    "expect": {
+      "cells": false,
+      "busy": 0,
+      "queued": false,
+      "lamps": "ok,idle"
+    }
+  },
+  {
+    "eval": "(() => { const q = (sel) => document.querySelectorAll('.ent[data-id=verifier] ' + sel); return [q('.fogcore').length, [...q('.lamp[data-lamp]')].map(l => l.dataset.lamp).join(',')]; })()",
+    "expect": [
+      0,
+      "ok"
+    ]
+  },
+  {
+    "eval": "gateAudit()",
+    "expect": []
+  },
+  {
+    "eval": "[document.querySelector('.bl .wait b').textContent, ENT.you.reading]",
+    "expect": [
+      "7",
+      "7 waiting"
+    ]
+  },
+  {
+    "eval": "polishAudit(['#gateStation','#gateCard','#gateBrief'])",
+    "expect": []
+  },
+  {
+    "shot": "gate-01-queue"
+  },
+  {
+    "key": "m"
+  },
+  {
+    "eval": "({open:gateState.allowanceOpen,options:document.querySelectorAll('[data-gate-cap]').length,current:document.querySelector('[data-gate-cap=\"40\"]').getAttribute('aria-pressed')})",
+    "expect": {
+      "open": true,
+      "options": 4,
+      "current": "true"
+    }
+  },
+  {
+    "eval": "polishAudit(['#gateStation','#gateCard','#gateBrief'])",
+    "expect": []
+  },
+  {
+    "shot": "gate-02-allowance"
+  },
+  {
+    "key": "1",
+    "shift": true
+  },
+  {
+    "eval": "({capacity:gateState.capacity,open:gateState.allowanceOpen,note:document.querySelector('.gate-demand-note').textContent,toast:document.querySelector('#toast').textContent})",
+    "expect": {
+      "capacity": 20,
+      "open": false,
+      "note": "Over allowance at the high estimate by 42 min. Slips first: Back off retries to x2 with jitter · Seal radar-otel. Everything stays listed.",
+      "toast": "Allowance set to 20 min per hour. Forecast unchanged."
+    }
+  },
+  {
+    "wait": 3000
+  },
+  {
+    "eval": "document.querySelector('#toast').classList.contains('on')",
+    "expect": false
+  },
+  {
+    "key": "m"
+  },
+  {
+    "key": "3",
+    "shift": true
+  },
+  {
+    "eval": "({capacity:gateState.capacity,open:gateState.allowanceOpen})",
+    "expect": {
+      "capacity": 40,
+      "open": false
+    }
+  },
+  {
+    "key": "i",
+    "after": 400
+  },
+  {
+    "eval": "({open:gateState.open,est:document.querySelector('.gate-est b').textContent,basis:document.querySelector('.gate-basis').textContent,basisNote:document.querySelector('.gate-est small').textContent,arrived:document.querySelector('.gate-card-head small').textContent,costCls:document.querySelector('.gate-cost').dataset.cls,kvarmBlocks:document.querySelectorAll('#gateCard .gate-kv').length,focusClose:!!document.activeElement.closest('[data-gate-close]'),mode:document.body.dataset.mode})",
+    "expect": {
+      "open": "breaker",
+      "est": "4–8 min",
+      "basis": "guess",
+      "basisNote": "no reviews of this kind yet",
+      "arrived": "Droid · paypal-payouts · arrived 16:10",
+      "costCls": "harm",
+      "kvarmBlocks": 0,
+      "focusClose": true,
+      "mode": "live"
+    }
+  },
+  {
+    "eval": "gateAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#gateStation','#gateCard','#gateBrief'])",
+    "expect": []
+  },
+  {
+    "shot": "gate-03-item-breaker"
+  },
+  {
+    "key": "v"
+  },
+  {
+    "eval": "({held:gateState.held,pressed:document.querySelector('[data-gate-hold]').getAttribute('aria-pressed'),rowTag:document.querySelector('[data-gate-item=breaker] .gt').textContent,toast:document.querySelector('#toast').textContent})",
+    "expect": {
+      "held": {
+        "breaker": true
+      },
+      "pressed": "true",
+      "rowTag": "advised hold",
+      "toast": "Advised a hold on “Approve the paypal breaker”. Droid reads this advice over MCP and decides whether to park."
+    }
+  },
+  {
+    "eval": "polishAudit(['#gateStation','#gateCard','#gateBrief'])",
+    "expect": []
+  },
+  {
+    "shot": "gate-04-hold"
+  },
+  {
+    "key": "i",
+    "after": 400
+  },
+  {
+    "eval": "({open:gateState.open,meanwhile:document.querySelectorAll('.gate-facts dd')[1].textContent,advice:document.querySelectorAll('.gate-facts dd')[2].textContent})",
+    "expect": {
+      "open": "codex",
+      "meanwhile": "Codex stopped itself at its terminal prompt. Orrery did not stop it.",
+      "advice": "Codex cannot read advice. Passive session, no MCP."
+    }
+  },
+  {
+    "eval": "polishAudit(['#gateStation','#gateCard','#gateBrief'])",
+    "expect": []
+  },
+  {
+    "shot": "gate-05-codex"
+  },
+  {
+    "eval": "document.querySelector('#toast').classList.contains('on')",
+    "expect": false
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "eval": "({open:gateState.open,hidden:document.querySelector('#gateCard').hidden})",
+    "expect": {
+      "open": null,
+      "hidden": true
+    }
+  },
+  {
+    "key": "p"
+  },
+  {
+    "eval": "({chooser:gateState.awayChooser,options:[...document.querySelectorAll('[data-gate-back]')].map(b=>b.dataset.gateBack)})",
+    "expect": {
+      "chooser": true,
+      "options": [
+        "30",
+        "60",
+        "120",
+        "960"
+      ]
+    }
+  },
+  {
+    "eval": "gateAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#gateStation','#gateCard','#gateBrief'])",
+    "expect": []
+  },
+  {
+    "shot": "gate-06-away-chooser"
+  },
+  {
+    "key": "1",
+    "shift": true
+  },
+  {
+    "eval": "({away:gateState.away,backAt:gateState.backAt.label,chooser:gateState.awayChooser,breakerGone:getComputedStyle(document.querySelector('.ent[data-id=breaker]')).display,craneGone:getComputedStyle(document.querySelector('.ent[data-id=crane]')).display,pinGone:getComputedStyle(document.querySelector('.cpin[data-c=traceparent-queue-rows]')).display,territory:SCENE.territories.find(t=>t.id==='gate-sessions').label,waiting:ENT.you.params.waiting,droidRow:document.querySelector('[data-session=droid-radar]').textContent.includes('claimed radar-otel'),codexRow:document.querySelector('[data-session=codex-paypal]').textContent.includes('no session yet'),demand:document.querySelector('.gate-demand-line b').textContent,tag:document.querySelector('.gate-away-tag text').textContent})",
+    "expect": {
+      "away": true,
+      "backAt": "in 30 min",
+      "chooser": false,
+      "breakerGone": "none",
+      "craneGone": "none",
+      "pinGone": "none",
+      "territory": "GATE-SESSIONS · PASSED",
+      "waiting": 3,
+      "droidRow": true,
+      "codexRow": true,
+      "demand": "29–52 min",
+      "tag": "16:00 · away"
+    }
+  },
+  {
+    "eval": "gateAudit()",
+    "expect": []
+  },
+  {
+    "eval": "[document.querySelector('.bl .wait b').textContent, ENT.you.reading]",
+    "expect": [
+      "3",
+      "3 waiting"
+    ]
+  },
+  {
+    "eval": "polishAudit(['#gateStation','#gateCard','#gateBrief'])",
+    "expect": []
+  },
+  {
+    "eval": "[...document.querySelectorAll('#gateStation .gate-row, #gateStation .gate-row *')].filter(e => e.scrollWidth > e.clientWidth + 1 || getComputedStyle(e).textOverflow === 'ellipsis').map(e => e.className || e.tagName).concat([...document.querySelectorAll('#gateStation .gate-row')].filter(r => !/^.+ · \\d+–\\d+ min · /.test(r.querySelector('small').textContent)).map(r => 'meta ' + r.dataset.gateItem))",
+    "expect": []
+  },
+  {
+    "shot": "gate-07-away"
+  },
+  {
+    "key": "p",
+    "after": 400
+  },
+  {
+    "eval": "({away:gateState.away,returned:gateState.returned,briefOpen:gateState.briefOpen,rows:document.querySelectorAll('.gate-brow').length,first:document.querySelector('.gate-brow b').textContent,unforecast:document.querySelectorAll('.gate-brow')[1].querySelector('small').textContent,waiting:ENT.you.params.waiting,territory:SCENE.territories.find(t=>t.id==='gate-sessions').label,breakerBack:getComputedStyle(document.querySelector('.ent[data-id=breaker]')).display,srcs:document.querySelectorAll('.gate-brow .gate-srcs span').length,toast:document.querySelector('#toast').textContent})",
+    "expect": {
+      "away": false,
+      "returned": true,
+      "briefOpen": true,
+      "rows": 5,
+      "first": "Droid proposed a paypal breaker",
+      "unforecast": "AGENT IDLE · NOT FORECAST",
+      "waiting": 7,
+      "territory": "GATE-SESSIONS · STALE",
+      "breakerBack": "inline",
+      "srcs": 7,
+      "toast": "Back at 16:30 · 4 reviews arrived, gate-sessions went stale · nothing was held back."
+    }
+  },
+  {
+    "eval": "gateAudit()",
+    "expect": []
+  },
+  {
+    "eval": "[document.querySelector('.bl .wait b').textContent, ENT.you.reading]",
+    "expect": [
+      "7",
+      "7 waiting"
+    ]
+  },
+  {
+    "eval": "polishAudit(['#gateStation','#gateCard','#gateBrief'])",
+    "expect": []
+  },
+  {
+    "eval": "[document.querySelector('#gateBrief').getBoundingClientRect().right <= document.querySelector('#nav').getBoundingClientRect().left, document.querySelector('#toast').textContent]",
+    "expect": [
+      true,
+      "Back at 16:30 · 4 reviews arrived, gate-sessions went stale · nothing was held back."
+    ]
+  },
+  {
+    "shot": "gate-08-brief"
+  },
+  {
+    "click": "[data-gate-seek=\"0\"]",
+    "after": 600
+  },
+  {
+    "eval": "({mode:document.body.dataset.mode,t:RP.t,sel:selected,briefKept:gateState.briefOpen,layerHidden:getComputedStyle(document.querySelector('#gateLayer')).display})",
+    "expect": {
+      "mode": "replay",
+      "t": 2400,
+      "sel": "paypal",
+      "briefKept": true,
+      "layerHidden": "none"
+    }
+  },
+  {
+    "eval": "polishAudit(['#gateStation','#gateCard','#gateBrief'])",
+    "expect": []
+  },
+  {
+    "shot": "gate-09-replay"
+  },
+  {
+    "key": "1"
+  },
+  {
+    "eval": "({mode:document.body.dataset.mode,briefOpen:gateState.briefOpen,briefVisible:!document.querySelector('#gateBrief').hidden})",
+    "expect": {
+      "mode": "live",
+      "briefOpen": true,
+      "briefVisible": true
+    }
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "eval": "({briefOpen:gateState.briefOpen,hidden:document.querySelector('#gateBrief').hidden})",
+    "expect": {
+      "briefOpen": false,
+      "hidden": true
+    }
+  },
+  {
+    "click": "[data-gate-item=webhook]",
+    "after": 400
+  },
+  {
+    "eval": "({open:gateState.open,kv:document.querySelector('#gateCard .gate-kv b').textContent,rule:document.querySelector('#gateCard .gate-kv span').textContent,basis:document.querySelector('.gate-basis').textContent})",
+    "expect": {
+      "open": "webhook",
+      "kv": "Blocks publication · Kvarm #212",
+      "rule": "deploy/Caddyfile is a protected path. One review required.",
+      "basis": "guess"
+    }
+  },
+  {
+    "eval": "gateAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#gateStation','#gateCard','#gateBrief'])",
+    "expect": []
+  },
+  {
+    "shot": "gate-10-mouse-kvarm"
+  },
+  {
+    "click": "[data-gate-review]",
+    "after": 600
+  },
+  {
+    "eval": "({open:gateState.open,inspOpen:document.querySelector('#insp').classList.contains('open'),kind:document.querySelector('#iKind').textContent.includes('gate-webhook-exempt')})",
+    "expect": {
+      "open": null,
+      "inspOpen": true,
+      "kind": true
+    }
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "eval": "document.querySelector('#insp').classList.contains('open')",
+    "expect": false
+  },
+  {
+    "key": "i",
+    "after": 400
+  },
+  {
+    "key": "2",
+    "after": 30
+  },
+  {
+    "key": "3",
+    "after": 30
+  },
+  {
+    "key": "4",
+    "after": 30
+  },
+  {
+    "key": "l",
+    "after": 30
+  },
+  {
+    "key": "g",
+    "after": 30
+  },
+  {
+    "key": "a",
+    "after": 30
+  },
+  {
+    "key": "b",
+    "after": 30
+  },
+  {
+    "key": "k",
+    "ctrl": true,
+    "after": 30
+  },
+  {
+    "eval": "({open:gateState.open,mode:document.body.dataset.mode,layers:document.querySelector('#layers').classList.contains('open'),palette:document.querySelector('#pal').classList.contains('open'),floor:document.body.classList.contains('floor-open')})",
+    "expect": {
+      "open": "breaker",
+      "mode": "live",
+      "layers": false,
+      "palette": false,
+      "floor": false
+    }
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "key": "m"
+  },
+  {
+    "click": "[data-gate-cap=\"60\"]"
+  },
+  {
+    "eval": "({capacity:gateState.capacity,note:document.querySelector('.gate-demand-note').textContent})",
+    "expect": {
+      "capacity": 60,
+      "note": "Over allowance at the high estimate by 2 min. Slips first: Seal radar-otel. Everything stays listed."
+    }
+  },
+  {
+    "eval": "gateAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#gateStation','#gateCard','#gateBrief'])",
+    "expect": []
+  },
+  {
+    "shot": "gate-11-allowance-60"
+  },
+  {
+    "eval": "(async()=>{const snap=()=>JSON.stringify([document.querySelector('#gateStation').innerHTML.length,document.querySelector('#gateDrawing').innerHTML]);const a=snap();await new Promise(r=>setTimeout(r,300));return a===snap()})()",
+    "expect": true
+  },
+  {
+    "eval": "gateAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#gateStation','#gateCard','#gateBrief'])",
+    "expect": []
+  },
+  {
+    "shot": "gate-12-final"
+  },
+  {
+    "click": ".egress",
+    "after": 300
+  },
+  {
+    "eval": "[document.querySelector('#net').classList.contains('open'), gateState.logOpen, document.activeElement.id, getComputedStyle(document.querySelector('.gate-kvlog-row span')).whiteSpace]",
+    "expect": [
+      false,
+      true,
+      "gateKv",
+      "normal"
+    ]
+  },
+  {
+    "shot": "gate-13-network-log"
+  },
+  {
+    "click": ".egress",
+    "after": 300
+  },
+  {
+    "eval": "[gateState.logOpen, gateAudit()]",
+    "expect": [
+      false,
+      []
+    ]
+  }
+]

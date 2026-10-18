@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Orrery · Stage 3 · Four design directions</title>
+<style>
+:root{
+  --paper:#F4F1EA; --ink:#1E2329; --graphite:#6B7280; --brass:#B08D57; --rule:#D9D3C5;
+  --sans:"IBM Plex Sans","Inter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:#ECE8DF;color:var(--ink);font-family:var(--sans);font-size:14px;line-height:1.45}
+header,main,section.reply{max-width:1500px;margin:0 auto}
+header{padding:28px 32px 6px}
+h1{font-size:12px;letter-spacing:.18em;text-transform:uppercase;margin:0 0 6px;color:var(--graphite);font-weight:600}
+h2{font-size:24px;margin:0 0 8px;font-weight:600}
+.note{color:var(--graphite);max-width:960px;margin:0 0 4px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:10px}
+.badge{display:inline-block;border:1px solid var(--rule);padding:2px 8px;font-family:var(--mono);font-size:12px;background:#F8F6F1}
+main{padding:16px 32px 28px;display:grid;grid-template-columns:1fr 1fr;gap:20px}
+.card{background:#FBFAF7;border:1px solid var(--rule);display:flex;flex-direction:column;min-width:0}
+.card.wide{grid-column:1 / -1}
+.card-head{display:flex;justify-content:space-between;align-items:flex-start;padding:12px 14px;border-bottom:1px solid var(--rule);gap:12px}
+.card-head .k{font-family:var(--mono);font-size:12px;color:var(--brass);margin-right:6px}
+.card-head .t{font-weight:600}
+.card-head .d{color:var(--graphite);font-size:12.5px;margin-top:2px}
+.tools{display:flex;gap:6px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+button{font:inherit;font-size:12px;border:1px solid var(--rule);background:#F4F1EA;padding:4px 9px;cursor:pointer;border-radius:2px;color:var(--ink)}
+button:hover{border-color:var(--brass)}
+button[aria-pressed="true"]{background:var(--ink);color:#F4F1EA;border-color:var(--ink)}
+.stage{position:relative;width:100%;aspect-ratio:820/520}
+.stage svg{display:block;width:100%;height:100%}
+.chips{padding:10px 14px 14px;border-top:1px solid var(--rule);display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.chips .lbl{font-size:12px;color:var(--graphite);margin-right:4px}
+.chip{font-size:12px;padding:3px 10px;border:1px solid var(--rule);border-radius:999px;background:#fff;cursor:pointer;user-select:none}
+.chip[data-v="steal"]{background:#2F8F83;color:#fff;border-color:#2F8F83}
+.chip[data-v="steal"]::before{content:"✓ "}
+.chip[data-v="skip"]{color:#C8462D;border-color:#C8462D;text-decoration:line-through}
+#tip{position:fixed;pointer-events:none;background:#1E2329;color:#F4F1EA;padding:9px 11px;font-size:12px;border-radius:2px;max-width:300px;display:none;z-index:10;box-shadow:0 2px 10px rgba(0,0,0,.25)}
+#tip b{display:block;font-size:13px;margin-bottom:2px}
+#tip .m{font-family:var(--mono);color:#D9B97A}
+#tip .s{color:#AEB4BD}
+section.reply{padding:0 32px 64px}
+.panel{background:#FBFAF7;border:1px solid var(--rule);padding:16px 18px}
+.panel h3{margin:0 0 12px;font-size:16px}
+.q{margin:0 0 14px}
+.q .qt{font-weight:600;margin-bottom:6px}
+.opts{display:flex;gap:6px;flex-wrap:wrap}
+textarea{width:100%;min-height:64px;font:inherit;border:1px solid var(--rule);padding:8px;background:#fff}
+pre#out{white-space:pre-wrap;background:#1E2329;color:#F4F1EA;padding:14px;font-family:var(--mono);font-size:12.5px;margin:10px 0 8px;min-height:80px}
+.lbl-svg{font-family:var(--sans);font-weight:600;letter-spacing:.09em}
+.mono-svg{font-family:var(--mono)}
+@keyframes press{0%,100%{transform:translateY(0)}50%{transform:translateY(5px)}}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.35}}
+@keyframes glow{0%,100%{opacity:.55}50%{opacity:.9}}
+@keyframes rise{0%{transform:translate(0,0);opacity:.7}100%{transform:translate(6px,-18px);opacity:0}}
+.a-press{animation:press linear infinite}
+.a-blink{animation:blink ease-in-out infinite}
+.a-glow{animation:glow ease-in-out infinite}
+.smoke{animation:rise 2.4s ease-out infinite}
+body.still .a-press,body.still .a-blink,body.still .a-glow,body.still .smoke{animation:none}
+@media (max-width:1000px){main{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Orrery · Explore unknowns · Stage 3 · Unknown knowns</h1>
+  <h2>Four design directions for the plan view, one real plant</h2>
+  <p class="note">All four draw the same model: Acquit, with its parts taken from its README (API, verifier, SQLite, PayPal, GitHub App, model calls, the sweep job, the agent CLI and MCP). Hover any machine for its readout. Click the chips under each direction to mark what to <b>steal</b> or <b>skip</b>; your reply assembles itself at the bottom.</p>
+  <p class="note">Includes one ghost (the OTel radar from D13), one fogged part (<code>packages/house</code>, purpose unknown), one strained machine and one failing dock, so every state is on screen.</p>
+  <div class="row">
+    <span class="badge">Numbers are invented for the mockup</span>
+    <span class="badge">Structure inferred from Acquit's README, rev 55825fe</span>
+    <button id="motion" aria-pressed="true">Motion on</button>
+  </div>
+</header>
+
+<main id="cards"></main>
+
+<section class="reply">
+  <div class="panel">
+    <h3>Your reaction</h3>
+    <div class="q"><div class="qt">1. Which direction is closest to Orrery overall?</div><div class="opts" data-q="closest"></div></div>
+    <div class="q"><div class="qt">2. Where should live numbers sit?</div><div class="opts" data-q="numbers"></div></div>
+    <div class="q"><div class="qt">3. Labels on the drawing?</div><div class="opts" data-q="labels"></div></div>
+    <div class="q"><div class="qt">4. Depth in the plan view?</div><div class="opts" data-q="depth"></div></div>
+    <div class="q"><div class="qt">5. Anything else (a feeling, a reference, a dislike)?</div><textarea id="notes" placeholder="e.g. B's machines with A's paper and title block; C's parts list is great for screenshots"></textarea></div>
+    <pre id="out"></pre>
+    <button id="copy">Copy reply</button> <span id="copied" class="note"></span>
+  </div>
+</section>
+
+<div id="tip"></div>
+
+<script>
+"use strict";
+const T = 60, OX = 20, OY = 20, W = 820, H = 520;
+const WALL = 10.8;
+const SANS = 'var(--sans)';
+
+const N = [
+  {id:'web', kind:'intake', label:'Web clients', sub:'apps/web · :5173', x:1, y:2, w:1.4, h:1, dial:'38 users', frac:.40, state:'working', src:'declared · observed', note:'Browser sessions of clients and operators.'},
+  {id:'agents', kind:'intake', label:'Agent CLI + MCP', sub:'acquit-cli · packages/mcp', x:1, y:5, w:1.4, h:1, dial:'6 sessions', frac:.30, state:'working', src:'declared', note:"Operators' agents use the JSON control CLI and the stdio MCP server (six tools)."},
+  {id:'gate', kind:'gate', label:'Sign-in', sub:'GET /api/session', x:3, y:3.5, w:.8, h:1, dial:'0.4% denied', frac:.10, state:'working', src:'declared'},
+  {id:'api', kind:'assembler', label:'acquit-api', sub:'apps/api · :4310 · node:http', x:5.5, y:3.5, w:2, h:1.6, dial:'p99 184 ms', frac:.61, state:'working', rps:15, src:'designed · declared · observed', budget:'Budget: p99 ≤ 300 ms, 40 rps'},
+  {id:'verifier', kind:'bank', label:'verifier', sub:'packages/verifier · :4311 · Docker subjects', x:8.5, y:1.6, w:2.4, h:1.2, dial:'3/4 busy · 7 queued', frac:.82, state:'strained', busy:3, cells:4, src:'declared · observed', note:'Strained: the queue in front of it is growing.'},
+  {id:'db', kind:'tank', label:'SQLite', sub:'data/acquit.db', x:8.5, y:5.6, w:1.4, h:1.4, dial:'q p99 3 ms', frac:.20, state:'working', src:'declared · observed'},
+  {id:'github', kind:'dock', label:'GitHub App', sub:'forks and sweeps client repos', x:11.5, y:1, w:1.4, h:1, dial:'410 ms', frac:.30, state:'working', src:'declared'},
+  {id:'paypal', kind:'dock', label:'PayPal', sub:'escrow · payouts (sandbox)', x:11.5, y:3.5, w:1.4, h:1, dial:'4.1% errors', frac:.93, state:'failing', src:'declared · observed', note:"401s trigger the payout reader's single retry; the return loop thickens."},
+  {id:'model', kind:'kiln', label:'Model calls', sub:'FACTORY_API_KEY', x:11.5, y:5.6, w:1.4, h:1.2, dial:'1.9k tok/s', frac:.45, state:'working', src:'declared'},
+  {id:'sweep', kind:'clock', label:'sweep', sub:'cron · expired visitors', x:5.5, y:6.8, w:1, h:1, dial:'next 14:00', frac:0, state:'idle', src:'declared'},
+  {id:'radar', kind:'module', label:'OTel radar', sub:'ghost · D13 · zero-dependency OTLP', x:5.5, y:1.2, w:1.8, h:.9, dial:'proposed', frac:0, state:'ghost', src:'designed', note:'Proposed in the blueprint, not built yet.'},
+  {id:'house', kind:'unknown', label:'packages/house', sub:'purpose unknown', x:3.2, y:7.0, w:1.4, h:.8, dial:'never observed', frac:0, state:'fogged', src:'declared', note:'Fogged: no telemetry, no owner, never explored.'},
+];
+const byId = Object.fromEntries(N.map(n => [n.id, n]));
+const F = [
+  {from:'web', to:'gate', rps:12, mx:2.2},
+  {from:'agents', to:'gate', rps:3, mx:2.2},
+  {from:'gate', to:'api', rps:15, dim:'15 / 40 rps'},
+  {from:'api', to:'verifier', rps:.6, mx:7.0, ay:-.5},
+  {from:'api', to:'github', rps:.3, mx:10.1, ay:-.25},
+  {from:'api', to:'paypal', rps:.4, err:true, fit:'retry'},
+  {from:'api', to:'model', rps:.2, mx:10.1, ay:.25},
+  {from:'api', to:'db', rps:40, mx:7.0, ay:.5},
+  {from:'sweep', to:'db', rps:.02, mx:7.35},
+  {from:'radar', to:'api', ghost:true, v:true},
+];
+const SIG = {ok:'#2F8F83', strain:'#D99A2B', fail:'#C8462D', ghost:'#3A7CA5', brass:'#B08D57', brassHi:'#D9B97A'};
+
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const box = n => { const w = n.w*T, h = n.h*T; return {x:OX+n.x*T-w/2, y:OY+n.y*T-h/2, w, h, cx:OX+n.x*T, cy:OY+n.y*T}; };
+const pts = p => p.map(q => q[0].toFixed(1)+','+q[1].toFixed(1)).join(' ');
+const speed = rps => 6 + 18*Math.log10(1 + (rps || 0));
+function route(f){
+  const a = box(byId[f.from]), b = box(byId[f.to]);
+  if (f.v) return [[a.cx, a.y+a.h], [b.cx, b.y]];
+  const ay = a.cy + (f.ay || 0)*T, ax = a.x + a.w, bx = b.x, by = b.cy;
+  if (f.mx == null) return [[ax, ay], [bx, ay]];
+  const mx = OX + f.mx*T;
+  return [[ax, ay], [mx, ay], [mx, by], [bx, by]];
+}
+function text(x, y, s, a){ return `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" ${a}>${esc(s)}</text>`; }
+function rect(b, fill, stroke, sw, extra){ return `<rect x="${b.x.toFixed(1)}" y="${b.y.toFixed(1)}" width="${b.w.toFixed(1)}" height="${b.h.toFixed(1)}" fill="${fill}" stroke="${stroke}" stroke-width="${sw}" ${extra || ''}/>`; }
+function polar(cx, cy, r, deg){ const t = deg*Math.PI/180; return [cx + r*Math.sin(t), cy - r*Math.cos(t)]; }
+function arc(cx, cy, r, d1, d2){ const [x1,y1] = polar(cx,cy,r,d1), [x2,y2] = polar(cx,cy,r,d2); return `M${x1.toFixed(1)} ${y1.toFixed(1)}A${r} ${r} 0 ${d2-d1>180?1:0} 1 ${x2.toFixed(1)} ${y2.toFixed(1)}`; }
+function defs(p, ghost, bg){
+  return `<defs>
+    <pattern id="hatch-${p}" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="${ghost}" stroke-width="1.3" opacity=".55"/></pattern>
+    <pattern id="wallhatch-${p}" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="5" stroke="currentColor" stroke-width="1"/></pattern>
+    <radialGradient id="fog-${p}"><stop offset="0" stop-color="${bg}" stop-opacity=".92"/><stop offset=".6" stop-color="${bg}" stop-opacity=".7"/><stop offset="1" stop-color="${bg}" stop-opacity="0"/></radialGradient>
+  </defs>`;
+}
+function smoke(b, color){
+  let s = '';
+  for (let i = 0; i < 3; i++) s += `<circle class="smoke" cx="${(b.x+b.w-10+i*4).toFixed(1)}" cy="${(b.y-2).toFixed(1)}" r="${4+i}" fill="${color}" style="animation-delay:${(i*0.8).toFixed(1)}s"/>`;
+  return s;
+}
+function fog(b, p){ return `<ellipse cx="${b.cx}" cy="${b.cy}" rx="${(b.w*0.95).toFixed(1)}" ry="${(b.h*1.25).toFixed(1)}" fill="url(#fog-${p})"/>`; }
+function motionDur(rps){ return Math.max(.45, Math.min(3, 2.2 - Math.log10(1 + rps))).toFixed(2); }
+
+function glyphPlan(n, b, k){
+  const ink = k.ink, fill = k.fill, s = [];
+  const L = (d, w) => `<path d="${d}" fill="none" stroke="${ink}" stroke-width="${w || 1.2}"/>`;
+  switch (n.kind){
+    case 'intake':
+      s.push(rect(b, fill, ink, k.sw));
+      for (let i = 0; i < 3; i++){ const y = b.y + b.h*(.3 + .2*i); s.push(L(`M${b.x+10} ${y}h${b.w-26}m-6 -4l6 4l-6 4`)); }
+      break;
+    case 'gate':
+      s.push(rect(b, fill, ink, k.sw));
+      s.push(L(`M${b.x} ${b.cy}H${b.x+b.w}M${b.cx} ${b.y+8}V${b.y+b.h-8}`));
+      s.push(`<circle cx="${b.cx}" cy="${b.cy}" r="6" fill="${fill}" stroke="${ink}" stroke-width="1.2"/>`);
+      break;
+    case 'assembler': {
+      s.push(rect(b, fill, ink, k.sw));
+      const ph = {x:b.x+b.w*.28, y:b.y+b.h*.18, w:b.w*.44, h:b.h*.28};
+      s.push(L(`M${b.x+8} ${b.y+b.h*.72}H${b.x+b.w-8}`, 1.4));
+      s.push(`<g ${k.motion ? `class="a-press" style="animation-duration:${motionDur(n.rps)}s"` : ''}>${rect(ph, k.accentFill || fill, ink, 1.2)}${L(`M${b.cx} ${ph.y+ph.h}v8`, 1.4)}</g>`);
+      s.push(`<circle cx="${b.x+b.w-16}" cy="${b.y+b.h-16}" r="7" fill="${fill}" stroke="${ink}" stroke-width="1.2"/>`);
+      break;
+    }
+    case 'bank': {
+      s.push(rect(b, fill, ink, k.sw));
+      const c = n.cells, g = 6, cw = (b.w - g*(c+1))/c;
+      for (let i = 0; i < c; i++){
+        const cb = {x:b.x+g+i*(cw+g), y:b.y+g, w:cw, h:b.h-2*g};
+        const busy = i < n.busy;
+        s.push(`<g ${busy && k.motion ? `class="a-blink" style="animation-duration:${(1.4+i*.3).toFixed(1)}s"` : ''}>${rect(cb, busy ? (k.busy || ink) : fill, ink, 1.1)}</g>`);
+      }
+      break;
+    }
+    case 'tank': {
+      const r = Math.min(b.w, b.h)/2;
+      s.push(`<circle cx="${b.cx}" cy="${b.cy}" r="${r}" fill="${fill}" stroke="${ink}" stroke-width="${k.sw}"/>`);
+      const ly = b.cy + r*.35, dx = Math.sqrt(r*r - (r*.35)**2);
+      s.push(L(`M${b.cx-dx} ${ly}H${b.cx+dx}`, 1));
+      s.push(`<circle cx="${b.cx}" cy="${b.cy-r*.3}" r="${r*.28}" fill="${fill}" stroke="${ink}" stroke-width="1"/>`);
+      s.push(L(`M${b.cx} ${b.cy-r*.3}l${r*.18} ${-r*.12}`, 1.2));
+      break;
+    }
+    case 'dock':
+      s.push(rect(b, fill, ink, k.sw));
+      s.push(L(`M${b.x} ${b.y+8}h8M${b.x} ${b.y+b.h-8}h8`, 1.4));
+      s.push(rect({x:b.x+b.w*.38, y:b.y+b.h*.3, w:b.w*.44, h:b.h*.4}, k.accentFill || fill, ink, 1.1));
+      s.push(L(`M${b.x+b.w*.38} ${b.cy}h-10`, 1));
+      break;
+    case 'kiln':
+      s.push(rect(b, fill, ink, k.sw));
+      if (k.glow) s.push(`<path class="${k.motion ? 'a-glow' : ''}" style="animation-duration:1.8s" d="M${b.x+b.w*.25} ${b.y+b.h*.8}V${b.y+b.h*.48}A${b.w*.25} ${b.w*.25} 0 0 1 ${b.x+b.w*.75} ${b.y+b.h*.48}V${b.y+b.h*.8}Z" fill="${k.glow}"/>`);
+      s.push(L(`M${b.x+b.w*.25} ${b.y+b.h*.8}V${b.y+b.h*.48}A${b.w*.25} ${b.w*.25} 0 0 1 ${b.x+b.w*.75} ${b.y+b.h*.48}V${b.y+b.h*.8}`));
+      s.push(L(`M${b.x+6} ${b.y+b.h*.8}H${b.x+b.w-6}`));
+      break;
+    case 'clock': {
+      const r = Math.min(b.w, b.h)/2;
+      s.push(`<circle cx="${b.cx}" cy="${b.cy}" r="${r}" fill="${fill}" stroke="${ink}" stroke-width="${k.sw}"/>`);
+      for (let i = 0; i < 12; i++){ const [x1,y1] = polar(b.cx,b.cy,r-3,i*30), [x2,y2] = polar(b.cx,b.cy,r-7,i*30); s.push(L(`M${x1} ${y1}L${x2} ${y2}`, 1)); }
+      s.push(L(`M${b.cx} ${b.cy}V${b.cy-r*.6}M${b.cx} ${b.cy}l${r*.42} ${r*.2}`, 1.5));
+      break;
+    }
+    case 'module':
+      s.push(rect(b, `url(#hatch-${k.p})`, ink, k.sw));
+      for (let i = 1; i <= 3; i++) s.push(`<path d="${arc(b.x+18, b.cy+8, i*7, 0, 90)}" fill="none" stroke="${ink}" stroke-width="1.1"/>`);
+      break;
+    case 'unknown':
+      s.push(rect(b, fill, ink, k.sw));
+      s.push(text(b.cx, b.cy+5, '?', `text-anchor="middle" font-size="16" fill="${ink}" class="lbl-svg"`));
+      break;
+  }
+  return s.join('');
+}
+
+/* ---------------- Direction A: drafting plan ---------------- */
+const PAPERS = {
+  live:{name:'Live', bg:'#F4F1EA', grid:'#E3DED3', ink:'#1E2329', soft:'#6B7280', fill:'#FBFAF7', ghost:'#3A7CA5', ok:'#2F8F83', mark:''},
+  blueprint:{name:'Blueprint', bg:'#1F3A5F', grid:'#2B4C75', ink:'#E8EEF5', soft:'#A9BCD3', fill:'#1F3A5F', ghost:'#8FD3FF', ok:'#8FD3FF', mark:'BLUEPRINT · 1 GHOST PENDING'},
+  simulate:{name:'Simulate', bg:'#F6F7F2', grid:'#CFE0D6', ink:'#1E2329', soft:'#5E6B63', fill:'#FFFFFF', ghost:'#3A7CA5', ok:'#2F8F83', mark:'SIMULATE ×60 · T+00:14:32 · TRAFFIC ×3', fine:true},
+  replay:{name:'Replay', bg:'#EFE4CF', grid:'#DCCBA8', ink:'#3B2F22', soft:'#7A6A55', fill:'#F6EEDD', ghost:'#3A7CA5', ok:'#6E7F3A', mark:'REPLAY · 2026-10-12 03:04:17'},
+};
+let paperA = 'live';
+function renderA(){
+  const P = PAPERS[paperA], p = 'A';
+  const s = [`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="color:${P.ink}">`, defs(p, P.ghost, P.bg)];
+  s.push(`<pattern id="grid-${p}" width="${P.fine ? 12 : T}" height="${P.fine ? 12 : T}" patternUnits="userSpaceOnUse" x="${OX}" y="${OY}"><path d="M${P.fine ? 12 : T} 0H0V${P.fine ? 12 : T}" fill="none" stroke="${P.grid}" stroke-width="${P.fine ? .6 : 1}"/></pattern>`);
+  s.push(`<rect width="${W}" height="${H}" fill="${P.bg}"/><rect width="${W}" height="${H}" fill="url(#grid-${p})"/>`);
+  if (P.mark) s.push(text(OX+8, OY+14, P.mark, `class="mono-svg" font-size="12" fill="${P.soft}" letter-spacing="1"`));
+  const wx = OX + WALL*T;
+  s.push(`<rect x="${wx-6}" y="${OY+.2*T}" width="6" height="${6.3*T}" fill="url(#wallhatch-${p})" stroke="${P.ink}" stroke-width="1.2"/>`);
+  s.push(text(wx+10, OY+6.75*T, 'PLANT BOUNDARY', `class="lbl-svg" font-size="8" fill="${P.soft}"`));
+  for (const f of F){
+    const r = route(f);
+    if (f.ghost){ s.push(`<polyline points="${pts(r)}" fill="none" stroke="${P.ghost}" stroke-width="1.4" stroke-dasharray="5 4"/>`); continue; }
+    s.push(`<polyline points="${pts(r)}" fill="none" stroke="${P.ink}" stroke-width="7" stroke-linejoin="miter"/>`);
+    s.push(`<polyline points="${pts(r)}" fill="none" stroke="${P.bg}" stroke-width="4.4" stroke-linejoin="miter"/>`);
+    s.push(`<polyline class="flow" data-speed="${speed(f.rps)}" points="${pts(r)}" fill="none" stroke="${f.err ? SIG.fail : P.ok}" stroke-width="1.6" stroke-dasharray="5 9"/>`);
+    if (f.dim){
+      const [a, b] = r, y = a[1] - 15;
+      s.push(`<path d="M${a[0]+2} ${y-4}v8M${b[0]-2} ${y-4}v8M${a[0]+2} ${y}H${b[0]-2}" stroke="${P.soft}" stroke-width=".8" fill="none"/>`);
+      s.push(text((a[0]+b[0])/2, y-4, f.dim, `text-anchor="middle" class="mono-svg" font-size="9" fill="${P.ink}"`));
+    }
+    if (f.fit === 'retry'){
+      const x = OX + 10.45*T, y = r[0][1];
+      s.push(`<path class="flow" data-speed="10" d="M${x+12} ${y}C${x+12} ${y-26} ${x-12} ${y-26} ${x-12} ${y}" fill="none" stroke="${SIG.fail}" stroke-width="2.6" stroke-dasharray="4 4"/>`);
+      s.push(text(x, y-26, 'RETRY ×1', `text-anchor="middle" class="lbl-svg" font-size="7.5" fill="${SIG.fail}"`));
+    }
+  }
+  for (const n of N){
+    const b = box(n);
+    const ghost = n.state === 'ghost', fogged = n.state === 'fogged';
+    const k = {ink: ghost ? P.ghost : (fogged ? P.soft : P.ink), fill:P.fill, sw:1.6, p, motion:false};
+    s.push(`<g data-id="${n.id}" style="cursor:pointer" ${ghost ? 'stroke-dasharray="5 4"' : ''} ${fogged ? 'stroke-dasharray="2 3"' : ''}>`);
+    s.push(glyphPlan(n, b, k));
+    if (n.state === 'failing'){ s.push(rect({x:b.x-4, y:b.y-4, w:b.w+8, h:b.h+8}, 'none', SIG.fail, 1.4)); s.push(smoke(b, SIG.fail)); }
+    if (n.state === 'strained'){ s.push(rect({x:b.x, y:b.y+b.h+4, w:b.w, h:4}, 'none', P.ink, .8)); s.push(rect({x:b.x, y:b.y+b.h+4, w:b.w*n.frac, h:4}, SIG.strain, 'none', 0)); }
+    if (fogged) s.push(fog(b, p));
+    s.push('</g>');
+    const ly = b.y + b.h + (n.state === 'strained' ? 22 : 14);
+    s.push(text(b.cx, ly, n.label.toUpperCase(), `text-anchor="middle" class="lbl-svg" font-size="8.5" fill="${fogged ? P.soft : P.ink}"`));
+    s.push(text(b.cx, b.y - 6, n.dial, `text-anchor="middle" class="mono-svg" font-size="9.5" fill="${n.state === 'failing' ? SIG.fail : n.state === 'strained' ? '#B47A12' : P.soft}"`));
+  }
+  const tb = {x:OX+9.95*T, y:OY+6.55*T, w:3.05*T, h:1.2*T};
+  s.push(rect(tb, P.bg, P.ink, 1.4));
+  s.push(`<path d="M${tb.x} ${tb.y+24}H${tb.x+tb.w}M${tb.x} ${tb.y+48}H${tb.x+tb.w}M${tb.x+82} ${tb.y+24}V${tb.y+tb.h}" stroke="${P.ink}" stroke-width=".8"/>`);
+  s.push(text(tb.x+8, tb.y+16, 'ORRERY', `class="lbl-svg" font-size="11" fill="${P.ink}" letter-spacing="2.5"`));
+  s.push(text(tb.x+tb.w-8, tb.y+16, 'ACQUIT · PLANT', `text-anchor="end" class="lbl-svg" font-size="9" fill="${P.ink}"`));
+  s.push(text(tb.x+8, tb.y+40, 'VIEW PLAN', `class="mono-svg" font-size="9" fill="${P.ink}"`));
+  s.push(text(tb.x+90, tb.y+40, 'MODE ' + P.name.toUpperCase(), `class="mono-svg" font-size="9" fill="${P.ink}"`));
+  s.push(text(tb.x+8, tb.y+64, 'REV 55825fe', `class="mono-svg" font-size="9" fill="${P.ink}"`));
+  s.push(text(tb.x+90, tb.y+64, '2026-10-13 14:22', `class="mono-svg" font-size="9" fill="${P.ink}"`));
+  s.push('</svg>');
+  return s.join('');
+}
+
+/* ---------------- Direction B: factory floor 3/4 ---------------- */
+function renderB(){
+  const p = 'B', ink = '#1E2329', D = 10;
+  const tone = {top:'#FBFAF7', left:'#E6E1D6', front:'#CFC8B9', shadow:'#A9A190'};
+  const s = [`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="color:#7D766A">`, defs(p, SIG.ghost, '#E6E0D3')];
+  s.push(`<pattern id="grid-${p}" width="${T}" height="${T}" patternUnits="userSpaceOnUse" x="${OX}" y="${OY}"><path d="M${T} 0H0V${T}" fill="none" stroke="#D6CEBD" stroke-width="1"/></pattern>`);
+  const wx = OX + WALL*T;
+  s.push(`<rect width="${W}" height="${H}" fill="#E9E4D9"/><rect x="${wx}" width="${W-wx}" height="${H}" fill="#DCD4C3"/><rect width="${W}" height="${H}" fill="url(#grid-${p})"/>`);
+  s.push(text(wx+12, OY+7.6*T, 'OUTSIDE', `class="lbl-svg" font-size="8" fill="#8E8676"`));
+  s.push(`<rect x="${wx-5}" y="${OY+.15*T}" width="10" height="${6.4*T}" fill="#B5AD9C" stroke="${ink}" stroke-width="1"/>`);
+  for (let i = 0; i < 16; i++) s.push(`<rect x="${wx-5}" y="${OY+.15*T+i*24}" width="10" height="5" fill="#9E9685"/>`);
+  for (const f of F){
+    const r = route(f);
+    if (f.ghost){ s.push(`<polyline points="${pts(r)}" fill="none" stroke="${SIG.ghost}" stroke-width="2" stroke-dasharray="5 4"/>`); continue; }
+    s.push(`<polyline points="${pts(r)}" fill="none" stroke="#6F685C" stroke-width="10" stroke-linejoin="miter"/>`);
+    s.push(`<polyline points="${pts(r)}" fill="none" stroke="#BDB5A4" stroke-width="7" stroke-linejoin="miter"/>`);
+    s.push(`<polyline class="flow" data-speed="${speed(f.rps)}" points="${pts(r)}" fill="none" stroke="${f.err ? '#E7907C' : '#F7F4EC'}" stroke-width="7" stroke-dasharray="2 6"/>`);
+    if (f.fit === 'retry'){
+      const x = OX + 10.45*T, y = r[0][1];
+      s.push(`<path d="M${x+12} ${y}C${x+12} ${y-28} ${x-12} ${y-28} ${x-12} ${y}" fill="none" stroke="#6F685C" stroke-width="8"/>`);
+      s.push(`<path class="flow" data-speed="10" d="M${x+12} ${y}C${x+12} ${y-28} ${x-12} ${y-28} ${x-12} ${y}" fill="none" stroke="#E7907C" stroke-width="5" stroke-dasharray="2 5"/>`);
+    }
+  }
+  for (const n of N){
+    const b = box(n), ghost = n.state === 'ghost', fogged = n.state === 'fogged';
+    const top = {x:b.x, y:b.y-D, w:b.w, h:b.h, cx:b.cx, cy:b.cy-D};
+    s.push(`<g data-id="${n.id}" style="cursor:pointer" ${ghost ? 'stroke-dasharray="5 4"' : ''} ${fogged ? 'opacity=".55"' : ''}>`);
+    if (!ghost){
+      if (n.kind === 'tank' || n.kind === 'clock'){
+        const r = Math.min(b.w, b.h)/2;
+        s.push(`<circle cx="${b.cx+6}" cy="${b.cy+4}" r="${r}" fill="${tone.shadow}" opacity=".35"/>`);
+        s.push(`<path d="M${b.cx-r} ${b.cy-D}L${b.cx-r} ${b.cy}A${r} ${r} 0 0 0 ${b.cx+r} ${b.cy}L${b.cx+r} ${b.cy-D}Z" fill="${tone.front}" stroke="${ink}" stroke-width="1.2"/>`);
+      } else {
+        s.push(`<rect x="${b.x+6}" y="${b.y-D+6}" width="${b.w}" height="${b.h+D}" fill="${tone.shadow}" opacity=".35"/>`);
+        s.push(rect({x:b.x, y:b.y+b.h-D, w:b.w, h:D}, tone.front, ink, 1.2));
+        s.push(rect({x:b.x, y:b.y-D, w:6, h:b.h}, tone.left, 'none', 0));
+      }
+    }
+    const k = {ink: ghost ? SIG.ghost : ink, fill: ghost ? 'none' : tone.top, sw:1.3, p, motion:true, busy: n.state === 'strained' ? SIG.strain : SIG.ok, accentFill:'#E6E1D6', glow:'#E0A458'};
+    s.push(glyphPlan(n, top, k));
+    if (!ghost && n.kind !== 'tank' && n.kind !== 'clock'){
+      const lamp = {working:SIG.ok, strained:SIG.strain, failing:SIG.fail, idle:'#9AA0A6', fogged:'#9AA0A6'}[n.state];
+      s.push(`<circle cx="${b.x+b.w-8}" cy="${b.y+b.h-D/2}" r="3" fill="${lamp}" stroke="${ink}" stroke-width=".6" ${n.state === 'failing' ? 'class="a-blink" style="animation-duration:.9s"' : ''}/>`);
+      if (n.state === 'strained'){ s.push(rect({x:b.x+6, y:b.y+b.h-D+3, w:b.w*.5, h:4}, '#F4F1EA', ink, .6)); s.push(rect({x:b.x+6, y:b.y+b.h-D+3, w:b.w*.5*n.frac, h:4}, SIG.strain, 'none', 0)); }
+    }
+    if (n.state === 'failing') s.push(smoke(top, '#8A8378'));
+    if (fogged) s.push(fog(b, p));
+    s.push('</g>');
+    const ly = b.y + b.h + 13;
+    s.push(text(b.cx, ly, n.label.toUpperCase(), `text-anchor="middle" class="lbl-svg" font-size="8.5" fill="${ink}" paint-order="stroke" stroke="#E9E4D9" stroke-width="3"`));
+    s.push(text(b.cx, b.y - D - 6, n.dial, `text-anchor="middle" class="mono-svg" font-size="9.5" fill="${n.state === 'failing' ? SIG.fail : n.state === 'strained' ? '#A86F0E' : '#4B5058'}" paint-order="stroke" stroke="#E9E4D9" stroke-width="3"`));
+  }
+  s.push('</svg>');
+  return s.join('');
+}
+
+/* ---------------- Direction C: cyanotype schematic ---------------- */
+function renderC(){
+  const p = 'C', bg = '#1F3A5F', L = '#E8EEF5', soft = '#A9BCD3', gh = '#8FD3FF';
+  const s = [`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" style="color:${soft}">`, defs(p, gh, bg)];
+  s.push(`<pattern id="gridf-${p}" width="12" height="12" patternUnits="userSpaceOnUse"><path d="M12 0H0V12" fill="none" stroke="#264670" stroke-width=".6"/></pattern>`);
+  s.push(`<rect width="${W}" height="${H}" fill="${bg}"/><rect width="${W}" height="${H}" fill="url(#gridf-${p})"/>`);
+  s.push(`<rect x="6" y="6" width="${W-12}" height="${H-12}" fill="none" stroke="${L}" stroke-width="1.4"/><rect x="11" y="11" width="${W-22}" height="${H-22}" fill="none" stroke="${L}" stroke-width=".5"/>`);
+  s.push(text(22, 34, 'ACQUIT — PLAN — SHEET 1 OF 1', `class="lbl-svg" font-size="11" fill="${L}" letter-spacing="2"`));
+  s.push(text(22, 48, 'ORRERY · REV 55825fe · 2026-10-13 14:22', `class="mono-svg" font-size="9" fill="${soft}"`));
+  s.push(`<g transform="translate(6,70) scale(.74)">`);
+  const wx = OX + WALL*T;
+  s.push(`<path d="M${wx} ${OY+.2*T}V${OY+6.5*T}" stroke="${L}" stroke-width="1.2" stroke-dasharray="14 4 2 4"/>`);
+  for (const f of F){
+    const r = route(f);
+    if (f.ghost){ s.push(`<polyline points="${pts(r)}" fill="none" stroke="${gh}" stroke-width="1.2" stroke-dasharray="6 4"/>`); continue; }
+    s.push(`<polyline points="${pts(r)}" fill="none" stroke="${L}" stroke-width="1.1"/>`);
+    s.push(`<polyline class="flow" data-speed="${speed(f.rps)}" points="${pts(r)}" fill="none" stroke="${f.err ? '#FF8C73' : L}" stroke-width="3.2" stroke-linecap="round" stroke-dasharray="0.1 14"/>`);
+    if (f.fit === 'retry'){ const x = OX+10.45*T, y = r[0][1]; s.push(`<path d="M${x+12} ${y}C${x+12} ${y-26} ${x-12} ${y-26} ${x-12} ${y}" fill="none" stroke="#FF8C73" stroke-width="1.6"/>`); }
+  }
+  N.forEach((n, i) => {
+    const b = box(n), ghost = n.state === 'ghost', fogged = n.state === 'fogged';
+    const c = ghost ? gh : fogged ? soft : L;
+    const P = (d, w) => `<path d="${d}" fill="none" stroke="${c}" stroke-width="${w || 1.2}"/>`;
+    s.push(`<g data-id="${n.id}" style="cursor:pointer" ${ghost ? 'stroke-dasharray="6 4"' : ''}>`);
+    switch (n.kind){
+      case 'intake': { const r = b.h*.36; s.push(`<circle cx="${b.cx-8}" cy="${b.cy}" r="${r}" fill="${bg}" stroke="${c}" stroke-width="1.4"/>`); s.push(P(`M${b.cx-8-r*.5} ${b.cy}h${r}m-5 -4l5 4l-5 4`)); s.push(P(`M${b.cx-8+r} ${b.cy}H${b.x+b.w}`)); break; }
+      case 'gate': s.push(P(`M${b.x} ${b.cy}h10M${b.x+b.w} ${b.cy}h-10M${b.x+10} ${b.cy}l${b.w-24} -12`, 1.4)); s.push(`<circle cx="${b.x+10}" cy="${b.cy}" r="2.5" fill="${c}"/><circle cx="${b.x+b.w-10}" cy="${b.cy}" r="2.5" fill="${c}"/>`); break;
+      case 'assembler': s.push(rect(b, bg, c, 1.4)); s.push(text(b.cx, b.cy+5, 'SVC', `text-anchor="middle" class="mono-svg" font-size="14" fill="${c}"`)); break;
+      case 'bank': { s.push(rect(b, bg, c, 1.4)); const cw = b.w/n.cells; for (let j = 1; j < n.cells; j++) s.push(P(`M${b.x+j*cw} ${b.y}V${b.y+b.h}`, .8)); for (let j = 0; j < n.busy; j++) s.push(`<circle cx="${b.x+cw*(j+.5)}" cy="${b.cy}" r="4" fill="${SIG.strain}"/>`); break; }
+      case 'tank': { const rx = b.w*.42, ry = 8; s.push(`<path d="M${b.cx-rx} ${b.y+ry}V${b.y+b.h-ry}A${rx} ${ry} 0 0 0 ${b.cx+rx} ${b.y+b.h-ry}V${b.y+ry}" fill="${bg}" stroke="${c}" stroke-width="1.4"/><ellipse cx="${b.cx}" cy="${b.y+ry}" rx="${rx}" ry="${ry}" fill="${bg}" stroke="${c}" stroke-width="1.4"/>`); break; }
+      case 'dock': s.push(rect({x:b.x+12, y:b.y, w:b.w-12, h:b.h}, bg, c, 1.4)); for (let j = 0; j < 3; j++) s.push(P(`M${b.x} ${b.y+b.h*(.25+.25*j)}h12`)); break;
+      case 'kiln': s.push(rect(b, bg, c, 1.4)); { let d = `M${b.x+8} ${b.cy}`; for (let j = 0; j < 6; j++) d += `l${(b.w-16)/12} ${j%2 ? 9 : -9}l${(b.w-16)/12} ${j%2 ? -9 : 9}`; s.push(P(d)); } break;
+      case 'clock': { const r = Math.min(b.w,b.h)/2-2; s.push(`<circle cx="${b.cx}" cy="${b.cy}" r="${r}" fill="${bg}" stroke="${c}" stroke-width="1.4"/>`); s.push(P(`M${b.cx} ${b.cy}V${b.cy-r*.65}M${b.cx} ${b.cy}l${r*.45} ${r*.2}`, 1.4)); break; }
+      case 'module': s.push(rect(b, `url(#hatch-${p})`, c, 1.3)); for (let j = 1; j <= 3; j++) s.push(`<path d="${arc(b.x+18, b.cy+8, j*7, 0, 90)}" fill="none" stroke="${c}" stroke-width="1.1"/>`); break;
+      case 'unknown': s.push(rect(b, `url(#hatch-${p})`, soft, 1, 'stroke-dasharray="2 3"')); break;
+    }
+    if (n.state === 'failing') s.push(rect({x:b.x-4, y:b.y-4, w:b.w+8, h:b.h+8}, 'none', '#FF8C73', 1.4, 'stroke-dasharray="3 3"'));
+    if (n.state === 'strained') s.push(`<path d="M${b.x+b.w+4} ${b.y+b.h}l7 -12l7 12z" fill="${SIG.strain}"/>`);
+    const bx = b.x + b.w + 6, by = b.y - 10;
+    s.push(`<path d="M${b.x+b.w-2} ${b.y+2}L${bx-5} ${by+6}" stroke="${soft}" stroke-width=".8"/><circle cx="${bx}" cy="${by}" r="9" fill="${bg}" stroke="${L}" stroke-width="1"/>`);
+    s.push(text(bx, by+3.5, String(i+1), `text-anchor="middle" class="mono-svg" font-size="10" fill="${L}"`));
+    s.push('</g>');
+  });
+  s.push('</g>');
+  const tx = 622, ty = 66;
+  s.push(text(tx, ty, 'PARTS LIST', `class="lbl-svg" font-size="10" fill="${L}" letter-spacing="2"`));
+  s.push(`<path d="M${tx} ${ty+6}H${W-18}" stroke="${L}" stroke-width=".8"/>`);
+  N.forEach((n, i) => {
+    const y = ty + 22 + i*28;
+    const col = n.state === 'failing' ? '#FF8C73' : n.state === 'strained' ? SIG.strain : n.state === 'ghost' ? gh : n.state === 'fogged' ? soft : L;
+    s.push(`<g data-id="${n.id}" style="cursor:pointer">`);
+    s.push(text(tx, y, String(i+1).padStart(2, '0'), `class="mono-svg" font-size="9.5" fill="${soft}"`));
+    s.push(text(tx+20, y, n.label.toUpperCase(), `class="lbl-svg" font-size="8.5" fill="${L}"`));
+    s.push(text(tx+20, y+12, n.dial, `class="mono-svg" font-size="9" fill="${col}"`));
+    s.push(`<path d="M${tx} ${y+18}H${W-18}" stroke="#35577F" stroke-width=".6"/>`);
+    s.push('</g>');
+  });
+  s.push(text(22, H-22, '— — GHOST (PROPOSED)    ▨ FOGGED    ▲ STRAINED    ⬚ FAILING    · · · FLOW', `class="mono-svg" font-size="8.5" fill="${soft}"`));
+  s.push('</svg>');
+  return s.join('');
+}
+
+/* ---------------- Direction D: brass instruments ---------------- */
+function renderD(){
+  const p = 'D', bg = '#202328', face = '#2A2E35', txt = '#EDE6D6', soft = '#A8A397';
+  const s = [`<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg">`, defs(p, SIG.ghost, bg)];
+  s.push(`<radialGradient id="vig-${p}" cx=".5" cy=".45" r=".8"><stop offset="0" stop-color="#2A2E34"/><stop offset="1" stop-color="#17191D"/></radialGradient>`);
+  s.push(`<pattern id="dots-${p}" width="${T/2}" height="${T/2}" patternUnits="userSpaceOnUse" x="${OX}" y="${OY}"><circle cx="1" cy="1" r=".9" fill="#3A3F47"/></pattern>`);
+  s.push(`<rect width="${W}" height="${H}" fill="url(#vig-${p})"/><rect width="${W}" height="${H}" fill="url(#dots-${p})"/>`);
+  const wx = OX + WALL*T;
+  s.push(`<path d="M${wx} ${OY+.2*T}V${OY+6.5*T}" stroke="${SIG.brass}" stroke-width="1" stroke-dasharray="3 5" opacity=".7"/>`);
+  for (const f of F){
+    const r = route(f);
+    if (f.ghost){ s.push(`<polyline points="${pts(r)}" fill="none" stroke="${SIG.ghost}" stroke-width="1.4" stroke-dasharray="5 4"/>`); continue; }
+    s.push(`<polyline points="${pts(r)}" fill="none" stroke="#3A3F47" stroke-width="7" stroke-linejoin="round" stroke-linecap="round"/>`);
+    s.push(`<polyline points="${pts(r)}" fill="none" stroke="#24272D" stroke-width="3.5" stroke-linejoin="round"/>`);
+    s.push(`<polyline class="flow" data-speed="${speed(f.rps)}" points="${pts(r)}" fill="none" stroke="${f.err ? '#E36A50' : SIG.brassHi}" stroke-width="3.4" stroke-linecap="round" stroke-dasharray="0.1 13"/>`);
+    if (f.fit === 'retry'){ const x = OX+10.45*T, y = r[0][1]; s.push(`<path class="flow" data-speed="10" d="M${x+12} ${y}C${x+12} ${y-26} ${x-12} ${y-26} ${x-12} ${y}" fill="none" stroke="#E36A50" stroke-width="3" stroke-linecap="round" stroke-dasharray="0.1 7"/>`); }
+  }
+  for (const n of N){
+    const b = box(n), ghost = n.state === 'ghost', fogged = n.state === 'fogged';
+    const r = Math.max(18, Math.min(44, Math.min(b.w, b.h)/2 - 2));
+    const cx = b.cx, cy = b.cy;
+    s.push(`<g data-id="${n.id}" style="cursor:pointer" ${fogged ? 'opacity=".4"' : ''}>`);
+    s.push(`<circle cx="${cx}" cy="${cy}" r="${r+2}" fill="${face}" stroke="${ghost ? SIG.ghost : SIG.brass}" stroke-width="3" ${ghost ? 'stroke-dasharray="5 4"' : ''}/>`);
+    s.push(`<circle cx="${cx}" cy="${cy}" r="${r-1.5}" fill="none" stroke="${SIG.brassHi}" stroke-width=".6" opacity=".6"/>`);
+    if (n.kind === 'clock'){
+      for (let i = 0; i < 12; i++){ const [x1,y1] = polar(cx,cy,r-3,i*30), [x2,y2] = polar(cx,cy,r-7,i*30); s.push(`<path d="M${x1} ${y1}L${x2} ${y2}" stroke="${soft}" stroke-width="1"/>`); }
+      s.push(`<path d="M${cx} ${cy}V${cy-r*.6}M${cx} ${cy}l${r*.42} ${r*.2}" stroke="${SIG.brassHi}" stroke-width="1.8" stroke-linecap="round"/>`);
+    } else if (!ghost && !fogged){
+      const zr = r - 6;
+      s.push(`<path d="${arc(cx,cy,zr,-120,24)}" fill="none" stroke="${SIG.ok}" stroke-width="3"/>`);
+      s.push(`<path d="${arc(cx,cy,zr,24,84)}" fill="none" stroke="${SIG.strain}" stroke-width="3"/>`);
+      s.push(`<path d="${arc(cx,cy,zr,84,120)}" fill="none" stroke="${SIG.fail}" stroke-width="3"/>`);
+      const deg = -120 + 240*n.frac;
+      s.push(`<g class="needle" data-cx="${cx}" data-cy="${cy}" data-frac="${n.frac}" transform="rotate(${deg.toFixed(1)} ${cx} ${cy})"><path d="M${cx} ${cy+4}L${cx} ${cy-zr+3}" stroke="${SIG.brassHi}" stroke-width="1.8" stroke-linecap="round"/></g>`);
+      s.push(`<circle cx="${cx}" cy="${cy}" r="3" fill="${SIG.brass}"/>`);
+    } else {
+      s.push(text(cx, cy+5, ghost ? '+' : '?', `text-anchor="middle" class="lbl-svg" font-size="16" fill="${ghost ? SIG.ghost : soft}"`));
+    }
+    if (n.kind === 'bank'){ for (let i = 0; i < n.cells; i++) s.push(`<circle cx="${cx-18+i*12}" cy="${cy+r+9}" r="3.2" fill="${i < n.busy ? SIG.strain : '#3A3F47'}" stroke="${SIG.brass}" stroke-width=".6"/>`); }
+    if (n.kind === 'kiln') s.push(`<circle class="a-glow" style="animation-duration:1.8s" cx="${cx}" cy="${cy}" r="${r+7}" fill="none" stroke="#E0A458" stroke-width="2" opacity=".6"/>`);
+    if (n.state === 'failing') s.push(`<circle class="a-blink" style="animation-duration:.9s" cx="${cx+r*.72}" cy="${cy-r*.72}" r="4" fill="${SIG.fail}"/>`);
+    s.push('</g>');
+    const inside = r >= 30 && n.kind !== 'clock' && !ghost && !fogged;
+    if (inside) s.push(text(cx, cy + r*.55, n.dial.split(' · ')[0], `text-anchor="middle" class="mono-svg" font-size="8.5" fill="${txt}"`));
+    const ly = cy + r + (n.kind === 'bank' ? 24 : 15);
+    s.push(text(cx, ly, n.label.toUpperCase(), `text-anchor="middle" class="lbl-svg" font-size="8.5" fill="${soft}"`));
+    if (!inside) s.push(text(cx, ly + 11, n.dial, `text-anchor="middle" class="mono-svg" font-size="8.5" fill="${n.state === 'failing' ? '#E36A50' : txt}"`));
+  }
+  s.push('</svg>');
+  return s.join('');
+}
+
+/* ---------------- Cards, chips, reply ---------------- */
+const CARDS = [
+  {id:'A', title:'Drafting plan', desc:'Ink on vellum, flat plan symbols, double-line belts, dimension-line budgets, a title block. The paper follows the mode.', render:renderA,
+   chips:['Vellum palette','Ink linework','Flat plan symbols','Double-line belts','Number above machine','Dimension-line budgets','Title block','Paper per mode']},
+  {id:'B', title:'Factory floor (3/4)', desc:'Top-down with slight extrusion, four-tone shading, conveyor slats, status lamps, machines that move with their metric. Closest to Factorio.', render:renderB,
+   chips:['3/4 extrusion','Four-tone shading','Conveyor slats','Status lamps','Moving machines','Stone wall boundary','Outside ground tone']},
+  {id:'C', title:'Cyanotype schematic', desc:'Schematic symbols on a drawing sheet. Numbers live in a parts list, not on the machines. Built for screenshots and design docs.', render:renderC,
+   chips:['Cyanotype palette','Schematic symbols','Numbered balloons','Parts list for numbers','Dot-flow lines','Sheet frame + header','Legend line']},
+  {id:'D', title:'Brass instruments', desc:'A dark graphite panel where every machine is a gauge with a moving needle and colored zones. Data first.', render:renderD,
+   chips:['Dark graphite','Brass bezels','Gauge zones','Moving needles','Pipes with brass dots','Value inside gauge','Kiln glow ring']},
+];
+const chipState = {}; const answers = {};
+const QUESTIONS = {
+  closest:['A · Drafting plan','B · Factory floor','C · Cyanotype schematic','D · Brass instruments','A mix (see notes)'],
+  numbers:['On the machine body','Only on hover','In a parts list / side panel'],
+  labels:['Always visible','Only at close zoom'],
+  depth:['Flat (A, C)','Slight 3/4 extrusion (B)','Round gauges (D)'],
+};
+
+const cardsEl = document.getElementById('cards');
+for (const c of CARDS){
+  chipState[c.id] = {};
+  const el = document.createElement('div');
+  el.className = 'card'; el.id = 'card-' + c.id;
+  el.innerHTML = `
+    <div class="card-head">
+      <div><span class="k">${c.id}</span><span class="t">${esc(c.title)}</span><div class="d">${esc(c.desc)}</div></div>
+      <div class="tools">${c.id === 'A' ? Object.keys(PAPERS).map(k => `<button data-paper="${k}" aria-pressed="${k === paperA}">${PAPERS[k].name}</button>`).join('') : ''}<button data-enlarge>Enlarge</button></div>
+    </div>
+    <div class="stage"></div>
+    <div class="chips"><span class="lbl">Steal / skip:</span>${c.chips.map(ch => `<span class="chip" data-card="${c.id}" data-chip="${esc(ch)}" data-v="">${esc(ch)}</span>`).join('')}</div>`;
+  cardsEl.appendChild(el);
+  el.querySelector('.stage').innerHTML = c.render();
+  el.querySelector('[data-enlarge]').addEventListener('click', e => {
+    el.classList.toggle('wide');
+    e.target.textContent = el.classList.contains('wide') ? 'Shrink' : 'Enlarge';
+  });
+}
+document.querySelectorAll('[data-paper]').forEach(b => b.addEventListener('click', () => {
+  paperA = b.dataset.paper;
+  document.querySelectorAll('[data-paper]').forEach(x => x.setAttribute('aria-pressed', String(x.dataset.paper === paperA)));
+  document.querySelector('#card-A .stage').innerHTML = renderA();
+  collectFlows();
+}));
+document.querySelectorAll('.chip').forEach(ch => ch.addEventListener('click', () => {
+  const next = {'':'steal', steal:'skip', skip:''}[ch.dataset.v];
+  ch.dataset.v = next; chipState[ch.dataset.card][ch.dataset.chip] = next; compose();
+}));
+document.querySelectorAll('.opts').forEach(o => {
+  const q = o.dataset.q;
+  o.innerHTML = QUESTIONS[q].map(v => `<button data-v="${esc(v)}" aria-pressed="false">${esc(v)}</button>`).join('');
+  o.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+    answers[q] = b.dataset.v;
+    o.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+    compose();
+  }));
+});
+document.getElementById('notes').addEventListener('input', compose);
+
+function compose(){
+  const lines = ['Stage 3 reaction: Orrery design directions'];
+  lines.push('Closest overall: ' + (answers.closest || '(not chosen)'));
+  for (const c of CARDS){
+    const st = chipState[c.id], steal = [], skip = [];
+    for (const k in st){ if (st[k] === 'steal') steal.push(k); if (st[k] === 'skip') skip.push(k); }
+    if (steal.length || skip.length) lines.push(`${c.id} · ${c.title}: steal [${steal.join(', ') || '-'}]; skip [${skip.join(', ') || '-'}]`);
+  }
+  lines.push('Numbers: ' + (answers.numbers || '(not chosen)'));
+  lines.push('Labels: ' + (answers.labels || '(not chosen)'));
+  lines.push('Depth: ' + (answers.depth || '(not chosen)'));
+  const notes = document.getElementById('notes').value.trim();
+  if (notes) lines.push('Notes: ' + notes);
+  document.getElementById('out').textContent = lines.join('\n');
+}
+compose();
+document.getElementById('copy').addEventListener('click', async () => {
+  const t = document.getElementById('out').textContent;
+  try { await navigator.clipboard.writeText(t); document.getElementById('copied').textContent = 'Copied. Paste it into the chat.'; }
+  catch { const r = document.createRange(); r.selectNodeContents(document.getElementById('out')); const s = getSelection(); s.removeAllRanges(); s.addRange(r); document.getElementById('copied').textContent = 'Selected. Press Ctrl/Cmd+C.'; }
+});
+
+/* tooltip */
+const tip = document.getElementById('tip');
+document.addEventListener('mousemove', e => {
+  const g = e.target.closest && e.target.closest('[data-id]');
+  if (!g){ tip.style.display = 'none'; return; }
+  const n = byId[g.dataset.id];
+  tip.innerHTML = `<b>${esc(n.label)}</b><div class="s">${esc(n.sub)}</div><div class="m">${esc(n.dial)}</div>
+    <div>State: ${esc(n.state)}</div><div class="s">Sources: ${esc(n.src)}</div>${n.budget ? `<div>${esc(n.budget)}</div>` : ''}${n.note ? `<div class="s">${esc(n.note)}</div>` : ''}<div class="s">Numbers invented for the mockup.</div>`;
+  tip.style.display = 'block';
+  const x = Math.min(e.clientX + 14, innerWidth - 310), y = Math.min(e.clientY + 14, innerHeight - tip.offsetHeight - 8);
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+});
+
+/* motion: belts move at a speed set by throughput (log scale); needles drift like live readings */
+let flows = [], motion = !matchMedia('(prefers-reduced-motion: reduce)').matches, last = performance.now();
+function collectFlows(){ flows = [...document.querySelectorAll('.flow')].map(el => ({el, v:+el.dataset.speed, off:0})); }
+collectFlows();
+function setMotion(on){
+  motion = on;
+  document.body.classList.toggle('still', !on);
+  const b = document.getElementById('motion');
+  b.setAttribute('aria-pressed', String(on)); b.textContent = on ? 'Motion on' : 'Motion off';
+}
+setMotion(motion);
+document.getElementById('motion').addEventListener('click', () => setMotion(!motion));
+function frame(t){
+  const dt = Math.min(.05, (t - last)/1000); last = t;
+  if (motion) for (const f of flows){ f.off -= f.v*dt; f.el.setAttribute('stroke-dashoffset', f.off.toFixed(2)); }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+setInterval(() => {
+  if (!motion) return;
+  document.querySelectorAll('.needle').forEach(g => {
+    const base = +g.dataset.frac, f = Math.max(0, Math.min(1, base + (Math.random() - .5)*.06));
+    g.setAttribute('transform', `rotate(${(-120 + 240*f).toFixed(1)} ${g.dataset.cx} ${g.dataset.cy})`);
+  });
+}, 1000);
+</script>
+</body>
+</html>

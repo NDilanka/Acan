@@ -1,0 +1,146 @@
+[
+  {
+    "eval": "window.polishAudit = (panels) => {\n const vis = e => e && !e.hidden && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && +getComputedStyle(e).opacity > 0.05;\n const t = document.querySelector('#toast'), out = [];\n if (t.classList.contains('on') && vis(t)) {\n  const r = t.getBoundingClientRect();\n  if (r.left < 0 || r.top < 0 || r.right > innerWidth || r.bottom > innerHeight) out.push('toast offscreen');\n  for (const sel of ['.fl', '.nav', '.cbar', '.hint', '#insp.open', '.pop.open', '#rpdeck', ...panels])\n   for (const e of document.querySelectorAll(sel)) { if (!vis(e)) continue; const q = e.getBoundingClientRect(); if (q.width && q.height && r.left < q.right && r.right > q.left && r.top < q.bottom && r.bottom > q.top) out.push('toast over ' + sel); }\n }\n return out;\n}; true",
+    "expect": true
+  },
+  {
+    "click": "[data-orders-go=w1]"
+  },
+  {
+    "click": "#orders-pin-not"
+  },
+  {
+    "click": "#orders-keep"
+  },
+  {
+    "click": "[data-orders-go=w2]"
+  },
+  {
+    "click": "#orders-pin-keep"
+  },
+  {
+    "click": "#orders-keep"
+  },
+  {
+    "click": "#orders-post"
+  },
+  {
+    "click": "#orders-sentence"
+  },
+  {
+    "type": "Payouts survive a PayPal outage without retry storms, and never charge twice."
+  },
+  {
+    "click": "#orders-submit",
+    "after": 100
+  },
+  {
+    "eval": "[ordersState.order.state,ordersState.kvarm.connection,ordersState.kvarm.script]",
+    "expect": [
+      "open",
+      "ok",
+      "unmatched"
+    ]
+  },
+  {
+    "wait": 1500
+  },
+  {
+    "eval": "[ordersState.kvarm.issue,ordersState.kvarm.dispatched,!!ordersState.kvarm.lease,ordersState.kvarm.lease&&ordersState.kvarm.lease.holder,!!document.querySelector('#orders-holder-row'),document.querySelector('#orders-plate b').textContent,document.querySelector('#orders-plate b').dataset.tone]",
+    "expect": [
+      41,
+      true,
+      true,
+      "Codex",
+      true,
+      "UNMATCHED · Codex holds g1 · no readback",
+      "wait"
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-kv-unmatched-flag"
+  },
+  {
+    "wait": 1500
+  },
+  {
+    "eval": "[ordersState.arrived.length,document.querySelector('.bl .wait b').textContent]",
+    "expect": [
+      2,
+      "9"
+    ]
+  },
+  {
+    "click": "#orders-question-pin:not([hidden]),#orders-question-edge:not([hidden])"
+  },
+  {
+    "click": "[data-orders-answer='1']",
+    "after": 100
+  },
+  {
+    "wait": 700
+  },
+  {
+    "wait": 1700
+  },
+  {
+    "eval": "[ordersState.order.state,ordersState.kvarm.claim&&ordersState.kvarm.claim.state,ordersState.kvarm.lease.holder,document.querySelector('#toast').textContent]",
+    "expect": [
+      "open",
+      "rejected",
+      "Codex",
+      "Kvarm rejected the claim from Claude Code. Codex holds g1 with no readback."
+    ]
+  },
+  {
+    "click": "#orders-plate",
+    "after": 50
+  },
+  {
+    "eval": "[document.querySelector('#orders-card-status').textContent,document.querySelector('#orders-card-status').dataset.tone,!!document.querySelector('#orders-card [data-orders-binding=holder]'),document.querySelector('#orders-bindings-list').children.length>0,document.querySelector('#orders-claim-session').textContent]",
+    "expect": [
+      "UNMATCHED · Codex holds g1 · no readback",
+      "wait",
+      true,
+      true,
+      "Codex holds g1 in Kvarm · no Orrery readback"
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-kv-unmatched"
+  },
+  {
+    "eval": "ordersProvOpen('holder', document.querySelector('[data-orders-binding=holder]'));true",
+    "expect": true
+  },
+  {
+    "eval": "[document.querySelector('#orders-prov').hidden,document.querySelector('#orders-prov').textContent.includes('No Orrery readback'),document.querySelector('#orders-prov-text').textContent.includes('authenticated')]",
+    "expect": [
+      false,
+      true,
+      true
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-kv-provenance"
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "eval": "document.querySelector('#orders-prov').hidden",
+    "expect": true
+  }
+]

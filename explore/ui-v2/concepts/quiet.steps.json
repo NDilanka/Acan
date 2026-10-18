@@ -1,0 +1,640 @@
+[
+ {
+  "eval": "location.hash='c=quiet';location.reload();true",
+  "expect": true
+ },
+ {
+  "wait": 1200
+ },
+ {
+  "eval": "window.quietWords = (P) => {\n const SURF = [['tag', '#cbar'], ['toast', '#toast'], ['hint', '.hint,#' + P + '-hint'], ['overlay', '#' + P + '-prov,#' + P + '-kv-panel,#insp,.pop,#net'], ['cardOpen', '#' + P + '-card'], ['cardRest', '#' + P + '-dock,#' + P + '-guide'], ['queue', '.bl'], ['status', '.br'], ['chrome', '.fl.tl,.fl.tc,.fl.tr,#nav'], ['replay', '#rpdeck,.watermark'], ['plant', '#stage,.' + P + '-mark,#' + P + '-witness-edges']];\n const ISLANDS = '.fl,#nav,#cbar,#toast.on,#' + P + '-card,#' + P + '-dock,#' + P + '-guide,#' + P + '-prov,#' + P + '-kv-panel,.pop.open,#insp.open,#rpdeck';\n const shown = (e) => { for (let n = e, o = 1; n && n.nodeType === 1; n = n.parentElement) { const cs = getComputedStyle(n); if (cs.display === 'none' || cs.visibility === 'hidden' || cs.contentVisibility === 'hidden') return false; o *= +cs.opacity; if (o < 0.05) return false; } return true; };\n const islands = [...document.querySelectorAll(ISLANDS)].filter((e) => e.getClientRects().length && shown(e)).map((e) => e.getBoundingClientRect());\n const inside = (x, y, r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;\n const clipped = (el, x, y) => { for (let n = el; n && n !== document.body; n = n.parentElement) { const cs = getComputedStyle(n); if (/(auto|scroll|hidden|clip)/.test(cs.overflow) && !inside(x, y, n.getBoundingClientRect())) return true; } return false; };\n const by = {}, items = {}, w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);\n let total = 0;\n for (let t; (t = w.nextNode());) {\n  const el = t.parentElement, words = t.textContent.split(/\\s+/).filter((s) => /[\\p{L}\\p{N}]/u.test(s));\n  if (!words.length || !el || el.closest('script,style,title,desc,defs,noscript,textarea,option') || !shown(el)) continue;\n  const range = document.createRange(); range.selectNodeContents(t);\n  const rect = [...range.getClientRects()].find((r) => r.width > 1 && r.height > 1 && r.right > 0 && r.bottom > 0 && r.left < innerWidth && r.top < innerHeight);\n  if (!rect) continue;\n  const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;\n  if (clipped(el, cx, cy)) continue;\n  if (el.closest('#stage') && islands.some((r) => inside(cx, cy, r))) continue;\n  const s = (SURF.find(([, sel]) => el.closest(sel)) || ['other'])[0];\n  by[s] = (by[s] || 0) + words.length; total += words.length;\n  (items[s] = items[s] || []).push(words.join(' '));\n }\n return { total, by, items };\n};\nwindow.quietTextAudit = (P, opt = {}) => {\n const BUDGET = Object.assign({ plant: 45, cardRest: 24, cardOpen: 60, queue: 24, hint: 6, status: 10, tag: 0, toast: 10, total: 999 }, opt);\n const out = [], r = quietWords(P);\n if (document.body.classList.contains('alt')) return out;\n for (const [s, max] of Object.entries(BUDGET)) { const n = s === 'total' ? r.total : r.by[s] || 0; if (n > max) out.push(s + ' ' + n + ' > ' + max); }\n const words = (s) => s.split(/\\s+/).filter((t) => /[\\p{L}\\p{N}]/u.test(t));\n const vis = (e) => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && +getComputedStyle(e).opacity > 0.05;\n for (const e of document.querySelectorAll('#chips .chip,.' + P + '-mark')) {\n  if (!vis(e)) continue;\n  const rd = e.querySelector('.rd'), reading = rd && rd.getClientRects().length ? words(rd.innerText).length : 0, name = words(e.innerText).length - reading;\n  if (name > 3) out.push('label \"' + e.innerText.replace(/\\s+/g, ' ') + '\" ' + name + ' > 3');\n  if (reading > 5) out.push('reading \"' + rd.innerText + '\" ' + reading + ' > 5');\n }\n for (const e of document.querySelectorAll('.bl .agent')) { const n = words(e.innerText).length; if (vis(e) && n > 5) out.push('row \"' + e.innerText.replace(/\\s+/g, ' ') + '\" ' + n + ' > 5'); }\n for (const root of document.querySelectorAll('#' + P + '-card,#' + P + '-dock,.chip.' + P + '-bot,.chip.' + P + '-witness')) {\n  if (!vis(root)) continue;\n  const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);\n  for (let t; (t = w.nextNode());) {\n   const el = t.parentElement;\n   if (!el.getClientRects().length || el.closest('kbd,textarea,[data-' + P + '-meta],.' + P + '-kv')) continue;\n   let hidden = false; for (let n = el; n && n !== root.parentElement; n = n.parentElement) if (getComputedStyle(n).display === 'none') hidden = true;\n   if (hidden) continue;\n   for (const tok of words(t.textContent)) if (/\\d/.test(tok) && !el.closest('[data-' + P + '-binding]')) out.push('unbound \"' + tok + '\" in ' + el.outerHTML.slice(0, 120) + ' < ' + (el.parentElement.className || el.parentElement.tagName));\n  }\n }\n return out;\n};\ntrue",
+  "expect": true
+ },
+ {
+  "eval": "[document.body.dataset.mode,document.querySelector('#rpTime').textContent,selected,quietState.order.state,quietState.kvarm.script]",
+  "expect": [
+   "replay",
+   "15:44:30",
+   "retry",
+   "draft",
+   "ok"
+  ]
+ },
+ {
+  "eval": "document.querySelector('#quiet-pin-gate').textContent",
+  "expect": "Select paypal at 15:35",
+  "q": "text"
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "eval": "quietTextAudit('quiet')",
+  "expect": [],
+  "q": "audit"
+ },
+ {
+  "shot": "quiet-after-01-replay"
+ },
+ {
+  "key": "m"
+ },
+ {
+  "eval": "[quietState.witnesses.map(w=>w.id),quietState.open,document.activeElement.id]",
+  "expect": [
+   [
+    "w1"
+   ],
+   "w1",
+   "quiet-reason"
+  ]
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "eval": "quietTextAudit('quiet')",
+  "expect": [],
+  "q": "audit"
+ },
+ {
+  "shot": "quiet-after-02-must-not"
+ },
+ {
+  "key": "Enter"
+ },
+ {
+  "key": "Home"
+ },
+ {
+  "key": "."
+ },
+ {
+  "key": "."
+ },
+ {
+  "key": "."
+ },
+ {
+  "key": "."
+ },
+ {
+  "key": "."
+ },
+ {
+  "key": "k",
+  "ctrl": true
+ },
+ {
+  "type": "paypal"
+ },
+ {
+  "key": "Enter"
+ },
+ {
+  "key": "m",
+  "shift": true
+ },
+ {
+  "eval": "[document.querySelector('#rpTime').textContent,quietState.witnesses.map(w=>w.id),quietState.open]",
+  "expect": [
+   "15:35:00",
+   [
+    "w1",
+    "w2"
+   ],
+   "w2"
+  ]
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "eval": "quietTextAudit('quiet')",
+  "expect": [],
+  "q": "audit"
+ },
+ {
+  "shot": "quiet-after-03-must-keep"
+ },
+ {
+  "key": "Escape"
+ },
+ {
+  "key": "Escape"
+ },
+ {
+  "key": "p"
+ },
+ {
+  "eval": "document.querySelector('#quiet-sentence').select();document.activeElement.id",
+  "expect": "quiet-sentence"
+ },
+ {
+  "type": "Payouts survive a PayPal outage without retry storms, and never charge twice."
+ },
+ {
+  "eval": "[quietState.sentence,quietState.open]",
+  "expect": [
+   "Payouts survive a PayPal outage without retry storms, and never charge twice.",
+   "order"
+  ]
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "eval": "quietTextAudit('quiet')",
+  "expect": [],
+  "q": "audit"
+ },
+ {
+  "shot": "quiet-after-04-post-draft"
+ },
+ {
+  "key": "Enter",
+  "after": 650
+ },
+ {
+  "eval": "[quietState.order.state,document.body.dataset.mode,quietState.open]",
+  "expect": [
+   "open",
+   "live",
+   "order"
+  ]
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "eval": "quietTextAudit('quiet')",
+  "expect": [],
+  "q": "audit"
+ },
+ {
+  "shot": "quiet-after-05-open"
+ },
+ {
+  "wait": 850
+ },
+ {
+  "eval": "quietState.arrived",
+  "expect": [
+   "claude-payouts"
+  ]
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "eval": "quietTextAudit('quiet')",
+  "expect": [],
+  "q": "audit"
+ },
+ {
+  "shot": "quiet-after-06-first-readback"
+ },
+ {
+  "wait": 1200
+ },
+ {
+  "eval": "[quietState.arrived,document.querySelector('.bl .wait b').textContent]",
+  "expect": [
+   [
+    "claude-payouts",
+    "droid-payouts"
+   ],
+   "8"
+  ]
+ },
+ {
+  "eval": "[...document.querySelectorAll('#quiet-readbacks .quiet-reading')].map(e=>[e.dataset.state,e.querySelector('.quiet-choice').textContent])",
+  "expect": [
+   [
+    "differs",
+    "pending · "
+   ],
+   [
+    "differs",
+    "failed · "
+   ]
+  ],
+  "q": "text"
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "eval": "quietTextAudit('quiet')",
+  "expect": [],
+  "q": "audit"
+ },
+ {
+  "shot": "quiet-after-07-readbacks"
+ },
+ {
+  "key": "i"
+ },
+ {
+  "eval": "[quietState.open,selected,document.querySelectorAll('[data-quiet-answer]').length]",
+  "expect": [
+   "question",
+   "sqlite",
+   2
+  ]
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "eval": "quietTextAudit('quiet')",
+  "expect": [],
+  "q": "audit"
+ },
+ {
+  "shot": "quiet-after-08-question"
+ },
+ {
+  "key": "Escape"
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "eval": "quietTextAudit('quiet')",
+  "expect": [],
+  "q": "audit"
+ },
+ {
+  "shot": "quiet-after-08b-question-pin"
+ },
+ {
+  "key": "i"
+ },
+ {
+  "key": "1",
+  "shift": true,
+  "after": 100
+ },
+ {
+  "eval": "[quietState.question.answered,quietState.rev,quietState.scoring,quietState.open]",
+  "expect": [
+   "1",
+   "r2",
+   "rescoring",
+   null
+  ]
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "eval": "quietTextAudit('quiet')",
+  "expect": [],
+  "q": "audit"
+ },
+ {
+  "shot": "quiet-after-09-answer"
+ },
+ {
+  "wait": 700
+ },
+ {
+  "eval": "[quietState.scoring,[...document.querySelectorAll('#quiet-mini-readbacks .quiet-mini')].map(e=>[e.dataset.state,e.querySelector('.quiet-n').textContent])]",
+  "expect": [
+   "settled",
+   [
+    [
+     "matches",
+     "3/3"
+    ],
+    [
+     "yields",
+     "2/3"
+    ]
+   ]
+  ],
+  "q": "text"
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "eval": "quietTextAudit('quiet')",
+  "expect": [],
+  "q": "audit"
+ },
+ {
+  "shot": "quiet-after-09b-rescored"
+ },
+ {
+  "wait": 1500
+ },
+ {
+  "eval": "[quietState.order,TERR['paypal-payouts'].owner,document.querySelector('#quiet-plate b').textContent]",
+  "expect": [
+   {
+    "state": "claimed",
+    "claimedBy": "Claude Code"
+   },
+   "Claude Code",
+   "CLAIMED · Claude Code · lease g1"
+  ]
+ },
+ {
+  "eval": "document.querySelector('#toast').textContent",
+  "expect": "Claude Code claimed. Readback matched 3 of 3.",
+  "q": "text"
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "eval": "quietTextAudit('quiet')",
+  "expect": [],
+  "q": "audit"
+ },
+ {
+  "shot": "quiet-after-10-claim"
+ },
+ {
+  "eval": "document.body.classList.add('alt');layoutChips();quietPosition();true",
+  "expect": true
+ },
+ {
+  "wait": 120
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "shot": "quiet-after-10-claim-alt"
+ },
+ {
+  "eval": "document.body.classList.remove('alt');layoutChips();quietPosition();true",
+  "expect": true
+ },
+ {
+  "wait": 3000
+ },
+ {
+  "key": "k",
+  "ctrl": true
+ },
+ {
+  "type": "paypal"
+ },
+ {
+  "key": "Enter"
+ },
+ {
+  "key": "p"
+ },
+ {
+  "eval": "[quietState.open,document.querySelector('#quiet-card-status').textContent,document.querySelectorAll('#quiet-checks .quiet-check').length]",
+  "expect": [
+   "order",
+   "CLAIMED · Claude Code · lease g1",
+   3
+  ]
+ },
+ {
+  "eval": "(()=>{const c=document.querySelector('#quiet-card');return c.scrollHeight<=c.clientHeight+1})()",
+  "expect": true
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "eval": "quietTextAudit('quiet')",
+  "expect": [],
+  "q": "audit"
+ },
+ {
+  "shot": "quiet-after-11-inspect"
+ },
+ {
+  "eval": "document.body.classList.add('alt');layoutChips();quietPosition();true",
+  "expect": true
+ },
+ {
+  "wait": 120
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "shot": "quiet-after-11-inspect-alt"
+ },
+ {
+  "eval": "document.body.classList.remove('alt');layoutChips();quietPosition();true",
+  "expect": true
+ },
+ {
+  "click": "#quiet-bindings summary"
+ },
+ {
+  "click": "[data-quiet-prov=budget]"
+ },
+ {
+  "eval": "[document.querySelector('#quiet-prov').hidden,document.querySelector('#quiet-prov-text').textContent.includes('declared · your order')]",
+  "expect": [
+   false,
+   true
+  ]
+ },
+ {
+  "shot": "quiet-after-11b-source"
+ },
+ {
+  "key": "Escape"
+ },
+ {
+  "eval": "document.querySelector('#quiet-prov').hidden",
+  "expect": true
+ },
+ {
+  "eval": "location.hash='c=quiet&kv=unmatched';location.reload();true",
+  "expect": true
+ },
+ {
+  "wait": 1200
+ },
+ {
+  "eval": "window.quietWords = (P) => {\n const SURF = [['tag', '#cbar'], ['toast', '#toast'], ['hint', '.hint,#' + P + '-hint'], ['overlay', '#' + P + '-prov,#' + P + '-kv-panel,#insp,.pop,#net'], ['cardOpen', '#' + P + '-card'], ['cardRest', '#' + P + '-dock,#' + P + '-guide'], ['queue', '.bl'], ['status', '.br'], ['chrome', '.fl.tl,.fl.tc,.fl.tr,#nav'], ['replay', '#rpdeck,.watermark'], ['plant', '#stage,.' + P + '-mark,#' + P + '-witness-edges']];\n const ISLANDS = '.fl,#nav,#cbar,#toast.on,#' + P + '-card,#' + P + '-dock,#' + P + '-guide,#' + P + '-prov,#' + P + '-kv-panel,.pop.open,#insp.open,#rpdeck';\n const shown = (e) => { for (let n = e, o = 1; n && n.nodeType === 1; n = n.parentElement) { const cs = getComputedStyle(n); if (cs.display === 'none' || cs.visibility === 'hidden' || cs.contentVisibility === 'hidden') return false; o *= +cs.opacity; if (o < 0.05) return false; } return true; };\n const islands = [...document.querySelectorAll(ISLANDS)].filter((e) => e.getClientRects().length && shown(e)).map((e) => e.getBoundingClientRect());\n const inside = (x, y, r) => x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;\n const clipped = (el, x, y) => { for (let n = el; n && n !== document.body; n = n.parentElement) { const cs = getComputedStyle(n); if (/(auto|scroll|hidden|clip)/.test(cs.overflow) && !inside(x, y, n.getBoundingClientRect())) return true; } return false; };\n const by = {}, items = {}, w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);\n let total = 0;\n for (let t; (t = w.nextNode());) {\n  const el = t.parentElement, words = t.textContent.split(/\\s+/).filter((s) => /[\\p{L}\\p{N}]/u.test(s));\n  if (!words.length || !el || el.closest('script,style,title,desc,defs,noscript,textarea,option') || !shown(el)) continue;\n  const range = document.createRange(); range.selectNodeContents(t);\n  const rect = [...range.getClientRects()].find((r) => r.width > 1 && r.height > 1 && r.right > 0 && r.bottom > 0 && r.left < innerWidth && r.top < innerHeight);\n  if (!rect) continue;\n  const cx = rect.left + rect.width / 2, cy = rect.top + rect.height / 2;\n  if (clipped(el, cx, cy)) continue;\n  if (el.closest('#stage') && islands.some((r) => inside(cx, cy, r))) continue;\n  const s = (SURF.find(([, sel]) => el.closest(sel)) || ['other'])[0];\n  by[s] = (by[s] || 0) + words.length; total += words.length;\n  (items[s] = items[s] || []).push(words.join(' '));\n }\n return { total, by, items };\n};\nwindow.quietTextAudit = (P, opt = {}) => {\n const BUDGET = Object.assign({ plant: 45, cardRest: 24, cardOpen: 60, queue: 24, hint: 6, status: 10, tag: 0, toast: 10, total: 999 }, opt);\n const out = [], r = quietWords(P);\n if (document.body.classList.contains('alt')) return out;\n for (const [s, max] of Object.entries(BUDGET)) { const n = s === 'total' ? r.total : r.by[s] || 0; if (n > max) out.push(s + ' ' + n + ' > ' + max); }\n const words = (s) => s.split(/\\s+/).filter((t) => /[\\p{L}\\p{N}]/u.test(t));\n const vis = (e) => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && +getComputedStyle(e).opacity > 0.05;\n for (const e of document.querySelectorAll('#chips .chip,.' + P + '-mark')) {\n  if (!vis(e)) continue;\n  const rd = e.querySelector('.rd'), reading = rd && rd.getClientRects().length ? words(rd.innerText).length : 0, name = words(e.innerText).length - reading;\n  if (name > 3) out.push('label \"' + e.innerText.replace(/\\s+/g, ' ') + '\" ' + name + ' > 3');\n  if (reading > 5) out.push('reading \"' + rd.innerText + '\" ' + reading + ' > 5');\n }\n for (const e of document.querySelectorAll('.bl .agent')) { const n = words(e.innerText).length; if (vis(e) && n > 5) out.push('row \"' + e.innerText.replace(/\\s+/g, ' ') + '\" ' + n + ' > 5'); }\n for (const root of document.querySelectorAll('#' + P + '-card,#' + P + '-dock,.chip.' + P + '-bot,.chip.' + P + '-witness')) {\n  if (!vis(root)) continue;\n  const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);\n  for (let t; (t = w.nextNode());) {\n   const el = t.parentElement;\n   if (!el.getClientRects().length || el.closest('kbd,textarea,[data-' + P + '-meta],.' + P + '-kv')) continue;\n   let hidden = false; for (let n = el; n && n !== root.parentElement; n = n.parentElement) if (getComputedStyle(n).display === 'none') hidden = true;\n   if (hidden) continue;\n   for (const tok of words(t.textContent)) if (/\\d/.test(tok) && !el.closest('[data-' + P + '-binding]')) out.push('unbound \"' + tok + '\" in ' + el.outerHTML.slice(0, 120) + ' < ' + (el.parentElement.className || el.parentElement.tagName));\n  }\n }\n return out;\n};\ntrue",
+  "expect": true
+ },
+ {
+  "click": "[data-quiet-go=w1]"
+ },
+ {
+  "click": "#quiet-pin-not"
+ },
+ {
+  "click": "#quiet-keep"
+ },
+ {
+  "click": "[data-quiet-go=w2]"
+ },
+ {
+  "click": "#quiet-pin-keep"
+ },
+ {
+  "click": "#quiet-keep"
+ },
+ {
+  "click": "#quiet-post"
+ },
+ {
+  "click": "#quiet-sentence"
+ },
+ {
+  "type": "Payouts survive a PayPal outage without retry storms, and never charge twice."
+ },
+ {
+  "click": "#quiet-submit",
+  "after": 100
+ },
+ {
+  "eval": "[quietState.order.state,quietState.kvarm.script]",
+  "expect": [
+   "open",
+   "unmatched"
+  ]
+ },
+ {
+  "wait": 1500
+ },
+ {
+  "eval": "[quietState.kvarm.lease&&quietState.kvarm.lease.holder,!!document.querySelector('#quiet-holder-row'),document.querySelector('#quiet-card-status').textContent,document.querySelector('#quiet-card-status').dataset.tone]",
+  "expect": [
+   "Codex",
+   true,
+   "UNMATCHED · Codex holds g1 · no readback",
+   "wait"
+  ]
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "eval": "quietTextAudit('quiet')",
+  "expect": [],
+  "q": "audit"
+ },
+ {
+  "shot": "quiet-after-kv-unmatched-flag"
+ },
+ {
+  "wait": 1500
+ },
+ {
+  "click": "#quiet-question-pin:not([hidden]),#quiet-question-edge:not([hidden])"
+ },
+ {
+  "click": "[data-quiet-answer='1']",
+  "after": 100
+ },
+ {
+  "wait": 700
+ },
+ {
+  "wait": 1700
+ },
+ {
+  "eval": "[quietState.order.state,quietState.kvarm.claim&&quietState.kvarm.claim.state,quietState.kvarm.lease.holder]",
+  "expect": [
+   "open",
+   "rejected",
+   "Codex"
+  ]
+ },
+ {
+  "eval": "document.querySelector('#toast').textContent",
+  "expect": "Kvarm rejected the claim from Claude Code.",
+  "q": "text"
+ },
+ {
+  "click": "#quiet-plate",
+  "after": 50
+ },
+ {
+  "eval": "[document.querySelector('#quiet-card-status').textContent,!!document.querySelector('#quiet-card [data-quiet-binding=holder]'),document.querySelector('#quiet-bindings-list').children.length>0]",
+  "expect": [
+   "UNMATCHED · Codex holds g1 · no readback",
+   true,
+   true
+  ]
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "eval": "quietTextAudit('quiet')",
+  "expect": [],
+  "q": "audit"
+ },
+ {
+  "shot": "quiet-after-kv-unmatched"
+ },
+ {
+  "eval": "document.body.classList.add('alt');layoutChips();quietPosition();true",
+  "expect": true
+ },
+ {
+  "wait": 120
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "shot": "quiet-after-kv-unmatched-alt"
+ },
+ {
+  "eval": "document.body.classList.remove('alt');layoutChips();quietPosition();true",
+  "expect": true
+ },
+ {
+  "eval": "quietProvOpen('holder', document.querySelector('[data-quiet-binding=holder]'));true",
+  "expect": true
+ },
+ {
+  "eval": "[document.querySelector('#quiet-prov').hidden,document.querySelector('#quiet-prov-text').textContent.includes('authenticated')]",
+  "expect": [
+   false,
+   true
+  ]
+ },
+ {
+  "eval": "JSON.stringify(quietWords('quiet'))",
+  "q": "count"
+ },
+ {
+  "shot": "quiet-after-kv-provenance"
+ },
+ {
+  "key": "Escape"
+ },
+ {
+  "eval": "document.querySelector('#quiet-prov').hidden",
+  "expect": true
+ }
+]

@@ -1,0 +1,115 @@
+[
+  {
+    "eval": "window.polishAudit = (panels) => {\n const vis = e => e && !e.hidden && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && +getComputedStyle(e).opacity > 0.05;\n const t = document.querySelector('#toast'), out = [];\n if (t.classList.contains('on') && vis(t)) {\n  const r = t.getBoundingClientRect();\n  if (r.left < 0 || r.top < 0 || r.right > innerWidth || r.bottom > innerHeight) out.push('toast offscreen');\n  for (const sel of ['.fl', '.nav', '.cbar', '.hint', '#insp.open', '.pop.open', '#rpdeck', ...panels])\n   for (const e of document.querySelectorAll(sel)) { if (!vis(e)) continue; const q = e.getBoundingClientRect(); if (q.width && q.height && r.left < q.right && r.right > q.left && r.top < q.bottom && r.bottom > q.top) out.push('toast over ' + sel); }\n }\n return out;\n}; true",
+    "expect": true
+  },
+  {
+    "click": "[data-orders-go=w1]"
+  },
+  {
+    "click": "#orders-pin-not"
+  },
+  {
+    "click": "#orders-keep"
+  },
+  {
+    "click": "[data-orders-go=w2]"
+  },
+  {
+    "click": "#orders-pin-keep"
+  },
+  {
+    "click": "#orders-keep"
+  },
+  {
+    "click": "#orders-post"
+  },
+  {
+    "click": "#orders-sentence"
+  },
+  {
+    "type": "Payouts survive a PayPal outage without retry storms, and never charge twice."
+  },
+  {
+    "click": "#orders-submit",
+    "after": 100
+  },
+  {
+    "wait": 3300
+  },
+  {
+    "click": "#orders-question-pin:not([hidden]),#orders-question-edge:not([hidden])"
+  },
+  {
+    "click": "[data-orders-answer='1']",
+    "after": 100
+  },
+  {
+    "wait": 700
+  },
+  {
+    "wait": 1700
+  },
+  {
+    "eval": "[ordersState.order.state,ordersState.order.claimedBy,ordersState.kvarm.lease.state,document.querySelector('#orders-plate b').textContent,document.querySelectorAll('.orders-ui .orders-lease')[0].textContent]",
+    "expect": [
+      "claimed",
+      "Claude Code",
+      "live",
+      "CLAIMED · Claude Code · lease g1",
+      "10:00 left"
+    ]
+  },
+  {
+    "wait": 2200
+  },
+  {
+    "eval": "[ordersState.order.state,ordersState.order.claimedBy,ordersState.kvarm.lease.state,ENT['bot-cc'].state,ENT['bot-cc'].reading,TERR['paypal-payouts'].owner,document.querySelector('#orders-fog').hidden,document.querySelector('#orders-plate b').textContent,document.querySelector('#orders-plate b').dataset.evidenceState,document.querySelector('#toast').textContent]",
+    "expect": [
+      "stale",
+      null,
+      "expired",
+      "dark",
+      "stopped · STALE_GENERATION",
+      null,
+      false,
+      "LEASE STALE · g1 expired",
+      "stale",
+      "Lease g1 expired. Kvarm rejected the heartbeat with STALE_GENERATION. Claude Code stopped."
+    ]
+  },
+  {
+    "eval": "[document.querySelector('.chip[data-id=bot-cc]').dataset.state,document.querySelector('.chip[data-id=bot-cc]').textContent.includes('stopped'),SCENE.territories.find(t=>t.id==='paypal-payouts').fog]",
+    "expect": [
+      "dark",
+      true,
+      true
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-kv-stale"
+  },
+  {
+    "click": "#orders-plate",
+    "after": 50
+  },
+  {
+    "eval": "[document.querySelector('#orders-card-status').textContent,document.querySelector('#orders-claim-session').textContent,document.querySelector('#orders-kv-card').textContent.includes('STALE_GENERATION')]",
+    "expect": [
+      "LEASE STALE · g1 expired",
+      "claude-payouts · heartbeat rejected · STALE_GENERATION",
+      true
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-kv-stale-card"
+  }
+]

@@ -1,0 +1,13 @@
+Two days of nothing but UI/UX on Orrery. Still zero lines of the actual app.
+
+Orrery draws your system as a factory floor. Services are machines, queues are belts, agents show up on the machine they touch.
+
+So Droid fanned out a research swarm, 76,498 words. Claude, GPT and Grok each pitched concepts on their own, then I got interviewed three times to pick what survived.
+
+Five prototypes are clickable now. Work orders, clash on the belt, the gate, the bench, and one world canvas holding every project so tab switching can go away.
+
+Claude and Grok reviewed each one. Every round came back "not ready", which is the part that actually moved the design.
+
+Parked last night at 96% of my 5h limit with five agents still mid flight. The blocker is too much text on screen, and that fix went to an Opus agent I killed mid work. So that's where it resumes.
+
+Anyone else this picky about UX before writing code, or am I just avoiding the hard part 😅

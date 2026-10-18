@@ -1,0 +1,29 @@
+# Work orders: UX critique
+
+## Verdict
+
+The loop is the right one and the plant language holds: red and teal pins, a brass plate, a question pinned on the sqlite tank, fog that actually clears. It fails the quality bar in the two places the loop is decided. The disagreement is not readable at a glance, and the claim arrives as a line of text in a corner while the camera is pointed at the wrong machine. The left guide panel and the automatic framing are both wrong, and they are the same mistake: a side panel and a viewport rule standing in for the plant.
+
+## Must fix
+
+1. The disagreement is buried, and the camera leaves it. In `orders-07-readbacks.png` both rows say "p-2307 differs" in the same grey, both score rows are all green, and the real split ("pending" against "failed") is a trailing amber chip. The toast is the only thing that says they disagree. Worse, `ordersFocusMachine` aims the dock at 55% of the width (`orders.mjs:126`), so the paypal dock is behind the 450px card and the camera sits on the belt and the breaker. The question pin has to be clamped to x=320 (`orders-08-question.png`), and its leader line runs the width of the screen to a tank the user cannot see. Fix: frame so the anchor sits just left of the card, not at a fixed fraction. Drop the 320px left clamp, which exists only to dodge the guide. On a disagreement, tint the disagreeing row amber and lead each row with the word it chose, "pending" or "failed", in that colour. Keep "p-2307 differs" as the status, not the explanation.
+
+2. The claim does not feel earned. `ordersClaim` fires on a 500ms timer with no guard (`orders.mjs:279`), so in `orders-09-answer.png` the toast already says "Answer pinned as w3" while the status bar says "CLAIMED · Claude Code" and the floor list says "claimed payout order". The user reads the answer and the claim as one event, and the claim half is a string in the top left of a panel. The dock flag and the bot are off screen the whole time (`orders-10-claim.png`, `orders-11-inspect.png`). Fix: let the answer card close and the w3 pin ink in, then claim. When it claims, fly back to the dock, turn the plate from OPEN to CLAIMED there, and move the bot onto it. That is the one animation the bar allows. A claim the user did not ask for has to be visible or it reads as the software deciding in private.
+
+3. The draft sentence hides its own start. Confirmed, and it is worse than logged. The field is an `<input>` (`orders.mjs:172`) holding a 79 character placeholder, and in `orders-04-post-draft.png` the visible text begins at "PayPal outage". The cursor sits on the clipped end, so typing appends to words the user cannot see. The posted sentence then wraps fine in `orders-05-open.png`, which shows the widget is the problem. Fix: a textarea, two lines, no `nowrap`, scrolling the caret into view on focus. Same bug will return the moment a user writes a sentence longer than the placeholder.
+
+## Should fix
+
+The guide panel should not be persistent. It is a 288px slab at left:20, top:130 (`orders.mjs:13`) that hides the "you" chip, forces `.cbar` down to 83px, and pushes every toast, dock and card to x=320. It duplicates the top hint and the footer, and its buttons do hidden work: "Post" silently selects paypal before opening (`orders.mjs:351`), so the mouse path skips the rule the keyboard path enforces. Collapse it to a one-line hint once the first pin exists, and let the pins and the plate be the navigation.
+
+Locked and editable are the same colour. The draft status says "witnesses become locked checks" (`orders-04-post-draft.png`) while the reason field is still editable and the check rows already read "Locked". After posting, nothing visible changes except the verb. Show the lock only once `order.state` leaves draft, and mark the check rows "becomes locked" before that.
+
+Readback rows reserve 110px while waiting (`orders.mjs:62`), so `orders-06-first-readback.png` shows a tall empty "awaiting readback" block. Size the row to its content. The card is also scrollable while the plant has room. At 450px wide and `max-height: calc(100vh - 162px)` the readbacks fall below the fold in `orders-09-answer.png`, which is exactly the comparison the step exists to show.
+
+`orders-12-mouse-droid.png` shows the mouse path ends correctly with Droid claiming, but the same framing bug hides the dock, and the claim toast says "matched 3 of 3" while Claude Code's row reads "2 of 3 · yields" with w3 in red. A user scanning the panel sees a contradiction the toast papered over. Put the matched count only on the row that matched.
+
+State bugs worth fixing before the next round. `ordersArrive` and `ordersClaim` run from timers that nothing clears, so a readback can land after the concept is inactive and push a bot into `SCENE`. `ordersPost` calls `setMode("live")` while the card is open and the sentence field is focused, so a mode key the card was supposed to swallow still fires as a side effect. Esc blurs a field and returns, which matches the bar, but Enter inside the field posts even when the button is disabled (`orders.mjs:389`), while the click path respects the guard. The witness chip click after posting jumps to the order (`orders.mjs:369`) instead of the machine the pin sits on, so a pin no longer means "go here".
+
+## Keep
+
+The polarity colouring is right and consistent from chip to row to guide dot, and the pins read as part of the machine rather than labels stuck on top. "Codex cannot see orders. Passive session, no MCP." is the honesty the bar asks for, and it survives every shot. The question card in `orders-08-question.png` is the best panel in the flow: one sentence, two answers, the two readings named, Shift 1 and Shift 2 on the buttons. The inactive shots (`orders-13` to `orders-16`) are clean, with no leftover chrome and no overlap in Live, Blueprint, Simulate or Replay. The ink-in on the posted plate is the right instinct. Spend it on the claim.

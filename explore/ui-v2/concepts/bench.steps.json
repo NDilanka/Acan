@@ -1,0 +1,566 @@
+[
+  {
+    "eval": "window.polishAudit = (panels) => {\n const vis = e => e && !e.hidden && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && +getComputedStyle(e).opacity > 0.05;\n const t = document.querySelector('#toast'), out = [];\n if (t.classList.contains('on') && vis(t)) {\n  const r = t.getBoundingClientRect();\n  if (r.left < 0 || r.top < 0 || r.right > innerWidth || r.bottom > innerHeight) out.push('toast offscreen');\n  for (const sel of ['.fl', '.nav', '.cbar', '.hint', '#insp.open', '.pop.open', '#rpdeck', ...panels])\n   for (const e of document.querySelectorAll(sel)) { if (!vis(e)) continue; const q = e.getBoundingClientRect(); if (q.width && q.height && r.left < q.right && r.right > q.left && r.top < q.bottom && r.bottom > q.top) out.push('toast over ' + sel); }\n }\n return out;\n}; true",
+    "expect": true
+  },
+  {
+    "eval": "window.benchAudit = () => {\n const visible = e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && +getComputedStyle(e).opacity > 0;\n const hits = (a,b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;\n const issues = [], labels = [...document.querySelectorAll('.bench-pin-label,.bench-plate,.bench-zone-label,#benchOrder')].filter(visible);\n const obstacles = [...document.querySelectorAll('#benchCard,.chip,.hint,.egress')].filter(visible);\n labels.forEach((e,i) => {\n  const r = e.getBoundingClientRect();\n  if (r.left < 0 || r.right > innerWidth || r.top < 0 || r.bottom > innerHeight) issues.push('offscreen ' + e.textContent.slice(0,40));\n  [...labels.slice(i+1),...obstacles].forEach(o => { if (hits(r,o.getBoundingClientRect())) issues.push(e.textContent.slice(0,30) + ' overlaps ' + (o.id || o.textContent.slice(0,30))); });\n });\n const card = document.querySelector('#benchCard');\n if (!card.hidden) {\n  const r = card.getBoundingClientRect();\n  if (r.left<0 || r.top<0 || r.right>innerWidth || r.bottom>innerHeight) issues.push('card offscreen');\n  if (card.scrollHeight > card.clientHeight) issues.push('card scrolls');\n }\n return issues;\n}; benchAudit()",
+    "expect": []
+  },
+  {
+    "eval": "({phase:benchState.phase, view:benchState.view, focus:benchState.focus, question:benchState.question, mode:document.body.dataset.mode, rigs:!!ENT['bench-a1'], waiting:document.querySelector('#benchWaiting').textContent, zoneLabel:document.querySelector('#benchZoneLabel').textContent, orderRev:benchState.order.rev, clash:benchState.clash.c1, egress:document.querySelector('.egress').textContent})",
+    "expect": {
+      "phase": "framing",
+      "view": null,
+      "focus": null,
+      "question": "Which design keeps payouts honest while PayPal fails?",
+      "mode": "live",
+      "rigs": false,
+      "waiting": "bench · frame",
+      "zoneLabel": "Benchempty · frame an experimentP",
+      "orderRev": "r2",
+      "clash": null,
+      "egress": "local + kvarm · 0 B out"
+    }
+  },
+  {
+    "eval": "[document.querySelector('.bl .wait b').textContent, ENT.you.reading]",
+    "expect": [
+      "8",
+      "8 waiting"
+    ]
+  },
+  {
+    "eval": "polishAudit(['#benchCard','#benchOrder','.bench-plate','.bench-pin','#benchZoneLabel'])",
+    "expect": []
+  },
+  {
+    "shot": "bench-01-empty"
+  },
+  {
+    "key": "u"
+  },
+  {
+    "eval": "({toast:document.querySelector('#toast').textContent, phase:benchState.phase, open:!document.querySelector('#benchCard').hidden})",
+    "expect": {
+      "toast": "Nothing to extend. Fund the bench first.",
+      "phase": "framing",
+      "open": false
+    }
+  },
+  {
+    "key": "p",
+    "after": 1000
+  },
+  {
+    "eval": "({open:!document.querySelector('#benchCard').hidden, view:benchState.view, scroll:document.querySelector('#benchCard').scrollHeight > document.querySelector('#benchCard').clientHeight, focus:document.activeElement.dataset.benchFund !== undefined, q:document.querySelector('#benchQuestion').value, wrongIf:document.querySelector('.bench-wrong p').textContent, clauses:document.querySelectorAll('.bench-clause').length, attempts:document.querySelectorAll('.bench-arow').length, cannot:document.querySelector('.bench-arow').parentElement.querySelector('.bench-note').textContent, toasts:document.querySelector('#toast').textContent})",
+    "expect": {
+      "open": true,
+      "view": "brief",
+      "scroll": false,
+      "focus": true,
+      "q": "Which design keeps payouts honest while PayPal fails?",
+      "wrongIf": "An attempt is wrong if replay at any pinned moment breaks it.",
+      "clauses": 3,
+      "attempts": 3,
+      "cannot": "Codex cannot run an attempt. Passive session, no MCP.",
+      "toasts": "Nothing to extend. Fund the bench first."
+    }
+  },
+  {
+    "eval": "benchAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#benchCard','#benchOrder','.bench-plate','.bench-pin','#benchZoneLabel'])",
+    "expect": []
+  },
+  {
+    "shot": "bench-02-brief"
+  },
+  {
+    "key": "2",
+    "after": 30
+  },
+  {
+    "key": "3",
+    "after": 30
+  },
+  {
+    "key": "4",
+    "after": 30
+  },
+  {
+    "key": "l",
+    "after": 30
+  },
+  {
+    "key": "g",
+    "after": 30
+  },
+  {
+    "key": "m",
+    "after": 30
+  },
+  {
+    "key": "v",
+    "after": 30
+  },
+  {
+    "key": "k",
+    "ctrl": true
+  },
+  {
+    "eval": "({mode:document.body.dataset.mode, open:!document.querySelector('#benchCard').hidden, layers:document.querySelector('#layers').classList.contains('open'), palette:document.querySelector('#pal').classList.contains('open'), phase:benchState.phase})",
+    "expect": {
+      "mode": "live",
+      "open": true,
+      "layers": false,
+      "palette": false,
+      "phase": "framing"
+    }
+  },
+  {
+    "key": "Enter",
+    "after": 900
+  },
+  {
+    "eval": "({phase:benchState.phase, view:benchState.view, a1:benchState.attempts.a1.status, a2:benchState.attempts.a2.status, a3:benchState.attempts.a3.status, ops:benchState.kvarm.ops, bytes:benchState.kvarm.bytes, egress:document.querySelector('.egress').textContent, rigs:!!ENT['bench-a1'] && !!ENT['bench-a2'] && !!ENT['bench-a3'], toast:document.querySelector('#toast').textContent, waiting:document.querySelector('#benchWaiting').textContent, zoneHidden:document.querySelector('#benchZoneLabel').hidden})",
+    "expect": {
+      "phase": "running",
+      "view": "results",
+      "a1": "running",
+      "a2": "running",
+      "a3": "running",
+      "ops": [
+        "create_arena"
+      ],
+      "bytes": 1184,
+      "egress": "local + kvarm · 1,184 B out",
+      "rigs": true,
+      "toast": "Bench funded. Three attempts replay against w1, w2 and w3. Results land on the bench.",
+      "waiting": "bench · replaying",
+      "zoneHidden": true
+    }
+  },
+  {
+    "eval": "polishAudit(['#benchCard','#benchOrder','.bench-plate','.bench-pin','#benchZoneLabel'])",
+    "expect": []
+  },
+  {
+    "shot": "bench-03-funded"
+  },
+  {
+    "wait": 2300
+  },
+  {
+    "eval": "({a2:benchState.attempts.a2.status, w3:benchState.attempts.a2.results.w3, seen:benchState.attempts.a2.seen.w3, a1:benchState.attempts.a1.status, a1w1:benchState.attempts.a1.results.w1, a3w1:benchState.attempts.a3.results.w1, toast:document.querySelector('#toast').textContent, phase:benchState.phase})",
+    "expect": {
+      "a2": "disproved",
+      "w3": "breaks",
+      "seen": "p-2307 marked failed at 15:45, not pending",
+      "a1": "running",
+      "a1w1": "holds",
+      "a3w1": "holds",
+      "toast": "Circuit breaker is disproved. w3 breaks on replay: p-2307 marked failed at 15:45, not pending.",
+      "phase": "running"
+    }
+  },
+  {
+    "eval": "polishAudit(['#benchCard','#benchOrder','.bench-plate','.bench-pin','#benchZoneLabel'])",
+    "expect": []
+  },
+  {
+    "shot": "bench-04-disproved"
+  },
+  {
+    "wait": 2800
+  },
+  {
+    "eval": "({phase:benchState.phase, a1:benchState.attempts.a1.status, a2:benchState.attempts.a2.status, a3:benchState.attempts.a3.status, a3w3:benchState.attempts.a3.results.w3, a3tokens:benchState.attempts.a3.tokens, a1tokens:benchState.attempts.a1.tokens, ops:benchState.kvarm.ops, bytes:benchState.kvarm.bytes, waiting:document.querySelector('#benchWaiting').textContent, toast:document.querySelector('#toast').textContent, scroll:document.querySelector('#benchCard').scrollHeight > document.querySelector('#benchCard').clientHeight})",
+    "expect": {
+      "phase": "results",
+      "a1": "held",
+      "a2": "disproved",
+      "a3": "spent",
+      "a3w3": "unreplayed",
+      "a3tokens": 300000,
+      "a1tokens": 182000,
+      "ops": [
+        "create_arena",
+        "rank_arena"
+      ],
+      "bytes": 1596,
+      "waiting": "bench · your pick",
+      "toast": "Split at the port spent its 300k tokens before w3. Extend with U, or pick another.",
+      "scroll": false
+    }
+  },
+  {
+    "eval": "benchAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#benchCard','#benchOrder','.bench-plate','.bench-pin','#benchZoneLabel'])",
+    "expect": []
+  },
+  {
+    "shot": "bench-05-results"
+  },
+  {
+    "key": "i"
+  },
+  {
+    "eval": "({focus:benchState.focus, trace:!!document.querySelector('.bench-trace'), cells:[...document.querySelectorAll('.bench-trace td')].map(e => e.textContent), recorded:document.querySelector('.bench-trace th span').textContent, pinPressed:document.querySelector('[data-bench-pin=w1]').getAttribute('aria-pressed')})",
+    "expect": {
+      "focus": "w1",
+      "trace": true,
+      "cells": [
+        "loop depth 2 of 2",
+        "loop depth 1 · the open breaker failed fast",
+        "loop depth 2 of 2 · unknown kept pending"
+      ],
+      "recorded": "loop depth 3 of 3 · paypal at 31% errors",
+      "pinPressed": "true"
+    }
+  },
+  {
+    "eval": "polishAudit(['#benchCard','#benchOrder','.bench-plate','.bench-pin','#benchZoneLabel'])",
+    "expect": []
+  },
+  {
+    "shot": "bench-06-witness"
+  },
+  {
+    "key": "u",
+    "after": 400
+  },
+  {
+    "eval": "({extended:benchState.attempts.a3.extended, budget:benchState.attempts.a3.budget, status:benchState.attempts.a3.status, w3:benchState.attempts.a3.results.w3, phase:benchState.phase, toast:document.querySelector('#toast').textContent})",
+    "expect": {
+      "extended": true,
+      "budget": {
+        "tokens": 400000,
+        "minutes": 25
+      },
+      "status": "running",
+      "w3": "waiting",
+      "phase": "running",
+      "toast": "Extended Split at the port by 100k tokens and 5 min. Replaying w3."
+    }
+  },
+  {
+    "wait": 1700
+  },
+  {
+    "eval": "({a3:benchState.attempts.a3.status, w3:benchState.attempts.a3.results.w3, seen:benchState.attempts.a3.seen.w3, tokens:benchState.attempts.a3.tokens, phase:benchState.phase, toast:document.querySelector('#toast').textContent})",
+    "expect": {
+      "a3": "held",
+      "w3": "holds",
+      "seen": "p-2307 kept unknown, then pending, settled once at 16:05",
+      "tokens": 341000,
+      "phase": "results",
+      "toast": "Split at the port held 3 of 3. Not disproved."
+    }
+  },
+  {
+    "eval": "benchAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#benchCard','#benchOrder','.bench-plate','.bench-pin','#benchZoneLabel'])",
+    "expect": []
+  },
+  {
+    "shot": "bench-07-extended"
+  },
+  {
+    "key": "2",
+    "shift": true
+  },
+  {
+    "eval": "({draft:benchState.pick.draft, toast:document.querySelector('#toast').textContent})",
+    "expect": {
+      "draft": null,
+      "toast": "Circuit breaker: Disproved. It cannot be picked."
+    }
+  },
+  {
+    "key": "1",
+    "shift": true
+  },
+  {
+    "eval": "({draft:benchState.pick.draft, focus:document.activeElement.dataset.benchRecord !== undefined, actRow:!!document.querySelector('.bench-act'), rejects:[...document.querySelectorAll('.bench-rejects span')].map(e => e.textContent), placeholder:document.querySelector('#benchReason').placeholder, scroll:document.querySelector('#benchCard').scrollHeight > document.querySelector('#benchCard').clientHeight})",
+    "expect": {
+      "draft": "a1",
+      "focus": true,
+      "actRow": false,
+      "rejects": [
+        "A2 disproved by w3 · p-2307 marked failed at 15:45, not pending",
+        "A3 held 3 of 3 · not picked"
+      ],
+      "placeholder": "Held w1, w2, w3 on sealed replay in bench-1.",
+      "scroll": false
+    }
+  },
+  {
+    "eval": "polishAudit(['#benchCard','#benchOrder','.bench-plate','.bench-pin','#benchZoneLabel'])",
+    "expect": []
+  },
+  {
+    "shot": "bench-08-pick"
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "eval": "({draft:benchState.pick.draft, open:!document.querySelector('#benchCard').hidden, focus:document.activeElement.dataset.benchClose !== undefined})",
+    "expect": {
+      "draft": null,
+      "open": true,
+      "focus": true
+    }
+  },
+  {
+    "key": "1",
+    "shift": true
+  },
+  {
+    "key": "Tab",
+    "shift": true
+  },
+  {
+    "eval": "document.activeElement.id",
+    "expect": "benchReason"
+  },
+  {
+    "type": "held every pinned moment"
+  },
+  {
+    "key": "Enter",
+    "after": 900
+  },
+  {
+    "eval": "({phase:benchState.phase, chosen:benchState.pick.chosen, reason:benchState.pick.reason, ops:benchState.kvarm.ops, bytes:benchState.kvarm.bytes, egress:document.querySelector('.egress').textContent, order:benchState.order, clash:benchState.clash.c1, retryPicked:document.body.classList.contains('bench-retry-picked'), breaker:getComputedStyle(document.querySelector('.ent[data-id=breaker]')).opacity, toast:document.querySelector('#toast').textContent, waiting:document.querySelector('#benchWaiting').textContent, scroll:document.querySelector('#benchCard').scrollHeight > document.querySelector('#benchCard').clientHeight})",
+    "expect": {
+      "phase": "recorded",
+      "chosen": "a1",
+      "reason": "held every pinned moment",
+      "ops": [
+        "create_arena",
+        "rank_arena",
+        "record_decision",
+        "select_arena_winner",
+        "resolve_escalation"
+      ],
+      "bytes": 2964,
+      "egress": "local + kvarm · 2,964 B out",
+      "order": {
+        "rev": "r3",
+        "design": "a1"
+      },
+      "clash": "left",
+      "retryPicked": true,
+      "breaker": "0.35",
+      "toast": "Pick recorded. ord-payouts-1 is now r3 with Retry with jitter. Claude Code builds from ws-a1.",
+      "waiting": "",
+      "scroll": false
+    }
+  },
+  {
+    "eval": "benchAudit()",
+    "expect": []
+  },
+  {
+    "eval": "[document.querySelector('.bl .wait b').textContent, ENT.you.reading]",
+    "expect": [
+      "7",
+      "7 waiting"
+    ]
+  },
+  {
+    "eval": "polishAudit(['#benchCard','#benchOrder','.bench-plate','.bench-pin','#benchZoneLabel'])",
+    "expect": []
+  },
+  {
+    "shot": "bench-09-recorded"
+  },
+  {
+    "key": "u"
+  },
+  {
+    "eval": "({toast:document.querySelector('#toast').textContent, phase:benchState.phase})",
+    "expect": {
+      "toast": "No attempt is out of budget.",
+      "phase": "recorded"
+    }
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "eval": "({open:!document.querySelector('#benchCard').hidden, zoneHidden:document.querySelector('#benchZoneLabel').hidden, zone:document.querySelector('#benchZoneLabel').textContent, focus:document.activeElement.id, orderPlate:document.querySelector('#benchOrder').textContent.includes('CLAIMED · Claude Code · r3'), design:document.querySelector('.bench-design').textContent, clashPin:document.querySelector('#benchClashPin .bench-pin-label').textContent})",
+    "expect": {
+      "open": false,
+      "zoneHidden": false,
+      "zone": "bench-19 of 9 replayed · pickedP",
+      "focus": "benchZoneLabel",
+      "orderPlate": true,
+      "design": "design Retry with jitter · from bench-1 · builds from ws-a1",
+      "clashPin": "retry wins · bench-1"
+    }
+  },
+  {
+    "eval": "benchAudit()",
+    "expect": []
+  },
+  {
+    "eval": "document.querySelector('#toast').classList.contains('on')",
+    "expect": false
+  },
+  {
+    "eval": "polishAudit(['#benchCard','#benchOrder','.bench-plate','.bench-pin','#benchZoneLabel'])",
+    "expect": []
+  },
+  {
+    "shot": "bench-10-closed"
+  },
+  {
+    "eval": "(async()=>{const snap=()=>JSON.stringify([...document.querySelectorAll('.bench-pin,.bench-plate,#benchOrder,.bench-zone-label')].map(e=>[e.style.left,e.style.top,e.textContent]));const a=snap();await new Promise(r=>setTimeout(r,300));return a===snap()})()",
+    "expect": true
+  },
+  {
+    "click": "#benchZoneLabel",
+    "after": 1000
+  },
+  {
+    "eval": "({open:!document.querySelector('#benchCard').hidden, view:benchState.view, scroll:document.querySelector('#benchCard').scrollHeight > document.querySelector('#benchCard').clientHeight})",
+    "expect": {
+      "open": true,
+      "view": "results",
+      "scroll": false
+    }
+  },
+  {
+    "click": "[data-bench-pin=w1]"
+  },
+  {
+    "eval": "({focus:benchState.focus, pressed:document.querySelector('[data-bench-pin=w1]').getAttribute('aria-pressed'), trace:!!document.querySelector('.bench-trace')})",
+    "expect": {
+      "focus": "w1",
+      "pressed": "true",
+      "trace": false
+    }
+  },
+  {
+    "click": "#benchCard [data-bench-witness=w2]"
+  },
+  {
+    "eval": "({focus:benchState.focus, pressed:document.querySelector('#benchCard [data-bench-witness=w2]').getAttribute('aria-pressed')})",
+    "expect": {
+      "focus": "w2",
+      "pressed": "true"
+    }
+  },
+  {
+    "eval": "benchAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#benchCard','#benchOrder','.bench-plate','.bench-pin','#benchZoneLabel'])",
+    "expect": []
+  },
+  {
+    "shot": "bench-11-mouse"
+  },
+  {
+    "click": "[data-bench-close]"
+  },
+  {
+    "eval": "({open:!document.querySelector('#benchCard').hidden, chosen:benchState.pick.chosen})",
+    "expect": {
+      "open": false,
+      "chosen": "a1"
+    }
+  },
+  {
+    "click": "[data-bench-plate=a2]",
+    "after": 1000
+  },
+  {
+    "eval": "({open:!document.querySelector('#benchCard').hidden, chosen:benchState.pick.chosen, bytes:benchState.kvarm.bytes})",
+    "expect": {
+      "open": true,
+      "chosen": "a1",
+      "bytes": 2964
+    }
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "key": "4",
+    "after": 600
+  },
+  {
+    "eval": "({mode:document.body.dataset.mode, open:!document.querySelector('#benchCard').hidden, layer:getComputedStyle(document.querySelector('#benchLayer')).display})",
+    "expect": {
+      "mode": "replay",
+      "open": false,
+      "layer": "none"
+    }
+  },
+  {
+    "key": "i"
+  },
+  {
+    "eval": "({mode:document.body.dataset.mode, open:!document.querySelector('#benchCard').hidden})",
+    "expect": {
+      "mode": "replay",
+      "open": false
+    }
+  },
+  {
+    "key": "1",
+    "after": 600
+  },
+  {
+    "eval": "({mode:document.body.dataset.mode, open:!document.querySelector('#benchCard').hidden, chosen:benchState.pick.chosen, order:benchState.order.rev, clash:benchState.clash.c1})",
+    "expect": {
+      "mode": "live",
+      "open": false,
+      "chosen": "a1",
+      "order": "r3",
+      "clash": "left"
+    }
+  },
+  {
+    "eval": "benchAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#benchCard','#benchOrder','.bench-plate','.bench-pin','#benchZoneLabel'])",
+    "expect": []
+  },
+  {
+    "shot": "bench-12-modes"
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "click": ".egress",
+    "after": 400
+  },
+  {
+    "eval": "[document.querySelector('#net').classList.contains('open'), !document.querySelector('#benchCard').hidden, !!document.querySelector('#benchCard .bench-kvarm')]",
+    "expect": [
+      false,
+      true,
+      true
+    ]
+  },
+  {
+    "key": "Escape"
+  }
+]

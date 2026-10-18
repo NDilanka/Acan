@@ -1,0 +1,6 @@
+[
+ {"eval":"(()=>{const g=document.querySelector('#grid');return g.outerHTML.slice(0,400)})()"},
+ {"eval":"[...new Set([...document.querySelectorAll('#clashLayer *')].map(e=>e.tagName+'.'+(e.className.baseVal??e.className)))].slice(0,40)"},
+ {"eval":"(()=>{const p=document.querySelector('.clash-pin');if(!p)return null;const cs=getComputedStyle(p);return [p.outerHTML.slice(0,300),cs.backgroundColor,cs.borderColor,cs.color]})()"},
+ {"eval":"(()=>{const c=document.querySelector('.chip');const m=c.querySelector('.mono');const cs=getComputedStyle(c);return [cs.color,cs.border,cs.boxShadow.slice(0,120),getComputedStyle(m).backgroundColor,getComputedStyle(m).color]})()"}
+]

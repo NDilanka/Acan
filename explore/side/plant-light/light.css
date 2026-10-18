@@ -1,0 +1,44 @@
+.fl,.pop,#nav,.hint,#insp,#drawer,#toast,#floor,#tip,#cbar,#clashToolbar,#clashAdvisory,#clashOrder,#clashCard,#watermark,#phint,#azRead,#qa,#pal,#simdeck,#rpdeck{display:none!important}
+html,body,#stage{background:#F7F7F5!important}
+/* The kit's own light tokens. ui-v2's STATE_CSS forces dark --anatomy-mid/lo on every .iso, so they are restated here. */
+.iso,.iso[data-theme],#plant.iso{
+ --anatomy-paper:#F7F7F5!important;--anatomy-face:#FFFFFF!important;--anatomy-top:#FFFFFF!important;
+ --anatomy-shade-0:#DCDCD9!important;--anatomy-shade-1:#E5E5E2!important;--anatomy-shade-2:#EDEDEA!important;--anatomy-shade-3:#F4F4F1!important;
+ --anatomy-lit-top:#FFFFFF!important;--anatomy-lit-shade:#EEEEEB!important;
+ --anatomy-hi:#3A3A3F!important;--anatomy-mid:#8A8A8F!important;--anatomy-lo:#B4B4B8!important;--anatomy-faint:#D4D4D6!important;--anatomy-lit:#000000!important;
+ --anatomy-halo:#8A8A80!important;--anatomy-halo-opacity:.32!important;--anatomy-dot:#3A3A3E!important;
+ --anatomy-red:#E5484D!important;--anatomy-green:#30A46C!important;--anatomy-blue:#3E63DD!important;--anatomy-weight:.6px!important;
+ --ok:#30A46C;--strain:#D4911E;--fail:#E5484D;--ghost:#3E63DD;
+}
+#grid path{stroke:#ECECE9!important;opacity:1!important}
+#grid path:not(.minor){stroke:#E3E3E0!important}
+.iso-face-text{fill:#9A9A9F!important}
+.lamp .iso-top{fill:#E4E4E1!important}.lamp .iso-shade{fill:#CFCFCC!important}
+.ent[data-state=ok] .lamp:not([data-lamp]) .iso-top,.lamp[data-lamp=ok] .iso-top{fill:#4CC38A!important}
+.ent[data-state=ok] .lamp:not([data-lamp]) .iso-shade,.lamp[data-lamp=ok] .iso-shade{fill:#2B9A66!important}
+.ent[data-state=strain] .lamp:not([data-lamp]) .iso-top,.ent[data-state=wait] .lamp:not([data-lamp]) .iso-top{fill:#F5B54A!important}
+.ent[data-state=strain] .lamp:not([data-lamp]) .iso-shade,.ent[data-state=wait] .lamp:not([data-lamp]) .iso-shade{fill:#C98A1C!important}
+.ent[data-state=fail] .lamp:not([data-lamp]) .iso-top{fill:#F2555A!important}
+.ent[data-state=fail] .lamp:not([data-lamp]) .iso-shade{fill:#C7343A!important}
+.lamp[data-lamp=run] .iso-top{fill:#8DA4EF!important}.lamp[data-lamp=run] .iso-shade{fill:#3E63DD!important}
+.ent[data-state=ghost] .iso-fill{fill:rgba(62,99,221,.035)!important}
+.ent[data-state=ghost] .iso-line{stroke:#3E63DD!important;opacity:.55!important}
+#droneShade stop:nth-child(1){stop-color:#FFFFFF}#droneShade stop:nth-child(2){stop-color:#EEEEEB}#droneShade stop:nth-child(3){stop-color:#D2D2CF}
+#droneHull stop:nth-child(1){stop-color:#F6F6F4}#droneHull stop:nth-child(2){stop-color:#D6D6D3}
+#droneGlass stop:nth-child(1){stop-color:#9A9AA0}#droneGlass stop:nth-child(2){stop-color:#4A4A50}#droneGlass stop:nth-child(3){stop-color:#26262A}
+.drone-duct{fill:#C4C4C1!important}.drone-hub{fill:#A6A6A3!important}.drone-bezel{fill:#8A8A8F!important}
+.drone-eye circle{fill:#FFFFFF!important;filter:none!important}
+.drone-shadow .iso-halo{opacity:.18!important}
+.chip{background:#FFFFFF!important;color:#26262A!important;border:1px solid #E2E2DF!important;box-shadow:0 1px 1px rgba(0,0,0,.03),0 3px 8px rgba(0,0,0,.04)!important}
+.chip .mono{background:#26262A!important;color:#FFFFFF!important}
+.chip[data-state=wait] .mono,.chip[data-state=strain] .mono,.chip[data-id=you] .mono{background:#D4911E!important}
+.chip[data-state=fail] .mono{background:#E5484D!important}
+.clash-pin{color:#26262A!important}
+.clash-pin-head{background:#FFFFFF!important;color:#26262A!important;border-color:#26262A!important;box-shadow:0 1px 3px rgba(0,0,0,.08)!important}
+.clash-pin[data-advisory=true] .clash-pin-head{color:#8A8A8F!important;border-color:#B4B4B8!important}
+.clash-pin-stem{background:#26262A!important}
+.clash-pin[data-advisory=true] .clash-pin-stem{background:#B4B4B8!important}
+.clash-pin-label{background:#FFFFFF!important;color:#26262A!important;border:1px solid #E2E2DF!important;box-shadow:0 1px 2px rgba(0,0,0,.04)!important}
+.clash-pin[data-advisory=true] .clash-pin-label{color:#6E6E73!important}
+#threads path,#threads line{stroke:#B4B4B8!important}
+*{animation-play-state:paused!important}

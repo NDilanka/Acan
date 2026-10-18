@@ -1,0 +1,13 @@
+[
+  {"eval":"if(worldState.theme!=='dark') dispatchEvent(new KeyboardEvent('keydown',{key:'F8',bubbles:true}));[worldState.kvarm.state,worldState.kvarm.pending.length,worldState.bindings.train.state,worldState.network.map(p=>p.op)]","expect":["stale",0,"stale",["list_repos","get_heads","get_leases"]]},
+  {"eval":"/^Kvarm stale · 2 missed polls · \\d+ s$/.test(document.querySelector('#worldKvarm').textContent)","expect":true},
+  {"eval":"[document.querySelector('[data-world-site=kvarm]').textContent.includes('train depth · stale · '),document.querySelector('#worldScope').textContent]","expect":[true,"5 plants · 2 block publication · 5 waiting · 2 stale"]},
+  {"shot":"world-kv-stale-01-overview"},
+  {"key":"3","alt":true},
+  {"eval":"[worldState.focus,worldState.level,document.querySelector('#worldStage [data-machine=train] .world-mini').dataset.evidenceState]","expect":["kvarm","plant","stale"]},
+  {"shot":"world-kv-stale-02-plant"},
+  {"click":"#worldApp #worldKvarm"},
+  {"eval":"[document.querySelector('#worldNetwork').textContent.includes('Remote fields are stale'),document.querySelector('#worldNetwork [data-action=connection]').textContent]","expect":[true,"Go offline"]},
+  {"key":"F8"},
+  {"shot":"world-kv-stale-03-light-network"}
+]

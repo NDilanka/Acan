@@ -1,0 +1,23 @@
+[
+  {"eval":"if(worldState.theme!=='dark') dispatchEvent(new KeyboardEvent('keydown',{key:'F8',bubbles:true}));[worldState.kvarm.state,worldState.kvarm.pending.map(p=>p.op),worldState.bindings.train.state,worldState.egressBytes,worldState.network.length]","expect":["offline",["record_decision"],"stale",0,0]},
+  {"eval":"/^Kvarm offline · 1 write held · \\d+ s$/.test(document.querySelector('#worldKvarm').textContent)","expect":true},
+  {"eval":"document.querySelector('[data-world-site=kvarm]').textContent.includes('train depth · offline · ')","expect":true},
+  {"shot":"world-kv-offline-01-overview"},
+  {"click":"#worldApp #worldKvarm"},
+  {"eval":"[worldState.overlay,document.querySelectorAll('#worldNetwork [data-pending-write]').length,document.querySelector('#worldNetwork').textContent.includes('Remote fields are stale'),document.querySelector('#worldNetwork [data-action=connection]').textContent]","expect":["network",1,true,"Reconnect"]},
+  {"eval":"document.querySelector('#worldNetwork').focus();document.activeElement.id","expect":"worldNetwork"},
+  {"key":"Enter"},
+  {"eval":"[worldState.kvarm.state,worldState.kvarm.pending.length,worldState.network.length]","expect":["offline",1,0]},
+  {"shot":"world-kv-offline-02-held"},
+  {"click":"#worldNetwork [data-action=connection]"},
+  {"eval":"[worldState.kvarm.state,worldState.kvarm.checked,worldState.network.map(p=>p.op),document.querySelector('#worldNetwork').textContent.includes('checked heads and leases'),document.activeElement.dataset.action,document.querySelector('#worldKvarm').textContent]","expect":["stale",true,["check_heads_and_leases"],true,"confirm","Kvarm checked · 1 write held · Enter sends"]},
+  {"shot":"world-kv-offline-03-checked"},
+  {"key":"Enter"},
+  {"eval":"[worldState.kvarm.state,worldState.kvarm.pending.length,worldState.network.map(p=>p.op),worldState.egressBytes,document.querySelector('#worldAnnouncement').textContent]","expect":["ok",0,["check_heads_and_leases","record_decision"],632,"1 held write sent to the fixture origin."]},
+  {"click":"#worldNetwork [data-action=connection]"},
+  {"eval":"[worldState.kvarm.state,worldState.kvarm.pending.length,/^Kvarm offline · no writes held · \\d+ s$/.test(document.querySelector('#worldKvarm').textContent)]","expect":["offline",0,true]},
+  {"click":"#worldNetwork [data-action=connection]"},
+  {"eval":"[worldState.kvarm.state,worldState.kvarm.checked,worldState.network.map(p=>p.op)]","expect":["ok",false,["check_heads_and_leases","record_decision","check_heads_and_leases"]]},
+  {"key":"F8"},
+  {"shot":"world-kv-offline-04-light-sent"}
+]

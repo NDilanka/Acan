@@ -1,0 +1,6 @@
+[
+ {"eval":"[...document.body.children].map(e=>{const r=e.getBoundingClientRect();const cs=getComputedStyle(e);return [e.tagName,e.id,(e.className&&e.className.baseVal===undefined?e.className:''),Math.round(r.left),Math.round(r.top),Math.round(r.width),Math.round(r.height),cs.display,cs.position,cs.backgroundColor].join('|')})"},
+ {"eval":"(()=>{const s=document.querySelector('.iso-svg');let p=s,chain=[];while(p&&p!==document.body){chain.push(p.tagName+'#'+p.id+'.'+(p.className.baseVal??p.className));p=p.parentElement}return chain})()"},
+ {"eval":"[...document.querySelectorAll('[id]')].filter(e=>{const cs=getComputedStyle(e);return (cs.position==='absolute'||cs.position==='fixed')&&e.getClientRects().length&&cs.visibility!=='hidden'}).map(e=>{const r=e.getBoundingClientRect();return e.id+' '+Math.round(r.left)+','+Math.round(r.top)+' '+Math.round(r.width)+'x'+Math.round(r.height)})"},
+ {"eval":"getComputedStyle(document.body).backgroundImage.slice(0,300)+' || '+getComputedStyle(document.body).backgroundColor"}
+]

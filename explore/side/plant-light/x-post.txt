@@ -1,0 +1,13 @@
+Been heads down on Orrery, the thing I'm building to actually see what my coding agents are doing.
+
+The idea is your system drawn as a little factory. Services are machines, queues are belts, and agents show up on the machine they're changing.
+
+Before building anything I had Droid fan out 12 research agents, then had Claude, GPT and Grok each pitch concepts on their own. Turns out "Factorio for agents" is already a whole category (AgentCraft, VibeCraft, Maestri), so that one's out 😅
+
+What survived is the part nobody seems to be doing. You pin real moments from a trace as must-keep and must-not, post that as a work order, and the agents read it back to you before writing any code. If two agents plan to touch the same thing, it shows up as a clash on the belt and you settle it before a single file changes.
+
+Three prototypes are clickable now. Work orders, clash on the belt, and one canvas with all my projects on it so I stop tab switching. Light mode too.
+
+Two more are being built. Still all fixture data, nothing hooked up to real agents yet.
+
+What would you want to see on the plant first?

@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Orrery UI/UX stopping point</title>
+<style>
+  @font-face {
+    font-family: 'Inter';
+    src: url('fonts/inter-var.woff2') format('woff2');
+    font-weight: 100 900;
+    font-style: normal;
+  }
+  html, body { margin: 0; padding: 0; }
+  body {
+    width: 1600px; height: 900px;
+    background: #F4F2EE;
+    color: #141414;
+    font-family: 'Inter', 'Liberation Sans', 'DejaVu Sans', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .pad { padding: 104px; height: 692px; display: flex; flex-direction: column; justify-content: center; }
+  .eyebrow {
+    font-size: 30px; font-weight: 700; letter-spacing: 6px; text-transform: uppercase;
+    color: #8A857C; margin-bottom: 84px;
+  }
+  .row { display: flex; align-items: flex-end; justify-content: center; }
+  .col { display: flex; flex-direction: column; align-items: center; }
+  .col.left { padding-right: 96px; }
+  .col.right { padding-left: 96px; }
+  .num { font-weight: 800; line-height: 0.86; letter-spacing: -0.045em; font-feature-settings: 'tnum' 0; }
+  .num.left { font-size: 250px; color: #141414; }
+  .num.right { font-size: 250px; color: #FF5B1F; }
+  .cap { font-size: 34px; font-weight: 500; color: #57534E; margin-top: 34px; letter-spacing: -0.01em; }
+  .divider { width: 2px; align-self: stretch; background: #DCD7CE; margin-bottom: 6px; }
+</style>
+</head>
+<body>
+  <div class="pad">
+    <div class="eyebrow">Orrery UI/UX</div>
+    <div class="row">
+      <div class="col">
+        <div class="num left">76,498</div>
+        <div class="cap">words of research</div>
+      </div>
+      <div class="divider"></div>
+      <div class="col">
+        <div class="num right">0</div>
+        <div class="cap">lines of app written</div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

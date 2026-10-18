@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Orrery sketch, bound slots with a System 1 selector</title>
+<style>
+  :root { --ink:#1d2430; --paper:#f4f1ea; --line:#c9c2b4; --muted:#6b6458; --fail:#b3412e; --drift:#b07a1c; --ok:#3d7a4f; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:13px/1.45 ui-sans-serif, "Segoe UI", system-ui, sans-serif; color:var(--ink); background:var(--paper); display:grid; grid-template-columns:260px 360px 1fr; height:100vh; }
+  section { padding:14px 16px; border-right:1px solid var(--line); overflow:auto; }
+  h1 { font-size:13px; margin:0 0 10px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  h2 { font-size:11px; margin:14px 0 6px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  button, select, input { font:inherit; }
+  .ent { display:block; width:100%; text-align:left; padding:6px 8px; margin:0 0 4px; background:#fff; border:1px solid var(--line); cursor:pointer; }
+  .ent[aria-pressed=true] { border-color:var(--ink); }
+  .ctl { margin:6px 0; display:flex; gap:6px; align-items:center; }
+  .slot { border:1px dashed var(--ink); background:#fff; padding:10px; min-height:118px; height:118px; overflow:hidden; position:relative; }
+  .slot .tag { position:absolute; top:-9px; left:8px; background:var(--paper); padding:0 4px; font-size:10px; color:var(--muted); }
+  .slot .acts { position:absolute; right:6px; top:6px; display:flex; gap:4px; }
+  .slot .acts button { font-size:11px; padding:1px 6px; border:1px solid var(--line); background:var(--paper); cursor:pointer; }
+  .why { font-size:11px; color:var(--muted); margin-top:6px; }
+  .fixed { border-top:1px solid var(--line); padding:6px 0; }
+  .bar { height:8px; background:#e6e0d4; position:relative; margin:6px 0; }
+  .bar i { position:absolute; top:0; bottom:0; left:0; background:var(--drift); }
+  .bar b { position:absolute; top:-3px; bottom:-3px; width:2px; background:var(--ink); }
+  .sev-fail { color:var(--fail); } .sev-drift { color:var(--drift); } .ok { color:var(--ok); }
+  pre { font:11px/1.4 ui-monospace, Consolas, monospace; background:#fff; border:1px solid var(--line); padding:8px; white-space:pre-wrap; }
+  #log { font:11px/1.5 ui-monospace, Consolas, monospace; }
+</style>
+</head>
+<body>
+<section>
+  <h1>Entities</h1>
+  <div id="ents"></div>
+  <h2>System 1</h2>
+  <div class="ctl"><label><input type="checkbox" id="adaptive" checked> Adaptive slots</label></div>
+  <div class="ctl"><label>Simulated latency <input type="range" id="lat" min="0" max="300" step="10" value="20"></label> <span id="latv"></span></div>
+  <div class="why">Deadline is 100 ms. A late answer is cached and used on the next open. It never replaces what is on screen.</div>
+  <h2>Pinned views</h2>
+  <pre id="pins">none</pre>
+</section>
+<section>
+  <h1 id="title">Inspector</h1>
+  <div class="slot" id="now"><span class="tag">Now</span></div>
+  <div id="fixedSecs"></div>
+</section>
+<section>
+  <h1>Event log</h1>
+  <div id="log"></div>
+  <h2>Last rendered view spec</h2>
+  <pre id="spec"></pre>
+</section>
+<script>
+// Twin read model, in the ui-v1 acquit.mjs fixture shape.
+const TWIN = {
+  inspect: {
+    verifier: {
+      budgets: [{ metric: "queue wait p95", unit: "s", value: 41, budget: 30, max: 60 }],
+      drift: [{ sev: "drift", text: "Queue wait is over budget: 41 s against 30 s", ref: "budget set 3 days ago" }],
+      choices: [{ id: "verifier-concurrency-2", text: "Raise verifier concurrency to 2", conf: 0.4, cost: "medium", risk: 0.36 }],
+      fog: { facet: "observed", level: 0.5 },
+    },
+    paypal: {
+      budgets: [{ metric: "error rate", unit: "%", value: 4.1, budget: 2, max: 6 }],
+      drift: [{ sev: "fail", text: "Error rate breaches budget: 4.1% against 2%", ref: "woke the canvas 14:02" }],
+      choices: [{ id: "paypal-retry-x2", text: "Back off retries to x2 with jitter", conf: 0.55, cost: "low", risk: 0.18 }],
+      fog: { facet: "owned", level: 0 },
+    },
+    radar: {
+      session: { agent: "Droid", state: "verifying", now: "run_checks radar-otel · 3 of 5 passed", since: "38m" },
+      checks: [{ ok: false, text: "Trace context across the queue and verifier callback (L13)" }, { ok: false, text: "Budget: export overhead under 2% cpu" }],
+    },
+  },
+};
+
+// Candidates are built deterministically from the twin. System 1 sees ids and bins only.
+function candidates(e) {
+  const base = "/inspect/" + e, d = TWIN.inspect[e], out = [];
+  if (d.drift && d.drift[0].sev === "fail") out.push({ id: "fail:" + e, component: "BudgetGauge", rule: "budget_fail", path: base + "/budgets/0", bins: { sev: "fail" } });
+  else if (d.budgets && d.budgets[0].value > d.budgets[0].budget) out.push({ id: "budget:" + e, component: "BudgetGauge", rule: "budget_over", path: base + "/budgets/0", bins: { sev: "drift" } });
+  if (d.session) out.push({ id: "session:" + e, component: "SessionCard", rule: "agent_working", path: base + "/session", bins: { state: d.session.state } });
+  if (d.checks && d.checks.some(c => !c.ok)) out.push({ id: "checks:" + e, component: "CheckList", rule: "check_failing", path: base + "/checks", bins: { failing: "some" } });
+  if (d.choices && d.choices.length) out.push({ id: "choice:" + d.choices[0].id, component: "ChoiceCard", rule: "choice_pending", path: base + "/choices/0", bins: { conf_band: d.choices[0].conf < 0.5 ? "low" : "mid" } });
+  if (d.fog && d.fog.level < 1) out.push({ id: "fog:" + e, component: "FogNote", rule: "fog_facet_low", path: base + "/fog", bins: { facet: d.fog.facet } });
+  return out;
+}
+
+// Static default order. Always available, and what shows first.
+const DEFAULT_ORDER = ["budget_fail", "budget_over", "check_failing", "agent_working", "choice_pending", "fog_facet_low"];
+// Tier 0 priors. Learned weights from dismiss and pin are added on top.
+const PRIOR = { budget_fail: 10, check_failing: 6, budget_over: 5, agent_working: 4, choice_pending: 3, fog_facet_low: 1 };
+const weight = {}, dismissed = {}, pins = {}, cache = {};
+
+function byDefault(cs) { return cs.slice().sort((a, b) => DEFAULT_ORDER.indexOf(a.rule) - DEFAULT_ORDER.indexOf(b.rule) || a.id.localeCompare(b.id))[0]; }
+function tier0(cs) {
+  const live = cs.filter(c => !dismissed[c.id]);
+  return live.map(c => ({ c, s: PRIOR[c.rule] + (weight[c.rule] || 0) })).sort((a, b) => b.s - a.s || a.c.id.localeCompare(b.c.id))[0]?.c;
+}
+
+function resolve(ptr) { return ptr.split("/").slice(1).reduce((o, k) => o?.[k], TWIN); }
+function esc(s) { return String(s).replace(/[&<>]/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[ch]); }
+
+// Validator. Every binding must resolve, and the component must be in the slot catalog.
+const SLOT_CATALOG = ["BudgetGauge", "ChoiceCard", "FogNote", "SessionCard", "CheckList"];
+function validate(c) { return c && SLOT_CATALOG.includes(c.component) && resolve(c.path) !== undefined; }
+
+function renderCard(c, tier) {
+  const v = resolve(c.path);
+  const spec = { root: "now", elements: { now: { component: c.component, props: { "$bind": c.path } } } };
+  document.getElementById("spec").textContent = JSON.stringify(spec, null, 2);
+  let body = "";
+  if (c.component === "BudgetGauge") {
+    const pct = Math.min(100, (v.value / v.max) * 100), bud = (v.budget / v.max) * 100;
+    body = `<b>${esc(v.metric)}</b><div class="bar"><i style="width:${pct}%"></i><b style="left:${bud}%"></b></div>${esc(v.value)} ${esc(v.unit)} against ${esc(v.budget)} ${esc(v.unit)} (max ${esc(v.max)})`;
+  } else if (c.component === "ChoiceCard") body = `<b>Choice</b><div>${esc(v.text)}</div><div>conf ${esc(v.conf)} · cost ${esc(v.cost)} · risk ${esc(v.risk)}</div>`;
+  else if (c.component === "FogNote") body = `<b>Fog</b><div>${esc(v.facet)} is at ${esc(v.level)}</div>`;
+  else if (c.component === "SessionCard") body = `<b>${esc(v.agent)} · ${esc(v.state)}</b><div>${esc(v.now)}</div><div>${esc(v.since)}</div>`;
+  else if (c.component === "CheckList") body = v.map(k => `<div class="${k.ok ? "ok" : "sev-fail"}">${k.ok ? "pass" : "open"} · ${esc(k.text)}</div>`).join("");
+  const now = document.getElementById("now");
+  now.innerHTML = `<span class="tag">Now</span><div class="acts"><button id="pin">pin</button><button id="dis">dismiss</button></div>${body}<div class="why">why: rule ${esc(c.rule)} · chosen by ${esc(tier)}</div>`;
+  now.dataset.cid = c.id;
+  document.getElementById("pin").onclick = () => { pins[sel] = c; weight[c.rule] = (weight[c.rule] || 0) + 1; log(`pinned ${c.id} to .orrery/views/${sel}-now.yaml`); showPins(); };
+  document.getElementById("dis").onclick = () => { dismissed[c.id] = true; weight[c.rule] = (weight[c.rule] || 0) - 1; delete cache[sel]; log(`dismissed ${c.id}`); open(sel); };
+}
+
+function renderFixed(e) {
+  const d = TWIN.inspect[e], rows = [];
+  if (d.budgets) rows.push(["Budgets", d.budgets.map(b => `${esc(b.metric)} ${esc(b.value)} ${esc(b.unit)} / ${esc(b.budget)}`).join("<br>")]);
+  if (d.drift) rows.push(["Drift", d.drift.map(x => `<span class="sev-${x.sev}">${esc(x.text)}</span>`).join("<br>")]);
+  if (d.session) rows.push(["Session", esc(d.session.now)]);
+  if (d.checks) rows.push(["Checks", d.checks.map(k => esc(k.text)).join("<br>")]);
+  if (d.choices) rows.push(["Choices", d.choices.map(x => esc(x.text)).join("<br>")]);
+  document.getElementById("fixedSecs").innerHTML = rows.map(([h, b]) => `<div class="fixed"><h2>${h}</h2>${b}</div>`).join("");
+}
+
+let sel = null, token = 0;
+function open(e) {
+  sel = e; const my = ++token;
+  document.querySelectorAll(".ent").forEach(b => b.setAttribute("aria-pressed", b.dataset.e === e));
+  document.getElementById("title").textContent = "Inspector · " + e;
+  renderFixed(e);
+  const cs = candidates(e);
+  if (pins[e] && validate(pins[e])) { renderCard(pins[e], "pin"); log(`${e}: pinned view`); return; }
+  const def = byDefault(cs.filter(c => !dismissed[c.id])) || byDefault(cs);
+  if (!document.getElementById("adaptive").checked) { renderCard(def, "default (adaptive off)"); log(`${e}: default, adaptive off`); return; }
+  const hit = cache[e];
+  if (hit && validate(hit)) { renderCard(hit, "System 1 (cache)"); log(`${e}: cache hit ${hit.id}`); return; }
+  renderCard(def, "default");
+  const lat = +document.getElementById("lat").value, t0 = performance.now();
+  setTimeout(() => {
+    const pick = tier0(cs), ms = Math.round(performance.now() - t0);
+    if (!validate(pick)) { log(`${e}: System 1 pick failed validation, default stays`); return; }
+    cache[e] = pick;
+    if (my !== token) { log(`${e}: answer after the user moved on, cached`); return; }
+    if (ms > 100) { log(`${e}: System 1 took ${ms} ms, past the 100 ms deadline. Cached, not shown.`); return; }
+    if (pick.id !== def.id) { renderCard(pick, "System 1 (tier 0)"); log(`${e}: System 1 chose ${pick.id} in ${ms} ms`); }
+    else log(`${e}: System 1 agreed with the default in ${ms} ms`);
+  }, lat);
+}
+
+function log(s) { const el = document.getElementById("log"); el.innerHTML = `<div>${esc(s)}</div>` + el.innerHTML; }
+function showPins() { const k = Object.keys(pins); document.getElementById("pins").textContent = k.length ? k.map(e => `.orrery/views/${e}-now.yaml\n  component: ${pins[e].component}\n  bind: ${pins[e].path}`).join("\n") : "none"; }
+
+const ents = document.getElementById("ents");
+Object.keys(TWIN.inspect).forEach(e => { const b = document.createElement("button"); b.className = "ent"; b.dataset.e = e; b.textContent = e; b.onclick = () => open(e); ents.appendChild(b); });
+const lat = document.getElementById("lat"), latv = document.getElementById("latv");
+lat.oninput = () => latv.textContent = lat.value + " ms"; lat.oninput();
+document.getElementById("adaptive").onchange = () => sel && open(sel);
+open("verifier");
+</script>
+</body>
+</html>

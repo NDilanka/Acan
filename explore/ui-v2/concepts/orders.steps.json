@@ -1,0 +1,1058 @@
+[
+  {
+    "eval": "window.polishAudit = (panels) => {\n const vis = e => e && !e.hidden && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && +getComputedStyle(e).opacity > 0.05;\n const t = document.querySelector('#toast'), out = [];\n if (t.classList.contains('on') && vis(t)) {\n  const r = t.getBoundingClientRect();\n  if (r.left < 0 || r.top < 0 || r.right > innerWidth || r.bottom > innerHeight) out.push('toast offscreen');\n  for (const sel of ['.fl', '.nav', '.cbar', '.hint', '#insp.open', '.pop.open', '#rpdeck', ...panels])\n   for (const e of document.querySelectorAll(sel)) { if (!vis(e)) continue; const q = e.getBoundingClientRect(); if (q.width && q.height && r.left < q.right && r.right > q.left && r.top < q.bottom && r.bottom > q.top) out.push('toast over ' + sel); }\n }\n return out;\n}; true",
+    "expect": true
+  },
+  {
+    "eval": "[document.body.dataset.mode,document.querySelector('#rpTime').textContent,selected,ordersState.order.state]",
+    "expect": [
+      "replay",
+      "15:44:30",
+      "retry",
+      "draft"
+    ]
+  },
+  {
+    "eval": "[document.querySelector('#orders-guide').hidden,document.querySelector('#orders-pin-not').disabled,document.querySelector('#orders-pin-keep').disabled,document.querySelector('#orders-pin-gate').textContent]",
+    "expect": [
+      false,
+      false,
+      true,
+      "must keep · select paypal at 15:35"
+    ]
+  },
+  {
+    "eval": "[document.querySelector('.bl .wait b').textContent, ENT.you.reading]",
+    "expect": [
+      "7",
+      "7 waiting"
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-01-replay"
+  },
+  {
+    "key": "m"
+  },
+  {
+    "eval": "[ordersState.witnesses.map(w=>w.id),document.activeElement.id,document.querySelector('[data-orders-witness=w1]').textContent.includes('MUST NOT · 15:44')]",
+    "expect": [
+      [
+        "w1"
+      ],
+      "orders-reason",
+      true
+    ]
+  },
+  {
+    "eval": "(()=>{const c=document.querySelector('#orders-card').getBoundingClientRect(),p=ordersPoint(selected,ordersState.open==='question');return [c.left>=0,c.top>=100,c.right<=innerWidth,c.bottom<=innerHeight-40,p[0]>=100,p[0]<c.left-100,p[1]>=160,p[1]<=innerHeight-100]})()",
+    "expect": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-02-must-not"
+  },
+  {
+    "key": "Enter"
+  },
+  {
+    "key": "Home"
+  },
+  {
+    "key": "."
+  },
+  {
+    "key": "."
+  },
+  {
+    "key": "."
+  },
+  {
+    "key": "."
+  },
+  {
+    "key": "."
+  },
+  {
+    "key": "k",
+    "ctrl": true
+  },
+  {
+    "type": "paypal"
+  },
+  {
+    "key": "Enter"
+  },
+  {
+    "key": "m",
+    "shift": true
+  },
+  {
+    "eval": "[document.querySelector('#rpTime').textContent,ordersState.witnesses.map(w=>w.id),ordersState.open,document.activeElement.id]",
+    "expect": [
+      "15:35:00",
+      [
+        "w1",
+        "w2"
+      ],
+      "w2",
+      "orders-reason"
+    ]
+  },
+  {
+    "eval": "(()=>{const c=document.querySelector('#orders-card').getBoundingClientRect(),p=ordersPoint(selected,ordersState.open==='question');return [c.left>=0,c.top>=100,c.right<=innerWidth,c.bottom<=innerHeight-40,p[0]>=100,p[0]<c.left-100,p[1]>=160,p[1]<=innerHeight-100]})()",
+    "expect": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-03-must-keep"
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "eval": "[ordersState.open,document.activeElement.id]",
+    "expect": [
+      "w2",
+      ""
+    ]
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "key": "p"
+  },
+  {
+    "eval": "[ordersState.open,document.querySelector('#orders-sentence').tagName,document.querySelector('#orders-sentence').rows,document.querySelector('#orders-submit').disabled,ordersState.sentence,document.querySelector('#orders-checks small').textContent.startsWith('Becomes locked'),document.querySelector('#orders-card').textContent.includes('paypal.error_rate < 2%')]",
+    "expect": [
+      "order",
+      "TEXTAREA",
+      2,
+      true,
+      "",
+      true,
+      true
+    ]
+  },
+  {
+    "key": "Enter"
+  },
+  {
+    "eval": "[ordersState.order.state,ordersState.sentence,document.body.dataset.mode]",
+    "expect": [
+      "draft",
+      "",
+      "replay"
+    ]
+  },
+  {
+    "type": "   "
+  },
+  {
+    "key": "Enter"
+  },
+  {
+    "eval": "[ordersState.order.state,document.querySelector('#orders-submit').disabled]",
+    "expect": [
+      "draft",
+      true
+    ]
+  },
+  {
+    "eval": "document.querySelector('#orders-sentence').select();document.activeElement.id",
+    "expect": "orders-sentence"
+  },
+  {
+    "type": "Payouts survive a PayPal outage without retry storms, keep an accepted payout pending when its response is lost, reconcile that payout by its id after PayPal recovers, and never charge the client twice even when the payout needs its second try."
+  },
+  {
+    "eval": "[document.querySelector('#orders-sentence').scrollTop,document.querySelector('#orders-sentence').scrollLeft,document.querySelector('#orders-sentence').offsetHeight>58,document.querySelector('#orders-sentence').scrollHeight<=document.querySelector('#orders-sentence').clientHeight,document.querySelector('#orders-sentence').value.startsWith('Payouts survive'),document.querySelector('#orders-submit').disabled]",
+    "expect": [
+      0,
+      0,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-04a-long-draft"
+  },
+  {
+    "eval": "document.querySelector('#orders-sentence').select();document.activeElement.id",
+    "expect": "orders-sentence"
+  },
+  {
+    "type": "Payouts survive a PayPal outage without retry storms, and never charge twice."
+  },
+  {
+    "eval": "[ordersState.sentence,document.body.dataset.mode,document.querySelector('#orders-sentence').scrollTop,document.querySelector('#orders-sentence').scrollLeft]",
+    "expect": [
+      "Payouts survive a PayPal outage without retry storms, and never charge twice.",
+      "replay",
+      0,
+      0
+    ]
+  },
+  {
+    "eval": "(()=>{const c=document.querySelector('#orders-card').getBoundingClientRect(),p=ordersPoint(selected,ordersState.open==='question');return [c.left>=0,c.top>=100,c.right<=innerWidth,c.bottom<=innerHeight-40,p[0]>=100,p[0]<c.left-100,p[1]>=160,p[1]<=innerHeight-100]})()",
+    "expect": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-04-post-draft"
+  },
+  {
+    "key": "Enter",
+    "after": 650
+  },
+  {
+    "eval": "[ordersState.order,document.body.dataset.mode,ordersState.open,document.querySelector('#orders-sentence')===null,document.querySelector('#orders-guide').hidden,document.querySelector('#orders-hint').hidden,document.querySelector('#orders-checks small').textContent.startsWith('Locked'),document.querySelector('#orders-card header').hasAttribute('data-orders-plate')]",
+    "expect": [
+      {
+        "state": "open",
+        "claimedBy": null
+      },
+      "live",
+      "order",
+      true,
+      true,
+      false,
+      true,
+      true
+    ]
+  },
+  {
+    "eval": "window.ordersBeforeArrival={focus:document.activeElement.outerHTML,top:document.querySelector('#orders-card').style.top,height:document.querySelector('#orders-card').offsetHeight};true",
+    "expect": true
+  },
+  {
+    "eval": "[document.querySelector('.bl .wait b').textContent, ENT.you.reading]",
+    "expect": [
+      "7",
+      "7 waiting"
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-05-open"
+  },
+  {
+    "wait": 850
+  },
+  {
+    "eval": "[ordersState.arrived,!!ENT['bot-cc'],ordersState.open,document.activeElement.outerHTML===ordersBeforeArrival.focus,document.querySelector('#orders-card').offsetHeight>ordersBeforeArrival.height,document.querySelector('#orders-card').style.top===ordersBeforeArrival.top]",
+    "expect": [
+      [
+        "claude-payouts"
+      ],
+      true,
+      "order",
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-06-first-readback"
+  },
+  {
+    "wait": 1200
+  },
+  {
+    "eval": "[ordersState.arrived,!!ENT['bot-d2'],ordersState.open,document.activeElement.outerHTML===ordersBeforeArrival.focus,document.querySelector('#orders-card').style.top===ordersBeforeArrival.top,document.querySelector('.bl .wait b').textContent]",
+    "expect": [
+      [
+        "claude-payouts",
+        "droid-payouts"
+      ],
+      true,
+      "order",
+      true,
+      true,
+      "8"
+    ]
+  },
+  {
+    "eval": "[...document.querySelectorAll('#orders-readbacks .orders-reading')].map(e=>[e.dataset.state,e.querySelector('.orders-choice').textContent,getComputedStyle(e.querySelector('.orders-choice')).color,e.querySelector('mark').textContent])",
+    "expect": [
+      [
+        "differs",
+        "pending",
+        "rgb(225, 164, 60)",
+        "keep it pending"
+      ],
+      [
+        "differs",
+        "failed",
+        "rgb(225, 164, 60)",
+        "mark the payout failed"
+      ]
+    ]
+  },
+  {
+    "eval": "[...document.querySelectorAll('#orders-readbacks [data-result]')].map(e=>[e.textContent,e.dataset.result,getComputedStyle(e).color])",
+    "expect": [
+      [
+        "w1 pass",
+        "pass",
+        "rgb(53, 183, 162)"
+      ],
+      [
+        "w2 pass",
+        "pass",
+        "rgb(53, 183, 162)"
+      ],
+      [
+        "p-2307 pending",
+        "pending",
+        "rgb(225, 164, 60)"
+      ],
+      [
+        "w1 pass",
+        "pass",
+        "rgb(53, 183, 162)"
+      ],
+      [
+        "w2 pass",
+        "pass",
+        "rgb(53, 183, 162)"
+      ],
+      [
+        "p-2307 failed",
+        "fail",
+        "rgb(232, 96, 74)"
+      ]
+    ]
+  },
+  {
+    "eval": "document.querySelector('#orders-question-pin').hidden ? [document.querySelector('#orders-question-edge').hidden,document.querySelector('#orders-question-edge').textContent.includes('sqlite'),document.querySelector('[data-orders-question-leader]')===null] : [false,true,true]",
+    "expect": [
+      false,
+      true,
+      true
+    ]
+  },
+  {
+    "eval": "(()=>{const c=document.querySelector('#orders-card').getBoundingClientRect(),p=ordersPoint(selected,ordersState.open==='question');return [c.left>=0,c.top>=100,c.right<=innerWidth,c.bottom<=innerHeight-40,p[0]>=100,p[0]<c.left-100,p[1]>=160,p[1]<=innerHeight-100]})()",
+    "expect": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-07-readbacks"
+  },
+  {
+    "key": "i"
+  },
+  {
+    "eval": "[ordersState.open,selected,document.querySelectorAll('[data-orders-answer]').length,document.querySelector('[data-orders-answer=\"1\"]').textContent.includes('Claude Code reads this'),document.querySelector('[data-orders-answer=\"2\"]').textContent.includes('Droid · second session reads this'),document.querySelector('[data-orders-answer=\"1\"]').textContent.includes('Answer ·')]",
+    "expect": [
+      "question",
+      "sqlite",
+      2,
+      true,
+      true,
+      false
+    ]
+  },
+  {
+    "eval": "(()=>{const c=document.querySelector('#orders-card').getBoundingClientRect(),p=ordersPoint(selected,ordersState.open==='question');return [c.left>=0,c.top>=100,c.right<=innerWidth,c.bottom<=innerHeight-40,p[0]>=100,p[0]<c.left-100,p[1]>=160,p[1]<=innerHeight-100]})()",
+    "expect": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "eval": "window.ordersCameraBefore=[goal.x,goal.y,goal.s];true",
+    "expect": true
+  },
+  {
+    "key": "i"
+  },
+  {
+    "eval": "[goal.x,goal.y,goal.s].every((n,i)=>n===ordersCameraBefore[i])",
+    "expect": true
+  },
+  {
+    "eval": "(()=>{const c=document.querySelector('#orders-card').getBoundingClientRect(),d=document.querySelector('#orders-dock').getBoundingClientRect();return c.right+10<=d.left||d.right+10<=c.left||c.bottom+10<=d.top||d.bottom+10<=c.top})()",
+    "expect": true
+  },
+  {
+    "eval": "[document.querySelector('.bl .wait b').textContent, ENT.you.reading]",
+    "expect": [
+      "8",
+      "8 waiting"
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-08-question"
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "eval": "(()=>{const p=document.querySelector('#orders-question-pin'),r=p.getBoundingClientRect(),path=document.querySelector('[data-orders-question-leader]');return [p.hidden,!!path,path?path.getTotalLength()<180:false,[...document.querySelectorAll('.orders-witness')].every(e=>{const q=e.getBoundingClientRect();return r.right<=q.left||r.left>=q.right||r.bottom<=q.top||r.top>=q.bottom})]})()",
+    "expect": [
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-08b-question-pin"
+  },
+  {
+    "key": "i"
+  },
+  {
+    "key": "1",
+    "shift": true,
+    "after": 100
+  },
+  {
+    "eval": "[ordersState.question.answered,ordersState.witnesses.map(w=>[w.id,w.observed.value]),ordersState.open,ordersState.order,ordersState.scoring,document.querySelector('.bl .wait b').textContent]",
+    "expect": [
+      "1",
+      [
+        [
+          "w1",
+          3
+        ],
+        [
+          "w2",
+          1
+        ],
+        [
+          "w3",
+          "pending"
+        ]
+      ],
+      null,
+      {
+        "state": "open",
+        "claimedBy": null
+      },
+      "rescoring",
+      "7"
+    ]
+  },
+  {
+    "eval": "[...document.querySelectorAll('#orders-mini-readbacks .orders-mini')].map(e=>[e.dataset.state,e.textContent.includes('w3 checking')])",
+    "expect": [
+      [
+        "rescoring",
+        true
+      ],
+      [
+        "rescoring",
+        true
+      ]
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-09-answer"
+  },
+  {
+    "wait": 700
+  },
+  {
+    "eval": "[ordersState.order,ordersState.scoring,ENT['bot-cc'].reading,TERR['paypal-payouts'].owner]",
+    "expect": [
+      {
+        "state": "open",
+        "claimedBy": null
+      },
+      "settled",
+      "readback",
+      null
+    ]
+  },
+  {
+    "eval": "[document.querySelector('.orders-mini[data-orders-session=claude-payouts]').dataset.state,document.querySelector('.orders-mini[data-orders-session=droid-payouts]').dataset.state,document.querySelector('.orders-mini[data-orders-session=claude-payouts] small').textContent,document.querySelector('.orders-mini[data-orders-session=droid-payouts] small').textContent]",
+    "expect": [
+      "matches",
+      "yields",
+      "3 of 3 · matches · claiming",
+      "2 of 3 · yields"
+    ]
+  },
+  {
+    "eval": "[...document.querySelectorAll('#orders-mini-readbacks .orders-mini')].map(e=>[getComputedStyle(e.querySelector('small')).color,[...e.querySelectorAll('[data-result]')].map(x=>x.textContent)])",
+    "expect": [
+      [
+        "rgb(53, 183, 162)",
+        [
+          "w1 pass",
+          "w2 pass",
+          "w3 pass"
+        ]
+      ],
+      [
+        "rgb(232, 96, 74)",
+        [
+          "w1 pass",
+          "w2 pass",
+          "w3 fail"
+        ]
+      ]
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-09b-rescored"
+  },
+  {
+    "wait": 1500
+  },
+  {
+    "eval": "[ordersState.order,TERR['paypal-payouts'].state,SCENE.territories.find(t=>t.id==='paypal-payouts').fog,document.querySelector('#orders-fog').hidden,ENT['bot-cc'].reading,ENT['bot-d2'].reading,ordersState.open,document.querySelector('#toast').textContent]",
+    "expect": [
+      {
+        "state": "claimed",
+        "claimedBy": "Claude Code"
+      },
+      "claimed",
+      false,
+      true,
+      "claimed · lease g1",
+      "yields",
+      null,
+      "Claude Code · claude-payouts claimed the order. Readback matched 3 of 3."
+    ]
+  },
+  {
+    "eval": "[...document.querySelectorAll('.bl .agent[data-orders-session]')].map(e=>[e.dataset.ordersSession,e.textContent.includes('claimed payout order'),e.textContent.includes('yields payout order')])",
+    "expect": [
+      [
+        "droid-payouts",
+        false,
+        true
+      ],
+      [
+        "claude-payouts",
+        true,
+        false
+      ]
+    ]
+  },
+  {
+    "eval": "(()=>{const d=document.querySelector('#orders-dock'),r=d.getBoundingClientRect(),p=ordersPoint('paypal');return [d.hidden,r.left>=0,r.right<=innerWidth,r.top>=100,r.bottom<=innerHeight-40,p[0]>=100,p[0]<=innerWidth-100,ENT['bot-cc'].x===ENT.paypal.x-10,ENT['bot-cc'].y===ENT.paypal.y+15,d.textContent.includes('CLAIMED · Claude Code'),d.textContent.includes('claude-payouts')]})()",
+    "expect": [
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "eval": "[document.querySelector('.bl .wait b').textContent, ENT.you.reading]",
+    "expect": [
+      "7",
+      "7 waiting"
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "eval": "[...document.querySelectorAll('.chip.orders-bot')].filter(chipShown).map(c => c.getBoundingClientRect()).flatMap((a, j, all) => all.slice(j + 1).filter(b => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top)).length",
+    "expect": 0
+  },
+  {
+    "shot": "orders-10-claim"
+  },
+  {
+    "wait": 3000
+  },
+  {
+    "eval": "document.querySelector('#toast').classList.contains('on')",
+    "expect": false
+  },
+  {
+    "key": "k",
+    "ctrl": true
+  },
+  {
+    "type": "paypal"
+  },
+  {
+    "key": "Enter"
+  },
+  {
+    "key": "p"
+  },
+  {
+    "eval": "[ordersState.open,document.querySelector('#orders-card-status').textContent,document.querySelectorAll('#orders-checks .orders-check').length,document.querySelector('#orders-readbacks').textContent.includes('3 of 3 · matches'),document.querySelector('#orders-readbacks').textContent.includes('2 of 3 · yields'),document.querySelectorAll('#orders-card input,#orders-card textarea').length,document.querySelector('#orders-checks').textContent.includes('answered at sqlite'),document.querySelector('#orders-checks').textContent.includes('replay 15:45')]",
+    "expect": [
+      "order",
+      "CLAIMED · Claude Code · lease g1",
+      3,
+      true,
+      true,
+      0,
+      true,
+      false
+    ]
+  },
+  {
+    "eval": "(()=>{const c=document.querySelector('#orders-card'),r=c.getBoundingClientRect();return [c.scrollHeight<=c.clientHeight+1,[...document.querySelectorAll('.orders-witness')].every(e=>{const q=e.getBoundingClientRect();return getComputedStyle(e).visibility==='hidden'||q.right<=r.left||q.left>=r.right||q.bottom<=r.top||q.top>=r.bottom}),[...document.querySelectorAll('.orders-witness')].every(e=>getComputedStyle(e).visibility!=='hidden'||!document.querySelector('[data-orders-witness-edge='+e.dataset.ordersWitness+']').hidden)]})()",
+    "expect": [
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "eval": "(()=>{const c=document.querySelector('#orders-card').getBoundingClientRect(),p=ordersPoint(selected,ordersState.open==='question');return [c.left>=0,c.top>=100,c.right<=innerWidth,c.bottom<=innerHeight-40,p[0]>=100,p[0]<c.left-100,p[1]>=160,p[1]<=innerHeight-100]})()",
+    "expect": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "eval": "(()=>{const r=document.querySelector('#orders-hint').getBoundingClientRect();return [...document.querySelectorAll('.chip')].filter(e=>getComputedStyle(e).visibility!=='hidden'&&Number(getComputedStyle(e).opacity)>0).every(e=>{const q=e.getBoundingClientRect();return r.right<=q.left||r.left>=q.right||r.bottom<=q.top||r.top>=q.bottom})})()",
+    "expect": true
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-11-inspect"
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "click": "[data-orders-witness=w1]"
+  },
+  {
+    "eval": "[ordersState.open,selected,document.querySelectorAll('#orders-card textarea,#orders-card input').length,document.querySelector('#orders-card').textContent.includes('Locked witness')]",
+    "expect": [
+      "w1",
+      "retry",
+      0,
+      true
+    ]
+  },
+  {
+    "click": "[data-orders-close]"
+  },
+  {
+    "eval": "location.reload();true",
+    "expect": true
+  },
+  {
+    "wait": 1100
+  },
+  {
+    "eval": "window.polishAudit = (panels) => {\n const vis = e => e && !e.hidden && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && +getComputedStyle(e).opacity > 0.05;\n const t = document.querySelector('#toast'), out = [];\n if (t.classList.contains('on') && vis(t)) {\n  const r = t.getBoundingClientRect();\n  if (r.left < 0 || r.top < 0 || r.right > innerWidth || r.bottom > innerHeight) out.push('toast offscreen');\n  for (const sel of ['.fl', '.nav', '.cbar', '.hint', '#insp.open', '.pop.open', '#rpdeck', ...panels])\n   for (const e of document.querySelectorAll(sel)) { if (!vis(e)) continue; const q = e.getBoundingClientRect(); if (q.width && q.height && r.left < q.right && r.right > q.left && r.top < q.bottom && r.bottom > q.top) out.push('toast over ' + sel); }\n }\n return out;\n}; true",
+    "expect": true
+  },
+  {
+    "click": "[data-orders-go=w1]"
+  },
+  {
+    "click": "#orders-pin-not"
+  },
+  {
+    "click": "#orders-keep"
+  },
+  {
+    "eval": "[ordersState.witnesses.map(w=>w.id),ordersState.open]",
+    "expect": [
+      [
+        "w1"
+      ],
+      null
+    ]
+  },
+  {
+    "click": "[data-orders-go=w2]"
+  },
+  {
+    "click": "#orders-pin-keep"
+  },
+  {
+    "click": "#orders-keep"
+  },
+  {
+    "eval": "[ordersState.witnesses.map(w=>w.id),ordersState.open]",
+    "expect": [
+      [
+        "w1",
+        "w2"
+      ],
+      null
+    ]
+  },
+  {
+    "click": "#orders-post"
+  },
+  {
+    "eval": "document.querySelector('#orders-submit').disabled",
+    "expect": true
+  },
+  {
+    "click": "#orders-submit",
+    "after": 50
+  },
+  {
+    "eval": "ordersState.order.state",
+    "expect": "draft"
+  },
+  {
+    "click": "#orders-sentence"
+  },
+  {
+    "type": "Payouts survive a PayPal outage without retry storms, and never charge twice."
+  },
+  {
+    "click": "#orders-submit",
+    "after": 100
+  },
+  {
+    "eval": "[ordersState.order.state,document.body.dataset.mode]",
+    "expect": [
+      "open",
+      "live"
+    ]
+  },
+  {
+    "click": "[data-orders-close]",
+    "after": 50
+  },
+  {
+    "eval": "location.hash='c=clash';true",
+    "expect": true
+  },
+  {
+    "wait": 2800
+  },
+  {
+    "eval": "[ordersState.arrived,!!ENT['bot-cc'],!!ENT['bot-d2'],ordersState.order.state]",
+    "expect": [
+      [],
+      false,
+      false,
+      "open"
+    ]
+  },
+  {
+    "eval": "location.hash='c=orders';true",
+    "expect": true
+  },
+  {
+    "wait": 2800
+  },
+  {
+    "eval": "[ordersState.arrived,ordersState.open]",
+    "expect": [
+      [
+        "claude-payouts",
+        "droid-payouts"
+      ],
+      null
+    ]
+  },
+  {
+    "click": "#orders-question-pin:not([hidden]),#orders-question-edge:not([hidden])"
+  },
+  {
+    "eval": "[ordersState.open,document.querySelector('#orders-card').textContent.includes('PayPal accepted payout p-2307')]",
+    "expect": [
+      "question",
+      true
+    ]
+  },
+  {
+    "click": "[data-orders-answer='2']",
+    "after": 100
+  },
+  {
+    "eval": "[ordersState.question.answered,ordersState.witnesses.find(w=>w.id==='w3').observed.value,ordersState.order.state,ordersState.scoring]",
+    "expect": [
+      "2",
+      "failed",
+      "open",
+      "rescoring"
+    ]
+  },
+  {
+    "wait": 700
+  },
+  {
+    "eval": "[document.querySelector('.orders-mini[data-orders-session=droid-payouts]').dataset.state,document.querySelector('.orders-mini[data-orders-session=claude-payouts]').dataset.state,document.querySelector('.orders-mini[data-orders-session=droid-payouts] small').textContent,document.querySelector('.orders-mini[data-orders-session=claude-payouts] small').textContent]",
+    "expect": [
+      "matches",
+      "yields",
+      "3 of 3 · matches · claiming",
+      "2 of 3 · yields"
+    ]
+  },
+  {
+    "click": "#modes [data-mode=blueprint]",
+    "after": 100
+  },
+  {
+    "wait": 2200
+  },
+  {
+    "eval": "[ordersState.order.state,ordersState.scoring,ENT['bot-d2'].reading,document.body.dataset.mode]",
+    "expect": [
+      "open",
+      "settled",
+      "readback",
+      "blueprint"
+    ]
+  },
+  {
+    "click": "#modes [data-mode=live]",
+    "after": 50
+  },
+  {
+    "click": "#orders-plate",
+    "after": 50
+  },
+  {
+    "click": "[data-orders-close]",
+    "after": 50
+  },
+  {
+    "click": "#orders-plate",
+    "after": 50
+  },
+  {
+    "eval": "[ordersState.order.state,ordersState.open,SCENE.entities.filter(e=>e.id==='bot-d2').length,SCENE.entities.filter(e=>e.id==='bot-cc').length]",
+    "expect": [
+      "open",
+      "order",
+      1,
+      1
+    ]
+  },
+  {
+    "eval": "window.ordersClaimFocus=document.activeElement.outerHTML;true",
+    "expect": true
+  },
+  {
+    "wait": 1800
+  },
+  {
+    "eval": "[ordersState.order,ENT['bot-d2'].reading,ordersState.open,TERR['paypal-payouts'].owner,document.activeElement.outerHTML===ordersClaimFocus]",
+    "expect": [
+      {
+        "state": "claimed",
+        "claimedBy": "Droid"
+      },
+      "claimed · lease g1",
+      "order",
+      "Droid",
+      true
+    ]
+  },
+  {
+    "eval": "[...document.querySelectorAll('.bl .agent[data-orders-session]')].map(e=>[e.dataset.ordersSession,e.textContent.includes('claimed payout order'),e.textContent.includes('yields payout order')])",
+    "expect": [
+      [
+        "droid-payouts",
+        true,
+        false
+      ],
+      [
+        "claude-payouts",
+        false,
+        true
+      ]
+    ]
+  },
+  {
+    "eval": "[document.querySelector('#orders-card-status').textContent,document.querySelector('#orders-readbacks').textContent.includes('2 of 3 · yields'),document.querySelector('#orders-readbacks').textContent.includes('3 of 3 · matches'),document.querySelector('#toast').textContent,document.querySelector('#orders-claim-session').textContent]",
+    "expect": [
+      "CLAIMED · Droid · lease g1",
+      true,
+      true,
+      "Droid · second session · droid-payouts claimed the order. Readback matched 3 of 3.",
+      "droid-payouts · readback matched every check"
+    ]
+  },
+  {
+    "eval": "(()=>{const c=document.querySelector('#orders-card').getBoundingClientRect(),p=ordersPoint(selected,ordersState.open==='question');return [c.left>=0,c.top>=100,c.right<=innerWidth,c.bottom<=innerHeight-40,p[0]>=100,p[0]<c.left-100,p[1]>=160,p[1]<=innerHeight-100]})()",
+    "expect": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  {
+    "eval": "polishAudit(['#orders-card','#orders-dock','#orders-guide','#orders-kv-panel','#orders-prov','.orders-mark','.orders-hint'])",
+    "expect": []
+  },
+  {
+    "shot": "orders-12-mouse-droid"
+  },
+  {
+    "eval": "location.reload();true",
+    "expect": true
+  },
+  {
+    "wait": 1100
+  },
+  {
+    "eval": "window.polishAudit = (panels) => {\n const vis = e => e && !e.hidden && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && +getComputedStyle(e).opacity > 0.05;\n const t = document.querySelector('#toast'), out = [];\n if (t.classList.contains('on') && vis(t)) {\n  const r = t.getBoundingClientRect();\n  if (r.left < 0 || r.top < 0 || r.right > innerWidth || r.bottom > innerHeight) out.push('toast offscreen');\n  for (const sel of ['.fl', '.nav', '.cbar', '.hint', '#insp.open', '.pop.open', '#rpdeck', ...panels])\n   for (const e of document.querySelectorAll(sel)) { if (!vis(e)) continue; const q = e.getBoundingClientRect(); if (q.width && q.height && r.left < q.right && r.right > q.left && r.top < q.bottom && r.bottom > q.top) out.push('toast over ' + sel); }\n }\n return out;\n}; true",
+    "expect": true
+  },
+  {
+    "key": "k",
+    "ctrl": true
+  },
+  {
+    "type": "sqlite"
+  },
+  {
+    "key": "Enter"
+  },
+  {
+    "key": "p"
+  },
+  {
+    "eval": "[selected,ordersState.open,document.querySelector('#orders-post').disabled,document.querySelector('#orders-post-gate').textContent]",
+    "expect": [
+      "sqlite",
+      null,
+      true,
+      "Select a machine in paypal-payouts before Post."
+    ]
+  },
+  {
+    "click": "#orders-post"
+  },
+  {
+    "eval": "[selected,ordersState.open,ordersState.order.state]",
+    "expect": [
+      "sqlite",
+      null,
+      "draft"
+    ]
+  },
+  {
+    "click": ".egress",
+    "after": 300
+  },
+  {
+    "eval": "[document.querySelector('#net').classList.contains('open'), !document.querySelector('#orders-kv-panel').hidden]",
+    "expect": [
+      false,
+      true
+    ]
+  },
+  {
+    "key": "Escape"
+  }
+]

@@ -1,0 +1,1520 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Orrery · v1 asset set</title><style>
+.iso{
+  --anatomy-page:#0b0b0b;--anatomy-card:#131313;--anatomy-text:#a3a3a3;--anatomy-strong:#e6e6e6;--anatomy-muted:#6e6e6e;
+  --anatomy-paper:#131313;--anatomy-face:#1b1b1b;--anatomy-top:#1c1c1c;
+  --anatomy-shade-0:#0f0f0f;--anatomy-shade-1:#121212;--anatomy-shade-2:#151515;--anatomy-shade-3:#181818;
+  --anatomy-lit-top:#262626;--anatomy-lit-shade:#1d1d1d;
+  --anatomy-hi:#d4d4d4;--anatomy-mid:#6a6a6a;--anatomy-lo:#3e3e3e;--anatomy-faint:#2a2a2a;--anatomy-lit:#ffffff;
+  --anatomy-halo:#050505;--anatomy-halo-opacity:.9;--anatomy-dot:#e6e6e6;
+  --anatomy-red:#ff6b6b;--anatomy-green:#6be0a0;--anatomy-blue:#6b9bff;
+  --anatomy-weight:.6px;--anatomy-ease:cubic-bezier(.32,.72,0,1);
+  --anatomy-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --anatomy-lift:inset 0 1px 0 0 #ffffff0a,inset 0 0 0 1px #ffffff06,0 0 0 1px #00000026,0 1px 1px -.5px #00000014,0 3px 3px -1.5px #00000014,0 6px 6px -3px #00000014,0 12px 12px -6px #00000014;
+}
+.iso[data-theme="light"]{
+  --anatomy-page:#f2f2ef;--anatomy-card:#fbfbfa;--anatomy-text:#57575a;--anatomy-strong:#18181a;--anatomy-muted:#8c8c90;
+  --anatomy-paper:#fbfbfa;--anatomy-face:#ffffff;--anatomy-top:#ffffff;
+  --anatomy-shade-0:#dcdcd9;--anatomy-shade-1:#e5e5e2;--anatomy-shade-2:#ededea;--anatomy-shade-3:#f4f4f1;
+  --anatomy-lit-top:#ffffff;--anatomy-lit-shade:#eeeeeb;
+  --anatomy-hi:#26262a;--anatomy-mid:#8a8a8f;--anatomy-lo:#b4b4b8;--anatomy-faint:#d4d4d6;--anatomy-lit:#000000;
+  --anatomy-halo:#8a8a80;--anatomy-halo-opacity:.32;--anatomy-dot:#3a3a3e;
+  --anatomy-red:#e5484d;--anatomy-green:#30a46c;--anatomy-blue:#3e63dd;
+  --anatomy-lift:inset 0 1px 0 0 #ffffff,0 0 0 1px #0000000f,0 1px 1px -.5px #0000000a,0 3px 3px -1.5px #0000000a,0 6px 6px -3px #0000000a,0 12px 12px -6px #0000000a;
+}
+.iso-svg{display:block;width:100%;height:auto;overflow:visible}
+.iso-svg path,.iso-svg circle{vector-effect:non-scaling-stroke}
+.iso-fill{fill:var(--anatomy-paper);stroke:none}
+.iso-solid[data-lit]>.iso-fill{fill:var(--anatomy-face)}
+.iso-shade,.iso-top{stroke:none}
+.iso-shade[data-shade="0"]{fill:var(--anatomy-shade-0)}
+.iso-shade[data-shade="1"]{fill:var(--anatomy-shade-1)}
+.iso-shade[data-shade="2"]{fill:var(--anatomy-shade-2)}
+.iso-shade[data-shade="3"]{fill:var(--anatomy-shade-3)}
+.iso-top{fill:var(--anatomy-top)}
+.iso-solid[data-lit]>.iso-top{fill:var(--anatomy-lit-top)}
+.iso-solid[data-lit]>.iso-shade{fill:var(--anatomy-lit-shade)}
+.iso-solid[data-seamless]>.iso-shade,.iso-solid[data-seamless]>.iso-top{stroke-width:.4;stroke-linejoin:round}
+.iso-solid[data-seamless]>.iso-shade[data-shade="0"]{stroke:var(--anatomy-shade-0)}
+.iso-solid[data-seamless]>.iso-shade[data-shade="1"]{stroke:var(--anatomy-shade-1)}
+.iso-solid[data-seamless]>.iso-shade[data-shade="2"]{stroke:var(--anatomy-shade-2)}
+.iso-solid[data-seamless]>.iso-shade[data-shade="3"]{stroke:var(--anatomy-shade-3)}
+.iso-solid[data-seamless]>.iso-top{stroke:var(--anatomy-top)}
+.iso-solid[data-seamless][data-lit]>.iso-top{stroke:var(--anatomy-lit-top)}
+.iso-solid[data-seamless][data-lit]>.iso-shade{stroke:var(--anatomy-lit-shade)}
+.iso-solid[data-lit]>.iso-edge{stroke:var(--anatomy-lit)}
+.iso-halo{fill:var(--anatomy-halo);stroke:none;filter:blur(9px);opacity:var(--anatomy-halo-opacity);transform:translateY(3px)}
+.iso-line{fill:none;stroke:var(--anatomy-lo);stroke-width:var(--anatomy-weight);stroke-linecap:round;stroke-linejoin:round}
+.iso-line[data-tone="hi"]{stroke:var(--anatomy-hi)}
+.iso-line[data-tone="mid"]{stroke:var(--anatomy-mid)}
+.iso-line[data-tone="lo"]{stroke:var(--anatomy-lo)}
+.iso-line[data-tone="faint"]{stroke:var(--anatomy-faint)}
+.iso-line[data-tone="lit"]{stroke:var(--anatomy-lit)}
+.iso-line[data-tone="red"]{stroke:var(--anatomy-red)}
+.iso-line[data-tone="green"]{stroke:var(--anatomy-green)}
+.iso-line[data-tone="blue"]{stroke:var(--anatomy-blue)}
+.iso-line[data-dotted]{stroke-dasharray:.01 3.5;stroke-width:1}
+.iso-line[data-dashed]{stroke-dasharray:3 3}
+.iso-line[data-flow]{stroke-dasharray:2 6}
+.iso-wire-end{fill:var(--anatomy-paper);stroke:var(--anatomy-lo);stroke-width:var(--anatomy-weight)}
+.iso-wire[data-tone="hi"] .iso-wire-end{stroke:var(--anatomy-hi)}
+.iso-wire[data-tone="mid"] .iso-wire-end{stroke:var(--anatomy-mid)}
+.iso-wire[data-tone="faint"] .iso-wire-end{stroke:var(--anatomy-faint)}
+.iso-wire[data-tone="lit"] .iso-wire-end{stroke:var(--anatomy-lit)}
+.iso-dots circle{fill:var(--anatomy-dot);stroke:none;opacity:.32}
+.iso-dots[data-tone="hi"] circle{opacity:.85}
+.iso-dots[data-tone="mid"] circle{opacity:.45}
+.iso-dots[data-tone="lo"] circle{opacity:.22}
+.iso-dots[data-tone="faint"] circle{opacity:.12}
+.iso-face-text{fill:var(--anatomy-mid);font-family:var(--anatomy-mono);letter-spacing:.04em}
+.iso-face-text[data-tone="hi"]{fill:var(--anatomy-hi)}
+.iso-face-text[data-tone="lo"]{fill:var(--anatomy-lo)}
+.iso-face-text[data-tone="faint"]{fill:var(--anatomy-faint)}
+.tb-body{fill:var(--anatomy-shade-2);stroke:none}
+.tb-shine{fill:var(--anatomy-top);stroke:none}
+.tb-shade{fill:var(--anatomy-shade-0);stroke:none}
+.tb-ring{fill:none;stroke:var(--anatomy-lo);stroke-width:.45;stroke-linecap:butt;stroke-linejoin:round}
+.tb-ring[data-tone="mid"]{stroke:var(--anatomy-mid)}
+.tb-ring[data-tone="faint"]{stroke:var(--anatomy-faint)}
+.tb-ring[data-tone="hi"]{stroke:var(--anatomy-hi)}
+@keyframes iso-flow{to{stroke-dashoffset:-32}}
+@keyframes iso-pulse{0%,100%{opacity:.18}12%{opacity:1}40%{opacity:.18}}
+.iso-line[data-flow]{animation:iso-flow 1600ms linear infinite}
+.iso-dots circle[data-pulse]{animation:iso-pulse 1600ms steps(1,end) infinite;animation-delay:var(--pulse-at,0ms)}
+.iso-figure{margin:32px 0 36px}
+.iso-plate{position:relative;padding:52px 24px;border-radius:0;background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-mid);--anatomy-paper:var(--anatomy-card)}
+.iso-plate-corners{position:absolute;inset:18px 20px;pointer-events:none}
+.iso-plate-corner{position:absolute;color:var(--anatomy-muted);font-family:var(--anatomy-mono);font-size:10.5px;line-height:1;letter-spacing:.04em;white-space:nowrap}
+.iso-plate-corner[data-corner="fig"]{top:0;left:0;color:var(--anatomy-text)}
+.iso-plate-corner[data-corner="title"]{top:0;right:0;text-transform:uppercase;letter-spacing:.1em}
+.iso-plate-corner[data-corner="hint"]{bottom:0;left:0;text-transform:uppercase;letter-spacing:.1em}
+.iso-plate-corner[data-corner="readout"]{right:0;bottom:0;color:var(--anatomy-text);font-variant-numeric:tabular-nums}
+.iso-plate .iso-svg{margin:0 auto}
+.iso-legend{display:grid;gap:8px;margin-top:12px;color:var(--anatomy-muted);font-size:13px;line-height:1.55}
+.iso-keys{display:flex;flex-wrap:wrap;gap:6px 18px}
+.iso-key{display:inline-flex;align-items:center;gap:7px}
+.iso-swatch{width:16px;height:10px;flex:none;overflow:visible}
+.iso-swatch path{fill:none;stroke:var(--anatomy-hi);stroke-width:1;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round}
+.iso-swatch[data-mark="raised"] path,.iso-swatch[data-mark="flat"] path{stroke:var(--anatomy-mid)}
+.iso-swatch[data-mark="lit"] path{stroke:var(--anatomy-lit)}
+.iso-swatch[data-mark="dim"] path{stroke:var(--anatomy-lo)}
+.iso-swatch[data-mark="dotted"] path{stroke-dasharray:.01 3;stroke-width:1.4}
+.iso-swatch[data-mark="dashed"] path{stroke-dasharray:3 2.5}
+.iso-swatch[data-mark="red"] path{stroke:var(--anatomy-red)}
+.iso-swatch[data-mark="green"] path{stroke:var(--anatomy-green)}
+.iso-swatch[data-mark="blue"] path{stroke:var(--anatomy-blue)}
+.iso-swatch-crease{stroke:var(--anatomy-lo)!important}
+@media (max-width:560px){.iso-plate{padding:48px 12px 70px}.iso-plate-corner[data-corner="hint"]{bottom:18px}}
+@media (prefers-reduced-motion:reduce){.iso-line[data-flow],.iso-dots circle[data-pulse]{animation:none}}
+
+:root{--ok:#35b7a2;--strain:#e1a43c;--fail:#e8604a;--ghost:#7ab8e6;--idle:#4a4a4a}
+.iso{--anatomy-red:#e8604a;--anatomy-mid:#7a7a7a;--anatomy-lo:#474747;--anatomy-weight:.75px}
+.iso-svg{overflow:visible}
+.lamp .iso-top{fill:#3a3a3a}.lamp .iso-shade{fill:#262626}
+.ent[data-state=ok] .lamp:not([data-lamp]) .iso-top,.lamp[data-lamp=ok] .iso-top{fill:var(--ok)}
+.ent[data-state=ok] .lamp:not([data-lamp]) .iso-shade,.lamp[data-lamp=ok] .iso-shade{fill:#1f6e62}
+.ent[data-state=strain] .lamp:not([data-lamp]) .iso-top,.lamp[data-lamp=strain] .iso-top{fill:var(--strain)}
+.ent[data-state=strain] .lamp:not([data-lamp]) .iso-shade,.lamp[data-lamp=strain] .iso-shade{fill:#8a6322}
+.ent[data-state=strain] .lamp:not([data-lamp]){animation:lampPulse 1.6s ease-in-out infinite}
+.ent[data-state=wait] .lamp:not([data-lamp]) .iso-top{fill:var(--strain)}
+.ent[data-state=wait] .lamp:not([data-lamp]) .iso-shade{fill:#8a6322}
+.ent[data-state=wait] .lamp:not([data-lamp]){animation:lampPulse 2.4s ease-in-out infinite}
+.ent[data-state=fail] .lamp:not([data-lamp]) .iso-top{fill:var(--fail)}
+.ent[data-state=fail] .lamp:not([data-lamp]) .iso-shade{fill:#8b3427}
+.ent[data-state=fail] .lamp:not([data-lamp]){animation:lampPulse .9s steps(2) infinite}
+.ent[data-state=idle] .lamp .iso-top,.ent[data-state=dark] .lamp .iso-top,.ent[data-state=fog] .lamp .iso-top{fill:#3a3a3a}
+.ent[data-state=idle] .lamp .iso-shade,.ent[data-state=dark] .lamp .iso-shade{fill:#262626}
+.ent[data-state=idle] .needle,.ent[data-state=dark] .needle{opacity:.35}
+@keyframes lampPulse{50%{opacity:.4}}
+.lamp[data-lamp=run] .iso-top{fill:#cfe6fb}.lamp[data-lamp=run] .iso-shade{fill:#56718a}.lamp[data-lamp=run]{animation:lampPulse 1.1s ease-in-out infinite}
+.crane-load[data-run=running]{animation:craneSway 2.8s ease-in-out infinite;transform-box:fill-box;transform-origin:50% 0}
+@keyframes craneSway{50%{transform:translateY(-3px)}}
+.ent[data-state=dark]{opacity:.32}
+.ent[data-state=dark] [data-lit]{--anatomy-lit:#777}
+.ent[data-state=fog]{filter:url(#fog);opacity:.7}
+.ent[data-state=ghost] .iso-fill{fill:rgba(122,184,230,.035)}
+.ent[data-state=ghost] .iso-shade,.ent[data-state=ghost] .iso-top,.ent[data-state=ghost] .iso-halo{fill:none;opacity:0}
+.ent[data-state=ghost] .iso-line{stroke:var(--ghost);stroke-dasharray:2.6 2.2;opacity:.85}
+.ent[data-state=ghost] .iso-dots circle{fill:var(--ghost)}
+.ent[data-state=ghost] .iso-face-text{fill:var(--ghost)}
+.ent[data-state=ghost] .lamp{display:none}
+.iso-line.scaffold{stroke:var(--anatomy-mid);stroke-dasharray:.01 3;stroke-width:1.1;stroke-linecap:round}
+.smoke{display:none}
+.ent[data-state=fail] .smoke{display:inline}
+.smoke circle{fill:#8d8d8d;opacity:0;transform-box:fill-box;transform-origin:center;animation:smoke 3.2s ease-out infinite;animation-delay:calc(var(--i)*.8s)}
+@keyframes smoke{0%{opacity:0;transform:translate(0,0)}15%{opacity:.35}100%{opacity:0;transform:translate(9px,-34px) scale(1.8)}}
+.ent:not([data-state=fail]):not([data-state=strain]) .fit-flow{stroke:var(--anatomy-mid);animation:none}
+.beam{stroke-dasharray:1.5 2;opacity:.8}
+.drone{animation:bob 3.6s ease-in-out infinite}
+@keyframes bob{50%{transform:translateY(-2.2px)}}
+.drone-shadow .iso-halo{opacity:.55;filter:blur(2px);animation:shadow 3.6s ease-in-out infinite;transform-box:fill-box;transform-origin:center}
+@keyframes shadow{50%{transform:scale(.9);opacity:.4}}
+.drone-shell{fill:url(#droneShade)}
+.drone-hull{fill:url(#droneHull)}
+.drone-duct{fill:#070707}
+.drone-hub{fill:#3a3a3a}
+.drone-bezel{fill:#262626}
+.drone-glass{fill:url(#droneGlass)}
+.drone-eye circle{fill:#fff;filter:drop-shadow(0 0 2px rgba(255,255,255,.9))}
+.drone-lamp circle{fill:var(--ok)}
+.ent[data-state=idle] .drone-lamp circle{fill:#555}.ent[data-state=idle] .drone-eye circle{fill:#777;filter:none}.ent[data-state=idle] .beam{display:none}
+.ent[data-state=wait] .drone-lamp circle{fill:var(--strain)}
+.fogcore{filter:url(#fog);opacity:.8}
+.fogcore .iso-line{stroke-dasharray:1.4 1.6}
+@media (prefers-reduced-motion:reduce){.iso-line[data-flow],.smoke circle,.lamp,.crane-load{animation:none!important}}
+
+*{box-sizing:border-box}
+html,body{margin:0;background:#0a0a0a;color:#d6d6d6;font:13px/1.45 "Inter",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+header{position:sticky;top:12px;z-index:5;display:flex;align-items:center;gap:18px;margin:12px auto 0;max-width:1480px;padding:10px 18px;border-radius:14px;background:rgba(18,18,18,.72);backdrop-filter:blur(14px);border:1px solid rgba(255,255,255,.08);box-shadow:0 12px 40px rgba(0,0,0,.45)}
+header h1{margin:0;font-size:14px;font-weight:600;color:#eee}
+header .meta{font:11px ui-monospace,monospace;color:#7c7c7c}
+.ctl{margin-left:auto;display:flex;align-items:center;gap:14px;font:11px ui-monospace,monospace;color:#9a9a9a}
+.ctl.inline{margin:0 0 14px}
+.ctl input[type=range]{width:140px;accent-color:#d6d6d6}
+.seg{display:flex;border:1px solid rgba(255,255,255,.1);border-radius:8px;overflow:hidden;width:max-content}
+.seg button,.play{font:11px ui-monospace,monospace;color:#8a8a8a;background:none;border:0;padding:5px 9px;cursor:pointer}
+.play{border:1px solid rgba(255,255,255,.12);border-radius:7px}
+.seg button[aria-pressed=true]{background:#262626;color:#fff}
+.toggles{margin:0 0 12px}
+main{padding:8px 28px 60px;max-width:1500px;margin:0 auto}
+h2{font:500 11px ui-monospace,monospace;letter-spacing:.14em;text-transform:uppercase;color:#9a9a9a;margin:38px 0 12px}
+h2 small{color:#555;margin-left:8px;letter-spacing:.06em}
+.lede{margin:-4px 0 14px;color:#7c7c7c;max-width:78ch}
+.legend{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:0 0 12px}
+.legend div{padding:10px 12px;border:1px solid rgba(255,255,255,.06);border-radius:10px;display:flex;flex-direction:column;gap:4px}
+.legend b{font-size:12px;color:#e6e6e6}.legend span{font-size:12px;color:#7c7c7c}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.grid.twins{grid-template-columns:1fr}
+.cell{position:relative;margin:0;border-radius:12px;background:radial-gradient(120% 90% at 50% 40%,#161616,#0e0e0e);border:1px solid rgba(255,255,255,.06);overflow:hidden;cursor:grab;transition:border-color .2s}
+.cell:hover{border-color:rgba(255,255,255,.16)}
+.cell .pane{height:190px;background:transparent}
+.cell.wide .pane{height:320px}
+.cell .pane svg{width:100%;height:100%;display:block}
+.over{position:absolute;left:0;top:0;right:0;height:190px;pointer-events:none}
+.cell.wide .over{height:320px}
+.cell figcaption{display:flex;flex-direction:column;gap:2px;padding:0 14px 12px}
+.cell figcaption b{font-size:12px;font-weight:600;color:#e8e8e8;letter-spacing:.02em}
+.cell figcaption span{font:10.5px ui-monospace,monospace;color:#7c7c7c}
+.cell figcaption i{font-style:normal;color:#565656}
+.states .cell .pane{height:170px}
+.xl{position:absolute;transform:translate(0,-50%);font:10px ui-monospace,monospace;color:#d4d4d4;white-space:nowrap}
+.leaders{position:absolute;left:0;top:0;overflow:visible}
+.leaders path{fill:none;stroke:rgba(255,255,255,.32);stroke-width:1}
+.leaders circle{fill:#e6e6e6}
+.grid.ex{grid-template-columns:repeat(auto-fill,minmax(440px,1fr))}
+.grid.ex .cell .pane,.grid.ex .over{height:260px}
+.tile{position:absolute;transform:translate(-50%,calc(-100% - 14px));display:flex;align-items:center;gap:6px;padding:3px 7px 3px 3px;border-radius:7px;background:rgba(14,14,14,.75);border:1px solid rgba(255,255,255,.14);backdrop-filter:blur(6px);font:600 10px Inter,system-ui;letter-spacing:.08em;text-transform:uppercase;color:#ddd;white-space:nowrap}
+.tile b{display:grid;place-items:center;min-width:20px;height:20px;padding:0 3px;border-radius:5px;background:#e8e8e8;color:#0a0a0a;font:700 10px ui-monospace,monospace;letter-spacing:0}
+.tile small{font:10px ui-monospace,monospace;color:#8a8a8a;letter-spacing:0;text-transform:none}
+.tile[data-state=fail]{border-color:rgba(232,96,74,.55)}
+table{border-collapse:collapse;width:100%;max-width:980px;font-size:12px}
+table.whole{margin-top:12px}
+td{padding:7px 10px;border-top:1px solid rgba(255,255,255,.06);color:#8a8a8a}
+td:first-child{color:#d6d6d6;width:180px}td:nth-child(2){font:11px ui-monospace,monospace}
+</style></head><body><svg width="0" height="0" style="position:absolute"><defs><radialGradient id="droneShade" cx=".36" cy=".3" r=".8"><stop offset="0" stop-color="#6a6a6a"/><stop offset=".45" stop-color="#363636"/><stop offset="1" stop-color="#151515"/></radialGradient><linearGradient id="droneHull" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4a4a4a"/><stop offset="1" stop-color="#1a1a1a"/></linearGradient><radialGradient id="droneGlass" cx=".35" cy=".3" r=".9"><stop offset="0" stop-color="#3c3c3c"/><stop offset=".5" stop-color="#121212"/><stop offset="1" stop-color="#050505"/></radialGradient></defs><filter id="fog" x="-20%" y="-20%" width="140%" height="140%"><feTurbulence type="fractalNoise" baseFrequency=".9" numOctaves="2" seed="4"/><feDisplacementMap in="SourceGraphic" scale="3"/><feGaussianBlur stdDeviation=".7"/></filter></svg>
+<header><h1>Orrery · v1 asset set</h1><span class="meta">20 assets · anatomy kit · drag any cell to orbit all</span>
+<div class="ctl"><label>azimuth <input id="az" type="range" min="0" max="359" value="35"> <span id="azv"></span></label><label>tilt <input id="el" type="range" min="8" max="89" value="30"> <span id="elv"></span></label>
+<div class="seg" id="state"><button data-s="ok" aria-pressed="true">working</button><button data-s="idle" aria-pressed="false">idle</button><button data-s="strain" aria-pressed="false">strained</button><button data-s="fail" aria-pressed="false">failing</button><button data-s="ghost" aria-pressed="false">ghost</button><button data-s="dark" aria-pressed="false">dark</button><button data-s="fog" aria-pressed="false">fogged</button></div></div></header>
+<main><section><h2>Machines <small>13</small></h2><div class="grid"><figure class="cell" data-cell="intake" data-scene='[{"id":"intake","kind":"intake","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Intake</b><span>clients: web, CLI, MCP, webhooks</span><span><i>Acquit, Astronomy Shop</i></span></figcaption></figure><figure class="cell" data-cell="splitter" data-scene='[{"id":"splitter","kind":"splitter","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Splitter</b><span>load balancer, gateway, reverse proxy</span><span><i>Astronomy Shop (frontend-proxy)</i></span></figcaption></figure><figure class="cell" data-cell="gate" data-scene='[{"id":"gate","kind":"gate","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Gate</b><span>auth: basic auth, sessions, OAuth</span><span><i>Acquit</i></span></figcaption></figure><figure class="cell" data-cell="assembler" data-scene='[{"id":"assembler","kind":"assembler","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Assembler</b><span>service: an HTTP API, a worker, a process</span><span><i>all three</i></span></figcaption></figure><figure class="cell" data-cell="bank" data-scene='[{"id":"bank","kind":"bank","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Assembler bank</b><span>worker pool, job runners</span><span><i>Acquit (verifier)</i></span></figcaption></figure><figure class="cell" data-cell="hopper" data-scene='[{"id":"hopper","kind":"hopper","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Hopper + conveyor</b><span>queue: Kafka, SQS, a jobs table, a channel</span><span><i>Astronomy Shop (Kafka), Orrery (channels)</i></span></figcaption></figure><figure class="cell" data-cell="tank" data-scene='[{"id":"tank","kind":"tank","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Tank</b><span>relational database: SQLite, Postgres, MySQL</span><span><i>all three</i></span></figcaption></figure><figure class="cell" data-cell="buffer" data-scene='[{"id":"buffer","kind":"buffer","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Buffer rack</b><span>cache: Redis, Valkey, memcached, an LRU</span><span><i>Astronomy Shop (valkey cart)</i></span></figcaption></figure><figure class="cell" data-cell="kiln" data-scene='[{"id":"kiln","kind":"kiln","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Kiln</b><span>LLM call: a model provider, an agent exec</span><span><i>Acquit (droid exec in docker)</i></span></figcaption></figure><figure class="cell" data-cell="dock" data-scene='[{"id":"dock","kind":"dock","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Dock</b><span>external API: PayPal, GitHub, Stripe, a model host</span><span><i>Acquit</i></span></figcaption></figure><figure class="cell" data-cell="clock" data-scene='[{"id":"clock","kind":"clock","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Cam clock</b><span>scheduler: cron, setInterval, a tick loop</span><span><i>Acquit (30 s tick + house loop)</i></span></figcaption></figure><figure class="cell" data-cell="radar" data-scene='[{"id":"radar","kind":"radar","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Radar</b><span>telemetry exporter: an OTel SDK, a log shipper</span><span><i>Acquit (D13)</i></span></figcaption></figure><figure class="cell" data-cell="crate" data-scene='[{"id":"crate","kind":"crate","x":0,"y":0,"variant":"?"}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Crate</b><span>anything not yet placed or recognized</span><span><i>all (unplaced tray)</i></span></figcaption></figure></div></section><section><h2>Fittings on belts <small>3</small></h2><div class="grid"><figure class="cell" data-cell="retry" data-scene='[{"id":"retry","kind":"retry","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Return loop</b><span>retries, backoff</span><span><i>Acquit (paypal x3)</i></span></figcaption></figure><figure class="cell" data-cell="valve" data-scene='[{"id":"valve","kind":"valve","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Valve</b><span>rate limiter, concurrency cap</span><span><i>Acquit (verifier concurrency 1)</i></span></figcaption></figure><figure class="cell" data-cell="breaker" data-scene='[{"id":"breaker","kind":"breaker","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Breaker</b><span>circuit breaker</span><span><i>Astronomy Shop (failure flags)</i></span></figcaption></figure></div></section><section><h2>Floor <small>4</small></h2><div class="grid"><figure class="cell" data-cell="bot" data-scene='[{"id":"bot","kind":"bot","x":0,"y":0,"params":{"target":[30,6,6]}}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Construction bot</b><span>an agent session at work</span><span><i>all (Droid, Claude Code, Codex)</i></span></figcaption></figure><figure class="cell" data-cell="scaffold" data-scene='[{"id":"scaffold","kind":"scaffold","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Scaffolding</b><span>an open PR or branch building a ghost</span><span><i>all</i></span></figcaption></figure><figure class="cell" data-cell="crane" data-scene='[{"id":"crane","kind":"crane","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Crane</b><span>CI: a pipeline run lifting a branch through its checks</span><span><i>all (GitHub Actions, local harness)</i></span></figcaption></figure><figure class="cell" data-cell="inspection" data-scene='[{"id":"inspection","kind":"inspection","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Inspection station</b><span>you: a human reviewer</span><span><i>all</i></span></figcaption></figure></div></section><section><h2>Telling twins apart <small>same drawing, different part</small></h2>
+<p class="lede">Three layers, each owning a zoom range. Toggle them to compare. The shape always says the kind.</p>
+<div class="seg toggles" id="twinCtl"><button data-t="form" aria-pressed="true">Telemetry form</button><button data-t="tile" aria-pressed="true">Recipe tile · Alt</button><button data-t="badge" aria-pressed="true">Engraved badge · close up</button></div>
+<div class="legend"><div><b>Telemetry form</b><span>always on. Size follows load or data size. Counts follow config: cells are worker slots, side tanks are files, items on a belt are queue depth. Two services on the same runtime still look different because they carry different load.</span></div><div><b>Recipe tile</b><span>hold Alt, like Factorio's alt-mode. A monogram tile and the name float over every machine and stay upright at any orbit. It answers "which one is Postgres" from far away.</span></div><div><b>Engraved badge</b><span>the variant engraved on the floor in front of the machine. It is readable at close zoom and turns to face the camera.</span></div></div>
+<div class="grid twins"><figure class="cell wide" data-cell="twins-assembler" data-fixed data-twins data-scene='[{"id":"assembler-0","kind":"assembler","x":0,"y":150,"state":"ok","name":"acquit-api","variant":"NODE","mono":"JS","size":1,"params":{"needle":0.38},"reading":"15 rps · p99 184 ms"},{"id":"assembler-1","kind":"assembler","x":0,"y":0,"state":"ok","name":"web","variant":"NODE","mono":"JS","size":0.78,"params":{"needle":0.12},"reading":"2 rps · p99 40 ms"},{"id":"assembler-2","kind":"assembler","x":0,"y":-150,"state":"ok","name":"checkout","variant":"GO","mono":"GO","size":1.22,"params":{"needle":0.74},"reading":"80 rps · p99 410 ms"}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Assembler ×3</b><span>acquit-api · web · checkout</span></figcaption></figure><figure class="cell wide" data-cell="twins-tank" data-fixed data-twins data-scene='[{"id":"tank-0","kind":"tank","x":0,"y":150,"state":"ok","name":"acquit.db","variant":"SQLITE","mono":"SQ","size":0.86,"params":{"extra":2},"reading":"48 MB · 3 files"},{"id":"tank-1","kind":"tank","x":0,"y":0,"state":"ok","name":"orders","variant":"POSTGRES","mono":"PG","size":1.2,"params":{"extra":0},"reading":"31 GB · 1 file"},{"id":"tank-2","kind":"tank","x":0,"y":-150,"state":"ok","name":"accounts","variant":"POSTGRES","mono":"PG","size":1,"params":{"extra":1},"reading":"4 GB · 2 files"}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Tank ×3</b><span>acquit.db · orders · accounts</span></figcaption></figure><figure class="cell wide" data-cell="twins-dock" data-fixed data-twins data-scene='[{"id":"dock-0","kind":"dock","x":0,"y":150,"state":"fail","name":"paypal","variant":"PAYPAL","mono":"PP","size":1,"reading":"4.1% errors"},{"id":"dock-1","kind":"dock","x":0,"y":0,"state":"ok","name":"github app","variant":"GITHUB","mono":"GH","size":0.85,"reading":"0.3 rps"},{"id":"dock-2","kind":"dock","x":0,"y":-150,"state":"idle","name":"stripe","variant":"STRIPE","mono":"ST","size":1.1,"reading":"idle"}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Dock ×3</b><span>paypal · github app · stripe</span></figcaption></figure></div></section><section><h2>Exploded views <small>6 assets</small></h2>
+<p class="lede">An asset explodes when Orrery can read its insides from code or config. Each layer gets a leader label taken from that source. Press X on a selected machine in the Live window.</p>
+<div class="ctl inline"><label>explode <input id="ex" type="range" min="0" max="100" value="100"> <span id="exv"></span></label><button class="play" id="exPlay">Play</button></div>
+<div class="grid ex"><figure class="cell" data-cell="ex-gate" data-fixed data-explode data-scene='[{"id":"gate","kind":"gate","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Gate</b><span>one layer per auth check, plus exempt routes</span></figcaption></figure><figure class="cell" data-cell="ex-assembler" data-fixed data-explode data-scene='[{"id":"assembler","kind":"assembler","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Assembler</b><span>adapters, core, routes (from the code graph)</span></figcaption></figure><figure class="cell" data-cell="ex-bank" data-fixed data-explode data-scene='[{"id":"bank","kind":"bank","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Assembler bank</b><span>one cell per worker slot, plus the waiting tray</span></figcaption></figure><figure class="cell" data-cell="ex-hopper" data-fixed data-explode data-scene='[{"id":"hopper","kind":"hopper","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Hopper + conveyor</b><span>topic rim, one ring per partition, the consumer belt</span></figcaption></figure><figure class="cell" data-cell="ex-tank" data-fixed data-explode data-scene='[{"id":"tank","kind":"tank","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Tank</b><span>tables, indexes, schema lid, side files</span></figcaption></figure><figure class="cell" data-cell="ex-kiln" data-fixed data-explode data-scene='[{"id":"kiln","kind":"kiln","x":0,"y":0}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>Kiln</b><span>sealed housing lifts off a fogged core (timed from the host only)</span></figcaption></figure></div>
+<table class="whole"><tr><td>Dock</td><td>stays whole: external. Orrery sees only the calls that cross the wall</td></tr><tr><td>Intake, Splitter</td><td>stays whole: already flat. Their routes are visible from outside</td></tr><tr><td>Buffer rack</td><td>stays whole: shelves are visible without lifting anything (v0.2 candidate: keyspaces)</td></tr><tr><td>Cam clock, Radar, Crate</td><td>stays whole: single-purpose parts with nothing to open</td></tr><tr><td>Fittings, Floor</td><td>stays whole: too small. Their story is on the belt or in the agent panel</td></tr></table></section><section><h2>Universal states <small>7, from map.md</small></h2><p class="lede">Every asset takes every state. Color appears only when it is the subject.</p><div class="grid states"><figure class="cell" data-cell="state-ok" data-fixed data-scene='[{"id":"assembler","kind":"assembler","x":0,"y":0,"state":"ok"}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>working</b></figcaption></figure><figure class="cell" data-cell="state-idle" data-fixed data-scene='[{"id":"assembler","kind":"assembler","x":0,"y":0,"state":"idle"}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>idle</b></figcaption></figure><figure class="cell" data-cell="state-strain" data-fixed data-scene='[{"id":"assembler","kind":"assembler","x":0,"y":0,"state":"strain"}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>strained</b></figcaption></figure><figure class="cell" data-cell="state-fail" data-fixed data-scene='[{"id":"assembler","kind":"assembler","x":0,"y":0,"state":"fail"}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>failing</b></figcaption></figure><figure class="cell" data-cell="state-ghost" data-fixed data-scene='[{"id":"assembler","kind":"assembler","x":0,"y":0,"state":"ghost"}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>ghost</b></figcaption></figure><figure class="cell" data-cell="state-dark" data-fixed data-scene='[{"id":"assembler","kind":"assembler","x":0,"y":0,"state":"dark"}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>dark</b></figcaption></figure><figure class="cell" data-cell="state-fog" data-fixed data-scene='[{"id":"assembler","kind":"assembler","x":0,"y":0,"state":"fog"}]'><div class="iso pane"></div><div class="over"></div><figcaption><b>fogged</b></figcaption></figure></div></section><section><h2>Deferred from the K7 catalog <small>7</small></h2><table><tr><td>Fold-out cell</td><td>serverless function</td><td>no v1 fixture runs serverless</td></tr><tr><td>Pneumatic exchange</td><td>pub/sub</td><td>Astronomy Shop uses Kafka as a queue, so Hopper covers it</td></tr><tr><td>Silo</td><td>object storage</td><td>no fixture stores objects</td></tr><tr><td>Card catalog</td><td>search / vector index</td><td>no fixture has an index</td></tr><tr><td>Fuse</td><td>timeout fitting</td><td>drawn as a budget dimension on the belt for now</td></tr><tr><td>Strainer</td><td>validation fitting</td><td>no fixture exposes validation as a step</td></tr><tr><td>Meter</td><td>budget probe fitting</td><td>budgets live in the inspector in v1</td></tr></table></section></main><script>const k = (() => {
+const AZIMUTH = 45;
+const ELEVATION = 30;
+const SHADES = 4;
+const RADIANS = Math.PI / 180;
+const UNIT = Math.sqrt(1.6);
+function cameraOf({ scale, azimuth = AZIMUTH, elevation = ELEVATION }) {
+    const a = azimuth * RADIANS;
+    const e = elevation * RADIANS;
+    return { sinA: Math.sin(a), cosA: Math.cos(a), sinE: Math.sin(e), cosE: Math.cos(e), k: scale * UNIT };
+}
+function iso([x, y, z], projection) {
+    const { origin } = projection;
+    const { sinA, cosA, sinE, cosE, k } = cameraOf(projection);
+    return [origin[0] + (x * sinA - y * cosA) * k, origin[1] + ((x * cosA + y * sinA) * sinE - z * cosE) * k];
+}
+function towardViewer(projection) {
+    const { sinA, cosA } = cameraOf(projection);
+    return [cosA, sinA];
+}
+function depthOf([x, y, z], projection) {
+    const { sinA, cosA, sinE, cosE } = cameraOf(projection);
+    return (x * cosA + y * sinA) * cosE + z * sinE;
+}
+const tenth = (value) => {
+    const text = (Math.round(value * 10) / 10).toFixed(1).replace(/\.0$/, "");
+    return text === "-0" ? "0" : text;
+};
+function pathOf(points, closed = false) {
+    if (!points.length)
+        return "";
+    return points.map(([x, y], at) => `${at ? "L" : "M"}${tenth(x)} ${tenth(y)}`).join("") + (closed ? "Z" : "");
+}
+const joinPaths = (paths) => paths.filter(Boolean).join("");
+function roundedPlan({ x, y, w, d, r }, steps = 8) {
+    const radius = Math.max(0, Math.min(r, w / 2, d / 2));
+    const corners = [
+        [x + w - radius, y + radius, -90],
+        [x + w - radius, y + d - radius, 0],
+        [x + radius, y + d - radius, 90],
+        [x + radius, y + radius, 180],
+    ];
+    const out = [];
+    for (const [cx, cy, start] of corners) {
+        const count = radius > 0 ? steps : 0;
+        for (let step = 0; step <= count; step++) {
+            const angle = (start + (count ? (90 * step) / count : 45)) * RADIANS;
+            out.push([cx + radius * Math.cos(angle), cy + radius * Math.sin(angle)]);
+        }
+    }
+    return out;
+}
+function signedArea(points) {
+    let area = 0;
+    for (let index = 0; index < points.length; index++) {
+        const [ax, ay] = points[index];
+        const [bx, by] = points[(index + 1) % points.length];
+        area += ax * by - bx * ay;
+    }
+    return area / 2;
+}
+const oriented = (points) => (signedArea(points) < 0 ? [...points].reverse() : points);
+function convexHull(points) {
+    const sorted = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+    if (sorted.length < 3)
+        return sorted;
+    const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const lower = [];
+    for (const point of sorted) {
+        while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], point) <= 0)
+            lower.pop();
+        lower.push(point);
+    }
+    const upper = [];
+    for (let index = sorted.length - 1; index >= 0; index--) {
+        const point = sorted[index];
+        while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], point) <= 0)
+            upper.pop();
+        upper.push(point);
+    }
+    return [...lower.slice(0, -1), ...upper.slice(0, -1)];
+}
+function runsOf(flags, want) {
+    const count = flags.length;
+    const runs = [];
+    const start = flags.findIndex((flag, index) => flag !== flags[(index + count - 1) % count]);
+    if (start < 0)
+        return flags[0] === want ? [Array.from({ length: count + 1 }, (_, index) => index % count)] : [];
+    let run = null;
+    for (let step = 0; step < count; step++) {
+        const index = (start + step) % count;
+        if (flags[index] === want) {
+            if (!run)
+                run = [index];
+            run.push((index + 1) % count);
+        }
+        else if (run) {
+            runs.push(run);
+            run = null;
+        }
+    }
+    if (run)
+        runs.push(run);
+    return runs;
+}
+function extrude(ring, z, height, projection, options = {}) {
+    const convex = options.convex ?? true;
+    const count = ring.length;
+    const counter = signedArea(ring) > 0;
+    const [vx, vy] = towardViewer(projection);
+    const { sinA, cosA } = cameraOf(projection);
+    const normals = ring.map(([ax, ay], index) => {
+        const [bx, by] = ring[(index + 1) % count];
+        const dx = bx - ax;
+        const dy = by - ay;
+        const length = Math.hypot(dx, dy) || 1;
+        return (counter ? [dy / length, -dx / length] : [-dy / length, dx / length]);
+    });
+    const facing = normals.map(([nx, ny]) => nx * vx + ny * vy > 1e-9);
+    const top = ring.map(([x, y]) => iso([x, y, z + height], projection));
+    const bottom = ring.map(([x, y]) => iso([x, y, z], projection));
+    const outline = [];
+    const crease = [];
+    for (const run of runsOf(facing, false))
+        outline.push(pathOf(run.map((index) => top[index])));
+    for (const run of runsOf(facing, true)) {
+        crease.push(pathOf(run.map((index) => top[index])));
+        if (height > 0)
+            outline.push(pathOf(run.map((index) => bottom[index])));
+    }
+    if (height > 0) {
+        for (let index = 0; index < count; index++) {
+            if (facing[(index + count - 1) % count] !== facing[index])
+                outline.push(pathOf([top[index], bottom[index]]));
+        }
+    }
+    let fill;
+    if (convex) {
+        fill = pathOf(convexHull([...top, ...bottom]), true);
+    }
+    else {
+        const parts = [pathOf(oriented(top), true), pathOf(oriented(bottom), true)];
+        for (let index = 0; index < count; index++) {
+            if (!facing[index])
+                continue;
+            const next = (index + 1) % count;
+            parts.push(pathOf(oriented([top[index], top[next], bottom[next], bottom[index]]), true));
+        }
+        fill = parts.join("");
+    }
+    const buckets = Array.from({ length: SHADES }, () => []);
+    if (height > 0) {
+        const [lx, ly] = [-sinA, cosA];
+        for (let index = 0; index < count; index++) {
+            if (!facing[index])
+                continue;
+            const [nx, ny] = normals[index];
+            const lit = (nx * lx + ny * ly + 1) / 2;
+            const shade = Math.min(SHADES - 1, Math.max(0, Math.floor(lit * SHADES)));
+            const next = (index + 1) % count;
+            buckets[shade].push(pathOf(oriented([top[index], top[next], bottom[next], bottom[index]]), true));
+        }
+    }
+    let bevel;
+    if (options.bevel && options.bevel > 0) {
+        const by = options.bevel;
+        const inset = ring.map(([x, y], index) => {
+            const [ax, ay] = normals[(index + count - 1) % count];
+            const [bx, by2] = normals[index];
+            const mx = ax + bx;
+            const my = ay + by2;
+            const length = Math.hypot(mx, my) || 1;
+            return [x - (mx / length) * by, y - (my / length) * by];
+        });
+        const insetTop = inset.map(([x, y]) => iso([x, y, z + height], projection));
+        bevel = runsOf(facing, true)
+            .map((run) => pathOf([top[run[0]], ...run.slice(1, -1).map((index) => insetTop[index]), top[run[run.length - 1]]]))
+            .join("");
+    }
+    return {
+        fill,
+        outline: outline.join(""),
+        crease: crease.join(""),
+        top: pathOf(oriented(top), true),
+        shades: buckets.map((paths) => paths.join("")),
+        bevel,
+    };
+}
+const ringOf = (plan, steps = 8) => roundedPlan(plan, steps);
+function slabOf(plan, z, height, projection, steps = 8, bevel = 0) {
+    return extrude(ringOf(plan, steps), z, height, projection, { convex: true, bevel });
+}
+function circleRing(cx, cy, radius, steps = 40) {
+    return Array.from({ length: steps }, (_, step) => {
+        const angle = (step / steps) * Math.PI * 2;
+        return [cx + radius * Math.cos(angle), cy + radius * Math.sin(angle)];
+    });
+}
+function cylinder(cx, cy, radius, z, height, projection, steps = 32, bevel = 0) {
+    return extrude(circleRing(cx, cy, radius, steps), z, height, projection, { convex: true, bevel });
+}
+const insetPlan = ({ x, y, w, d, r }, by) => ({ x: x + by, y: y + by, w: w - by * 2, d: d - by * 2, r: Math.max(0, r - by) });
+function onTop(points, z, projection, closed = false) {
+    return pathOf(points.map(([x, y]) => iso([x, y, z], projection)), closed);
+}
+const planOutline = (plan, z, projection, steps = 8) => onTop(ringOf(plan, steps), z, projection, true);
+const lineOnTop = (from, to, z, projection) => onTop([from, to], z, projection);
+const segment = (from, to, projection) => pathOf([iso(from, projection), iso(to, projection)]);
+const rise = (at, from, to, projection) => segment([at[0], at[1], from], [at[0], at[1], to], projection);
+const ring = (cx, cy, radius, z, projection, steps = 40) => onTop(circleRing(cx, cy, radius, steps), z, projection, true);
+const pointsAt = (points, projection) => points.map((point) => iso(point, projection));
+function dotGrid(x, y, columns, rows, gap, z, projection) {
+    const dots = [];
+    for (let row = 0; row < rows; row++) {
+        for (let column = 0; column < columns; column++)
+            dots.push(iso([x + column * gap, y + row * gap, z], projection));
+    }
+    return dots;
+}
+function corners({ x, y, w, d }, inset = 0) {
+    return [
+        [x + inset, y + inset],
+        [x + w - inset, y + inset],
+        [x + inset, y + d - inset],
+        [x + w - inset, y + d - inset],
+    ];
+}
+function boxCorners({ x, y, w, d }, z0, z1) {
+    const out = [];
+    for (const px of [x, x + w])
+        for (const py of [y, y + d])
+            for (const z of [z0, z1])
+                out.push([px, py, z]);
+    return out;
+}
+function knurl(cx, cy, radius, z0, z1, count, projection, inset = 0.4) {
+    const [vx, vy] = towardViewer(projection);
+    const lines = [];
+    for (let index = 0; index < count; index++) {
+        const angle = (index / count) * Math.PI * 2;
+        const nx = Math.cos(angle);
+        const ny = Math.sin(angle);
+        if (nx * vx + ny * vy < 0.15)
+            continue;
+        lines.push(segment([cx + radius * nx, cy + radius * ny, z0 + inset], [cx + radius * nx, cy + radius * ny, z1 - inset], projection));
+    }
+    return lines.join("");
+}
+function sideArc(cx, cy, radius, z, projection, steps = 24) {
+    const [vx, vy] = towardViewer(projection);
+    const facing = Math.atan2(vy, vx);
+    const points = [];
+    for (let step = 0; step <= steps; step++) {
+        const angle = facing - Math.PI / 2 + (step / steps) * Math.PI;
+        points.push(iso([cx + radius * Math.cos(angle), cy + radius * Math.sin(angle), z], projection));
+    }
+    return pathOf(points);
+}
+function ringSeam(ring, z, projection) {
+    const count = ring.length;
+    const counter = signedArea(ring) > 0;
+    const [vx, vy] = towardViewer(projection);
+    const facing = ring.map(([ax, ay], index) => {
+        const [bx, by] = ring[(index + 1) % count];
+        const dx = bx - ax;
+        const dy = by - ay;
+        const [nx, ny] = counter ? [dy, -dx] : [-dy, dx];
+        return nx * vx + ny * vy > 1e-9;
+    });
+    return runsOf(facing, true).map((run) => pathOf(run.map((index) => iso([ring[index][0], ring[index][1], z], projection)))).join("");
+}
+const sideSeam = (plan, z, projection, steps = 8) => ringSeam(ringOf(plan, steps), z, projection);
+function sideRing(center, radius, axis, projection, steps = 20) {
+    const [px, py, pz] = center;
+    const points = [];
+    for (let step = 0; step < steps; step++) {
+        const angle = (step / steps) * Math.PI * 2;
+        const u = radius * Math.cos(angle);
+        const v = radius * Math.sin(angle);
+        points.push(iso(axis === "x" ? [px, py + u, pz + v] : [px + u, py, pz + v], projection));
+    }
+    return pathOf(points, true);
+}
+function coil(from, to, center, radius, turns, axis, projection, perTurn = 16) {
+    const count = Math.max(1, Math.round(turns * perTurn));
+    const back = [];
+    const front = [];
+    let run = [];
+    let near = null;
+    for (let index = 0; index <= count; index++) {
+        const share = index / count;
+        const angle = share * turns * Math.PI * 2;
+        const u = radius * Math.cos(angle);
+        const v = radius * Math.sin(angle);
+        const along = from + (to - from) * share;
+        const point = axis === "x" ? [along, center[0] + u, center[1] + v] : [center[0] + u, along, center[1] + v];
+        const normal = axis === "x" ? [0, Math.cos(angle), Math.sin(angle)] : [Math.cos(angle), 0, Math.sin(angle)];
+        const facing = depthOf(normal, projection) > 0;
+        const flat = iso(point, projection);
+        if (near === null)
+            near = facing;
+        if (facing !== near) {
+            run.push(flat);
+            (near ? front : back).push(pathOf(run));
+            run = [flat];
+            near = facing;
+            continue;
+        }
+        run.push(flat);
+    }
+    if (run.length > 1)
+        (near ? front : back).push(pathOf(run));
+    return { back: back.join(""), front: front.join("") };
+}
+function topTicks(from, to, step, every, edge, z, lengths, projection, axis = "x") {
+    const minor = [];
+    const major = [];
+    const first = Math.ceil(from / step) * step;
+    for (let at = first, index = Math.round(first / step); at <= to + 1e-9; at += step, index++) {
+        const big = index % every === 0;
+        const length = big ? lengths[1] : lengths[0];
+        const a = axis === "x" ? [at, edge] : [edge, at];
+        const b = axis === "x" ? [at, edge + length] : [edge + length, at];
+        (big ? major : minor).push(lineOnTop(a, b, z, projection));
+    }
+    return { minor: minor.join(""), major: major.join("") };
+}
+function sideTicks(from, to, step, every, face, top, lengths, projection, axis = "x") {
+    const minor = [];
+    const major = [];
+    const first = Math.ceil(from / step) * step;
+    for (let at = first, index = Math.round(first / step); at <= to + 1e-9; at += step, index++) {
+        const big = index % every === 0;
+        const length = big ? lengths[1] : lengths[0];
+        const a = axis === "x" ? [at, face, top] : [face, at, top];
+        const b = axis === "x" ? [at, face, top - length] : [face, at, top - length];
+        (big ? major : minor).push(segment(a, b, projection));
+    }
+    return { minor: minor.join(""), major: major.join("") };
+}
+function radialTicks(cx, cy, radius, count, every, z, lengths, projection, from = 0, span = Math.PI * 2) {
+    const minor = [];
+    const major = [];
+    const closed = Math.abs(span - Math.PI * 2) < 1e-9;
+    const steps = closed ? count : count + 1;
+    for (let index = 0; index < steps; index++) {
+        const angle = from + (index / count) * span;
+        const big = index % every === 0;
+        const inner = radius - (big ? lengths[1] : lengths[0]);
+        const sx = Math.sin(angle);
+        const sy = -Math.cos(angle);
+        (big ? major : minor).push(lineOnTop([cx + sx * inner, cy + sy * inner], [cx + sx * radius, cy + sy * radius], z, projection));
+    }
+    return { minor: minor.join(""), major: major.join("") };
+}
+const haloOf = (plan, z, height, projection) => slabOf(plan, z, height, projection).fill;
+function axisVector(projection, [dx, dy, dz]) {
+    const origin = iso([0, 0, 0], projection);
+    const moved = iso([dx, dy, dz], projection);
+    return [moved[0] - origin[0], moved[1] - origin[1]];
+}
+const fine = (value) => Math.round(value * 100) / 100;
+function translateAlong(projection, by) {
+    const [x, y] = axisVector(projection, by);
+    return `translate(${fine(x)} ${fine(y)})`;
+}
+const thousandth = (value) => Math.round(value * 1000) / 1000;
+function axesAt(at, z, projection) {
+    const origin = iso([at[0], at[1], z], projection);
+    const along = (point) => {
+        const [px, py] = iso(point, projection);
+        return [px - origin[0], py - origin[1]];
+    };
+    return { origin, x: along([at[0] + 1, at[1], z]), y: along([at[0], at[1] + 1, z]), z: along([at[0], at[1], z + 1]) };
+}
+const matrixOf = (u, v, origin) => `matrix(${thousandth(u[0])} ${thousandth(u[1])} ${thousandth(v[0])} ${thousandth(v[1])} ${thousandth(origin[0])} ${thousandth(origin[1])})`;
+function holdStill(element, [dx, dy]) {
+    const text = dx || dy ? `translate(${-dx} ${-dy})` : "";
+    element.querySelectorAll("[data-hold]").forEach((node) => (text ? node.setAttribute("transform", text) : node.removeAttribute("transform")));
+}
+function topMatrix(at, z, projection, along = "x") {
+    const { origin, x, y } = axesAt(at, z, projection);
+    return along === "x" ? matrixOf(x, y, origin) : matrixOf([-y[0], -y[1]], x, origin);
+}
+function sideMatrix(at, z, projection, face) {
+    const { origin, x, y, z: up } = axesAt(at, z, projection);
+    const down = [-up[0], -up[1]];
+    return face === "left" ? matrixOf(x, down, origin) : matrixOf([-y[0], -y[1]], down, origin);
+}
+function screenRise(height, projection) {
+    const { cosE, k } = cameraOf(projection);
+    return height * cosE * k;
+}
+function fitProjection(points, width, height, { pad = 24, headroom = 0, azimuth = AZIMUTH, elevation = ELEVATION } = {}) {
+    const unit = { origin: [0, 0], scale: 1, azimuth, elevation };
+    const flat = points.map((point) => iso(point, unit));
+    const xs = flat.map(([x]) => x);
+    const ys = flat.map(([, y]) => y);
+    const left = Math.min(...xs);
+    const right = Math.max(...xs);
+    const up = Math.min(...ys);
+    const down = Math.max(...ys);
+    const scale = Math.min((width - pad * 2) / (right - left), (height - pad * 2 - headroom) / (down - up));
+    return {
+        origin: [width / 2 - ((left + right) / 2) * scale, headroom + (height - headroom) / 2 - ((up + down) / 2) * scale],
+        scale,
+        azimuth,
+        elevation,
+    };
+}
+const escape = (text) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const attrs = (pairs) => Object.entries(pairs)
+    .filter(([, value]) => value !== undefined && value !== false)
+    .map(([key, value]) => ` ${key}="${escape(String(value))}"`)
+    .join("");
+function solidSvg(paths, { tone = "hi", crease = "faint", halo = false, lit = false, flat = false, className, inner = "" } = {}) {
+    const parts = [];
+    if (halo)
+        parts.push(`<path class="iso-halo" d="${paths.fill}"/>`);
+    parts.push(`<path class="iso-fill" d="${paths.fill}"/>`);
+    if (!flat) {
+        paths.shades.forEach((d, shade) => {
+            if (d)
+                parts.push(`<path class="iso-shade" data-shade="${shade}" d="${d}"/>`);
+        });
+        parts.push(`<path class="iso-top" d="${paths.top}"/>`);
+    }
+    if (crease !== "none" && paths.crease)
+        parts.push(`<path class="iso-line iso-crease" data-tone="${crease}" d="${paths.crease}"/>`);
+    if (crease !== "none" && paths.bevel)
+        parts.push(`<path class="iso-line iso-bevel" data-tone="${crease}" d="${paths.bevel}"/>`);
+    if (inner)
+        parts.push(inner);
+    parts.push(`<path class="iso-line iso-edge" data-tone="${tone}" d="${paths.outline}"/>`);
+    return `<g${attrs({ class: className ? `iso-solid ${className}` : "iso-solid", "data-lit": lit ? "" : undefined, "data-seamless": paths.seamless ? "" : undefined })}>${parts.join("")}</g>`;
+}
+function lineSvg(d, { tone = "lo", dotted = false, dashed = false, flow = false, className, free } = {}) {
+    if (!d)
+        return "";
+    return `<path${attrs({
+        class: className ? `iso-line ${className}` : "iso-line",
+        "data-tone": tone,
+        "data-free": free === true ? "" : free || undefined,
+        "data-dotted": dotted ? "" : undefined,
+        "data-dashed": dashed ? "" : undefined,
+        "data-flow": flow ? "" : undefined,
+        d,
+    })}/>`;
+}
+function dotsSvg(points, { size = 0.5, tone = "mid", pulse = false } = {}) {
+    const dots = points
+        .map(([x, y, alpha], index) => `<circle cx="${tenth(x)}" cy="${tenth(y)}" r="${size}"${alpha !== undefined && alpha < 1 ? ` fill-opacity="${Math.max(0, alpha).toFixed(2)}"` : ""}${pulse ? ` data-pulse="" style="--pulse-at:${(index * 137) % 1600}ms"` : ""}/>`)
+        .join("");
+    return `<g class="iso-dots" data-tone="${tone}">${dots}</g>`;
+}
+function fadedSvg(list, style = {}) {
+    const groups = new Map();
+    for (const entry of list) {
+        const [d, alpha] = Array.isArray(entry) ? entry : [entry.d, entry.alpha];
+        if (!d || !(alpha > 0.02))
+            continue;
+        const level = Math.min(1, Math.round(alpha * 20) / 20);
+        groups.set(level, (groups.get(level) ?? "") + d);
+    }
+    return [...groups].map(([alpha, d]) => (alpha >= 1 ? lineSvg(d, style) : `<g opacity="${alpha.toFixed(2)}">${lineSvg(d, style)}</g>`)).join("");
+}
+function fadeLineSvg(points, { fade = [0, 0], tone = "lo", className, stops = 6 } = {}) {
+    if (points.length < 2)
+        return "";
+    const ease = (t) => t * t * (3 - 2 * t);
+    const hashOf = (text) => {
+        let hash = 2166136261;
+        for (let index = 0; index < text.length; index++)
+            hash = Math.imul(hash ^ text.charCodeAt(index), 16777619);
+        return (hash >>> 0).toString(36);
+    };
+    const lengths = [0];
+    for (let index = 1; index < points.length; index++)
+        lengths.push(lengths[index - 1] + Math.hypot(points[index][0] - points[index - 1][0], points[index][1] - points[index - 1][1]));
+    const at = (length) => {
+        let index = 1;
+        while (index < points.length - 1 && lengths[index] < length)
+            index++;
+        const span = lengths[index] - lengths[index - 1] || 1;
+        const t = Math.max(0, Math.min(1, (length - lengths[index - 1]) / span));
+        return [points[index - 1][0] + (points[index][0] - points[index - 1][0]) * t, points[index - 1][1] + (points[index][1] - points[index - 1][1]) * t];
+    };
+    const pieceOf = (from, to) => [at(from), ...points.filter((_, index) => lengths[index] > from + 1e-6 && lengths[index] < to - 1e-6), at(to)];
+    const total = lengths[lengths.length - 1];
+    if (total < 1e-6)
+        return "";
+    let [start, end] = Array.isArray(fade) ? fade : [fade, fade];
+    if (start + end > total) {
+        const share = total / (start + end);
+        start *= share;
+        end *= share;
+    }
+    const paint = `var(--anatomy-${tone})`;
+    const ramp = (piece, rising) => {
+        const d = pathOf(piece);
+        const [x1, y1] = piece[0];
+        const [x2, y2] = piece[piece.length - 1];
+        const id = `iso-fade-${hashOf(`${d}|${tone}|${rising}`)}`;
+        const marks = Array.from({ length: stops + 1 }, (_, index) => {
+            const t = index / stops;
+            const alpha = ease(rising ? t : 1 - t);
+            return `<stop offset="${t.toFixed(3)}" stop-opacity="${alpha.toFixed(3)}" style="stop-color:${paint}"/>`;
+        }).join("");
+        const gradient = `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${tenth(x1)}" y1="${tenth(y1)}" x2="${tenth(x2)}" y2="${tenth(y2)}">${marks}</linearGradient>`;
+        return `<defs>${gradient}</defs><path${attrs({ class: className ? `iso-line ${className}` : "iso-line", "data-tone": tone, "data-free": rising ? "start" : "end", d, style: `stroke:url(#${id})` })}/>`;
+    };
+    const parts = [];
+    if (start > 0.05)
+        parts.push(ramp(pieceOf(0, start), true));
+    if (total - end - start > 0.05)
+        parts.push(lineSvg(pathOf(pieceOf(start, total - end)), { tone, className }));
+    if (end > 0.05)
+        parts.push(ramp(pieceOf(total - end, total), false));
+    return `<g class="iso-fade">${parts.join("")}</g>`;
+}
+function wireSvg(from, to, { via = [], tone = "lo", dotted = false, dashed = false, flow = false, ends = "both", size = 1.2 } = {}) {
+    const d = pathOf([from, ...via, to]);
+    const end = ([x, y]) => `<circle class="iso-wire-end" cx="${tenth(x)}" cy="${tenth(y)}" r="${size}"/>`;
+    return `<g class="iso-wire" data-tone="${tone}">${lineSvg(d, { tone, dotted, dashed, flow })}${ends === "both" || ends === "from" ? end(from) : ""}${ends === "both" || ends === "to" ? end(to) : ""}</g>`;
+}
+function faceTextSvg(transform, text, { size = 3, tone = "mid", anchor = "start" } = {}) {
+    return `<text class="iso-face-text" data-tone="${tone}" transform="${transform}" font-size="${size}" text-anchor="${anchor}">${escape(text)}</text>`;
+}
+function groupSvg(children, extra = {}) {
+    return `<g${attrs(extra)}>${Array.isArray(children) ? children.join("") : children}</g>`;
+}
+function figureSvg({ width, height, label, body, standalone = false, className }) {
+    const style = standalone ? `<style>${ISO_CSS}</style>` : "";
+    return `<svg${attrs({
+        xmlns: "http://www.w3.org/2000/svg",
+        class: `iso-svg${standalone ? " iso" : ""}${className ? ` ${className}` : ""}`,
+        "data-theme": standalone || undefined,
+        viewBox: `0 0 ${width} ${height}`,
+        role: "img",
+        "aria-label": label,
+    })}>${style}${Array.isArray(body) ? body.join("") : body}</svg>`;
+}
+function swatchSvg(mark) {
+    if (mark === "raised" || mark === "flat" || mark === "lit") {
+        const body = mark === "flat" ? "M2 6.5 8 3.5 14 6.5 8 9.5Z" : "M2 4.5 8 1.5 14 4.5 14 6 8 9 2 6Z";
+        const crease = mark === "flat" ? "" : `<path class="iso-swatch-crease" d="M2 4.5 8 7.5 14 4.5"/>`;
+        return `<svg class="iso-swatch" data-mark="${mark}" viewBox="0 0 16 10" aria-hidden="true"><path d="${body}"/>${crease}</svg>`;
+    }
+    return `<svg class="iso-swatch" data-mark="${mark}" viewBox="0 0 16 10" aria-hidden="true"><path d="M1.5 5h13"/></svg>`;
+}
+function plateHtml({ fig, title, hint, readout = "", keys = [], caption, body }) {
+    const corner = (name, text, extra = "") => `<span class="iso-plate-corner" data-corner="${name}"${extra}>${escape(text)}</span>`;
+    const legend = keys.length || caption
+        ? `<figcaption class="iso-legend">${keys.length ? `<span class="iso-keys">${keys.map((key) => `<span class="iso-key">${swatchSvg(key.mark)}${escape(key.label)}</span>`).join("")}</span>` : ""}${caption ? `<span class="iso-caption">${escape(caption)}</span>` : ""}</figcaption>`
+        : "";
+    return `<figure class="iso-figure"><div class="iso-plate"><div class="iso-plate-corners" aria-hidden="true">${corner("fig", fig)}${title ? corner("title", title) : ""}${hint ? corner("hint", hint) : ""}${corner("readout", readout, " data-readout")}</div>${body}</div>${legend}</figure>`;
+}
+function pageHtml({ title, theme = "dark", body, script = "", width = 650 }) {
+    return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escape(title)}</title><style>${ISO_CSS}${PAGE_CSS.replace("__WIDTH__", String(width))}</style></head><body class="iso" data-theme="${theme}"><main class="iso-page">${body}</main>${script ? `<script type="module">${script.replace(/<\/(script)/gi, "<\\/$1")}<\/script>` : ""}</body></html>`;
+}
+const PAGE_CSS = `
+*{box-sizing:border-box}
+html{color-scheme:dark}
+body[data-theme="light"]{color-scheme:light}
+body{margin:0;background:var(--anatomy-page);color:var(--anatomy-text);font:14px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+.iso-page{width:min(__WIDTH__px,100% - 32px);margin:64px auto 96px}
+`;
+const ISO_CSS = `
+.iso{
+  --anatomy-page:#0b0b0b;--anatomy-card:#131313;--anatomy-text:#a3a3a3;--anatomy-strong:#e6e6e6;--anatomy-muted:#6e6e6e;
+  --anatomy-paper:#131313;--anatomy-face:#1b1b1b;--anatomy-top:#1c1c1c;
+  --anatomy-shade-0:#0f0f0f;--anatomy-shade-1:#121212;--anatomy-shade-2:#151515;--anatomy-shade-3:#181818;
+  --anatomy-lit-top:#262626;--anatomy-lit-shade:#1d1d1d;
+  --anatomy-hi:#d4d4d4;--anatomy-mid:#6a6a6a;--anatomy-lo:#3e3e3e;--anatomy-faint:#2a2a2a;--anatomy-lit:#ffffff;
+  --anatomy-halo:#050505;--anatomy-halo-opacity:.9;--anatomy-dot:#e6e6e6;
+  --anatomy-red:#ff6b6b;--anatomy-green:#6be0a0;--anatomy-blue:#6b9bff;
+  --anatomy-weight:.6px;--anatomy-ease:cubic-bezier(.32,.72,0,1);
+  --anatomy-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --anatomy-lift:inset 0 1px 0 0 #ffffff0a,inset 0 0 0 1px #ffffff06,0 0 0 1px #00000026,0 1px 1px -.5px #00000014,0 3px 3px -1.5px #00000014,0 6px 6px -3px #00000014,0 12px 12px -6px #00000014;
+}
+.iso[data-theme="light"]{
+  --anatomy-page:#f2f2ef;--anatomy-card:#fbfbfa;--anatomy-text:#57575a;--anatomy-strong:#18181a;--anatomy-muted:#8c8c90;
+  --anatomy-paper:#fbfbfa;--anatomy-face:#ffffff;--anatomy-top:#ffffff;
+  --anatomy-shade-0:#dcdcd9;--anatomy-shade-1:#e5e5e2;--anatomy-shade-2:#ededea;--anatomy-shade-3:#f4f4f1;
+  --anatomy-lit-top:#ffffff;--anatomy-lit-shade:#eeeeeb;
+  --anatomy-hi:#26262a;--anatomy-mid:#8a8a8f;--anatomy-lo:#b4b4b8;--anatomy-faint:#d4d4d6;--anatomy-lit:#000000;
+  --anatomy-halo:#8a8a80;--anatomy-halo-opacity:.32;--anatomy-dot:#3a3a3e;
+  --anatomy-red:#e5484d;--anatomy-green:#30a46c;--anatomy-blue:#3e63dd;
+  --anatomy-lift:inset 0 1px 0 0 #ffffff,0 0 0 1px #0000000f,0 1px 1px -.5px #0000000a,0 3px 3px -1.5px #0000000a,0 6px 6px -3px #0000000a,0 12px 12px -6px #0000000a;
+}
+.iso-svg{display:block;width:100%;height:auto;overflow:visible}
+.iso-svg path,.iso-svg circle{vector-effect:non-scaling-stroke}
+.iso-fill{fill:var(--anatomy-paper);stroke:none}
+.iso-solid[data-lit]>.iso-fill{fill:var(--anatomy-face)}
+.iso-shade,.iso-top{stroke:none}
+.iso-shade[data-shade="0"]{fill:var(--anatomy-shade-0)}
+.iso-shade[data-shade="1"]{fill:var(--anatomy-shade-1)}
+.iso-shade[data-shade="2"]{fill:var(--anatomy-shade-2)}
+.iso-shade[data-shade="3"]{fill:var(--anatomy-shade-3)}
+.iso-top{fill:var(--anatomy-top)}
+.iso-solid[data-lit]>.iso-top{fill:var(--anatomy-lit-top)}
+.iso-solid[data-lit]>.iso-shade{fill:var(--anatomy-lit-shade)}
+.iso-solid[data-seamless]>.iso-shade,.iso-solid[data-seamless]>.iso-top{stroke-width:.4;stroke-linejoin:round}
+.iso-solid[data-seamless]>.iso-shade[data-shade="0"]{stroke:var(--anatomy-shade-0)}
+.iso-solid[data-seamless]>.iso-shade[data-shade="1"]{stroke:var(--anatomy-shade-1)}
+.iso-solid[data-seamless]>.iso-shade[data-shade="2"]{stroke:var(--anatomy-shade-2)}
+.iso-solid[data-seamless]>.iso-shade[data-shade="3"]{stroke:var(--anatomy-shade-3)}
+.iso-solid[data-seamless]>.iso-top{stroke:var(--anatomy-top)}
+.iso-solid[data-seamless][data-lit]>.iso-top{stroke:var(--anatomy-lit-top)}
+.iso-solid[data-seamless][data-lit]>.iso-shade{stroke:var(--anatomy-lit-shade)}
+.iso-solid[data-lit]>.iso-edge{stroke:var(--anatomy-lit)}
+.iso-halo{fill:var(--anatomy-halo);stroke:none;filter:blur(9px);opacity:var(--anatomy-halo-opacity);transform:translateY(3px)}
+.iso-line{fill:none;stroke:var(--anatomy-lo);stroke-width:var(--anatomy-weight);stroke-linecap:round;stroke-linejoin:round}
+.iso-line[data-tone="hi"]{stroke:var(--anatomy-hi)}
+.iso-line[data-tone="mid"]{stroke:var(--anatomy-mid)}
+.iso-line[data-tone="lo"]{stroke:var(--anatomy-lo)}
+.iso-line[data-tone="faint"]{stroke:var(--anatomy-faint)}
+.iso-line[data-tone="lit"]{stroke:var(--anatomy-lit)}
+.iso-line[data-tone="red"]{stroke:var(--anatomy-red)}
+.iso-line[data-tone="green"]{stroke:var(--anatomy-green)}
+.iso-line[data-tone="blue"]{stroke:var(--anatomy-blue)}
+.iso-line[data-dotted]{stroke-dasharray:.01 3.5;stroke-width:1}
+.iso-line[data-dashed]{stroke-dasharray:3 3}
+.iso-line[data-flow]{stroke-dasharray:2 6}
+.iso-wire-end{fill:var(--anatomy-paper);stroke:var(--anatomy-lo);stroke-width:var(--anatomy-weight)}
+.iso-wire[data-tone="hi"] .iso-wire-end{stroke:var(--anatomy-hi)}
+.iso-wire[data-tone="mid"] .iso-wire-end{stroke:var(--anatomy-mid)}
+.iso-wire[data-tone="faint"] .iso-wire-end{stroke:var(--anatomy-faint)}
+.iso-wire[data-tone="lit"] .iso-wire-end{stroke:var(--anatomy-lit)}
+.iso-dots circle{fill:var(--anatomy-dot);stroke:none;opacity:.32}
+.iso-dots[data-tone="hi"] circle{opacity:.85}
+.iso-dots[data-tone="mid"] circle{opacity:.45}
+.iso-dots[data-tone="lo"] circle{opacity:.22}
+.iso-dots[data-tone="faint"] circle{opacity:.12}
+.iso-face-text{fill:var(--anatomy-mid);font-family:var(--anatomy-mono);letter-spacing:.04em}
+.iso-face-text[data-tone="hi"]{fill:var(--anatomy-hi)}
+.iso-face-text[data-tone="lo"]{fill:var(--anatomy-lo)}
+.iso-face-text[data-tone="faint"]{fill:var(--anatomy-faint)}
+.tb-body{fill:var(--anatomy-shade-2);stroke:none}
+.tb-shine{fill:var(--anatomy-top);stroke:none}
+.tb-shade{fill:var(--anatomy-shade-0);stroke:none}
+.tb-ring{fill:none;stroke:var(--anatomy-lo);stroke-width:.45;stroke-linecap:butt;stroke-linejoin:round}
+.tb-ring[data-tone="mid"]{stroke:var(--anatomy-mid)}
+.tb-ring[data-tone="faint"]{stroke:var(--anatomy-faint)}
+.tb-ring[data-tone="hi"]{stroke:var(--anatomy-hi)}
+@keyframes iso-flow{to{stroke-dashoffset:-32}}
+@keyframes iso-pulse{0%,100%{opacity:.18}12%{opacity:1}40%{opacity:.18}}
+.iso-line[data-flow]{animation:iso-flow 1600ms linear infinite}
+.iso-dots circle[data-pulse]{animation:iso-pulse 1600ms steps(1,end) infinite;animation-delay:var(--pulse-at,0ms)}
+.iso-figure{margin:32px 0 36px}
+.iso-plate{position:relative;padding:52px 24px;border-radius:0;background:var(--anatomy-card);box-shadow:0 0 0 1px var(--anatomy-mid);--anatomy-paper:var(--anatomy-card)}
+.iso-plate-corners{position:absolute;inset:18px 20px;pointer-events:none}
+.iso-plate-corner{position:absolute;color:var(--anatomy-muted);font-family:var(--anatomy-mono);font-size:10.5px;line-height:1;letter-spacing:.04em;white-space:nowrap}
+.iso-plate-corner[data-corner="fig"]{top:0;left:0;color:var(--anatomy-text)}
+.iso-plate-corner[data-corner="title"]{top:0;right:0;text-transform:uppercase;letter-spacing:.1em}
+.iso-plate-corner[data-corner="hint"]{bottom:0;left:0;text-transform:uppercase;letter-spacing:.1em}
+.iso-plate-corner[data-corner="readout"]{right:0;bottom:0;color:var(--anatomy-text);font-variant-numeric:tabular-nums}
+.iso-plate .iso-svg{margin:0 auto}
+.iso-legend{display:grid;gap:8px;margin-top:12px;color:var(--anatomy-muted);font-size:13px;line-height:1.55}
+.iso-keys{display:flex;flex-wrap:wrap;gap:6px 18px}
+.iso-key{display:inline-flex;align-items:center;gap:7px}
+.iso-swatch{width:16px;height:10px;flex:none;overflow:visible}
+.iso-swatch path{fill:none;stroke:var(--anatomy-hi);stroke-width:1;vector-effect:non-scaling-stroke;stroke-linejoin:round;stroke-linecap:round}
+.iso-swatch[data-mark="raised"] path,.iso-swatch[data-mark="flat"] path{stroke:var(--anatomy-mid)}
+.iso-swatch[data-mark="lit"] path{stroke:var(--anatomy-lit)}
+.iso-swatch[data-mark="dim"] path{stroke:var(--anatomy-lo)}
+.iso-swatch[data-mark="dotted"] path{stroke-dasharray:.01 3;stroke-width:1.4}
+.iso-swatch[data-mark="dashed"] path{stroke-dasharray:3 2.5}
+.iso-swatch[data-mark="red"] path{stroke:var(--anatomy-red)}
+.iso-swatch[data-mark="green"] path{stroke:var(--anatomy-green)}
+.iso-swatch[data-mark="blue"] path{stroke:var(--anatomy-blue)}
+.iso-swatch-crease{stroke:var(--anatomy-lo)!important}
+@media (max-width:560px){.iso-plate{padding:48px 12px 70px}.iso-plate-corner[data-corner="hint"]{bottom:18px}}
+@media (prefers-reduced-motion:reduce){.iso-line[data-flow],.iso-dots circle[data-pulse]{animation:none}}
+`;
+
+return { AZIMUTH, ELEVATION, SHADES, cameraOf, iso, towardViewer, depthOf, pathOf, joinPaths, roundedPlan, extrude, ringOf, slabOf, circleRing, cylinder, insetPlan, onTop, planOutline, lineOnTop, segment, rise, ring, pointsAt, dotGrid, corners, boxCorners, knurl, sideArc, ringSeam, sideSeam, sideRing, coil, topTicks, sideTicks, radialTicks, haloOf, axisVector, translateAlong, holdStill, topMatrix, sideMatrix, screenRise, fitProjection, solidSvg, lineSvg, dotsSvg, fadedSvg, fadeLineSvg, wireSvg, faceTextSvg, groupSvg, figureSvg, plateHtml, pageHtml, ISO_CSS };
+})();
+const FAMILIES = {
+  machine: "Machines",
+  fitting: "Fittings on belts",
+  floor: "Floor",
+};
+
+const DEFERRED = [
+  { label: "Fold-out cell", maps: "serverless function", why: "no v1 fixture runs serverless" },
+  { label: "Pneumatic exchange", maps: "pub/sub", why: "Astronomy Shop uses Kafka as a queue, so Hopper covers it" },
+  { label: "Silo", maps: "object storage", why: "no fixture stores objects" },
+  { label: "Card catalog", maps: "search / vector index", why: "no fixture has an index" },
+  { label: "Fuse", maps: "timeout fitting", why: "drawn as a budget dimension on the belt for now" },
+  { label: "Strainer", maps: "validation fitting", why: "no fixture exposes validation as a step" },
+  { label: "Meter", maps: "budget probe fitting", why: "budgets live in the inspector in v1" },
+];
+
+const ASSETS = {
+  intake: {
+    family: "machine", label: "Intake", maps: "clients: web, CLI, MCP, webhooks", fixtures: "Acquit, Astronomy Shop", w: 50, d: 96, top: 30,
+    build(c, { x, y }) {
+      c.plinth(x, y, 50, 96);
+      c.put([x - 19, y, 16], c.box(x - 22, y - 44, 6, 88, 4, 24, { tone: "mid" }, 3, 0.6) + c.D([-30, -10, 10, 30].map((dy) => c.at([x - 19, y + dy, 28])), { size: 0.45 }) + c.lamp(x - 19, y + 40, 28));
+      for (let i = 0; i < 4; i++) {
+        const yy = y - 38 + i * 20;
+        c.put([x + 1, yy + 7, 7], c.box(x - 16, yy, 34, 14, 4, 7, { tone: "mid" }, 2, 0.4) + c.L(c.k.lineOnTop([x - 14, yy + 7], [x + 16, yy + 7], 11, c.P), { tone: "faint" }) + c.D([c.at([x - 8, yy + 7, 11]), c.at([x + 2, yy + 7, 11]), c.at([x + 12, yy + 7, 11])], { size: 0.9, tone: "hi" }));
+      }
+    },
+  },
+
+  splitter: {
+    family: "machine", label: "Splitter", maps: "load balancer, gateway, reverse proxy", fixtures: "Astronomy Shop (frontend-proxy)", w: 86, d: 86, top: 34,
+    build(c, { x, y }) {
+      c.plinth(x, y, 86, 86);
+      const chute = (ang, len, wide) => {
+        const [ux, uy] = [Math.cos(ang), Math.sin(ang)], [vx, vy] = [-uy, ux];
+        const r0 = 10, r1 = r0 + len;
+        const ring = [[r0, -wide], [r1, -wide], [r1, wide], [r0, wide]].map(([a, b]) => [x + ux * a + vx * b, y + uy * a + vy * b]);
+        const tip = [x + ux * (r1 - 3), y + uy * (r1 - 3)];
+        c.put([x + ux * (r0 + len / 2), y + uy * (r0 + len / 2), 9], c.prism(ring, 4, 10, { tone: "mid" }) + c.L(c.k.onTop([[x + ux * (r0 + 2), y + uy * (r0 + 2)], tip], 14, c.P), { tone: "faint" }) + c.D([c.at([...tip, 14])], { size: 0.6, tone: "hi" }));
+      };
+      chute(Math.PI, 28, 6);
+      for (const a of [-0.75, 0, 0.75]) chute(a, 26, 5);
+      const hub = c.cyl(x, y, 14, 4, 22, { tone: "mid" }, 40, 0.6);
+      const top = c.cyl(x, y, 9, 26, 3, { tone: "hi", crease: "lo" }, 32, 0.4);
+      const ticks = c.k.radialTicks(x, y, 8, 24, 6, 29, [0.8, 1.8], c.P);
+      const vane = c.L(c.k.lineOnTop([x, y], [x + 7, y - 3], 29.2, c.P), { tone: "lit", free: "start" });
+      c.put([x, y, 15], hub + c.L(c.k.sideArc(x, y, 14, 16, c.P, 32), { tone: "lo" }), [[[x, y, 28], top + c.L(ticks.minor, { tone: "lo" }) + c.L(ticks.major, { tone: "mid" }) + vane + c.D([c.at([x, y, 29.3])], { size: 0.8, tone: "hi" }) + c.lamp(x - 6, y + 4, 29)]]);
+    },
+  },
+
+  gate: {
+    family: "machine", label: "Gate", maps: "auth: basic auth, sessions, OAuth", fixtures: "Acquit", w: 44, d: 74, top: 40,
+    explodes: 18, parts: "one layer per auth check, plus exempt routes",
+    build(c, { x, y, explode = 0, layers = ["outer auth", "sessions", "exempt route"] }) {
+      c.plinth(x, y, 44, 74);
+      const T = 8 * explode, B = 18 * explode, S = 16 * explode;
+      c.put([x, y - 26, 19], c.cyl(x, y - 26, 4, 4, 30, { tone: "mid" }));
+      c.put([x, y + 26, 19], c.cyl(x, y + 26, 4, 4, 30, { tone: "mid" }));
+      const arms = [0, 2.094, 4.189].map((a) => c.L(c.k.lineOnTop([x, y], [x + Math.sin(a) * 14, y - Math.cos(a) * 14], 18 + T, c.P), { tone: "hi" })).join("");
+      c.put([x, y, 11 + T], c.cyl(x, y, 3.2, 4 + T, 14, { tone: "hi" }) + arms + c.D([c.at([x, y, 18.5 + T])], { size: 0.8, tone: "hi" }));
+      c.put([x + 13 + S, y + 16, 11], c.box(x + 8 + S, y + 10, 10, 12, 4, 14, { tone: "mid" }, 2, 0.4) + c.L(c.k.ring(x + 13 + S, y + 16, 2.4, 18, c.P, 14), { tone: "hi" }));
+      c.put([x, y, 36.5 + B], c.box(x - 5, y - 31, 10, 62, 34 + B, 5, { tone: "mid" }, 3, 0.5) + c.L(c.k.planOutline({ x: x - 3, y: y - 28, w: 6, d: 56, r: 1 }, 39 + B, c.P, 2), { tone: "faint" }) + c.lamp(x, y - 20, 39 + B));
+      if (explode > 0.05) { c.label([x, y + 31, 37 + B], layers[0]); c.label([x + 10, y, 18 + T], layers[1]); c.label([x + 18 + S, y + 16, 18], layers[2]); }
+    },
+  },
+
+  assembler: {
+    family: "machine", label: "Assembler", maps: "service: an HTTP API, a worker, a process", fixtures: "all three", w: 96, d: 86, top: 66,
+    explodes: 36, parts: "adapters, core, routes (from the code graph)",
+    build(c, { x, y, needle = 0.38, explode = 0, layers = ["adapters", "core", "routes"] }) {
+      c.plinth(x, y, 96, 86);
+      const G = 18 * explode, u = 2 * G;
+      const body = { x: x - 38, y: y - 34, w: 76, d: 68, r: 4 };
+      const slab = (z, h) => c.S(c.k.slabOf(body, z, h, c.P, 4, 0.8), { tone: "mid" });
+      c.put([x, y, 10], slab(4, 12) + (explode ? c.L(c.k.segment([x, y, 16], [x, y, 40 + u], c.P), { tone: "faint", dashed: true }) : ""));
+      c.put([x, y, 23 + G], slab(16 + G, 14));
+      const Z = 40 + u;
+      const shell = slab(30 + u, 10) + c.L(c.k.planOutline(c.k.insetPlan(body, 4), Z, c.P, 4), { tone: "faint" }) + c.screws(body, 3.5, Z) + c.D(c.k.dotGrid(x + 6, y - 30, 8, 2, 3.2, Z, c.P), { size: 0.45, tone: "lo" });
+      const [gx, gy] = [x + 18, y + 14];
+      const t = c.k.radialTicks(gx, gy, 10, 40, 5, Z + 5, [1.2, 2.6], c.P, -2.4, 4.8);
+      const a = -2.4 + 4.8 * needle;
+      const gauge = c.cyl(gx, gy, 13, Z, 5, { tone: "hi", crease: "lo" }, 56, 0.6) + c.L(c.k.ring(gx, gy, 11, Z + 5, c.P, 56), { tone: "lo" }) + c.L(t.minor, { tone: "lo" }) + c.L(t.major, { tone: "mid" })
+        + `<path class="iso-line needle" data-tone="lit" data-free="start" d="${c.k.lineOnTop([gx, gy], [gx + Math.sin(a) * 9, gy - Math.cos(a) * 9], Z + 5.2, c.P)}" style="stroke-width:1.1"/>` + c.D([c.at([gx, gy, Z + 5.3])], { size: 0.9, tone: "hi" });
+      const knob = c.cyl(x - 12, y - 10, 10, Z, 4, { tone: "mid" }, 32, 0.5) + c.cyl(x - 12, y - 10, 5, Z + 4, 14, { tone: "mid" }) + c.L(c.k.knurl(x - 12, y - 10, 5, Z + 6, Z + 16, 18, c.P), { tone: "lo" })
+        + c.box(x - 24, y - 22, 24, 24, Z + 18, 6, { tone: "hi", crease: "lo" }, 3, 0.6) + c.screws({ x: x - 24, y: y - 22, w: 24, d: 24 }, 3, Z + 24);
+      const dials = [[x - 30, y + 22], [x - 30, y + 8]].map(([ox, oy]) => {
+        const ct = c.k.radialTicks(ox, oy, 4.8, 12, 3, Z + 2.4, [0.8, 1.4], c.P);
+        return [[ox, oy, Z + 1], c.cyl(ox, oy, 5.5, Z, 2.4, { tone: "mid" }, 28, 0.4) + c.L(ct.minor, { tone: "lo" }) + c.L(ct.major, { tone: "mid" }) + c.L(c.k.lineOnTop([ox, oy], [ox + 3.6, oy - 1.8], Z + 2.5, c.P), { tone: "hi", free: "end" })];
+      });
+      c.put([x, y, 35 + u], shell, [[[gx, gy, Z + 2], gauge], [[x - 12, y - 10, Z + 10], knob], ...dials, [[x + 32, y - 28, Z + 1], c.lamp(x + 32, y - 28, Z)]]);
+      if (explode > 0.05) [[10, layers[0]], [23 + G, layers[1]], [35 + u, layers[2]]].forEach(([z, text]) => c.label(c.rightOf(body, z), text));
+    },
+  },
+
+  bank: {
+    family: "machine", label: "Assembler bank", maps: "worker pool, job runners", fixtures: "Acquit (verifier)", w: 132, d: 58, top: 44,
+    explodes: 14, parts: "one cell per worker slot, plus the waiting tray",
+    build(c, { x, y, cells = 4, busy = 1, queued = 7, explode = 0 }) {
+      const w = cells * 30 + 12;
+      c.plinth(x, y, w, 58);
+      for (let i = 0; i < cells; i++) {
+        const bx = x - w / 2 + 8 + i * 30 + (i - (cells - 1) / 2) * 16 * explode, on = i < busy, L = 14 * explode;
+        c.put([bx + 12, y - 7, 17], c.box(bx, y - 22, 24, 30, 4, 26, { tone: "mid" }, 3, 0.6) + c.L(c.k.planOutline({ x: bx + 3, y: y - 19, w: 18, d: 24, r: 1 }, 30, c.P, 2), { tone: "faint" }),
+          [[[bx + 12, y - 7, 33 + L], c.cyl(bx + 12, y - 7, 5, 30 + L, 3, { tone: "mid" }) + c.cyl(bx + 12, y - 7, 2.2, 33 + L, on ? 6 : 13, { tone: on ? "hi" : "mid", lit: on }) + c.box(bx + 6, y - 13, 12, 12, (on ? 39 : 46) + L, 3, { tone: on ? "hi" : "mid", lit: on }, 2, 0.4)],
+            [[bx + 20, y + 4, 31], c.lamp(bx + 20, y + 4, 30, on ? "ok" : "idle")]]);
+        if (explode > 0.05) c.label([bx + 12, y - 7, 50 + L], `slot ${i + 1} · ${on ? "busy" : "idle"}`);
+      }
+      const tray = { x: x - w / 2 + 4, y: y + 12 + 10 * explode, w: 70, d: 10, r: 1 };
+      c.put([tray.x + 35, tray.y + 5, 6], c.S(c.k.slabOf(tray, 4, 3, c.P, 2, 0.4), { tone: "lo" }), Array.from({ length: Math.min(7, queued) }, (_, i) => [[tray.x + 5.5 + i * 9.5, tray.y + 5, 9], c.box(tray.x + 3 + i * 9.5, tray.y + 2.5, 5, 5, 7, 5, { tone: "hi", crease: "lo" }, 2, 0.3)]));
+      if (explode > 0.05) c.label([tray.x + 70, tray.y + 5, 8], `${queued} waiting`);
+      c.put([x + w / 2 - 10, y + 18, 5], c.lamp(x + w / 2 - 10, y + 18, 4));
+    },
+  },
+
+  hopper: {
+    family: "machine", label: "Hopper + conveyor", maps: "queue: Kafka, SQS, a jobs table, a channel", fixtures: "Astronomy Shop (Kafka), Orrery (channels)", w: 100, d: 56, top: 48,
+    explodes: 25, parts: "topic rim, one ring per partition, the consumer belt",
+    build(c, { x, y, depth = 5, explode = 0, layers = ["topic", "partitions", "consumer belt"] }) {
+      c.plinth(x + 14, y, 100, 56);
+      for (const [lx, ly] of [[-13, -13], [13, -13], [-13, 13], [13, 13]]) c.put([x + lx, y + ly, 12], c.box(x + lx - 2, y + ly - 2, 4, 4, 4, 18, { tone: "mid" }, 2));
+      const E = 5 * explode;
+      const rings = [[7, 20], [11, 24], [15, 28], [18, 32], [20, 36]];
+      rings.forEach(([r, z], i) => c.put([x, y, z + 2 + i * E], c.cyl(x, y, r, z + i * E, 4, { tone: "mid", crease: "faint" }, 40, 0.3)));
+      const rz = 40 + 5 * E;
+      c.put([x, y, rz + 1.5], c.cyl(x, y, 22, rz, 3, { tone: "mid" }, 44, 0.5) + c.L(c.k.ring(x, y, 19, rz + 3, c.P, 44), { tone: "lo" }) + c.L(c.k.ring(x, y, 14, rz + 3, c.P, 40), { tone: "faint" }));
+      const bx = x + 14 * explode;
+      const belt = { x: bx - 4, y: y - 7, w: 64, d: 14, r: 2 };
+      const items = Array.from({ length: depth }, (_, i) => [[bx + 10 + i * 10, y, 13], c.box(bx + 7 + i * 10, y - 3.5, 7, 7, 10, 6, { tone: "hi", crease: "lo" }, 2, 0.3)]);
+      const rollers = Array.from({ length: 8 }, (_, i) => c.L(c.k.lineOnTop([belt.x + 4 + i * 8, belt.y + 1.5], [belt.x + 4 + i * 8, belt.y + belt.d - 1.5], 10, c.P), { tone: "faint" })).join("");
+      c.put([bx + 28, y, 7], c.S(c.k.slabOf(belt, 4, 6, c.P, 3, 0.4), { tone: "mid" }) + rollers, [...items, [[bx + 56, y + 10, 11], c.lamp(bx + 56, y + 10, 10)]]);
+      if (explode > 0.05) { c.label([x + 22, y, rz + 2], layers[0]); c.label([x + 18, y, 34 + 3 * E], `${layers[1]} ×${rings.length}`); c.label([bx + 60, y, 10], layers[2]); }
+    },
+  },
+
+  tank: {
+    family: "machine", label: "Tank", maps: "relational database: SQLite, Postgres, MySQL", fixtures: "all three", w: 78, d: 62, top: 56,
+    explodes: 42, parts: "tables, indexes, schema lid, side files",
+    build(c, { x, y, extra = 2, explode = 0, layers = ["tables", "indexes", "schema"], files = ["-wal", "-shm"] }) {
+      c.plinth(x + (extra ? 14 : 0), y, extra ? 78 : 52, 62);
+      const G = 14 * explode;
+      const [vx, vy] = c.view;
+      const fa = Math.atan2(vy, vx) + 0.5;
+      const front = [x + Math.cos(fa) * 21, y + Math.sin(fa) * 21];
+      const ring = (z0, h, i) => c.cyl(x, y, 21, z0 + i * G, h, { tone: "mid" }, 56, 0.6) + c.L(c.k.sideArc(x, y, 21, z0 + i * G + h * 0.5, c.P, 40), { tone: "lo" });
+      c.put([x, y, 11], ring(4, 14, 0) + c.L(c.k.segment([front[0], front[1], 8], [front[0], front[1], 17], c.P), { tone: "lit" }));
+      c.put([x, y, 26 + G], ring(18, 16, 1) + c.L(c.k.segment([front[0], front[1], 19 + G], [front[0], front[1], 33 + G], c.P), { tone: "hi" }));
+      c.put([x, y, 42 + 2 * G], ring(34, 16, 2) + c.L(c.k.segment([front[0], front[1], 35 + 2 * G], [front[0], front[1], 48 + 2 * G], c.P), { tone: "hi" }));
+      const Z = 50 + 3 * G;
+      const t = c.k.radialTicks(x, y, 13, 24, 6, Z + 3, [1, 2.2], c.P);
+      c.put([x, y, Z + 1.5], c.cyl(x, y, 15, Z, 3, { tone: "mid" }, 48, 0.4) + c.L(c.k.ring(x, y, 18, Z, c.P, 48), { tone: "faint" }) + c.L(t.minor, { tone: "lo" }) + c.L(t.major, { tone: "mid" }) + c.L(c.k.lineOnTop([x, y], [x + 7, y - 9], Z + 3.2, c.P), { tone: "lit", free: "start" }));
+      [[x + 32, y - 14, 22], [x + 32, y + 14, 16]].slice(0, extra).forEach(([tx0, ty, h], i) => {
+        const tx = tx0 + 22 * explode;
+        c.put([tx, ty, 4 + h / 2], c.cyl(tx, ty, 8, 4, h, { tone: "mid" }, 32, 0.4) + c.L(c.k.sideArc(tx, ty, 8, 4 + h * 0.5, c.P, 24), { tone: "lo" }) + c.L(c.k.ring(tx, ty, 5, 4 + h, c.P, 24), { tone: "faint" }));
+        if (explode > 0.05) c.label([tx + 8, ty, 4 + h], files[i]);
+      });
+      c.put([x - 14, y - 18, 5], c.lamp(x - 14, y - 18, 4));
+      if (explode > 0.05) [[11, layers[0]], [26 + G, layers[1]], [Z + 1.5, layers[2]]].forEach(([z, text]) => c.label([x + 21, y - 4, z], text));
+    },
+  },
+
+  buffer: {
+    family: "machine", label: "Buffer rack", maps: "cache: Redis, Valkey, memcached, an LRU", fixtures: "Astronomy Shop (valkey cart)", w: 72, d: 36, top: 46,
+    build(c, { x, y, fill = 0.7 }) {
+      c.plinth(x, y, 72, 36);
+      const W = 60, Dp = 22, x0 = x - W / 2, y0 = y - Dp / 2;
+      for (const [px, py] of [[x0, y0], [x0 + W - 3, y0], [x0, y0 + Dp - 3], [x0 + W - 3, y0 + Dp - 3]]) c.put([px + 1.5, py + 1.5, 24], c.box(px, py, 3, 3, 4, 40, { tone: "mid" }, 2));
+      let n = 0;
+      for (const [si, z] of [[0, 10], [1, 24], [2, 38]].map(([i, z]) => [i, z])) {
+        const slots = [];
+        for (let j = 0; j < 6; j++) {
+          n++;
+          if ((n * 0.37) % 1 < fill) slots.push([[x0 + 7 + j * 9.4, y, z + 4], c.box(x0 + 4 + j * 9.4, y - 6, 6.5, 12, z + 1.2, 7, { tone: si === 1 && j === 2 ? "hi" : "mid", crease: "lo", lit: si === 1 && j === 2 }, 2, 0.3)]);
+        }
+        c.put([x, y, z + 0.6], c.S(c.k.slabOf({ x: x0 + 1, y: y0 + 1, w: W - 2, d: Dp - 2, r: 0.6 }, z, 1.2, c.P, 2), { tone: "mid" }), slots);
+      }
+      c.put([x0 + 1.5, y0 + 1.5, 46], c.lamp(x0 + 1.5, y0 + 1.5, 44));
+    },
+  },
+
+  kiln: {
+    family: "machine", label: "Kiln", maps: "LLM call: a model provider, an agent exec", fixtures: "Acquit (droid exec in docker)", w: 70, d: 66, top: 62,
+    explodes: 34, parts: "sealed housing lifts off a fogged core (timed from the host only)",
+    build(c, { x, y, explode = 0, layers = ["sealed housing", "agent exec · timed from host only"] }) {
+      c.plinth(x, y, 70, 66);
+      const H = 34 * explode;
+      c.put([x, y, 6], c.box(x - 22, y - 20, 44, 40, 3, 3, { tone: "lo" }, 3, 0.4));
+      c.put([x, y, 18], `<g class="fogcore">${c.cyl(x, y, 13, 6, 26, { tone: "mid" }, 36, 0.6)}${c.L(c.k.sideArc(x, y, 13, 16, c.P, 30) + c.k.sideArc(x, y, 13, 24, c.P, 30), { tone: "lo" })}${c.D([c.at([x, y, 32])], { size: 1, tone: "hi" })}</g>`);
+      const body = { x: x - 28, y: y - 26, w: 56, d: 52, r: 7 };
+      const [n, half] = c.frontFace(28, 26);
+      const t = [-n[1], n[0]];
+      const fp = (u, z) => c.at([x + n[0] * half + t[0] * u, y + n[1] * half + t[1] * u, z + H]);
+      const arch = Array.from({ length: 13 }, (_, i) => { const th = Math.PI * (i / 12); return fp(-4 + Math.cos(th) * 12, 26 + Math.sin(th) * 8); });
+      const door = `<path class="iso-line" data-tone="hi" d="${c.k.pathOf([fp(8, 12), fp(8, 26), ...arch, fp(-16, 26), fp(-16, 12)], true)}"/>` + Array.from({ length: 4 }, (_, i) => c.L(c.k.pathOf([fp(-13 + i * 6, 14), fp(-13 + i * 6, 24)]), { tone: "lit" })).join("");
+      const shell = c.S(c.k.slabOf(body, 4 + H, 40, c.P, 6, 1.2), { tone: "mid", inner: c.L(c.k.sideSeam(body, 12 + H, c.P, 6), { tone: "lo" }) + door }) + c.L(c.k.planOutline(c.k.insetPlan(body, 4), 44 + H, c.P, 5), { tone: "faint" }) + c.D(c.k.corners(body, 4).map(([px, py]) => c.at([px, py, 44 + H])), { size: 0.5 });
+      c.put([x, y, 24 + H], shell, [[[x + 14, y - 12, 52 + H], c.cyl(x + 14, y - 12, 5, 44 + H, 16, { tone: "mid" }) + c.L(c.k.sideArc(x + 14, y - 12, 5, 54 + H, c.P, 16), { tone: "lo" }) + c.cyl(x + 14, y - 12, 6.5, 60 + H, 2, { tone: "mid" })], [[x - 18, y - 16, 45 + H], c.lamp(x - 18, y - 16, 44 + H)]]);
+      if (explode > 0.05) { c.label(c.rightOf(body, 30 + H), layers[0]); c.label([x + 13, y, 20], layers[1]); }
+    },
+  },
+
+  dock: {
+    family: "machine", label: "Dock", maps: "external API: PayPal, GitHub, Stripe, a model host", fixtures: "Acquit", w: 60, d: 50, top: 40,
+    build(c, { x, y, variant }) {
+      c.plinth(x + 6, y, 60, 50);
+      c.put([x - 19, y - 15, 18], c.box(x - 22, y - 18, 6, 6, 4, 28, { tone: "mid" }, 2));
+      c.put([x - 19, y + 15, 18], c.box(x - 22, y + 12, 6, 6, 4, 28, { tone: "mid" }, 2));
+      c.put([x + 9, y, 12], c.box(x - 4, y - 12, 26, 24, 4, 16, { tone: "hi", crease: "lo" }, 3, 0.6) + c.L(c.k.planOutline(c.k.insetPlan({ x: x - 4, y: y - 12, w: 26, d: 24, r: 1 }, 3), 20, c.P, 2), { tone: "faint" }), [[[x + 9, y, 23], c.box(x + 4, y - 8, 10, 16, 20, 6, { tone: "mid" }, 2, 0.4)]]);
+      c.put([x - 19, y, 34.5], c.box(x - 24, y - 20, 10, 40, 32, 5, { tone: "mid" }, 3, 0.5) + c.L(c.k.planOutline({ x: x - 22, y: y - 17, w: 6, d: 34, r: 1 }, 37, c.P, 2), { tone: "faint" }) + c.lamp(x - 19, y, 37));
+    },
+  },
+
+  clock: {
+    family: "machine", label: "Cam clock", maps: "scheduler: cron, setInterval, a tick loop", fixtures: "Acquit (30 s tick + house loop)", w: 44, d: 44, top: 34,
+    build(c, { x, y, variant, phase = 0.3 }) {
+      c.plinth(x, y, 44, 44);
+      const cam = Array.from({ length: 28 }, (_, i) => { const th = (i / 28) * Math.PI * 2; const r = 10 + 5 * Math.max(0, Math.cos(th - phase * Math.PI * 2)) ** 2; return [x + Math.cos(th) * r, y + Math.sin(th) * r]; });
+      const ticks = c.k.radialTicks(x, y, 15.5, 30, 5, 21, [0.9, 2], c.P);
+      c.put([x, y, 12], c.box(x - 15, y - 15, 30, 30, 4, 16, { tone: "mid" }, 4, 0.6) + c.L(ticks.minor, { tone: "lo" }) + c.L(ticks.major, { tone: "mid" }) + c.screws({ x: x - 15, y: y - 15, w: 30, d: 30 }, 2.5, 20),
+        [[[x, y, 24], c.prism(cam, 20, 6, { tone: "hi", crease: "lo" }) + c.D([c.at([x, y, 26.2])], { size: 0.9, tone: "hi" })],
+          [[x + 15, y - 12, 26], c.cyl(x + 15, y - 12, 2, 20, 10, { tone: "mid" }) + c.L(c.k.lineOnTop([x + 15, y - 12], [x + 6 + Math.cos(phase * 6.283) * 2, y - 6], 29, c.P), { tone: "lit", free: "start" })],
+          [[x - 12, y + 12, 21], c.lamp(x - 12, y + 12, 20)]]);
+    },
+  },
+
+  retry: {
+    family: "fitting", label: "Return loop", maps: "retries, backoff", fixtures: "Acquit (paypal x3)", w: 20, d: 20, top: 10,
+    build(c, { x, y, along = "x" }) {
+      const off = along === "x" ? [0, -11] : [11, 0];
+      c.put([x, y, 4], c.box(x - 3, y - 3, 6, 6, 2, 4, { tone: "mid" }, 2) + c.L(c.k.ring(x + off[0], y + off[1], 8, 2.2, c.P, 32), { tone: "red", flow: true, className: "fit-flow" }) + c.D([c.at([x + off[0], y + off[1] - 8, 2.2])], { size: 0.9, tone: "hi" }));
+    },
+  },
+
+  valve: {
+    family: "fitting", label: "Valve", maps: "rate limiter, concurrency cap", fixtures: "Acquit (verifier concurrency 1)", w: 18, d: 18, top: 16,
+    build(c, { x, y }) {
+      const spokes = [0, 1.047, 2.094].map((a) => c.L(c.k.lineOnTop([x - Math.cos(a) * 6, y - Math.sin(a) * 6], [x + Math.cos(a) * 6, y + Math.sin(a) * 6], 14, c.P), { tone: "hi" })).join("");
+      c.put([x, y, 7], c.box(x - 5, y - 5, 10, 10, 2, 6, { tone: "mid" }, 2, 0.4) + c.cyl(x, y, 1.6, 8, 6, { tone: "mid" }, 12), [[[x, y, 14], c.L(c.k.ring(x, y, 6.5, 14, c.P, 28), { tone: "hi" }) + spokes + c.D([c.at([x, y, 14])], { size: 0.8, tone: "hi" })]]);
+    },
+  },
+
+  breaker: {
+    family: "fitting", label: "Breaker", maps: "circuit breaker", fixtures: "Astronomy Shop (failure flags)", w: 18, d: 18, top: 14,
+    build(c, { x, y, open = false }) {
+      const tip = open ? [x + 6, y - 5] : [x - 6, y - 5];
+      c.put([x, y, 6], c.box(x - 6, y - 5, 12, 10, 2, 8, { tone: "mid" }, 2, 0.4) + c.L(c.k.planOutline({ x: x - 4, y: y - 3, w: 8, d: 6, r: 0.5 }, 10, c.P, 2), { tone: "faint" }) + c.L(c.k.segment([x, y, 10], [tip[0], tip[1], 16], c.P), { tone: "hi" }) + c.D([c.at([tip[0], tip[1], 16])], { size: 1.2, tone: "hi" }) + c.lamp(x + 3.5, y + 2.5, 10));
+    },
+  },
+
+  bot: {
+    family: "floor", label: "Construction bot", maps: "an agent session at work", fixtures: "all (Droid, Claude Code, Codex)", w: 44, d: 44, top: 40,
+    build(c, { x, y, target, heading }) {
+      const k = c.k, V = c.view3, kk = k.cameraOf(c.P).k;
+      const h = heading ?? (target ? Math.atan2(target[1] - y, target[0] - x) : 0.5);
+      const f = [Math.cos(h), Math.sin(h), 0], s = [-Math.sin(h), Math.cos(h), 0], up = [0, 0, 1];
+      const add = (...vs) => vs.reduce((a, b) => [a[0] + b[0], a[1] + b[1], a[2] + b[2]]);
+      const mul = (v, m) => [v[0] * m, v[1] * m, v[2] * m];
+      const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      const R = 9, C = [x, y, 30];
+      const circle = (o, u, v, r, n = 40) => Array.from({ length: n + 1 }, (_, i) => { const t = (i / n) * Math.PI * 2; return add(o, mul(u, r * Math.cos(t)), mul(v, r * Math.sin(t))); });
+      const runs = (pts, ok) => { const out = []; let cur = []; for (const p of pts) { if (ok(p)) cur.push(c.at(p)); else { if (cur.length > 1) out.push(cur); cur = []; } } if (cur.length > 1) out.push(cur); return out.map((r) => k.pathOf(r)).join(""); };
+      const rel = (p) => mul(add(p, mul(C, -1)), 1 / R);
+      const faces = (p) => dot(rel(p), V) > 0.06;
+      const hull = (pts) => { const p = pts.slice().sort((a, b) => a[0] - b[0] || a[1] - b[1]); const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]); const lo = [], hi = []; for (const q of p) { while (lo.length > 1 && cr(lo[lo.length - 2], lo[lo.length - 1], q) <= 0) lo.pop(); lo.push(q); } for (const q of p.reverse()) { while (hi.length > 1 && cr(hi[hi.length - 2], hi[hi.length - 1], q) <= 0) hi.pop(); hi.push(q); } return lo.slice(0, -1).concat(hi.slice(0, -1)); };
+      const poly = (pts, cls, tone = "hi") => `<path class="${cls}" d="${k.pathOf(pts, true)}"/><path class="iso-line iso-edge" data-tone="${tone}" d="${k.pathOf(pts, true)}"/>`;
+      const lift = Math.sin(h * 3) * 0.0;
+
+      const nacelle = (sg) => {
+        const N = add(C, mul(s, sg * (R + 3.4)), [0, 0, -1.5 + lift]), rf = 4.4, Lh = 3.2;
+        const Fc = add(N, mul(f, Lh)), Bc = add(N, mul(f, -Lh));
+        const fr = circle(Fc, s, up, rf, 32), br = circle(Bc, s, up, rf, 32);
+        let svg = c.L(k.segment(add(C, mul(s, sg * R * 0.8)), add(N, mul(s, -sg * rf * 0.6)), c.P), { tone: "mid" });
+        svg += poly(hull([...fr, ...br].map(c.at)), "drone-hull");
+        const frontOn = dot(f, V) > 0;
+        const face = frontOn ? Fc : Bc, ring = frontOn ? fr : br;
+        svg += poly(ring.map(c.at), "drone-duct");
+        if (frontOn) {
+          svg += c.L(Array.from({ length: 14 }, (_, i) => { const a0 = (i / 14) * Math.PI * 2; return k.pathOf([add(face, mul(s, 1.3 * Math.cos(a0)), mul(up, 1.3 * Math.sin(a0))), add(face, mul(s, 3.9 * Math.cos(a0 + 0.5)), mul(up, 3.9 * Math.sin(a0 + 0.5)))].map(c.at)); }).join(""), { tone: "mid", className: "blades" });
+          svg += poly(circle(add(face, mul(f, 0.4)), s, up, 1.3, 14).map(c.at), "drone-hub");
+        } else {
+          svg += c.L(k.pathOf(circle(face, s, up, 3, 28).map(c.at)) + k.pathOf(circle(face, s, up, 1.6, 20).map(c.at)), { tone: "lo" });
+        }
+        svg += c.L(k.pathOf(circle(add(N, mul(f, frontOn ? -Lh * 0.1 : Lh * 0.1)), s, up, rf, 32).map(c.at)), { tone: "faint" });
+        return { d: k.depthOf(N, c.P), svg };
+      };
+      const tail = (() => {
+        const b = add(C, mul(f, -R * 0.75));
+        const pts = [add(b, [0, 0, R * 0.25]), add(b, mul(f, -R * 0.75), [0, 0, R * 0.55]), add(b, mul(f, -R * 0.85), [0, 0, R * 0.3]), add(b, mul(f, -0.2), [0, 0, -R * 0.15])];
+        return { d: k.depthOf(add(b, mul(f, -R * 0.4)), c.P), svg: poly(pts.map(c.at), "drone-hull", "mid") };
+      })();
+
+      const sc = c.at(C), r = R * kk;
+      let shell = `<circle class="drone-shell" cx="${sc[0].toFixed(1)}" cy="${sc[1].toFixed(1)}" r="${r.toFixed(2)}"/>`;
+      const seams = [];
+      for (const hz of [0.38, -0.42]) seams.push(runs(circle(add(C, [0, 0, R * hz]), [1, 0, 0], [0, 1, 0], R * Math.sqrt(1 - hz * hz), 56), faces));
+      const notEye = (p) => faces(p) && dot(rel(p), f) < 0.72;
+      seams.push(runs(circle(C, s, up, R, 56), notEye));
+      seams.push(runs(circle(C, mul(add(f, mul(s, 0.9)), 0.743), up, R, 56), notEye), runs(circle(C, mul(add(f, mul(s, -0.9)), 0.743), up, R, 56), notEye));
+      shell += c.L(seams.join(""), { tone: "lo" });
+      const grille = [];
+      for (let i = -3; i <= 3; i++) for (const lat of [0.62, 0.7]) { const az = h + Math.PI + i * 0.13; const p = add(C, mul([Math.cos(az) * Math.sqrt(1 - lat * lat), Math.sin(az) * Math.sqrt(1 - lat * lat), lat], R)); if (faces(p)) grille.push(c.at(p)); }
+      shell += c.D(grille, { size: 0.4, tone: "mid" });
+      shell += `<circle class="iso-line iso-edge" data-tone="hi" fill="none" cx="${sc[0].toFixed(1)}" cy="${sc[1].toFixed(1)}" r="${r.toFixed(2)}"/>`;
+      if (dot(f, V) > 0.12) {
+        const eye = (deg) => { const a = (deg * Math.PI) / 180; return circle(add(C, mul(f, R * Math.cos(a))), s, up, R * Math.sin(a), 40).map(c.at); };
+        shell += poly(eye(40), "drone-bezel", "mid") + poly(eye(31), "drone-glass", "hi");
+        shell += c.L(k.pathOf(eye(20), true), { tone: "faint" });
+        const vents = [-1, 1].map((sg) => k.pathOf([add(C, mul(f, R * 0.8), mul(up, sg * R * 0.52), mul(s, -R * 0.22)), add(C, mul(f, R * 0.8), mul(up, sg * R * 0.52), mul(s, R * 0.22))].map(c.at))).join("");
+        shell += c.L(vents, { tone: "mid" });
+        shell += `<g class="drone-eye">${c.D([c.at(add(C, mul(f, R)))], { size: 1.6, tone: "hi" })}</g>`;
+      }
+      shell += `<g class="drone-lamp">${c.D([c.at(add(C, [0, 0, R]))], { size: 1.1, tone: "hi" })}</g>`;
+      const nac = [nacelle(1), nacelle(-1), tail];
+      const dc = k.depthOf(C, c.P);
+      const body = [...nac.filter((n) => n.d < dc).sort((a, b) => a.d - b.d).map((n) => n.svg), shell, ...nac.filter((n) => n.d >= dc).sort((a, b) => a.d - b.d).map((n) => n.svg)].join("");
+      const beam = target ? c.L(k.segment(add(C, mul(f, R)), target, c.P), { tone: "lit", className: "beam" }) + c.D([c.at(target)], { size: 1.2, tone: "hi", pulse: true }) : "";
+      c.floor(`<g class="drone-shadow">${c.halo({ x: x - R * 1.4, y: y - R * 1.4, w: R * 2.8, d: R * 2.8, r: R * 1.4 }, 0, 0.5)}</g>`);
+      c.put([x, y, 30], `<g class="drone">${beam}${body}</g>`);
+    },
+  },
+
+  scaffold: {
+    family: "floor", label: "Scaffolding", maps: "an open PR or branch building a ghost", fixtures: "all", w: 48, d: 44, top: 32,
+    build(c, { x, y, w = 48, d = 44, h = 32 }) {
+      const sc = { x: x - w / 2, y: y - d / 2, w, d, r: 1 };
+      c.floor(`<path class="iso-line scaffold" d="${c.k.planOutline(sc, 0, c.P, 2)}"/>`);
+      for (const [px, py] of c.k.corners(sc, 0)) c.put([px, py, h / 2], `<path class="iso-line scaffold" d="${c.k.rise([px, py], 0, h, c.P)}"/><path class="iso-line scaffold" d="${c.k.rise([px, py], h - 0.1, h, c.P)}"/>`);
+      c.put([x, y, h], `<path class="iso-line scaffold" d="${c.k.planOutline(sc, h, c.P, 2)}"/>`);
+    },
+  },
+
+  crane: {
+    family: "floor", label: "Crane", maps: "CI: a pipeline run lifting a branch through its checks", fixtures: "all (GitHub Actions, local harness)", w: 30, d: 92, top: 70,
+    build(c, { x, y, span = 84, h = 64, at = 0.5, lift = 0.4, run = "running" }) {
+      const hs = span / 2, gx = 11, lamp = { running: "run", passed: "ok", failed: "fail" }[run] || "ok";
+      for (const sy of [-1, 1]) {
+        const ey = y + sy * hs;
+        c.floor(c.halo({ x: x - 15, y: ey - 3, w: 30, d: 6, r: 1 }, 0, 3) + c.S(c.k.slabOf({ x: x - 15, y: ey - 3, w: 30, d: 6, r: 1 }, 0, 3, c.P, 2, 0.4), { tone: "lo" }));
+        for (const sx of [-1, 1]) c.put([x + sx * gx, ey, h / 2], c.box(x + sx * gx - 1.8, ey - 1.8, 3.6, 3.6, 3, h - 3, { tone: "mid" }, 2, 0.3));
+        c.put([x, ey, h - 6], c.L(c.k.segment([x - gx, ey, h - 14], [x + gx, ey, h - 2], c.P) + c.k.segment([x + gx, ey, h - 14], [x - gx, ey, h - 2], c.P), { tone: "lo" }));
+      }
+      for (const sx of [-1, 1]) c.put([x + sx * gx, y, h + 2], c.box(x + sx * gx - 2.2, y - hs - 3, 4.4, span + 6, h, 4, { tone: "mid" }, 2, 0.4) + c.L(c.k.segment([x + sx * gx, y - hs, h + 4.1], [x + sx * gx, y + hs, h + 4.1], c.P), { tone: "faint" }));
+      const ty = y - hs + 8 + (span - 16) * at, hookZ = h - 8 - (h - 22) * (1 - lift);
+      const trolley = c.box(x - gx - 1, ty - 5, 2 * gx + 2, 10, h + 4, 5, { tone: "hi", crease: "lo" }, 2, 0.4) + c.lamp(x + 5, ty, h + 9, lamp);
+      const cable = c.L(c.k.segment([x - 1.2, ty, h + 4], [x - 1.2, ty, hookZ + 6], c.P) + c.k.segment([x + 1.2, ty, h + 4], [x + 1.2, ty, hookZ + 6], c.P), { tone: "mid" });
+      const load = c.box(x - 6, ty - 6, 12, 12, hookZ - 6, 8, { tone: run === "failed" ? "lo" : "hi", crease: "lo" }, 2, 0.4) + c.L(c.k.sideSeam({ x: x - 6, y: ty - 6, w: 12, d: 12, r: 0.6 }, hookZ - 2, c.P, 2), { tone: "lo" });
+      c.put([x, ty, hookZ], `<g class="crane-load" data-run="${run}">${cable}${load}</g>`);
+      c.put([x, ty, h + 6], trolley);
+    },
+  },
+
+  inspection: {
+    family: "floor", label: "Inspection station", maps: "you: a human reviewer", fixtures: "all", w: 66, d: 40, top: 30,
+    build(c, { x, y, waiting = 3 }) {
+      c.plinth(x + 8, y, 66, 40);
+      c.put([x + 12, y, 11], c.box(x - 6, y - 12, 36, 24, 4, 14, { tone: "mid" }, 3, 0.6), [[[x + 7, y - 1, 18.5], c.box(x - 2, y - 8, 18, 14, 18, 1, { tone: "hi", crease: "lo" }, 2)], [[x + 22, y + 2, 21], c.cyl(x + 22, y + 2, 4, 18, 6, { tone: "mid" }) + c.L(c.k.ring(x + 22, y + 2, 2, 24, c.P, 14), { tone: "hi" })]]);
+      for (let i = 0; i < Math.min(waiting, 4); i++) c.put([x - 18.5, y - 8.5 + i * 9, 7.5], c.box(x - 22, y - 12 + i * 9, 7, 7, 4, 7, { tone: "hi", crease: "lo" }, 2, 0.3));
+      c.put([x + 34, y - 12, 5], c.lamp(x + 34, y - 12, 4));
+    },
+  },
+
+  radar: {
+    family: "machine", label: "Radar", maps: "telemetry exporter: an OTel SDK, a log shipper", fixtures: "Acquit (D13)", w: 40, d: 36, top: 46,
+    build(c, { x, y }) {
+      c.plinth(x, y, 40, 36);
+      c.put([x, y, 10], c.box(x - 14, y - 12, 28, 24, 4, 12, { tone: "mid" }, 3, 0.5) + c.D(c.k.dotGrid(x - 10, y - 8, 4, 2, 3, 16, c.P), { size: 0.45, tone: "lo" }),
+        [[[x + 4, y + 2, 28], c.cyl(x + 4, y + 2, 2, 16, 22, { tone: "mid" }, 14)],
+          [[x + 4, y + 2, 40], c.cyl(x + 4, y + 2, 12, 38, 2.5, { tone: "hi", crease: "lo" }, 44, 0.4) + c.L(c.k.ring(x + 4, y + 2, 8, 40.5, c.P, 40), { tone: "lo" }) + c.L(c.k.ring(x + 4, y + 2, 4, 40.5, c.P, 28), { tone: "lo" }) + c.D([c.at([x + 4, y + 2, 41])], { size: 1, tone: "hi" })],
+          [[x - 10, y + 8, 17], c.lamp(x - 10, y + 8, 16)]]);
+    },
+  },
+
+  crate: {
+    family: "machine", label: "Crate", maps: "anything not yet placed or recognized", fixtures: "all (unplaced tray)", w: 40, d: 40, top: 30,
+    build(c, { x, y, variant = "?" }) {
+      c.floor(c.halo({ x: x - 16, y: y - 16, w: 32, d: 32, r: 2 }, 0, 26));
+      const b = { x: x - 16, y: y - 16, w: 32, d: 32, r: 1.5 };
+      const bands = [9, 18].map((z) => c.L(c.k.sideSeam(b, z, c.P, 2), { tone: "lo" })).join("");
+      c.put([x, y, 13], c.S(c.k.slabOf(b, 0, 26, c.P, 2, 0.6), { tone: "mid", inner: bands }) + c.L(c.k.planOutline(c.k.insetPlan(b, 3), 26, c.P, 2), { tone: "faint" }) + c.screws(b, 2.5, 26) + c.text(x, y + 3, 26, variant, { size: 9, anchor: "middle", tone: "mid" }));
+    },
+  },
+};
+
+function sceneBounds(scene, ASSETS) {
+  const pts = [];
+  for (const e of scene.entities) {
+    const a = ASSETS[e.kind];
+    for (const [sx, sy] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) for (const z of [0, a.top]) pts.push([e.x + (sx * a.w) / 2, e.y + (sy * a.d) / 2, z]);
+  }
+  return pts;
+}
+
+function projectionFor(k, scene, ASSETS, { width, height, azimuth, elevation, scale, pivot, pad = 80 }) {
+  const pts = sceneBounds(scene, ASSETS);
+  if (!scale) scale = k.fitProjection(pts, width, height, { pad, azimuth, elevation }).scale;
+  if (!pivot) {
+    const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+    pivot = [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2, 20];
+  }
+  const p0 = k.iso(pivot, { origin: [0, 0], scale, azimuth, elevation });
+  return { origin: [width / 2 - p0[0], height / 2 - p0[1]], scale, azimuth, elevation, pivot };
+}
+
+function renderScene(k, ASSETS, scene, P0, { width, height, label = "" }) {
+  const floor = [], upright = [], labels = [];
+  let P = P0, focus = [0, 0, 0], grow = 1;
+  const at = (p) => k.iso(p, P);
+  const depth = (p) => k.depthOf([focus[0] + (p[0] - focus[0]) * grow, focus[1] + (p[1] - focus[1]) * grow, p[2] * grow], P);
+  const view = k.towardViewer(P);
+  const cam = k.cameraOf(P);
+  const view3 = [cam.cosA * cam.cosE, cam.sinA * cam.cosE, cam.sinE];
+  let tag = "";
+  const wrap = (svg) => (tag ? `<g ${tag}>${svg}</g>` : svg);
+
+  const c = {
+    k, P, at, view, view3,
+    label: (p, text, side = 1) => labels.push({ pt: at(p), text, side }),
+    rightOf: (plan, z) => k.corners(plan, 0).map(([x, y]) => [x, y, z]).reduce((m, p) => (at(p)[0] > at(m)[0] ? p : m)),
+    S: (paths, o) => k.solidSvg(paths, o),
+    L: (d, o) => k.lineSvg(d, o),
+    D: (pts, o) => k.dotsSvg(pts, o),
+    box: (x, y, w, d, z, h, o = {}, steps = 3, bevel = 0.5) => k.solidSvg(k.slabOf({ x, y, w, d, r: o.r ?? 1.5 }, z, h, P, steps, bevel), o),
+    cyl: (x, y, r, z, h, o = {}, steps = 28, bevel = 0) => k.solidSvg(k.cylinder(x, y, r, z, h, P, steps, bevel), o),
+    prism: (ring, z, h, o = {}) => k.solidSvg(k.extrude(ring, z, h, P, { convex: true, bevel: 0.3 }), o),
+    halo: (plan, z, h) => `<path class="iso-halo" d="${k.haloOf(plan, z, h, P)}"/>`,
+    screws: (plan, inset, z) => k.dotsSvg(k.corners(plan, inset).map(([x, y]) => at([x, y, z])), { size: 0.5 }),
+    lamp: (x, y, z, state) => `<g class="lamp"${state ? ` data-lamp="${state}"` : ""}>${k.solidSvg(k.cylinder(x, y, 2.4, z, 1.8, P, 16, 0), { tone: "hi", crease: "none" })}</g>`,
+    floor: (svg) => floor.push({ d: 0, svg: wrap(svg) }),
+    put: (center, svg, mounts = []) => {
+      const inner = mounts.slice().sort((a, b) => depth(a[0]) - depth(b[0])).map((m) => m[1]).join("");
+      upright.push({ d: depth(center), svg: wrap(svg + inner) });
+    },
+    plinth(cx, cy, w, d, h = 3) {
+      const plan = { x: cx - w / 2, y: cy - d / 2, w, d, r: 3 };
+      c.lastPlinth = plan;
+      c.floor(c.halo(plan, 0, h) + c.S(k.slabOf(plan, 0, h, P, 4, 0.6), { tone: "lo" }) + c.L(k.planOutline(k.insetPlan(plan, 3), h, P, 3), { tone: "faint" }) + c.screws(plan, 5, h));
+    },
+    frontFace(hw, hd) {
+      const n = [[1, 0], [-1, 0], [0, 1], [0, -1]].reduce((best, v) => (v[0] * view[0] + v[1] * view[1] > best[0] * view[0] + best[1] * view[1] ? v : best));
+      return [n, n[0] ? hw : hd];
+    },
+    text(x, y, z, str, { size = 4, tone = "mid", anchor = "start", along } = {}) {
+      const o0 = at([0, 0, 0]), a1 = at([1, 0, 0]), b1 = at([0, 1, 0]), ex = { x: [a1[0] - o0[0], a1[1] - o0[1]], y: [b1[0] - o0[0], b1[1] - o0[1]] };
+      const dirs = (along ? [along, [-along[0], -along[1]]] : [[1, 0], [0, -1], [-1, 0], [0, 1]]).map((u) => [u, [u[0] * ex.x[0] + u[1] * ex.y[0], u[0] * ex.x[1] + u[1] * ex.y[1]]]);
+      const [u, U] = dirs.reduce((b, d) => (d[1][0] / Math.hypot(...d[1]) > b[1][0] / Math.hypot(...b[1]) ? d : b));
+      let V = [-u[1] * ex.x[0] + u[0] * ex.y[0], -u[1] * ex.x[1] + u[0] * ex.y[1]];
+      if (V[1] < 0) V = [-V[0], -V[1]];
+      const o = at([x, y, z]), f = (n) => n.toFixed(3);
+      return k.faceTextSvg(`matrix(${f(U[0])} ${f(U[1])} ${f(V[0])} ${f(V[1])} ${f(o[0])} ${f(o[1])})`, str, { size, tone, anchor });
+    },
+  };
+
+  for (const t of scene.territories || []) {
+    const ents = t.entities.map((id) => scene.entities.find((e) => e.id === id)).filter(Boolean);
+    if (!ents.length) continue;
+    let [x0, y0, x1, y1] = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const e of ents) {
+      const a = ASSETS[e.kind], s = e.size || 1;
+      x0 = Math.min(x0, e.x - (a.w * s) / 2); x1 = Math.max(x1, e.x + (a.w * s) / 2);
+      y0 = Math.min(y0, e.y - (a.d * s) / 2); y1 = Math.max(y1, e.y + (a.d * s) / 2);
+    }
+    [x0, y0, x1, y1] = [x0 - 12, y0 - 12, x1 + 12, y1 + 12];
+    const ring = [[x0, y0], [x1, y0], [x1, y1], [x0, y1], [x0, y0]];
+    const fill = ring.map((p, i) => (i ? "L" : "M") + at([p[0], p[1], 0]).map((v) => v.toFixed(1)).join(" ")).join("") + "Z";
+    let svg = `<path class="terr-fill" d="${fill}"/>` + c.L(k.onTop(ring, 0.2, P), { tone: "mid", dashed: t.state === "unclaimed" });
+    svg += c.text(x0 + 3, y1 + 7, 0, t.label, { size: 4.2, tone: "mid" });
+    if (t.state === "passed") svg += `<g class="seal">${c.cyl(x1 - 10, y0 + 10, 6.5, 0, 1.4, { tone: "hi" }, 24)}${c.D([at([x1 - 10, y0 + 10, 1.4])], { size: 1.1, tone: "hi" })}</g>`;
+    floor.push({ d: -2e6, svg: `<g class="terr" data-id="${t.id}" data-state="${t.state}"${t.stale ? " data-stale" : ""}>${svg}</g>` });
+  }
+
+  for (const b of scene.belts || []) {
+    tag = `class="belt" data-from="${b.from}" data-to="${b.to}"${b.tone === "red" ? ' data-tone="red"' : ""}${b.ghost ? " data-ghost" : ""}`;
+    if (b.ghost) {
+      const ends = [b.pts[0], b.pts[b.pts.length - 1]].map(([x, y]) => at([x, y, 0.4]));
+      floor.push({ d: -1e6, svg: `<g ${tag}>${c.L(k.onTop(b.pts, 0.4, P), { tone: "hi", dashed: true })}${c.D(ends, { size: 0.9, tone: "hi" })}</g>` });
+      continue;
+    }
+    let svg = "";
+    for (let i = 0; i < b.pts.length - 1; i++) {
+      const [a, e] = [b.pts[i], b.pts[i + 1]];
+      const x = Math.min(a[0], e[0]) - 5, y = Math.min(a[1], e[1]) - 5;
+      svg += c.S(k.slabOf({ x, y, w: Math.abs(e[0] - a[0]) + 10, d: Math.abs(e[1] - a[1]) + 10, r: 1 }, 0, 1.6, P, 2, 0.3), { tone: "lo" });
+    }
+    for (let i = 0; i < b.pts.length - 1; i++) {
+      const [a, e] = [b.pts[i], b.pts[i + 1]];
+      const nx = Math.sign(e[1] - a[1]), ny = Math.sign(e[0] - a[0]);
+      for (const off of [-3.4, 3.4]) svg += c.L(k.lineOnTop([a[0] + nx * off, a[1] - ny * off], [e[0] + nx * off, e[1] - ny * off], 1.6, P), { tone: "lo" });
+    }
+    svg += c.L(k.onTop(b.pts, 1.7, P), { tone: b.tone === "red" ? "red" : "hi", flow: true });
+    floor.push({ d: -1e6, svg: `<g ${tag}>${svg}</g>` });
+  }
+  tag = "";
+
+  if (scene.wall) {
+    const { x: wx, y0, y1, gaps = [], text } = scene.wall;
+    tag = `class="wall"`;
+    c.floor(c.L(k.onTop([[wx, y0], [wx, y1]], 0, P), { tone: "mid", dashed: true }) + (text ? c.text(wx - 8, y1 - 4, 0, text, { size: 5, tone: "mid" }) : ""));
+    for (let yy = y0; yy <= y1; yy += 22) if (!gaps.some(([a, b]) => yy > a - 4 && yy < b + 4)) c.put([wx, yy, 6], c.box(wx - 2.5, yy - 2.5, 5, 5, 0, 12, { tone: "mid" }, 2, 0.4) + c.D([at([wx, yy, 12])], { size: 0.5, tone: "hi" }));
+    tag = "";
+  }
+
+  const anchors = {};
+  for (const e of scene.entities) {
+    const a = ASSETS[e.kind];
+    tag = `class="ent" data-id="${e.id}" data-kind="${e.kind}" data-state="${e.state || "ok"}"`;
+    c.lastPlinth = null;
+    grow = e.size || 1; focus = [e.x, e.y, 0];
+    if (grow !== 1) {
+      const q0 = k.iso([e.x, e.y, 0], P0), qe = k.iso([e.x, e.y, 0], { ...P0, scale: P0.scale * grow, origin: [0, 0] });
+      P = { ...P0, scale: P0.scale * grow, origin: [q0[0] - qe[0], q0[1] - qe[1]] };
+    }
+    c.P = P; c.id = e.id;
+    const before = labels.length;
+    a.build(c, { ...e.params, x: e.x, y: e.y, state: e.state, variant: e.variant, explode: e.explode || 0 });
+    for (const l of labels.slice(before)) l.id = e.id;
+    if (e.variant && c.lastPlinth) {
+      const pl = c.lastPlinth, [n, half] = c.frontFace(pl.w / 2, pl.d / 2);
+      const [px, py] = [pl.x + pl.w / 2 + n[0] * (half + 6), pl.y + pl.d / 2 + n[1] * (half + 6)];
+      c.floor(c.text(px, py, 0, e.variant, { size: 5, tone: "mid", anchor: "middle", along: [-n[1], n[0]] }));
+    }
+    if (e.state === "fail") {
+      const s = at([e.x, e.y, a.top - 4]);
+      c.put([e.x, e.y, a.top + 10], `<g class="smoke">${[0, 1, 2, 3].map((i) => `<circle cx="${s[0].toFixed(1)}" cy="${s[1].toFixed(1)}" r="${(3 + i).toFixed(1)}" style="--i:${i}"/>`).join("")}</g>`);
+    }
+    anchors[e.id] = at([e.x, e.y, a.top + (a.explodes ? (e.explode || 0) * a.explodes : 0)]);
+    P = P0; c.P = P0; grow = 1;
+  }
+  tag = "";
+
+  floor.sort((a, b) => a.d - b.d);
+  upright.sort((a, b) => a.d - b.d);
+  const svg = k.figureSvg({ width, height, label, body: [...floor, ...upright].map((p) => p.svg) });
+  return { svg, anchors, labels };
+}
+
+function layoutCallouts(labels, { gap = 15, pad = 28, scale = 1, offset = [0, 0] } = {}) {
+  const groups = {};
+  for (const l of labels) (groups[l.id] ||= []).push(l);
+  const out = [];
+  for (const list of Object.values(groups)) {
+    const pts = list.map((l) => ({ text: l.text, ax: offset[0] + l.pt[0] * scale, ay: offset[1] + l.pt[1] * scale }));
+    const col = Math.max(...pts.map((p) => p.ax)) + pad;
+    // Anchors farther from the label column sort lower, so leaders fan out instead of crossing when parts share a row.
+    const key = (p) => p.ay + (col - p.ax) * 0.3;
+    pts.sort((a, b) => key(a) - key(b));
+    let prev = -Infinity;
+    for (const p of pts) { p.ty = Math.max(p.ay, prev + gap); prev = p.ty; p.tx = col; }
+    const shift = (pts[pts.length - 1].ty - pts[pts.length - 1].ay) / 2;
+    for (const p of pts) p.ty -= Math.min(shift, p.ty - (pts[0].ay - gap * 2));
+    out.push(...pts);
+  }
+  return out;
+}
+
+function calloutHtml(callouts, width, height) {
+  const lines = callouts.map((c) => `<path d="M${c.ax.toFixed(1)} ${c.ay.toFixed(1)}L${(c.tx - 8).toFixed(1)} ${c.ty.toFixed(1)}H${(c.tx - 2).toFixed(1)}"/><circle cx="${c.ax.toFixed(1)}" cy="${c.ay.toFixed(1)}" r="1.8"/>`).join("");
+  const texts = callouts.map((c) => `<span class="xl" style="left:${c.tx.toFixed(1)}px;top:${c.ty.toFixed(1)}px">${c.text}</span>`).join("");
+  return `<svg class="leaders" width="${width}" height="${height}">${lines}</svg>${texts}`;
+}
+
+let az = 35, el = 30, state = "ok", ex = 1;
+const twin = { form: true, tile: true, badge: true };
+const cells = [...document.querySelectorAll(".cell")];
+function draw() {
+  for (const cel of cells) {
+    const pane = cel.querySelector(".pane"), wide = cel.classList.contains("wide"), isEx = "explode" in cel.dataset, CW = wide ? 1000 : isEx ? 440 : 300, CH = wide ? 320 : isEx ? 260 : 220;
+    const base = JSON.parse(cel.dataset.scene);
+    const entities = base.map((e) => {
+      const a = ASSETS[e.kind], out = { ...e };
+      if (!("fixed" in cel.dataset)) out.state = a.family === "floor" ? "ok" : state;
+      if ("explode" in cel.dataset) out.explode = ex;
+      if ("twins" in cel.dataset) { if (!twin.form) { out.size = 1; out.params = {}; } if (!twin.badge) out.variant = undefined; }
+      return out;
+    });
+    const scene = { entities };
+    const top = Math.max(...entities.map((e) => ASSETS[e.kind].top + (ASSETS[e.kind].explodes || 0) * (e.explode || 0)));
+    if (!cel.scale) cel.scale = Math.min(4.6, projectionFor(k, { entities: base.map((e) => ({ ...e, size: e.size || 1 })) }, ASSETS, { width: CW, height: CH, azimuth: 45, elevation: 30, pad: 34 }).scale * (isEx ? 0.7 : 0.82));
+    const P = projectionFor(k, scene, ASSETS, { width: CW, height: CH, azimuth: az, elevation: el, scale: cel.scale, pivot: [isEx ? 30 : 0, isEx ? -30 : 0, top * 0.42] });
+    const out = renderScene(k, ASSETS, scene, P, { width: CW, height: CH });
+    pane.innerHTML = out.svg;
+    const svg = pane.querySelector("svg"), rect = pane.getBoundingClientRect();
+    svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+    const sx = Math.min(rect.width / CW, rect.height / CH), ox = (rect.width - CW * sx) / 2, oy = (rect.height - CH * sx) / 2;
+    const pos = ([x, y]) => "left:" + (ox + x * sx).toFixed(1) + "px;top:" + (oy + y * sx).toFixed(1) + "px";
+    let html = out.labels.length ? calloutHtml(layoutCallouts(out.labels, { scale: sx, offset: [ox, oy] }), rect.width, rect.height) : "";
+    if ("twins" in cel.dataset && twin.tile) html += entities.map((e) => '<span class="tile" data-state="' + e.state + '" style="' + pos(out.anchors[e.id]) + '"><b>' + e.mono + "</b>" + e.name + (twin.form ? " <small>" + e.reading + "</small>" : "") + "</span>").join("");
+    cel.querySelector(".over").innerHTML = html;
+  }
+  document.querySelector("#azv").textContent = Math.round(((az % 360) + 360) % 360) + "°";
+  document.querySelector("#elv").textContent = Math.round(el) + "°";
+  document.querySelector("#exv").textContent = Math.round(ex * 100) + "%";
+  document.querySelector("#az").value = ((az % 360) + 360) % 360; document.querySelector("#el").value = el; document.querySelector("#ex").value = ex * 100;
+}
+let pending = false;
+const redraw = () => { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; draw(); }); };
+document.querySelector("#az").oninput = (e) => { az = +e.target.value; redraw(); };
+document.querySelector("#el").oninput = (e) => { el = +e.target.value; redraw(); };
+document.querySelector("#ex").oninput = (e) => { ex = +e.target.value / 100; redraw(); };
+let playing = 0;
+document.querySelector("#exPlay").onclick = () => {
+  if (playing) { cancelAnimationFrame(playing); playing = 0; return; }
+  const t0 = performance.now();
+  const tick = (t) => { const p = ((t - t0) / 2400) % 2; ex = 0.5 - 0.5 * Math.cos(Math.PI * p); draw(); playing = requestAnimationFrame(tick); };
+  playing = requestAnimationFrame(tick);
+};
+for (const b of document.querySelectorAll("#state button")) b.onclick = () => { state = b.dataset.s; for (const o of document.querySelectorAll("#state button")) o.setAttribute("aria-pressed", o === b); redraw(); };
+for (const b of document.querySelectorAll("#twinCtl button")) b.onclick = () => { twin[b.dataset.t] = !twin[b.dataset.t]; b.setAttribute("aria-pressed", twin[b.dataset.t]); redraw(); };
+let drag = null;
+addEventListener("pointerdown", (e) => { if (e.target.closest(".cell")) { drag = { x: e.clientX, y: e.clientY, az, el }; e.preventDefault(); } });
+addEventListener("pointermove", (e) => { if (!drag) return; az = drag.az - (e.clientX - drag.x) * 0.5; el = Math.min(89, Math.max(8, drag.el + (e.clientY - drag.y) * 0.3)); redraw(); });
+addEventListener("pointerup", () => (drag = null));
+addEventListener("resize", redraw);
+const params = new URLSearchParams(location.hash.slice(1));
+if (params.get("az")) az = +params.get("az");
+if (params.get("el")) el = +params.get("el");
+if (params.get("ex")) ex = +params.get("ex");
+if (params.get("twins")) for (const t of Object.keys(twin)) { twin[t] = params.get("twins").includes(t); document.querySelector('#twinCtl [data-t="' + t + '"]').setAttribute("aria-pressed", twin[t]); }
+if (params.get("state")) { state = params.get("state"); for (const o of document.querySelectorAll("#state button")) o.setAttribute("aria-pressed", o.dataset.s === state); }
+draw();
+</script></body></html>

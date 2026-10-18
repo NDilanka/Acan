@@ -1,0 +1,1031 @@
+[
+  {
+    "eval": "window.polishAudit = (panels) => {\n const vis = e => e && !e.hidden && e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && +getComputedStyle(e).opacity > 0.05;\n const t = document.querySelector('#toast'), out = [];\n if (t.classList.contains('on') && vis(t)) {\n  const r = t.getBoundingClientRect();\n  if (r.left < 0 || r.top < 0 || r.right > innerWidth || r.bottom > innerHeight) out.push('toast offscreen');\n  for (const sel of ['.fl', '.nav', '.cbar', '.hint', '#insp.open', '.pop.open', '#rpdeck', ...panels])\n   for (const e of document.querySelectorAll(sel)) { if (!vis(e)) continue; const q = e.getBoundingClientRect(); if (q.width && q.height && r.left < q.right && r.right > q.left && r.top < q.bottom && r.bottom > q.top) out.push('toast over ' + sel); }\n }\n return out;\n}; true",
+    "expect": true
+  },
+  {
+    "eval": "window.clashAudit = () => {\n const visible = e => e.getClientRects().length && getComputedStyle(e).visibility !== 'hidden' && +getComputedStyle(e).opacity > 0;\n const hits = (a,b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;\n const issues = [], labels = [...document.querySelectorAll('.clash-foot-label,.clash-pin-label')].filter(visible);\n const obstacles = [...document.querySelectorAll('#clashCard,#clashOrder,#clashToolbar,.chip')].filter(visible);\n labels.forEach((e,i) => {\n  const r=e.getBoundingClientRect();\n  if (r.left < 0 || r.right > innerWidth || r.top < 0 || r.bottom > innerHeight) issues.push('offscreen '+e.textContent);\n  [...labels.slice(i+1),...obstacles].forEach(o=> {if(hits(r,o.getBoundingClientRect())) issues.push(e.textContent+' overlaps '+(o.id||o.textContent));});\n });\n const card=document.querySelector('#clashCard');\n if (!card.hidden) {\n  const r=card.getBoundingClientRect();\n  if (r.left<0 || r.top<0 || r.right>innerWidth || r.bottom>innerHeight) issues.push('card offscreen');\n  if (card.scrollHeight > card.clientHeight) issues.push('card scrolls');\n }\n const plate=document.querySelector('#clashOrder');\n if (!plate.hidden) {\n  const r=plate.getBoundingClientRect();\n  [...document.querySelectorAll('.chip,.clash-pin-label')].filter(visible).forEach(e=> {if(hits(r,e.getBoundingClientRect())) issues.push('order overlaps '+e.textContent);});\n }\n return issues;\n}; clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "({state:clashState,mode:document.body.dataset.mode,claimed:document.querySelector('#clashOrder').textContent.includes('CLAIMED · Claude Code'),checks:document.querySelectorAll('.clash-checks>span').length,count:document.querySelector('#clashCount').textContent})",
+    "expect": {
+      "state": {
+        "footprints": false,
+        "open": null,
+        "settled": {
+          "c1": null,
+          "c2": null
+        },
+        "kv": {
+          "script": "ok",
+          "connection": "ok",
+          "log": [
+            {
+              "op": "get_intent",
+              "reason": "Read declared intents for paypal-payouts · cached 12 s",
+              "bytes": 412,
+              "destination": "git.orrery.local",
+              "state": "sent",
+              "count": 1
+            },
+            {
+              "op": "forecast",
+              "reason": "Forecast path overlap for d1 and d3 · cached 12 s",
+              "bytes": 538,
+              "destination": "git.orrery.local",
+              "state": "sent",
+              "count": 1
+            }
+          ],
+          "held": [],
+          "bytes": 950,
+          "panel": false,
+          "decisions": {},
+          "seq": 0,
+          "lastReturn": 0
+        }
+      },
+      "mode": "live",
+      "claimed": true,
+      "checks": 4,
+      "count": "2 clashes before code"
+    }
+  },
+  {
+    "eval": "(()=>{const rows=[...document.querySelectorAll('.hint,#cbar,#clashToolbar')].map(e=>Math.round(e.getBoundingClientRect().top));return {hintLines:document.querySelectorAll('.hint').length,toolbarKeys:document.querySelectorAll('#clashToolbar kbd').length,topStrips:new Set(rows).size,hintAboveScene:getComputedStyle(document.querySelector('.hint')).zIndex,waiting:document.querySelector('#clashWaiting').textContent}})()",
+    "expect": {
+      "hintLines": 1,
+      "toolbarKeys": 0,
+      "topStrips": 2,
+      "hintAboveScene": "45",
+      "waiting": "2 clashes"
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "[document.querySelector('.bl .wait b').textContent, ENT.you.reading]",
+    "expect": [
+      "9",
+      "9 waiting"
+    ]
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-01-claimed"
+  },
+  {
+    "key": "v"
+  },
+  {
+    "eval": "({on:clashState.footprints,outlines:document.querySelectorAll('.clash-footprint').length,sources:[...document.querySelectorAll('.clash-foot-label')].map(e=>e.textContent).sort(),shown:document.querySelector('#clashWriteCount').textContent})",
+    "expect": {
+      "on": true,
+      "outlines": 3,
+      "sources": [
+        "api · Claude Code · static",
+        "api · Droid · history · not declared",
+        "breaker · Droid · proposal · not claimed",
+        "retry · Claude Code · declared · kvarm intent",
+        "sqlite · Claude Code · declared · kvarm intent",
+        "sqlite · Droid · history · not declared"
+      ],
+      "shown": "6 writes · 6 shown"
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-02-footprints"
+  },
+  {
+    "key": "v"
+  },
+  {
+    "eval": "({on:clashState.footprints,pins:document.querySelectorAll('.clash-pin').length,outlines:document.querySelectorAll('.clash-footprint').length})",
+    "expect": {
+      "on": false,
+      "pins": 2,
+      "outlines": 0
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-03-footprints-off"
+  },
+  {
+    "key": "i",
+    "after": 1000
+  },
+  {
+    "eval": "({open:clashState.open,mode:document.body.dataset.mode,anchorVisible:(()=>{const r=document.querySelector('[data-clash-pin=c1]').getBoundingClientRect(),c=document.querySelector('#clashCard').getBoundingClientRect();return r.x+r.width/2<c.left && r.x>0 && r.y>150})(),scroll:document.querySelector('#clashCard').scrollHeight>document.querySelector('#clashCard').clientHeight})",
+    "expect": {
+      "open": "c1",
+      "mode": "live",
+      "anchorVisible": true,
+      "scroll": false
+    }
+  },
+  {
+    "eval": "({title:document.querySelector('#clashCard h2').textContent,breaks:document.querySelector('.clash-breaks').textContent,suggested:document.querySelector('[data-suggested=true]').dataset.clashResolution,collapsed:[...document.querySelectorAll('.clash-declaration')].every(e=>!e.open),partner:document.querySelector('.clash-declaration[data-unclaimed=true] summary small').textContent,heroFirst:document.querySelector('.clash-card-head').nextElementSibling.className})",
+    "expect": {
+      "title": "Retry meets breaker",
+      "breaks": "Breaks w3 · payout p-2307Required · replay 15:45 · p-2307 pending, then settled once",
+      "suggested": "split",
+      "collapsed": true,
+      "partner": "proposal · not claimed",
+      "heroFirst": "clash-consequence"
+    }
+  },
+  {
+    "key": "2",
+    "after": 30
+  },
+  {
+    "eval": "({mode:document.body.dataset.mode,open:clashState.open})",
+    "expect": {
+      "mode": "live",
+      "open": "c1"
+    }
+  },
+  {
+    "key": "3",
+    "after": 30
+  },
+  {
+    "key": "4",
+    "after": 30
+  },
+  {
+    "key": "l",
+    "after": 30
+  },
+  {
+    "key": "g",
+    "after": 30
+  },
+  {
+    "key": "a",
+    "after": 30
+  },
+  {
+    "key": "b",
+    "after": 30
+  },
+  {
+    "key": "c",
+    "after": 30
+  },
+  {
+    "key": "j",
+    "after": 30
+  },
+  {
+    "key": "k",
+    "after": 30
+  },
+  {
+    "key": "r",
+    "after": 30
+  },
+  {
+    "key": "s",
+    "after": 30
+  },
+  {
+    "key": "w",
+    "after": 30
+  },
+  {
+    "key": "k",
+    "ctrl": true
+  },
+  {
+    "eval": "({open:clashState.open,mode:document.body.dataset.mode,layers:document.querySelector('#layers').classList.contains('open'),palette:document.querySelector('#pal').classList.contains('open'),floor:document.body.classList.contains('floor-open'),queue:document.body.classList.contains('queue-open')})",
+    "expect": {
+      "open": "c1",
+      "mode": "live",
+      "layers": false,
+      "palette": false,
+      "floor": false,
+      "queue": false
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "(()=>{const p=document.querySelector('.clash-why'),r=p.getBoundingClientRect();return {whyLines:Math.round(r.height/parseFloat(getComputedStyle(p).lineHeight)),suggested:document.querySelector('[data-suggested=true]').dataset.clashResolution,allOptions:[...document.querySelectorAll('[data-clash-resolution]')].map(e=>e.getBoundingClientRect().bottom<=document.querySelector('#clashCard').getBoundingClientRect().bottom-10)}})()",
+    "expect": {
+      "whyLines": 1,
+      "suggested": "split",
+      "allOptions": [
+        true,
+        true,
+        true,
+        true
+      ]
+    }
+  },
+  {
+    "eval": "(()=>{const e=document.querySelector('[data-suggested=true]'),p=e.parentNode;p.append(e);const r={kind:e.dataset.clashResolution,last:e===p.lastElementChild,border:getComputedStyle(e).borderTopColor,firstBorder:getComputedStyle(p.querySelector('button')).borderTopColor};p.insertBefore(e,p.querySelector('button'));return r})()",
+    "expect": {
+      "kind": "split",
+      "last": true,
+      "border": "rgba(201, 164, 92, 0.396)",
+      "firstBorder": "rgba(255, 255, 255, 0.08)"
+    }
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-04-belt-card"
+  },
+  {
+    "click": ".clash-declaration summary"
+  },
+  {
+    "eval": "({expanded:document.querySelector('.clash-declaration').open,assertion:document.querySelector('.clash-declaration p').textContent,sources:[...document.querySelectorAll('.clash-source')].map(e=>e.textContent)})",
+    "expect": {
+      "expanded": true,
+      "assertion": "Retry x2 with jitter. A lost response marks the effect row pending.",
+      "sources": [
+        "declared · kvarm intent",
+        "declared · kvarm intent",
+        "static",
+        "declared"
+      ]
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-26-expanded-declaration"
+  },
+  {
+    "click": ".clash-declaration summary"
+  },
+  {
+    "key": "1",
+    "shift": true
+  },
+  {
+    "eval": "({open:clashState.open,kind:clashState.settled.c1,ghost:ENT['clash-port'].state,port:document.querySelector('.clash-port').textContent,label:document.querySelector('[data-clash-pin=c1] .clash-pin-label').textContent,undo:clashUndo.length,toast:document.querySelector('#toast').textContent})",
+    "expect": {
+      "open": null,
+      "kind": "split",
+      "ghost": "ghost",
+      "port": "paypal.result v1owner Claude Code",
+      "label": "port v1",
+      "undo": 1,
+      "toast": "Settled before code. Decision logged to Kvarm. No file was edited."
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "[document.querySelector('.bl .wait b').textContent, ENT.you.reading]",
+    "expect": [
+      "8",
+      "8 waiting"
+    ]
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-05-split"
+  },
+  {
+    "key": "i",
+    "after": 1000
+  },
+  {
+    "eval": "({open:clashState.open,mode:document.body.dataset.mode,anchorVisible:(()=>{const r=document.querySelector('[data-clash-pin=c2]').getBoundingClientRect(),c=document.querySelector('#clashCard').getBoundingClientRect();return r.x+r.width/2<c.left && r.x>0 && r.y>150})(),scroll:document.querySelector('#clashCard').scrollHeight>document.querySelector('#clashCard').clientHeight})",
+    "expect": {
+      "open": "c2",
+      "mode": "live",
+      "anchorVisible": true,
+      "scroll": false
+    }
+  },
+  {
+    "eval": "({suggested:document.querySelector('[data-suggested=true]').dataset.clashResolution,why:document.querySelector('.clash-why').textContent,advisory:document.querySelector('#clashCard').dataset.advisory,partner:document.querySelector('.clash-declaration[data-unclaimed=true] summary small').textContent,differences:[...document.querySelectorAll('.clash-declaration summary b')].map(e=>e.textContent)})",
+    "expect": {
+      "suggested": "serialize",
+      "why": "Why · paypal-payouts already depends on radar-otel.",
+      "advisory": "true",
+      "partner": "history · not declared",
+      "differences": [
+        "payout_state column",
+        "traceparent column"
+      ]
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-06-layer-card"
+  },
+  {
+    "key": "1",
+    "shift": true
+  },
+  {
+    "eval": "({open:clashState.open,kind:clashState.settled.c2,count:document.querySelector('#clashCount').textContent,label:document.querySelector('[data-clash-pin=c2] .clash-pin-label').textContent,sequence:document.querySelector('[data-clash-effect=c2-serialize]').textContent,short:document.querySelector('[data-clash-effect=c2-serialize] path').getTotalLength()<220})",
+    "expect": {
+      "open": null,
+      "kind": "serialize",
+      "count": "0 clashes · 2 settled before code",
+      "label": "after radar-otel",
+      "sequence": "traceparent → payout_stateafter · pin waits for upstream revision",
+      "short": true
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "[document.querySelector('.bl .wait b').textContent, ENT.you.reading]",
+    "expect": [
+      "7",
+      "7 waiting"
+    ]
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-07-done"
+  },
+  {
+    "wait": 3000
+  },
+  {
+    "eval": "document.querySelector('#toast').classList.contains('on')",
+    "expect": false
+  },
+  {
+    "key": "z",
+    "ctrl": true,
+    "after": 1000
+  },
+  {
+    "eval": "({open:clashState.open,settled:clashState.settled,undo:clashUndo.length,after:document.querySelectorAll('[data-clash-effect=c2-serialize]').length,toast:document.querySelector('#toast').textContent})",
+    "expect": {
+      "open": "c2",
+      "settled": {
+        "c1": "split",
+        "c2": null
+      },
+      "undo": 1,
+      "after": 0,
+      "toast": "Undid the settlement. dec-c2-2 superseded · Kvarm keeps both. No file was edited."
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "[document.querySelector('.bl .wait b').textContent, ENT.you.reading]",
+    "expect": [
+      "8",
+      "8 waiting"
+    ]
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-08-undo"
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "click": "[data-clash-pin=c1]",
+    "after": 1000
+  },
+  {
+    "eval": "({open:clashState.open,mode:document.body.dataset.mode,anchorVisible:(()=>{const r=document.querySelector('[data-clash-pin=c1]').getBoundingClientRect(),c=document.querySelector('#clashCard').getBoundingClientRect();return r.x+r.width/2<c.left && r.x>0 && r.y>150})(),scroll:document.querySelector('#clashCard').scrollHeight>document.querySelector('#clashCard').clientHeight})",
+    "expect": {
+      "open": "c1",
+      "mode": "live",
+      "anchorVisible": true,
+      "scroll": false
+    }
+  },
+  {
+    "eval": "({settled:document.querySelector('[data-clash-resolution=split]').getAttribute('aria-pressed'),checked:document.querySelector('[data-clash-resolution=split] em').textContent,filled:getComputedStyle(document.querySelector('[data-clash-resolution=split]')).backgroundColor})",
+    "expect": {
+      "settled": "true",
+      "checked": "✓ settled",
+      "filled": "rgb(25, 55, 44)"
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-09-reopen"
+  },
+  {
+    "key": "1",
+    "shift": true
+  },
+  {
+    "eval": "({open:clashState.open,kind:clashState.settled.c1,undo:clashUndo.length,toast:document.querySelector('#toast').textContent})",
+    "expect": {
+      "open": null,
+      "kind": "split",
+      "undo": 1,
+      "toast": "Settlement unchanged. No file was edited."
+    }
+  },
+  {
+    "key": "Enter",
+    "after": 1000
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "eval": "({open:clashState.open,cardHidden:document.querySelector('#clashCard').hidden,focus:document.activeElement.dataset.clashPin,settled:clashState.settled})",
+    "expect": {
+      "open": null,
+      "cardHidden": true,
+      "focus": "c1",
+      "settled": {
+        "c1": "split",
+        "c2": null
+      }
+    }
+  },
+  {
+    "wait": 2600
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-23-escape"
+  },
+  {
+    "eval": "window.clashCameraBefore = [goal.x,goal.y,goal.s]; true",
+    "expect": true
+  },
+  {
+    "key": "Enter",
+    "after": 1000
+  },
+  {
+    "eval": "({open:clashState.open,mode:document.body.dataset.mode,anchorVisible:(()=>{const r=document.querySelector('[data-clash-pin=c1]').getBoundingClientRect(),c=document.querySelector('#clashCard').getBoundingClientRect();return r.x+r.width/2<c.left && r.x>0 && r.y>150})(),scroll:document.querySelector('#clashCard').scrollHeight>document.querySelector('#clashCard').clientHeight})",
+    "expect": {
+      "open": "c1",
+      "mode": "live",
+      "anchorVisible": true,
+      "scroll": false
+    }
+  },
+  {
+    "key": "l"
+  },
+  {
+    "eval": "document.querySelector('#layers').classList.contains('open')",
+    "expect": false
+  },
+  {
+    "click": "#layersBtn"
+  },
+  {
+    "eval": "({open:clashState.open,layers:document.querySelector('#layers').classList.contains('open')})",
+    "expect": {
+      "open": "c1",
+      "layers": true
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "({unchanged:JSON.stringify(clashCameraBefore)===JSON.stringify([goal.x,goal.y,goal.s]),open:clashState.open})",
+    "expect": {
+      "unchanged": true,
+      "open": "c1"
+    }
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-24-keyboard-reopen"
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "eval": "({open:clashState.open,layers:document.querySelector('#layers').classList.contains('open'),cardHidden:document.querySelector('#clashCard').hidden})",
+    "expect": {
+      "open": "c1",
+      "layers": false,
+      "cardHidden": false
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-25-top-layer"
+  },
+  {
+    "key": "2",
+    "shift": true
+  },
+  {
+    "eval": "({kind:clashState.settled.c1,label:document.querySelector('[data-clash-effect=left]').textContent,opacity:getComputedStyle(document.querySelector('.ent[data-id=breaker]')).opacity,port:document.querySelectorAll('.clash-port').length})",
+    "expect": {
+      "kind": "left",
+      "label": "waits for payout order",
+      "opacity": "1",
+      "port": 0
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-10-retry-wins"
+  },
+  {
+    "key": "Enter",
+    "after": 1000
+  },
+  {
+    "key": "3",
+    "shift": true
+  },
+  {
+    "eval": "({kind:clashState.settled.c1,replan:document.querySelector('[data-clash-effect=replanning]').textContent,label:document.querySelector('[data-clash-pin=c1] .clash-pin-label').textContent})",
+    "expect": {
+      "kind": "right",
+      "replan": "Claude Code · replanning",
+      "label": "breaker first"
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-11-breaker-wins"
+  },
+  {
+    "key": "Enter",
+    "after": 1000
+  },
+  {
+    "key": "4",
+    "shift": true
+  },
+  {
+    "eval": "({kind:clashState.settled.c1,sequence:document.querySelector('[data-clash-effect=c1-serialize]').textContent,label:document.querySelector('[data-clash-pin=c1] .clash-pin-label').textContent,short:document.querySelector('[data-clash-effect=c1-serialize] path').getTotalLength()<220})",
+    "expect": {
+      "kind": "serialize",
+      "sequence": "payout order → breakerafter · pin waits for upstream revision",
+      "label": "after payout order",
+      "short": true
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-12-serialize-belt"
+  },
+  {
+    "key": "i",
+    "after": 1000
+  },
+  {
+    "key": "2",
+    "shift": true
+  },
+  {
+    "eval": "({kind:clashState.settled.c2,owner:document.querySelector('[data-clash-effect=owner]').textContent,count:document.querySelector('#clashCount').textContent})",
+    "expect": {
+      "kind": "owner",
+      "owner": "owner Droid",
+      "count": "0 clashes · 2 settled before code"
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-13-owner"
+  },
+  {
+    "key": "Enter",
+    "after": 1000
+  },
+  {
+    "key": "3",
+    "shift": true
+  },
+  {
+    "eval": "({kind:clashState.settled.c2,merged:document.querySelector('[data-clash-effect=merge]').textContent,outlines:document.querySelectorAll('.clash-merged').length})",
+    "expect": {
+      "kind": "merge",
+      "merged": "joined migration territory",
+      "outlines": 1
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-14-merge"
+  },
+  {
+    "key": "i",
+    "after": 1000
+  },
+  {
+    "eval": "({open:clashState.open,mode:document.body.dataset.mode,anchorVisible:(()=>{const r=document.querySelector('[data-clash-pin=c1]').getBoundingClientRect(),c=document.querySelector('#clashCard').getBoundingClientRect();return r.x+r.width/2<c.left && r.x>0 && r.y>150})(),scroll:document.querySelector('#clashCard').scrollHeight>document.querySelector('#clashCard').clientHeight})",
+    "expect": {
+      "open": "c1",
+      "mode": "live",
+      "anchorVisible": true,
+      "scroll": false
+    }
+  },
+  {
+    "eval": "document.querySelector('[aria-pressed=true][data-clash-resolution]').dataset.clashResolution",
+    "expect": "serialize"
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "click": "#clashFootprints"
+  },
+  {
+    "eval": "clashState.footprints",
+    "expect": true
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-15-mouse-footprints"
+  },
+  {
+    "click": "[data-clash-pin=c1]",
+    "after": 1000
+  },
+  {
+    "eval": "({open:clashState.open,mode:document.body.dataset.mode,anchorVisible:(()=>{const r=document.querySelector('[data-clash-pin=c1]').getBoundingClientRect(),c=document.querySelector('#clashCard').getBoundingClientRect();return r.x+r.width/2<c.left && r.x>0 && r.y>150})(),scroll:document.querySelector('#clashCard').scrollHeight>document.querySelector('#clashCard').clientHeight})",
+    "expect": {
+      "open": "c1",
+      "mode": "live",
+      "anchorVisible": true,
+      "scroll": false
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-16-mouse-belt-card"
+  },
+  {
+    "click": "[data-clash-close]"
+  },
+  {
+    "eval": "({open:clashState.open,hidden:document.querySelector('#clashCard').hidden})",
+    "expect": {
+      "open": null,
+      "hidden": true
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-17-mouse-close"
+  },
+  {
+    "click": "#clashUndo",
+    "after": 1000
+  },
+  {
+    "eval": "({open:clashState.open,settled:clashState.settled})",
+    "expect": {
+      "open": "c2",
+      "settled": {
+        "c1": "serialize",
+        "c2": "owner"
+      }
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-18-mouse-undo"
+  },
+  {
+    "click": "[data-clash-close]"
+  },
+  {
+    "click": "[data-clash-pin=c1]",
+    "after": 1000
+  },
+  {
+    "click": "[data-clash-resolution=split]"
+  },
+  {
+    "eval": "({open:clashState.open,kind:clashState.settled.c1,port:document.querySelector('.clash-port').textContent})",
+    "expect": {
+      "open": null,
+      "kind": "split",
+      "port": "paypal.result v1owner Claude Code"
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-19-mouse-split"
+  },
+  {
+    "click": "[data-clash-pin=c2]",
+    "after": 1000
+  },
+  {
+    "eval": "({open:clashState.open,mode:document.body.dataset.mode,anchorVisible:(()=>{const r=document.querySelector('[data-clash-pin=c2]').getBoundingClientRect(),c=document.querySelector('#clashCard').getBoundingClientRect();return r.x+r.width/2<c.left && r.x>0 && r.y>150})(),scroll:document.querySelector('#clashCard').scrollHeight>document.querySelector('#clashCard').clientHeight})",
+    "expect": {
+      "open": "c2",
+      "mode": "live",
+      "anchorVisible": true,
+      "scroll": false
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-20-mouse-layer-card"
+  },
+  {
+    "click": "[data-clash-resolution=serialize]"
+  },
+  {
+    "eval": "({open:clashState.open,kind:clashState.settled.c2,count:document.querySelector('#clashCount').textContent})",
+    "expect": {
+      "open": null,
+      "kind": "serialize",
+      "count": "0 clashes · 2 settled before code"
+    }
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-21-mouse-done"
+  },
+  {
+    "click": "#clashFootprints"
+  },
+  {
+    "eval": "({on:clashState.footprints,outlines:document.querySelectorAll('.clash-footprint').length})",
+    "expect": {
+      "on": false,
+      "outlines": 0
+    }
+  },
+  {
+    "eval": "(async()=>{const snapshot=()=>JSON.stringify([...document.querySelectorAll('.clash-pin,#clashOrder,#clashToolbar')].map(e=>[e.style.left,e.style.top,e.textContent]));const a=snapshot();await new Promise(r=>setTimeout(r,300));return a===snapshot()})()",
+    "expect": true
+  },
+  {
+    "eval": "clashAudit()",
+    "expect": []
+  },
+  {
+    "eval": "polishAudit(['#clashCard','#clashOrder','#clashToolbar','#clashKvPanel','#clashProv','.clash-pin'])",
+    "expect": []
+  },
+  {
+    "shot": "clash-22-mouse-footprints-off"
+  },
+  {
+    "key": "z",
+    "ctrl": true,
+    "after": 1000
+  },
+  {
+    "eval": "({settled:clashState.settled,open:clashState.open})",
+    "expect": {
+      "settled": {
+        "c1": "split",
+        "c2": "owner"
+      },
+      "open": "c2"
+    }
+  },
+  {
+    "key": "z",
+    "ctrl": true,
+    "after": 1000
+  },
+  {
+    "eval": "({settled:clashState.settled,open:clashState.open,port:!!ENT['clash-port']})",
+    "expect": {
+      "settled": {
+        "c1": "serialize",
+        "c2": "owner"
+      },
+      "open": "c1",
+      "port": false
+    }
+  },
+  {
+    "key": "Escape"
+  },
+  {
+    "key": "4"
+  },
+  {
+    "eval": "({mode:document.body.dataset.mode,open:clashState.open})",
+    "expect": {
+      "mode": "replay",
+      "open": null
+    }
+  },
+  {
+    "key": "i"
+  },
+  {
+    "eval": "({mode:document.body.dataset.mode,open:clashState.open})",
+    "expect": {
+      "mode": "replay",
+      "open": null
+    }
+  },
+  {
+    "key": "1"
+  },
+  {
+    "key": "i",
+    "after": 1000
+  },
+  {
+    "eval": "({mode:document.body.dataset.mode,open:clashState.open})",
+    "expect": {
+      "mode": "live",
+      "open": "c2"
+    }
+  },
+  {
+    "click": "#modes [data-mode=blueprint]"
+  },
+  {
+    "eval": "({mode:document.body.dataset.mode,open:clashState.open})",
+    "expect": {
+      "mode": "blueprint",
+      "open": null
+    }
+  },
+  {
+    "click": ".egress",
+    "after": 300
+  },
+  {
+    "eval": "[document.querySelector('#net').classList.contains('open'), !document.querySelector('#clashKvPanel').hidden]",
+    "expect": [
+      false,
+      true
+    ]
+  },
+  {
+    "key": "Escape"
+  }
+]
