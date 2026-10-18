@@ -13,6 +13,7 @@ Resume file for a fresh orchestrator chat. Updated 2026-10-18. No git repo, no l
 - **Verify every agent's work yourself.** Rerun its steps files and look at the key shots before you accept it. Log each decision with `~/.factory/plugins/marketplaces/pvstack/plugins/pvstack/skills/show-me-your-work/scripts/log.sh research/agentic-ux/decisions.tsv <phase> <decision> <why> <evidence> <result>`.
 - **Write replies to the user in plain sentences.** No em dashes and no mid-sentence colons. Cite principles where they decide something.
 - **Fresh-chat rule (user AGENTS.md).** At every boundary, update this file. Suggest a fresh chat when the chat is heavy and the moment is cheap. Never suggest while a subagent is running or a change is half-made. When you suggest, end with a copy-paste handoff prompt.
+- **Open core (user decision, 2026-10-18).** An open core keeps startup options open. The desktop app and the agent adapters are open. A possible team or hosted version stays separate. Keep that boundary clean in the design and the code. Anything team or hosted lives behind its own seam and is never required by the open desktop app.
 - **Kvarm** is opt-in to the user's own origin, with declared egress. Agents self-claim after a readback match plus a Kvarm lease. The gate is advisory and blocks publication only. The world is a canvas of systems, not agents.
 
 ## Repo and name
