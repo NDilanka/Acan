@@ -1,4 +1,4 @@
-# Concurrent same-file editing: prior art for Orrery and Kvarm
+# Concurrent same-file editing: prior art for Acan and Kvarm
 
 ## Six-line summary
 
@@ -7,7 +7,7 @@
 [sourced] Jujutsu and Pijul preserve unresolved conflicts instead of requiring immediate resolution. [Jujutsu](https://docs.jj-vcs.dev/latest/conflicts/), [Pijul](https://pijul.org/manual/why_pijul.html)  
 [sourced] Claude Code and Codex document worktrees as practical parallel-edit isolation. [Claude](https://code.claude.com/docs/en/worktrees), [Codex](https://developers.openai.com/codex/app/worktrees)  
 [inferred] Existing agent tool calls need versioned edit transactions, not merely collaborative editor buffers.  
-[inferred] Orrery's opportunity is cross-harness coordination with explicit conflicts, recoverability, and tested publication.
+[inferred] Acan's opportunity is cross-harness coordination with explicit conflicts, recoverability, and tested publication.
 
 ## Scope and evidence rules
 
@@ -33,7 +33,7 @@
 
 [sourced] Peritext addresses inline formatting intent, including annotations attached to character ranges. It guarantees convergence while explicitly acknowledging that not all author intentions can coexist. Its original scope excludes complete document collaboration and block-level structures. [Peritext](https://www.inkandswitch.com/peritext/)
 
-[inferred] Peritext suggests how Orrery could anchor agent provenance or review annotations. It is not a semantic code merger. Likewise, preventing character interleaving does not reconcile two incompatible function implementations.
+[inferred] Peritext suggests how Acan could anchor agent provenance or review annotations. It is not a semantic code merger. Likewise, preventing character interleaving does not reconcile two incompatible function implementations.
 
 [sourced] Eg-walker records an event graph and temporarily reconstructs CRDT state for concurrent merges. Measured against selected implementations and editing traces, it reports substantially lower steady-state memory and faster loading. One divergent document took about one hour with the tested OT implementation and 24 milliseconds with Eg-walker. These are text-processing results, not agent throughput measurements. [Paper](https://arxiv.org/html/2409.14252v1)
 
@@ -71,7 +71,7 @@
 
 [inferred] Snapshot-based mergers fit agent patch and whole-file tools better than keystroke protocols. Their costs include parsing, heuristic node identity, language configuration, formatting preservation, and fallback behavior. They need the original base revision, not just the latest file.
 
-[inferred] Structural alignment can follow a moved method, but cannot establish that its new callers still obey its contract. Independent AST nodes can interact semantically across files. Fewer markers can mean better reconciliation or hidden errors. Orrery should retain alternatives and attach validation results to the exact merged snapshot.
+[inferred] Structural alignment can follow a moved method, but cannot establish that its new callers still obey its contract. Independent AST nodes can interact semantically across files. Fewer markers can mean better reconciliation or hidden errors. Acan should retain alternatives and attach validation results to the exact merged snapshot.
 
 ## 3. Patch theory and first-class conflicts
 
@@ -131,7 +131,7 @@
 
 [sourced] Its claim protocol writes an assignment, waits 50 milliseconds, then rereads. The safety argument assumes verification observes the converged state. Crashed claims are reclaimed using a timeout. [Protocol and appendix A.5](https://arxiv.org/html/2510.18893)
 
-[inferred] A fixed delay cannot guarantee mutual exclusion under unbounded message delay. Two partitioned agents can each read their own assignment and proceed before eventual convergence. Deterministic final ownership is weaker than at-most-one active worker. Orrery should not copy this as a fenced lease protocol.
+[inferred] A fixed delay cannot guarantee mutual exclusion under unbounded message delay. Two partitioned agents can each read their own assignment and proceed before eventual convergence. Deterministic final ownership is weaker than at-most-one active worker. Acan should not copy this as a fenced lease protocol.
 
 ### Products and integration measurements
 
@@ -143,7 +143,7 @@
 
 [sourced] Another observational study replayed 747 co-active PR pairs and reported 41.7% textual conflicts for cross-agent pairs versus 19.8% for same-agent pairs. Temporal PR overlap does not establish simultaneous tool execution. [Study](https://arxiv.org/html/2607.04697v2)
 
-[inferred] None of these percentages directly predicts Orrery's conflict rate. Worktree integration, toy shared-buffer generation, and uncontrolled PR histories measure different populations. Observation also costs context and tokens, while worktrees cost environment setup and later integration.
+[inferred] None of these percentages directly predicts Acan's conflict rate. Worktree integration, toy shared-buffer generation, and uncontrolled PR histories measure different populations. Observation also costs context and tokens, while worktrees cost environment setup and later integration.
 
 ## Comparison
 

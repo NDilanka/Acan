@@ -107,7 +107,7 @@
       "wait",
       true,
       true,
-      "Codex holds g1 in Kvarm · no Orrery readback"
+      "Codex holds g1 in Kvarm · no Acan readback"
     ]
   },
   {
@@ -122,7 +122,7 @@
     "expect": true
   },
   {
-    "eval": "[document.querySelector('#orders-prov').hidden,document.querySelector('#orders-prov').textContent.includes('No Orrery readback'),document.querySelector('#orders-prov-text').textContent.includes('authenticated')]",
+    "eval": "[document.querySelector('#orders-prov').hidden,document.querySelector('#orders-prov').textContent.includes('No Acan readback'),document.querySelector('#orders-prov-text').textContent.includes('authenticated')]",
     "expect": [
       false,
       true,

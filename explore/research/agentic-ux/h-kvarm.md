@@ -1,8 +1,8 @@
-# Kvarm in Orrery
+# Kvarm in Acan
 
 ## Summary
 
-[inferred] Make Kvarm the coordination and publication authority, while Orrery owns the drawing, runtime evidence, and interpretation.
+[inferred] Make Kvarm the coordination and publication authority, while Acan owns the drawing, runtime evidence, and interpretation.
 [inferred] Ship all four support modes together, with explicit consent before any connection.
 [sourced] Kvarm already supplies workspaces, forecasts, fenced claims, exact-tree integration, decisions, and graded provenance (`/tmp/kvarm/README.md:62-70`).
 [inferred] Store the blueprint and portable choices in repository files hosted by Kvarm, and publish choice reasoning into Kvarm decisions.
@@ -49,16 +49,16 @@
   [sourced] Audit exports provenance and recorded ref updates in stable first-seen order, with 200-record pages, but ordinary push and explicit-merge recording are best effort (`/tmp/kvarm/docs/architecture.md:290`, `/tmp/kvarm/README.md:442`).
   [inferred] Neither audit nor webhook delivery history is a complete runtime timeline.
 
-## Mapping Orrery concepts
+## Mapping Acan concepts
 
-[sourced] Orrery's current loop includes witnesses, locked checks, readbacks, self-claims, declarations, and pre-code clash settlement (`/home/factory-user/orrery/explore/ui-v2/CORE.md:9-13`).
+[sourced] Acan's current loop includes witnesses, locked checks, readbacks, self-claims, declarations, and pre-code clash settlement (`/home/factory-user/acan/explore/ui-v2/CORE.md:9-13`).
 [inferred] The following fit assessments describe the integration, not additional Kvarm guarantees.
 
-| Orrery concept | Kvarm object or exact operation | Fit and remaining gap |
+| Acan concept | Kvarm object or exact operation | Fit and remaining gap |
 |---|---|---|
 | Territory | [sourced] Workspace and `set_intent` (`/tmp/kvarm/packages/ops/src/index.js:350-378`, `/tmp/kvarm/packages/ops/src/index.js:881-892`). | [inferred] Partial fit, because enduring system ownership differs from temporary path coverage and needs territory IDs in YAML. |
 | Ghost | [sourced] `create_workspace`, `create_change_set` with `draft` (`/tmp/kvarm/packages/ops/src/index.js:350-398`). | [inferred] Partial fit, because a draft can back proposed code but a predicted machine need not have code or a branch yet. |
-| Order | [sourced] `create_issue`, `dispatch_issue` (`/tmp/kvarm/packages/ops/src/index.js:1287-1300`, `/tmp/kvarm/packages/ops/src/index.js:1345-1352`). | [inferred] Good dispatch fit, with issued blueprint revision, witness IDs, and readback requirements added in Orrery files. |
+| Order | [sourced] `create_issue`, `dispatch_issue` (`/tmp/kvarm/packages/ops/src/index.js:1287-1300`, `/tmp/kvarm/packages/ops/src/index.js:1345-1352`). | [inferred] Good dispatch fit, with issued blueprint revision, witness IDs, and readback requirements added in Acan files. |
 | Witness | [sourced] Issue `evidence` accepts commit, check, run, workspace, and URL references (`/tmp/kvarm/packages/ops/src/index.js:1298-1300`). | [inferred] Weak fit, because evidence references do not define a replayable must-keep or must-not assertion. |
 | Locked check or budget, K16 | [sourced] `create_branch_rule`, `POST /api/v1/repos/:owner/:repo/check-runs` (`/tmp/kvarm/packages/ops/src/index.js:1452-1469`, `/tmp/kvarm/apps/platform/src/routes/api/checks.ts:27-40`). | [inferred] Partial fit, because ref protection is not field-level human ownership of budgets or check definitions. |
 | Readback | [sourced] `comment_issue`, `record_decision` (`/tmp/kvarm/packages/ops/src/index.js:1355-1361`, `/tmp/kvarm/packages/ops/src/index.js:1253-1265`). | [inferred] Weak fit, because neither stores a typed interpretation scored against witnesses before claiming. |
@@ -69,10 +69,10 @@
 | Bench | [sourced] `create_arena`, `rank_arena`, `select_arena_winner` (`/tmp/kvarm/packages/ops/src/index.js:980-1030`). | [inferred] Partial fit through attempts, without experiment funding, falsification criteria, or runtime replay. |
 | Choices ledger | [sourced] `record_decision`, `get_context` (`/tmp/kvarm/packages/ops/src/index.js:1253-1281`). | [inferred] Strong reasoning fit, with stable choice IDs, confidence, reversal cost, and revision links added in YAML. |
 | Replay | [sourced] `list_events`, `get_path_history`, `get_commit_diff`, `get_attribution` (`/tmp/kvarm/packages/ops/src/index.js:254-280`, `/tmp/kvarm/packages/ops/src/index.js:333-345`, `/tmp/kvarm/packages/ops/src/index.js:1243-1250`). | [inferred] Strong delivery-history fit, while runtime history requires a join to local telemetry by commit and session. |
-| Return brief | [sourced] `get_train`, `list_pending_reviews`, `get_context` (`/tmp/kvarm/packages/ops/src/index.js:581-588`, `/tmp/kvarm/packages/ops/src/index.js:649-655`, `/tmp/kvarm/packages/ops/src/index.js:1269-1281`). | [inferred] Good inputs for Orrery to compute changes since departure and consequences, rather than copy a timeline. |
-| Fog | [sourced] Forecast freshness and truncation, attribution evidence, and check completeness (`/tmp/kvarm/docs/architecture.md:30`, `/tmp/kvarm/docs/architecture.md:265-273`, `/tmp/kvarm/docs/architecture.md:318-326`). | [inferred] Partial fit that qualifies evidence without supplying all six Orrery fog signals. |
+| Return brief | [sourced] `get_train`, `list_pending_reviews`, `get_context` (`/tmp/kvarm/packages/ops/src/index.js:581-588`, `/tmp/kvarm/packages/ops/src/index.js:649-655`, `/tmp/kvarm/packages/ops/src/index.js:1269-1281`). | [inferred] Good inputs for Acan to compute changes since departure and consequences, rather than copy a timeline. |
+| Fog | [sourced] Forecast freshness and truncation, attribution evidence, and check completeness (`/tmp/kvarm/docs/architecture.md:30`, `/tmp/kvarm/docs/architecture.md:265-273`, `/tmp/kvarm/docs/architecture.md:318-326`). | [inferred] Partial fit that qualifies evidence without supplying all six Acan fog signals. |
 | Floor sessions | [sourced] Workspace actor and attribution session, plus `list_ci_jobs` (`/tmp/kvarm/docs/architecture.md:264`, `/tmp/kvarm/docs/architecture.md:316`, `/tmp/kvarm/packages/ops/src/index.js:1621-1627`). | [inferred] Partial fit, because a workspace is not a live process and CI claims are not agent heartbeats. |
-| Blueprint YAML | [sourced] `read_file`, `get_tree`, and git receive-pack (`/tmp/kvarm/packages/ops/src/index.js:228-250`, `/tmp/kvarm/docs/architecture.md:76-89`). | [inferred] Strong repository storage fit that leaves YAML validation, drawing diffs, and comment-preserving edits with Orrery. |
+| Blueprint YAML | [sourced] `read_file`, `get_tree`, and git receive-pack (`/tmp/kvarm/packages/ops/src/index.js:228-250`, `/tmp/kvarm/docs/architecture.md:76-89`). | [inferred] Strong repository storage fit that leaves YAML validation, drawing diffs, and comment-preserving edits with Acan. |
 
 ## Four integrations, one explicit connection
 
@@ -85,7 +85,7 @@
 
 [inferred] Join paths to blueprint entities without inventing runtime ownership.
 [inferred] Show unmapped paths in the tray, label declared versus observed footprints, and retain incomplete or stale markers.
-[sourced] Session observation still prioritizes native OTel, then opt-in hooks, then transcripts with drift warnings (`/home/factory-user/orrery/explore/map.md:202-218`).
+[sourced] Session observation still prioritizes native OTel, then opt-in hooks, then transcripts with drift warnings (`/home/factory-user/acan/explore/map.md:202-218`).
 [inferred] Join that local stream to Kvarm attribution by session and commit, never by a guessed model name.
 
 [sourced] There is also an outbound-client-friendly `GET /api/v1/repos/:owner/:repo/live` WebSocket and `list_repo_events` using `GET .../events?since=<seq>` (`/tmp/kvarm/apps/platform/src/routes/api/events.ts:14-45`, `/tmp/kvarm/packages/ops/src/index.js:263-269`).
@@ -95,8 +95,8 @@
 
 ### 2. Write orders and settlements through Kvarm
 
-[inferred] Posting creates an Orrery order revision, then `create_issue` with its ID, paths, witness references, and a fingerprint, followed by `dispatch_issue`.
-[inferred] Managed agents read `get_context`, submit a revision-bound readback to Orrery, and call `claim_task` themselves after matching checks.
+[inferred] Posting creates an Acan order revision, then `create_issue` with its ID, paths, witness references, and a fingerprint, followed by `dispatch_issue`.
+[inferred] Managed agents read `get_context`, submit a revision-bound readback to Acan, and call `claim_task` themselves after matching checks.
 [inferred] Preserve the returned generation and workspace, heartbeat every 120 seconds for a 600-second lease, and stop on `STALE_GENERATION`.
 [sourced] Kvarm supplies the lease and workspace, but not that readback gate (`/tmp/kvarm/packages/ops/src/index.js:823-866`).
 [inferred] Label raw Kvarm claims without readbacks as unmatched rather than retroactively claiming compliance.
@@ -107,12 +107,12 @@
 [inferred] Observe `get_train` and `get_change` until publication, with `merge_change` reserved for an explicit human action.
 [inferred] After an ambiguous write timeout, inspect the resulting object before retrying.
 
-[sourced] Orrery offers split at the port, either side winning, serialize, one migration owner, and merged territories before code (`/home/factory-user/orrery/explore/ui-v2/CORE.md:59-66`).
+[sourced] Acan offers split at the port, either side winning, serialize, one migration owner, and merged territories before code (`/home/factory-user/acan/explore/ui-v2/CORE.md:59-66`).
 [inferred] Persist each settlement as a choice and `record_decision`, then update affected intents.
 [inferred] A winning side makes the other replan, and one migration owner removes that path from other declarations.
 [inferred] Serialization records an order dependency first, then calls `add_dependency` only when an exact upstream revision exists.
 [sourced] Kvarm pins revisions, not hypothetical future work, and exposes stale or broken pins explicitly (`/tmp/kvarm/docs/architecture.md:330-333`).
-[inferred] A port split publishes an Orrery contract file before dependent code, because Kvarm contract capsules remain deferred.
+[inferred] A port split publishes an Acan contract file before dependent code, because Kvarm contract capsules remain deferred.
 [inferred] Merging territories changes blueprint ownership, while `compose_candidates` applies only when actual compatible code pieces exist.
 [sourced] Kvarm composition and deferred capsules are distinct mechanisms (`/tmp/kvarm/docs/architecture.md:40`, `/tmp/kvarm/docs/architecture.md:382`).
 
@@ -129,7 +129,7 @@
 
 ### 4. Keep the blueprint and choices in Kvarm
 
-[sourced] Orrery already requires repository YAML under `.orrery/`, with separate system, layout, territory, choice, machine, and protected check files (`/home/factory-user/orrery/explore/map.md:44`, `/home/factory-user/orrery/explore/map.md:297`).
+[sourced] Acan already requires repository YAML under `.acan/`, with separate system, layout, territory, choice, machine, and protected check files (`/home/factory-user/acan/explore/map.md:44`, `/home/factory-user/acan/explore/map.md:297`).
 [inferred] Keep that layout in the Kvarm-hosted repository and publish edits through ordinary commits, Kvarm changes, and the train.
 [inferred] Add small versioned order, witness, and readback documents that reference stable blueprint IDs.
 [inferred] Store portable, sanitized witness fixtures in the repository, but retain raw traces, transcripts, credentials, caches, and sensitive Replay payloads only locally.
@@ -143,10 +143,10 @@
 [inferred] Do not claim atomicity between a git commit and a D1 decision.
 [sourced] Attribution has a fixed provenance shape, so it is not the general choices or runtime-evidence store (`/tmp/kvarm/packages/ops/src/index.js:1225-1239`).
 
-[inferred] Enforce K16 with an evaluator owned by Orrery or a pinned human-owned runner, not evaluator code selected by the candidate branch.
+[inferred] Enforce K16 with an evaluator owned by Acan or a pinned human-owned runner, not evaluator code selected by the candidate branch.
 [inferred] Compare candidate budgets, checks, and CI configuration against the last human-approved definition digest.
 [inferred] Reject changed definitions unless a human approves their exact digest and candidate head.
-[inferred] Configure a required `orrery/locked-definitions` check through `create_branch_rule`, and report only through the separate trusted `ci` credential.
+[inferred] Configure a required `acan/locked-definitions` check through `create_branch_rule`, and report only through the separate trusted `ci` credential.
 [inferred] Agent edits remain proposals until that approval, never live changes to their grading target.
 [sourced] Protected-branch human approval counting excludes the change's recorded author user (`/tmp/kvarm/apps/platform/src/services/reviewGate.ts:153-154`).
 [inferred] Validate the solo owner's workflow rather than assuming the human who minted an authoring agent can satisfy an independent-reviewer requirement.
@@ -154,7 +154,7 @@
 ### Polling and rate budgets
 
 [sourced] Limits are 600 reads and 120 writes per minute per token, and a git push uses about two writes (`/tmp/kvarm/README.md:433-440`).
-[inferred] Cap Orrery at 480 reads and 90 writes per token per minute, across all windows and repositories.
+[inferred] Cap Acan at 480 reads and 90 writes per token per minute, across all windows and repositories.
 [inferred] For ten active repositories, six state reads every 30 seconds cost 120 reads per minute, and cursor polling every five seconds costs another 120.
 [inferred] The remaining 240-read budget covers pagination, selected checks, forecasts, and immutable details.
 [inferred] Debounce declaration forecasts by one second, poll selected checks at most every five seconds, and refresh decisions on relevant actions or return.
@@ -171,8 +171,8 @@
 
 ## Local-first honesty and permissions
 
-[sourced] Q16 requires an outbound destination, byte, and reason log, a hard offline switch, and a published data statement (`/home/factory-user/orrery/explore/map.md:230`).
-[sourced] V6 keeps update checks opt-in and starts the egress pill at "0 out" (`/home/factory-user/orrery/explore/proposals/ui-v1.md:14`).
+[sourced] Q16 requires an outbound destination, byte, and reason log, a hard offline switch, and a published data statement (`/home/factory-user/acan/explore/map.md:230`).
+[sourced] V6 keeps update checks opt-in and starts the egress pill at "0 out" (`/home/factory-user/acan/explore/proposals/ui-v1.md:14`).
 [inferred] Kvarm connection must therefore be opt-in, naming the user's own origin and what leaves the device before the first request.
 [inferred] Once connected, the pill must show actual egress, even when the destination belongs to the user.
 [inferred] Log API calls, git subprocess traffic, WebSocket traffic, redirects, and retries without logging tokens or bodies.
@@ -183,11 +183,11 @@
 [inferred] Local D1 and fake Artifacts tests do not constitute a self-contained local git platform.
 [inferred] Full Kvarm operation therefore needs its Cloudflare services unless Kvarm adds another storage implementation.
 
-[inferred] Offline Orrery keeps local files, cached Kvarm history, local agents, OTLP, and MCP working.
+[inferred] Offline Acan keeps local files, cached Kvarm history, local agents, OTLP, and MCP working.
 [inferred] Mark remote claims, checks, queue positions, and permissions stale.
 [inferred] Permit drafts and local commits, but do not report a queued write as a published order, remote lease, or successful landing.
 [inferred] Reconnect by checking current heads, policy, and leases before explicitly confirming deferred writes.
-[inferred] The hard switch must block Orrery-owned git and connector processes too.
+[inferred] The hard switch must block Acan-owned git and connector processes too.
 [inferred] It cannot honestly promise to block independently launched agents or the user's other software.
 
 [sourced] Humans own agent principals and mint repository-scoped expiring tokens with read or write roles and ref restrictions (`/tmp/kvarm/docs/agents/README.md:25-51`).
@@ -195,29 +195,29 @@
 [sourced] Read-agent tokens receive `read,api`, write-agent tokens receive `read,write,api`, and neither receives `ci` (`/tmp/kvarm/apps/platform/src/auth/agentTokens.ts:35-38`).
 [sourced] A human PAT's `api` scope follows the holder's repository role rather than defining read-only access (`/tmp/kvarm/apps/platform/src/services/authz.ts:123-153`).
 
-[sourced] A6 specifies three MCP permission levels without naming their exact boundaries in the supplied map (`/home/factory-user/orrery/explore/map.md:56`).
+[sourced] A6 specifies three MCP permission levels without naming their exact boundaries in the supplied map (`/home/factory-user/acan/explore/map.md:56`).
 [inferred] Propose observe, design, and build as the adapter's levels, pending specification.
 [inferred] Observe uses a repository read token and read-only tools.
-[inferred] Design permits local proposals but needs an Orrery operation allowlist if remote issue or decision writes are enabled.
+[inferred] Design permits local proposals but needs an Acan operation allowlist if remote issue or decision writes are enabled.
 [inferred] Build adds write-agent workspace refs, claims, intents, changes, and authorized queue actions.
 [inferred] Kvarm has no native middle "design-only" role, so giving an agent a raw write token bypasses that local distinction.
 [inferred] Human policy administration and escalation resolution stay outside all agent levels, and a separate trusted runner owns the `ci` credential.
 
-## Changes Kvarm should cause in Orrery
+## Changes Kvarm should cause in Acan
 
 [inferred] Stop designing a second branch coordinator, task lock, or merge scheduler.
 [sourced] Kvarm already has non-exclusive forecasts, generation-fenced claims, crash-reconciled publication, and exact-tree checks (`/tmp/kvarm/docs/architecture.md:318-346`).
-[inferred] Redesign clash pins around that evidence, while retaining Orrery's runtime consequence and witness interpretation.
+[inferred] Redesign clash pins around that evidence, while retaining Acan's runtime consequence and witness interpretation.
 [inferred] Keep semantic overlap advisory, rather than converting a heuristic hit into a mandatory clash.
 
 [inferred] Replace a single "agent did this" badge with principal, session, and evidence level.
 [inferred] Keep fog's owned, tested, and understood signals separate, because authenticated attribution proves none of the other two.
-[sourced] Orrery already names six independent fog signals (`/home/factory-user/orrery/explore/map.md:57`).
+[sourced] Acan already names six independent fog signals (`/home/factory-user/acan/explore/map.md:57`).
 [inferred] Bind inspection and acceptance to exact heads and witness-definition revisions, and carry human review acknowledgements only under Kvarm's content identity rules.
 [sourced] Exact-head approvals and content-keyed acknowledgements already exist (`/tmp/kvarm/docs/architecture.md:36-39`).
 
-[inferred] Show Kvarm publication blockers separately from Orrery's advisory inspection-capacity forecast.
-[sourced] The core spec makes the review gate advisory, while the earlier concept text proposes dispatch admission based on review minutes (`/home/factory-user/orrery/explore/ui-v2/CORE.md:3`, `/home/factory-user/orrery/explore/research/agentic-ux/concepts/00-judging.md:30`).
+[inferred] Show Kvarm publication blockers separately from Acan's advisory inspection-capacity forecast.
+[sourced] The core spec makes the review gate advisory, while the earlier concept text proposes dispatch admission based on review minutes (`/home/factory-user/acan/explore/ui-v2/CORE.md:3`, `/home/factory-user/acan/explore/research/agentic-ux/concepts/00-judging.md:30`).
 [inferred] Preserve self-claiming and show an attention warning rather than silently withholding the Kvarm task.
 [inferred] Make the bench an experiment brief and evidence comparison over arenas, not a replacement arena service.
 
@@ -226,8 +226,8 @@
 1. [inferred] Add a versioned witness object with blueprint revision, trace or fixture reference, assertion, evaluator identity, and exact-tree result.
    [inferred] Reject changes to locked definitions without human approval of the exact definition digest.
 2. [inferred] Add readbacks keyed by order revision and witness set, plus an optional server-side `claim_task` precondition requiring a matching readback.
-   [inferred] Orrery-only enforcement cannot govern agents using Kvarm directly.
-3. [inferred] Add path-specific protection for `.orrery/checks/`, budget fields in `system.yaml`, evaluator code, and `.kvarm/ci.json`.
+   [inferred] Acan-only enforcement cannot govern agents using Kvarm directly.
+3. [inferred] Add path-specific protection for `.acan/checks/`, budget fields in `system.yaml`, evaluator code, and `.kvarm/ci.json`.
    [sourced] Current `protected-path` escalation actually means a protected target ref, not configurable file protection (`/tmp/kvarm/apps/platform/src/services/reviewGate.ts:54-57`).
    [inferred] Until then, require a trusted locked-definition check and refuse managed edits or publication that lack human approval.
 4. [inferred] Add stable client IDs and idempotency keys for orders and decisions, with explicit supersession and immutable repository-revision links.
@@ -244,7 +244,7 @@
 - [inferred] Ship one explicit Kvarm connection, bounded polling, an honest network log, offline behavior, and revision-aware cached state.
 - [inferred] Draw workspaces, changes, attribution evidence, CI, review blockers, and Nexus evidence without claiming complete runtime visibility.
 - [inferred] Support issue-backed orders, managed readbacks, self-claims, intent updates, settlement decisions, and exact-head queue publication.
-- [inferred] Commit `.orrery/` through Kvarm and publish portable choice reasoning into Kvarm decisions with visible synchronization status.
+- [inferred] Commit `.acan/` through Kvarm and publish portable choice reasoning into Kvarm decisions with visible synchronization status.
 - [inferred] Join delivery history to local Replay and produce a source-linked return brief.
 - [inferred] Ship K16 enforcement before autonomous publication, and defer hosted fleets, WebSocket optimization, automated bench funding, and contract-capsule assumptions.
 

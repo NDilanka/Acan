@@ -17,14 +17,14 @@
 
 ## Artifacts and rerun
 
-The executable experiment is `/home/factory-user/orrery/explore/research/agentic-ux/same-file/replay/replay.py`.
+The executable experiment is `/home/factory-user/acan/explore/research/agentic-ux/same-file/replay/replay.py`.
 
-The full evidence is `/home/factory-user/orrery/explore/research/agentic-ux/same-file/replay/results.json`. It contains every merge and exclusion, every file pair, blob IDs, changed byte ranges, region IDs, conflict excerpts and source lines, and splice outcomes.
+The full evidence is `/home/factory-user/acan/explore/research/agentic-ux/same-file/replay/results.json`. It contains every merge and exclusion, every file pair, blob IDs, changed byte ranges, region IDs, conflict excerpts and source lines, and splice outcomes.
 
 Run the following command.
 
 ```sh
-python3 /home/factory-user/orrery/explore/research/agentic-ux/same-file/replay/replay.py
+python3 /home/factory-user/acan/explore/research/agentic-ux/same-file/replay/replay.py
 ```
 
 The script requires Python 3, Node, npm, Git, and network access for its first run. It clones missing repositories and installs the pinned TypeScript parser under `/tmp/same-file-replay/`. It reads `/tmp/kvarm` only as a clone source. It never checks out or edits corpus source files.

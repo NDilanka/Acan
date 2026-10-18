@@ -140,7 +140,7 @@ function frApply() {
 }
 
 function frYaml() {
-  const L = [["c", "# .orrery/system.yaml · drafted from " + FRD.folder + " @ " + FRD.rev], ["c", "# yours to edit · Orrery re-reads it on save"], ["", "machines:"]];
+  const L = [["c", "# .acan/system.yaml · drafted from " + FRD.folder + " @ " + FRD.rev], ["c", "# yours to edit · Acan re-reads it on save"], ["", "machines:"]];
   const ids = [...frDrawn()].filter((id) => FRD.match[id]);
   const parts = FR.items.filter((it) => frFx(it) === "part").map(frName), lane = FR.items.some((it) => frFx(it) === "lane");
   for (const id of ids) {
@@ -207,13 +207,13 @@ function frRender() {
     const left = undecided().length, y = yamlHtml();
     h = sum + '<p class="fr-lede">Confident matches are on the plant in grey. They light up when spans arrive. Check the rest. <b>Nothing is written until you continue.</b></p>';
     h += '<div class="fr-sec"><h5>Unplaced tray<i>' + (FR.items.length - left) + " of " + FR.items.length + " checked</i></h5>" + FR.items.map(cardHtml).join("") + "</div>";
-    h += '<details class="fr-yaml" open><summary>.orrery/system.yaml<i>' + y.n + " lines · draft</i></summary><pre>" + y.html + "</pre></details>";
+    h += '<details class="fr-yaml" open><summary>.acan/system.yaml<i>' + y.n + " lines · draft</i></summary><pre>" + y.html + "</pre></details>";
     ft = '<div class="fr-keys"><span><kbd>J</kbd><kbd>K</kbd> move</span><span><kbd>Y</kbd> agree</span><span><kbd>N</kbd> the other</span><span><kbd>Ctrl Z</kbd> undo</span></div>';
-    ft += '<button class="fr-go" data-fr="write-orrery">Write .orrery/' + (left ? " <small>" + left + " stay in the tray</small><kbd>Shift Enter</kbd>" : " <kbd>Enter</kbd>") + "</button>";
+    ft += '<button class="fr-go" data-fr="write-acan">Write .acan/' + (left ? " <small>" + left + " stay in the tray</small><kbd>Shift Enter</kbd>" : " <kbd>Enter</kbd>") + "</button>";
   }
   if (FR.phase === "connect") {
     const open = FR.agents.filter((a) => a.st === "found").length;
-    h = sum + '<p class="fr-lede">Wrote <b>.orrery/system.yaml</b> and <b>layout.yaml</b>. Now point your agents at Orrery. It adds these lines and nothing else, and keeps a backup next to each file. Message content export stays off.</p>';
+    h = sum + '<p class="fr-lede">Wrote <b>.acan/system.yaml</b> and <b>layout.yaml</b>. Now point your agents at Acan. It adds these lines and nothing else, and keeps a backup next to each file. Message content export stays off.</p>';
     h += '<div class="fr-sec"><h5>Agents on this machine<i>' + (FR.agents.length - open) + " of " + FR.agents.length + " done</i></h5>" + FR.agents.map(agentHtml).join("") + "</div>";
     ft = '<div class="fr-keys"><span><kbd>J</kbd><kbd>K</kbd> move</span><span><kbd>Enter</kbd> write</span><span><kbd>C</kbd> copy</span><span><kbd>S</kbd> skip</span></div>';
     ft += '<button class="fr-go" data-fr="done">Open the plant ' + (open ? "<kbd>Shift Enter</kbd>" : "<kbd>Enter</kbd>") + "</button>";
@@ -264,16 +264,16 @@ function frUndo() {
   const it = FR.items[i]; toast("Undid " + frName(it) + ": " + (it.pick === "yes" ? it.yes : it.no).toLowerCase() + ".");
   it.pick = null; FR.i = i; frApply(); frRender();
 }
-function frWriteOrrery() {
+function frWriteAcan() {
   const left = undecided().length;
   frPhase("connect");
-  toast("Wrote .orrery/system.yaml (" + frYaml().length + " lines) and layout.yaml." + (left ? " " + left + " stay in the tray." : ""));
+  toast("Wrote .acan/system.yaml (" + frYaml().length + " lines) and layout.yaml." + (left ? " " + left + " stay in the tray." : ""));
 }
 function frClock(sec) { const d = new Date(Date.now() + sec * 1000); return d.toTimeString().slice(0, 8); }
 function frAgent(act) {
   const a = FR.agents[FR.ai]; if (!a || a.st !== "found") return;
   const n = a.writes.reduce((k, w) => k + w.lines.length, 0), files = a.writes.map((w) => w.to).join(" and ");
-  if (act === "copy") { copyText(a.writes.map((w) => (w.via ? "# or run: " + w.via + "\\n" : "") + "# " + w.to + "\\n" + w.lines.join("\\n")).join("\\n\\n")); return toast("Copied " + n + " lines for " + files + ". Orrery watches for the first signal."); }
+  if (act === "copy") { copyText(a.writes.map((w) => (w.via ? "# or run: " + w.via + "\\n" : "") + "# " + w.to + "\\n" + w.lines.join("\\n")).join("\\n\\n")); return toast("Copied " + n + " lines for " + files + ". Acan watches for the first signal."); }
   if (act === "skip") a.st = "skipped";
   if (act === "write") {
     a.st = a.first == null ? "quiet" : "written";
@@ -315,9 +315,9 @@ $("#fr").addEventListener("click", (ev) => {
   if (b) {
     const d = b.dataset.fr;
     if (d === "yes" || d === "no") return frPick(d);
-    if (d === "write-orrery") return frWriteOrrery();
+    if (d === "write-acan") return frWriteAcan();
     if (d === "done") return frDone();
-    if (d === "skip-all") return frExit(FR.phase === "connect" ? "Setup stopped. .orrery/ is written. Agents not connected yet." : "Setup skipped. Nothing was written.");
+    if (d === "skip-all") return frExit(FR.phase === "connect" ? "Setup stopped. .acan/ is written. Agents not connected yet." : "Setup skipped. Nothing was written.");
     return frAgent(d);
   }
   const card = ev.target.closest("[data-i]");
@@ -340,7 +340,7 @@ addEventListener("keydown", (ev) => {
   if (FR.phase === "place") {
     if (k === "y") frPick("yes");
     else if (k === "n") frPick("no");
-    else if (k === "enter" && (ev.shiftKey || !undecided().length)) frWriteOrrery();
+    else if (k === "enter" && (ev.shiftKey || !undecided().length)) frWriteAcan();
     else if (k === "enter") frPick("yes");
     else return;
     return handled();

@@ -80,12 +80,12 @@ function redact(t) {
 function brief(ctx, safe = false) {
   const m = document.body.dataset.mode, refs = refsFor(ctx), owner = ownerOf(ctx);
   const kind = ctx.kind === "entity" ? (GHOST[ctx.id] ? "ghost" : { fail: "failing", strain: "over_budget", wait: "waiting" }[ENT[ctx.id].state] || "machine") : ctx.kind;
-  const open = "orrery://acquit/" + ctx.kind + "/" + ctx.id + "?mode=" + m + (m === "replay" ? "&t=" + rpClock(RP.t) : m === "simulate" ? "&t=" + Math.round(SIMS.t) + "&mult=" + SIMS.mult + "&seed=" + SIMD.seed + (SIMS.down.size ? "&down=" + [...SIMS.down].join(",") : "") + (SIMS.ghosts ? "" : "&noghosts=1") : "");
+  const open = "acan://acquit/" + ctx.kind + "/" + ctx.id + "?mode=" + m + (m === "replay" ? "&t=" + rpClock(RP.t) : m === "simulate" ? "&t=" + Math.round(SIMS.t) + "&mult=" + SIMS.mult + "&seed=" + SIMD.seed + (SIMS.down.size ? "&down=" + [...SIMS.down].join(",") : "") + (SIMS.ghosts ? "" : "&noghosts=1") : "");
   const cons = ["- Do not edit budgets or checks (K16)."];
   if (owner && ctx.kind !== "session") cons.push("- " + (owner.territory ? owner.territory + " is claimed by " + owner.agent + "." : owner.agent + " is editing these files.") + " Coordinate before you change them.");
   if (m === "simulate") cons.push("- Values are model predictions, not measurements.");
   if (m === "replay") cons.push("- Values are recorded. The plant has moved on since.");
-  const head = ["---", "orrery: brief/1", "about: " + (safe && ctx.kind === "entity" ? "[" + ENT[ctx.id].mono + "]" : ctx.id), "kind: " + kind, "mode: " + m, "rev: " + REV, "redaction: " + (safe ? "share-safe" : "local"), "refs:" + (refs.length ? "" : " []"), ...refs.map((r) => "  - " + r)];
+  const head = ["---", "acan: brief/1", "about: " + (safe && ctx.kind === "entity" ? "[" + ENT[ctx.id].mono + "]" : ctx.id), "kind: " + kind, "mode: " + m, "rev: " + REV, "redaction: " + (safe ? "share-safe" : "local"), "refs:" + (refs.length ? "" : " []"), ...refs.map((r) => "  - " + r)];
   if (!safe) head.push("open: " + open);
   const body = [...head, "---", "## What", ...whatLines(ctx).filter(Boolean), "## Evidence", ...(evidenceLines(ctx).length ? evidenceLines(ctx) : ["- none mapped yet"]), "## Constraints", ...cons, "## Ask", ""].join("\\n");
   return safe ? body.split("\\n").map((l, i) => (i === 1 ? l : redact(l))).join("\\n") : body;
@@ -116,7 +116,7 @@ function runAction(id, ctx = context()) {
   if (id === "runlog" || id === "rerun") {
     const r = CI.runs[CI.runs.length - 1];
     if (id === "runlog") return handoff("ci", { run: r.n }, "Opened the log for CI #" + r.n + " at its first unfinished check.");
-    return handoff("ci", { run: r.n, rerun: true }, "Re-running " + r.what.split(" ")[0] + " checks through run_checks. Nothing in .orrery/checks/ changes.");
+    return handoff("ci", { run: r.n, rerun: true }, "Re-running " + r.what.split(" ")[0] + " checks through run_checks. Nothing in .acan/checks/ changes.");
   }
   if (id === "branch") return handoff("git", { branch: "radar/otel", base: "main" }, "Opened the radar/otel diff against main.");
 }

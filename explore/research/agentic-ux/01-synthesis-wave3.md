@@ -4,12 +4,12 @@ Date 2026-10-17. Citation keys are `h`, `i`, `j`, `k`, and `f` for the reports o
 
 ## Summary
 
-1. [inferred] Kvarm owns coordination, and Orrery owns the drawing, witnesses, readbacks, and runtime evidence (h:5, h:208).
-2. [inferred] A claim is an Orrery readback match plus a Kvarm lease, and Kvarm's rejection of a competing live claim is the atomic step (h:34, h:99-102).
-3. [inferred] K16 needs Orrery, Kvarm, and the Droid sandbox together (h:146-152, i:154-164).
+1. [inferred] Kvarm owns coordination, and Acan owns the drawing, witnesses, readbacks, and runtime evidence (h:5, h:208).
+2. [inferred] A claim is an Acan readback match plus a Kvarm lease, and Kvarm's rejection of a competing live claim is the atomic step (h:34, h:99-102).
+3. [inferred] K16 needs Acan, Kvarm, and the Droid sandbox together (h:146-152, i:154-164).
 4. [inferred] Every semantic mark has an inspectable binding, and unknown, stale, zero, stopped, and simulated never look alike (j:7, j:195-216).
 5. [inferred] The world is a canvas of systems, not of agents or terminals like Maestri and VibeCraft (f:35, f:40).
-6. [inferred] A thin Orrery self-loop goes first, and Acquit stays the fidelity reference and the week-6 demo (i:108, j:9).
+6. [inferred] A thin Acan self-loop goes first, and Acquit stays the fidelity reference and the week-6 demo (i:108, j:9).
 
 ## Convergences
 
@@ -22,20 +22,20 @@ Date 2026-10-17. Citation keys are `h`, `i`, `j`, `k`, and `f` for the reports o
 
 ### Kvarm claim lease versus the readback gate
 
-[sourced] h has agents call `claim_task` after an Orrery readback match (h:99), while i keeps Orrery authoritative for claims on day one and mirrors work into Kvarm (i:78).
-**Recommendation.** [inferred] Orrery owns the readback verdict. Kvarm owns the lease. The order reads `CLAIMED` only when a matching readback and a live lease with the same generation both exist. [inferred] The adapter calls `claim_task` with the agent's own token (i:62, h:194).
+[sourced] h has agents call `claim_task` after an Acan readback match (h:99), while i keeps Acan authoritative for claims on day one and mirrors work into Kvarm (i:78).
+**Recommendation.** [inferred] Acan owns the readback verdict. Kvarm owns the lease. The order reads `CLAIMED` only when a matching readback and a live lease with the same generation both exist. [inferred] The adapter calls `claim_task` with the agent's own token (i:62, h:194).
 **What would change it.** [inferred] A Kvarm readback precondition on `claim_task` (h:228) moves the gate into Kvarm.
 
 ### K16 enforcement split
 
-[sourced] h proposes an Orrery evaluator behind a required Kvarm check (h:146-149). i adds read-only mounts and Droid sandbox deny-write paths (i:156-160). Kvarm protects refs, not files (h:231).
+[sourced] h proposes an Acan evaluator behind a required Kvarm check (h:146-149). i adds read-only mounts and Droid sandbox deny-write paths (i:156-160). Kvarm protects refs, not files (h:231).
 **Recommendation.** [inferred] Use three layers with one job each. The Droid sandbox prevents writes in the worker. The pinned runner compares protected inputs to the approved digest. The Kvarm branch rule blocks publication without that check, reported through the separate `ci` credential (h:149, i:162).
 **What would change it.** [inferred] Kvarm path protection (h:230) retires the custom check. [sourced] No native Windows sandbox is documented (i:160), so Windows needs WSL2 or a VM before autonomous writes. [inferred] Kvarm excludes the recorded author from approval counts (h:151), so agents need principals distinct from the solo owner.
 
 ### Dogfood ordering versus the Acquit fixture
 
-[sourced] The handover puts Acquit first and Orrery's self-drawing in weeks 10 to 12 (map.md:328, map.md:341). i moves a thin self-loop ahead of Acquit (i:108).
-**Recommendation.** [inferred] Run i's milestones 0 to 4 in weeks 2 to 4, then keep the D13 Acquit ghost task as the week-6 demo through the same loop. [inferred] Validate fidelity bindings on Acquit first, because Orrery does not exercise the service catalog (map.md:98, j:9).
+[sourced] The handover puts Acquit first and Acan's self-drawing in weeks 10 to 12 (map.md:328, map.md:341). i moves a thin self-loop ahead of Acquit (i:108).
+**Recommendation.** [inferred] Run i's milestones 0 to 4 in weeks 2 to 4, then keep the D13 Acquit ghost task as the week-6 demo through the same loop. [inferred] Validate fidelity bindings on Acquit first, because Acan does not exercise the service catalog (map.md:98, j:9).
 **What would change it.** [guess] If milestone 4 slips past week 4, return to Acquit-first to protect the demo.
 
 ### Fidelity "unknown" versus Kvarm "stale offline"
@@ -55,7 +55,7 @@ Date 2026-10-17. Citation keys are `h`, `i`, `j`, `k`, and `f` for the reports o
 [sourced] Maestri is a macOS canvas of terminals, diagrams, agent connections, and notes agents read and write (f:40). VibeCraft puts agent units, folders, terminals, and worktrees on an infinite canvas (f:35, dec:18).
 [inferred] "Infinite canvas for agents" is taken (dec:18, 00-synthesis.md:12).
 
-**What Orrery's world does that they do not.** [inferred] Its objects are running services, queues, and stores bound to designed, declared, and observed evidence (j:195, map.md:29). Agents appear on the machines they change (i:38). Lines between plants are declared contracts with revisions (k:150-159). Work arrives as witnessed orders that agents self-claim (CORE:9-12).
+**What Acan's world does that they do not.** [inferred] Its objects are running services, queues, and stores bound to designed, declared, and observed evidence (j:195, map.md:29). Agents appear on the machines they change (i:38). Lines between plants are declared contracts with revisions (k:150-159). Work arrives as witnessed orders that agents self-claim (CORE:9-12).
 
 **What it must not copy.**
 - [inferred] Unit command ("select a unit, assign work") contradicts self-claim (f:35, CORE:12).
@@ -70,7 +70,7 @@ Each concept inlines its own scripted Kvarm fixture, with no network. A strip un
 
 **Orders.**
 1. Post (P, Enter) writes order revision `r1` locally, then logs `create_issue` and `dispatch_issue` (h:98). The flag reads `POSTED LOCALLY` until both return, then `OPEN · kvarm #<n>`.
-2. Readback rows say `readback · Orrery`, because Kvarm stores none (h:64).
+2. Readback rows say `readback · Acan`, because Kvarm stores none (h:64).
 3. An answer that creates w3 bumps the order to `r2` and logs `comment_issue`. Readbacks show `re-scored on r2`.
 4. Claim logs `claim_task` from the agent's token. The flag reads `CLAIMED · Claude Code · lease g1` with a text countdown. The other matched agent shows `yields · Kvarm rejected`.
 5. With `kv=unmatched`, Codex holds the Kvarm lease with no readback. The flag reads `UNMATCHED · Codex holds g1 · no readback` in amber, the territory stays fogged, and a Waiting-on-you row appears. Never draw this state as `CLAIMED`.
@@ -98,17 +98,17 @@ Each concept inlines its own scripted Kvarm fixture, with no network. A strip un
 **Files.** `concepts/world.mjs`, `concepts/world-data.mjs`, and `concepts/world.steps.json`, started with `#c=world`. Expose `window.worldState` with `{ focus, level, history: { i, n }, bookmarks, queueOpen, kvarm: { state, pending }, egressBytes }`.
 
 **Plant sites.** Positions are fixed and never move.
-- Orrery. One Rust housing with receiver, matcher, evaluator, SQLite, telemetry ring, and webview renderer (i:112-114).
+- Acan. One Rust housing with receiver, matcher, evaluator, SQLite, telemetry ring, and webview renderer (i:112-114).
 - Acquit. The existing scene, with the corrected one-cell verifier (j:122).
 - Kvarm. Worker, D1, Artifacts, repo events, and the train (h:16-17, h:32, h:92).
-- `orrery-format`. [guess] The spec's reference validator library (map.md:298).
-- `orrery-site`. [guess] A static waitlist page (map.md:116).
+- `acan-format`. [guess] The spec's reference validator library (map.md:298).
+- `acan-site`. [guess] A static waitlist page (map.md:116).
 
 **Contract belts.** Each has a line pattern and text (k:151).
-- Acquit to Orrery, runtime OTLP/HTTP (map.md:221).
-- Orrery to Kvarm, runtime REST, marked as declared egress.
-- `orrery-format` to Orrery, a package dependency with version.
-- Orrery to `orrery-site`, artifact delivery.
+- Acquit to Acan, runtime OTLP/HTTP (map.md:221).
+- Acan to Kvarm, runtime REST, marked as declared egress.
+- `acan-format` to Acan, a package dependency with version.
+- Acan to `acan-site`, artifact delivery.
 
 **Semantic levels.** World shows name, freshness, decision count, and top condition (k:131). Plant shows silhouettes and territories (k:135). Machine fills the inspector (k:139). Cutaway uses X, the existing explode key (k:143). Scroll changes level with hysteresis (k:145). World view is read-only, and a drag across a boundary cancels (k:248-249).
 
@@ -121,7 +121,7 @@ Each concept inlines its own scripted Kvarm fixture, with no network. A strip un
 - Ctrl K is the global jump. This overrides the ui-v1 palette (`actions.mjs:143`) while the concept is active. The empty query lists Recent, Bookmarks, and Waiting.
 - Alt Left and Alt Right go back and forward through `history.pushState` and `popstate`. Alt alone keeps its labels role.
 
-**Waiting on you.** Each row names plant, why you, cost of waiting, latest safe response, and an estimate range (k:165, k:180). The five rows are an Orrery unmatched claim, the Acquit p-2307 question, the Acquit clash c1, a Kvarm review, and an `orrery-format` check digest. A sixth row arrives after 3 seconds without moving the camera.
+**Waiting on you.** Each row names plant, why you, cost of waiting, latest safe response, and an estimate range (k:165, k:180). The five rows are an Acan unmatched claim, the Acquit p-2307 question, the Acquit clash c1, a Kvarm review, and an `acan-format` check digest. A sixth row arrives after 3 seconds without moving the camera.
 
 **Kvarm pill.** It reads `Kvarm · <origin> · 3 repos · fresh 8 s`, or not connected, stale, or offline. A click or Ctrl K "Go offline" flips the hard switch. The egress pill opens the network log.
 
@@ -145,14 +145,14 @@ Assert stable site coordinates. A mouse-only path repeats shots 1, 3, 6, and 10.
 
 | ID | Decision | Why | Source |
 |---|---|---|---|
-| W1 | Kvarm owns coordination. Orrery owns drawing and evidence. | No second coordinator. | h:5, h:208 |
+| W1 | Kvarm owns coordination. Acan owns drawing and evidence. | No second coordinator. | h:5, h:208 |
 | W2 | A claim is a readback match plus a Kvarm lease. Unmatched claims are labeled. Amends CORE step 4. | One authority per fact. | h:99-102, i:78 |
 | W3 | K16 in three layers. Sandbox, pinned runner on a digest, Kvarm required check. Amends K16, D11. | No layer covers it alone. | h:146-152, i:154-168 |
 | W4 | Kvarm is opt-in, declared egress, and polled. Refines Q16, V6. | Local-first honesty. | h:168-177, dec:28 |
 | W5 | Offline marks remote state stale and holds writes until confirmed. | No false publication. | h:186-191 |
 | W6 | Cap at 480 reads and 90 writes per token per minute across the world. | Kvarm rate limits. | h:156-166 |
 | W7 | Choice YAML is canonical and published to `record_decision` with sync status. Amends D11. | Git and D1 are not atomic. | h:137-143 |
-| W8 | A thin Orrery self-loop runs before Acquit D13, which stays the week-6 demo. | Dogfood day one. | i:108, i:122-132, map.md:328 |
+| W8 | A thin Acan self-loop runs before Acquit D13, which stays the week-6 demo. | Dogfood day one. | i:108, i:122-132, map.md:328 |
 | W9 | A last-good observer watches the candidate build, with a terminal escape hatch. | Safe self-hosting. | i:142-150 |
 | W10 | Droid runs as a `stream-jsonrpc` subprocess with content-free GenAI OTel. Amends E1, V3, V4. | Documented interfaces. | i:16-48, i:96-100 |
 | W11 | Every semantic mark has a binding, shown on Alt hover. No demo defaults. Refines S1, K4. | The plant cannot lie. | j:195-204, j:232 |
@@ -163,7 +163,7 @@ Assert stable site coordinates. A mouse-only path repeats shots 1, 3, 6, and 10.
 | W16 | Cross-plant belts show declared contracts only. | No decorative links. | k:148-160 |
 | W17 | Ctrl K jumps across plants, with history and bookmarks. Amends V7. | Direct access. | k:195-208 |
 | W18 | A10 is one aggregate budget across plants. Amends A10. | Not multiplied per plant. | k:215-226 |
-| W19 | Orrery is a canvas of systems, not of agents, terminals, or notes. | Taken category. | f:35, f:40, dec:18 |
+| W19 | Acan is a canvas of systems, not of agents, terminals, or notes. | Taken category. | f:35, f:40, dec:18 |
 
 ## Light mode
 
@@ -171,6 +171,6 @@ Placeholder. `l-light-mode.md` is not ready. Its findings land here, including t
 
 ## Open questions for the user
 
-1. **Should Kvarm enforce the readback before `claim_task`?** [inferred] Orrery cannot stop agents that use Kvarm directly (h:228-229). Default is to label unmatched claims now and add the precondition to Kvarm.
+1. **Should Kvarm enforce the readback before `claim_task`?** [inferred] Acan cannot stop agents that use Kvarm directly (h:228-229). Default is to label unmatched claims now and add the precondition to Kvarm.
 2. **Is Acquit D13 still the week-6 demo with the self-loop first?** [inferred] The handover plan changes (map.md:327-328). Default is yes, with the self-loop in weeks 2 to 4.
 3. **May autonomous writes on Windows require WSL2?** [sourced] The Droid sandbox does not document native Windows (i:160), and Windows is the polish target (map.md:144). Default is WSL2 for writes and native read-only readbacks.

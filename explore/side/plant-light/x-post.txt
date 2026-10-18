@@ -1,4 +1,4 @@
-Been heads down on Orrery, the thing I'm building to actually see what my coding agents are doing.
+Been heads down on Acan, the thing I'm building to actually see what my coding agents are doing.
 
 The idea is your system drawn as a little factory. Services are machines, queues are belts, and agents show up on the machine they're changing.
 

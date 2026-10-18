@@ -40,7 +40,7 @@ export const GATE = {
       est: [1, 2], basis: "history", basisNote: "terminal approvals", cls: "idle", before: false, after: true, unforecast: true,
       cost: "Codex is idle at its own approval prompt. 9 min so far.",
       safe: "Now. Each minute is idle agent time.",
-      meanwhile: "Codex stopped itself at its terminal prompt. Orrery did not stop it.",
+      meanwhile: "Codex stopped itself at its terminal prompt. Acan did not stop it.",
       advice: "Codex cannot read advice. Passive session, no MCP.",
       review: { kind: "session", id: "codex-paypal" },
     },
@@ -122,20 +122,20 @@ export const GATE = {
     {
       cls: "idle", items: ["codex"], t: -9, sel: "bot-cx", on: "bot-cx", unforecast: true,
       title: "Codex is blocked at its own prompt",
-      what: "Codex started on paypal.ts at 16:04 and asked to run npm test at 16:21. It is passive, so Orrery could not forecast it.",
+      what: "Codex started on paypal.ts at 16:04 and asked to run npm test at 16:21. It is passive, so Acan could not forecast it.",
       sources: [["Codex hooks", "approval prompt", "observed"]],
     },
     {
       cls: "reversal", items: ["traceparent", "databasesync"], t: -22, sel: "api", on: "api",
       title: "Droid recorded 2 choices in radar-otel",
       what: "Traceparent in queue rows at 16:08, confidence 0.70. DatabaseSync wrapped by hand at 16:16, confidence 0.85. Forecast 3–7 min, arrived 3–7 min.",
-      sources: [["Orrery MCP", "record_choice", "declared"]],
+      sources: [["Acan MCP", "record_choice", "declared"]],
     },
     {
       cls: "publish", items: ["webhook"], t: -16, sel: "gate", on: "gate",
       title: "gate-sessions went stale",
       what: "apps/api/src/server.ts changed at 16:14, after its seal. Kvarm still blocks change #212 on your review.",
-      sources: [["Kvarm", "get_reviews #212", "authenticated"], ["Orrery", "seal check", "observed"]],
+      sources: [["Kvarm", "get_reviews #212", "authenticated"], ["Acan", "seal check", "observed"]],
     },
     {
       cls: "none", items: ["seal"], t: -4, sel: null, on: "radar",
@@ -145,10 +145,10 @@ export const GATE = {
     },
   ],
   unchanged: "Verifier concurrency 2 and retry x2 still wait. Their costs held steady.",
-  heldNothing: "Orrery held nothing back. Droid ran 3 CI runs and recorded 2 choices. Codex stopped at its own prompt.",
+  heldNothing: "Acan held nothing back. Droid ran 3 CI runs and recorded 2 choices. Codex stopped at its own prompt.",
 
   kvarm: {
-    origin: "https://git.orrery.local",
+    origin: "https://git.acan.local",
     ops: [
       { op: "list_pending_reviews", bytes: 640, reason: "Which acquit changes wait on your review" },
       { op: "get_reviews", bytes: 512, reason: "Rules on change #212, gate-sessions" },

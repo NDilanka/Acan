@@ -224,7 +224,7 @@ const body = `
   <div class="callouts" id="callouts"></div>
 </main>
 <div class="watermark" id="watermark"></div>
-<div class="fl tl"><button class="b brand">${LOGO}Orrery</button><span class="sep"></span><button class="b">Acquit <span style="opacity:.5">▾</span></button><button class="b" data-do="palette">Go to <kbd>Ctrl K</kbd></button></div>
+<div class="fl tl"><button class="b brand">${LOGO}Acan</button><span class="sep"></span><button class="b">Acquit <span style="opacity:.5">▾</span></button><button class="b" data-do="palette">Go to <kbd>Ctrl K</kbd></button></div>
 <div class="fl tc"><div class="modes" id="modes"><span class="pill"></span>
   <button data-mode="live" aria-pressed="true">Live <kbd>1</kbd></button><button data-mode="blueprint">Blueprint <kbd>2</kbd></button><button data-mode="simulate">Simulate <kbd>3</kbd></button><button data-mode="replay">Replay <kbd>4</kbd></button></div></div>
 <div class="fl tr"><button class="b" id="layersBtn">Layers <kbd>L</kbd></button><button class="b" id="exportBtn">Export</button><span class="egress" title="Outbound connections since launch"><span class="dot"></span>local · 0 out</span></div>
@@ -237,7 +237,7 @@ const body = `
   <label>Agents<input type="checkbox" data-layer="agents" checked><span class="sw"></span></label>
   <label>Territories<input type="checkbox" data-layer="territories" checked><span class="sw"></span></label>
   <label>Choices <small>pins</small><input type="checkbox" data-layer="choices" checked><span class="sw"></span></label>
-  <label>Fog <small>what Orrery doesn't know</small><input type="checkbox" data-layer="fogged"><span class="sw"></span></label>
+  <label>Fog <small>what Acan doesn't know</small><input type="checkbox" data-layer="fogged"><span class="sw"></span></label>
 </div>
 <div class="nav" id="nav">
   <div class="compass" id="compass" title="Drag to orbit. Double-click to reset.">${rose}<div class="read" id="azRead">35°</div></div>
@@ -671,6 +671,6 @@ requestAnimationFrame(() => {
 });
 `;
 
-const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Orrery · v1 · Live</title>${TOAST_DISMISS}<style>${css}${papers}${BP_CSS}${FLOOR_CSS}${CH_CSS}${SIM_CSS}${RP_CSS}${PAL_CSS}${FR_CSS}${SH_CSS}${FOG_CSS}${CBAR_CSS}${LIST.map((c) => c.css).join("")}</style></head><body class="traffic ghosts agents territories choices" data-mode="live">${FOG_DEFS}${body}${BP_HTML}${floorHtml(DRONE_ICON)}${CH_HTML}${SIM_HTML}${RP_HTML}${PAL_HTML}${FR_HTML}${SH_HTML}${CBAR}${LIST.map((c) => c.html).join("")}<script>${script}</script></body></html>`;
+const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Acan · v1 · Live</title>${TOAST_DISMISS}<style>${css}${papers}${BP_CSS}${FLOOR_CSS}${CH_CSS}${SIM_CSS}${RP_CSS}${PAL_CSS}${FR_CSS}${SH_CSS}${FOG_CSS}${CBAR_CSS}${LIST.map((c) => c.css).join("")}</style></head><body class="traffic ghosts agents territories choices" data-mode="live">${FOG_DEFS}${body}${BP_HTML}${floorHtml(DRONE_ICON)}${CH_HTML}${SIM_HTML}${RP_HTML}${PAL_HTML}${FR_HTML}${SH_HTML}${CBAR}${LIST.map((c) => c.html).join("")}<script>${script}</script></body></html>`;
 writeFileSync(join(HERE, OUT), html);
 console.log("wrote " + OUT, (html.length / 1024).toFixed(0) + " KB");

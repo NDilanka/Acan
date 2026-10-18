@@ -5,7 +5,7 @@
 [inferred] Put the developer's active plants in one persistent world, but preserve direct jumps that cost no more gestures than switching tabs.
 [inferred] Stable places support recognition. [inferred] Semantic zoom must change the information shown, not shrink twenty unreadable plants.
 [inferred] Keep one focused plant, one inspector, and one global "Waiting on you" queue.
-[inferred] Review capacity belongs to the person across all plants. [sourced] The inspection gate remains advisory under `/home/factory-user/orrery/explore/research/agentic-ux/decisions.tsv:15`.
+[inferred] Review capacity belongs to the person across all plants. [sourced] The inspection gate remains advisory under `/home/factory-user/acan/explore/research/agentic-ux/decisions.tsv:15`.
 [inferred] Show actual cross-project contracts, not decorative connections between nearby repositories.
 [guess] Target 5 to 20 plants through summaries and bounded detail, not twenty copies of the current renderer and telemetry allowance.
 
@@ -13,14 +13,14 @@
 
 ### Grounding and limits
 
-[sourced] Research uses the assignment's date of 2026-10-17, also recorded in `/home/factory-user/orrery/explore/research/agentic-ux/00-synthesis.md:3`.
-[sourced] K1 to K20 establish architect-owned layouts, designed, declared, and observed evidence, protected checks, repo-local YAML, and risk-ranked choices in `/home/factory-user/orrery/explore/map.md:26-45`.
-[sourced] A1, A4, and A10 specify the Rust renderer, orthographic views, WebGPU and WebGL2 tiers, and an 8 ms p99 frame at 2,000 machines in `/home/factory-user/orrery/explore/map.md:51-60`.
-[sourced] U2, Q15, L7, and L8 require second-monitor use, capped motion, idle control, and recovery from device loss in `/home/factory-user/orrery/explore/map.md:115,164-165,229`.
+[sourced] Research uses the assignment's date of 2026-10-17, also recorded in `/home/factory-user/acan/explore/research/agentic-ux/00-synthesis.md:3`.
+[sourced] K1 to K20 establish architect-owned layouts, designed, declared, and observed evidence, protected checks, repo-local YAML, and risk-ranked choices in `/home/factory-user/acan/explore/map.md:26-45`.
+[sourced] A1, A4, and A10 specify the Rust renderer, orthographic views, WebGPU and WebGL2 tiers, and an 8 ms p99 frame at 2,000 machines in `/home/factory-user/acan/explore/map.md:51-60`.
+[sourced] U2, Q15, L7, and L8 require second-monitor use, capped motion, idle control, and recovery from device loss in `/home/factory-user/acan/explore/map.md:115,164-165,229`.
 
-[sourced] The supplied screenshots show one project selector, one mode strip, and a small decision queue, with a right inspector and bottom Floor in the expanded view at `/home/factory-user/orrery/explore/ui-v1/shots/l-default.png` and `/home/factory-user/orrery/explore/ui-v1/shots/p5-floor.png`.
+[sourced] The supplied screenshots show one project selector, one mode strip, and a small decision queue, with a right inspector and bottom Floor in the expanded view at `/home/factory-user/acan/explore/ui-v1/shots/l-default.png` and `/home/factory-user/acan/explore/ui-v1/shots/p5-floor.png`.
 [inferred] Those regions can become shared chrome rather than repeat around every plant.
-[sourced] The synthesis converges on limited human review capacity, one decision queue, quiet peripheral awareness, and evidence-bound completion in `/home/factory-user/orrery/explore/research/agentic-ux/00-synthesis.md`, "Convergences".
+[sourced] The synthesis converges on limited human review capacity, one decision queue, quiet peripheral awareness, and evidence-bound completion in `/home/factory-user/acan/explore/research/agentic-ux/00-synthesis.md`, "Convergences".
 
 [sourced] External research uses WebSearch full-text results, not FetchUrl or installed product tests, with calls logged under `/home/factory-user/.factory/artifacts/scripts/62de3077-ca4a-4838-8efd-41285e169859/`.
 [sourced] The search logs under `/home/factory-user/.factory/artifacts/scripts/62de3077-ca4a-4838-8efd-41285e169859/` contain no rate-limit errors, so no retries or pauses were needed.
@@ -34,7 +34,7 @@
 [sourced] Perlin and Fox's 1993 Pad places objects on a shared two-dimensional plane and uses portals to view distant regions, as described in this [institutional paper analysis](http://www.cs.umd.edu/~bederson/classes/cmsc838b/papers/pad.html).
 [sourced] Bederson and Hollan's 1994 [Pad++ paper](http://www.cs.columbia.edu/graphics/courses/csw4170/resources/bedersonHollanUIST94.pdf) distinguishes semantic zoom from geometric scaling, so an object can change representation with its displayed size.
 [sourced] The [Pad++ paper](http://www.cs.columbia.edu/graphics/courses/csw4170/resources/bedersonHollanUIST94.pdf) also describes spatial indexing, clipping, level of detail, lazy loading, and eviction of unseen objects.
-[inferred] Orrery should inherit meaningful representations and bounded work, not the promise that infinite space removes organization.
+[inferred] Acan should inherit meaningful representations and bounded work, not the promise that infinite space removes organization.
 
 [sourced] Raskin's ZoomWorld argument replaces document hierarchies with navigation over a common plane, where zooming opens detail, according to this [summary of The Humane Interface](https://en.wikipedia.org/wiki/The_Humane_Interface).
 [inferred] The useful argument is continuity between overview and work, rather than a requirement to replace every list, search box, and application boundary.
@@ -59,7 +59,7 @@
 [sourced] Obsidian's separate [Bookmarks plugin](https://obsidian.md/help/plugins/bookmarks) provides named, grouped shortcuts to frequently used items.
 
 [inferred] Search answers "where is this named thing", a minimap answers "where am I", and bookmarks answer "take me back there".
-[inferred] Orrery needs all three functions, although they need not occupy three permanent panels.
+[inferred] Acan needs all three functions, although they need not occupy three permanent panels.
 [inferred] None of this evidence justifies assigning a minimap, bookmark system, or universal content search to every listed product.
 
 ### Spatial memory helps when places remain learnable
@@ -83,7 +83,7 @@
 
 [sourced] [Stellaris](https://stellaris.paradoxwikis.com/Main_interface) distinguishes galaxy and system views, supplies an outliner, and offers ownership, diplomacy, intelligence, and opinion map modes.
 [sourced] [Civilization VI lenses](https://civilization.fandom.com/wiki/Lens_(Civ6)) overlay selected strategic information on the same world.
-[inferred] Orrery can borrow overview versus inspection and task-specific overlays without changing the identity or position of plants.
+[inferred] Acan can borrow overview versus inspection and task-specific overlays without changing the identity or position of plants.
 
 [sourced] [Dwarf Fortress's world information](https://dwarffortresswiki.org/index.php/Civilization_and_World_Info) distinguishes sites, holdings, missions, and news beyond the local fortress.
 [sourced] Original [Frostpunk scouting](https://www.neoseeker.com/frostpunk/Scout_Locations) opens exploration after constructing a Beacon, with discovered locations revealing further destinations.
@@ -98,11 +98,11 @@
 [sourced] Their [task-switching diary study](https://www.microsoft.com/en-us/research/publication/a-diary-study-of-task-switching-and-interruptions/) describes difficulty interleaving work and recovering complex projects.
 [inferred] More persistent visual context can help recovery, but neither study proves that more simultaneous detail improves attention.
 
-[sourced] `/home/factory-user/orrery/explore/research/agentic-ux/e-attention.md:44-69` separates interruption stress, delayed return, memory cues, ready-to-resume plans, and breakpoint-based delivery.
-[sourced] That review reports greater stress under interruption in Mark's experiment and useful departure and retrieval cues in Altmann and Trafton's model at `/home/factory-user/orrery/explore/research/agentic-ux/e-attention.md:46-60`.
-[sourced] It also reports reduced attention residue with Leroy and Glomb's ready-to-resume plan and reduced frustration with Iqbal and Bailey's deferred notifications at `/home/factory-user/orrery/explore/research/agentic-ux/e-attention.md:64-69`.
+[sourced] `/home/factory-user/acan/explore/research/agentic-ux/e-attention.md:44-69` separates interruption stress, delayed return, memory cues, ready-to-resume plans, and breakpoint-based delivery.
+[sourced] That review reports greater stress under interruption in Mark's experiment and useful departure and retrieval cues in Altmann and Trafton's model at `/home/factory-user/acan/explore/research/agentic-ux/e-attention.md:46-60`.
+[sourced] It also reports reduced attention residue with Leroy and Glomb's ready-to-resume plan and reduced frustration with Iqbal and Bailey's deferred notifications at `/home/factory-user/acan/explore/research/agentic-ux/e-attention.md:64-69`.
 [inferred] A plant jump should restore the unfinished question and next action, not merely its camera.
-[inferred] There is no defensible universal switching penalty to subtract from Orrery's claimed savings.
+[inferred] There is no defensible universal switching penalty to subtract from Acan's claimed savings.
 
 [sourced] [VS Code multi-root workspaces](https://code.visualstudio.com/docs/editing/workspaces/multi-root-workspaces) combine related folders while preserving folder identity, settings scope, and disambiguated names.
 [sourced] Its [container documentation](https://code.visualstudio.com/remote/advancedcontainers/connect-multiple-containers) permits one connected container per window, with multiple windows or explicit switching for several containers.
@@ -117,9 +117,9 @@
 [inferred] A plant represents a software system, not necessarily one repository, so a monorepo can contain several plants and one plant can span repositories.
 [inferred] Each plant retains its own model and local coordinates, while the world stores its placement and camera bookmarks in local workspace state.
 [inferred] A plant's worktree and environment are explicit identity fields, so switching branches does not silently redirect another plant's evidence or edits.
-[inferred] World placement must not rewrite another project's `.orrery/` files.
+[inferred] World placement must not rewrite another project's `.acan/` files.
 
-[inferred] Orrery suggests initial nonoverlapping sites, but the architect accepts placement and controls subsequent moves, extending K5.
+[inferred] Acan suggests initial nonoverlapping sites, but the architect accepts placement and controls subsequent moves, extending K5.
 [inferred] New plants arrive in the unplaced tray, with an explicit "place suggested site" action rather than automatic rearrangement.
 [inferred] Reserve expansion space around each site, and ask before growth overlaps a neighbor.
 [inferred] Preserve positions across launches, branch changes, agent activity, and sorting of the decision queue.
@@ -172,7 +172,7 @@
 [guess] Add per-plant defer controls and a review checkpoint that flags every overdue decision, rather than using a fixed quota that could conceal urgent harm.
 [inferred] Routine progress does not enter this queue, animate the world, steal focus, or move the camera.
 
-[sourced] The user's gate decision is advisory in `/home/factory-user/orrery/explore/research/agentic-ux/decisions.tsv:15`.
+[sourced] The user's gate decision is advisory in `/home/factory-user/acan/explore/research/agentic-ux/decisions.tsv:15`.
 [inferred] Therefore show one personal review allowance across plants and recommend holding new high-review work when demand exceeds it.
 [inferred] Agents may voluntarily park at declared safe points, but the UI must distinguish recommended holds from enforced authority limits.
 [inferred] Do not claim that the advisory gate prevents independent agents from starting work.
@@ -214,7 +214,7 @@
 
 ### Performance is one aggregate budget
 
-[sourced] A10 requires 8 ms p99 at 2,000 machines, telemetry-to-pixel below 100 ms, 100,000 spans per second below one core, cached open below one second, and memory below 500 MB with one hour of telemetry at `/home/factory-user/orrery/explore/map.md:60`.
+[sourced] A10 requires 8 ms p99 at 2,000 machines, telemetry-to-pixel below 100 ms, 100,000 spans per second below one core, cached open below one second, and memory below 500 MB with one hour of telemetry at `/home/factory-user/acan/explore/map.md:60`.
 [inferred] Do not multiply those allowances by plant count.
 [inferred] Test 5 plants with 400 machines, 10 with 200, and 20 with 100 as equal-total fixtures.
 [inferred] Add a stress fixture of 20 plants with 2,000 machines each to verify virtualization, without claiming 40,000 full-detail machines satisfy A10.
@@ -231,7 +231,7 @@
 [inferred] Retain bounded one-hour aggregate rings and separately capped span samples, with cardinality limits shared across plants.
 [inferred] Preserve failure records and expose retention loss if admission or sampling policies reduce telemetry detail.
 
-[sourced] Q15 caps flowing belts at 20 fps and stops motion after two minutes without input or state change in `/home/factory-user/orrery/explore/map.md:229`.
+[sourced] Q15 caps flowing belts at 20 fps and stops motion after two minutes without input or state change in `/home/factory-user/acan/explore/map.md:229`.
 [inferred] Offscreen plants need no animation, while visible summary changes can invalidate a frame without starting continuous rendering.
 [guess] Coalesce routine world-summary changes for at most 50 ms, with consequential changes bypassing that window.
 [inferred] Apply A10's under-100-ms telemetry-to-pixel target to both visible summaries and detailed views, with ingestion, batching, and rendering included.
@@ -250,9 +250,9 @@
 [inferred] Bind each write to its named plant and expected revision so a late inspector response cannot edit the newly focused plant.
 [inferred] These safeguards preserve the project boundaries retained by [multi-root IDEs](https://code.visualstudio.com/docs/editing/workspaces/multi-root-workspaces).
 
-[inferred] Avoid camera theft, flashing fleets, and agent-activity rankings, because attention is already the shared limit in `/home/factory-user/orrery/explore/research/agentic-ux/00-synthesis.md`, "Convergences".
+[inferred] Avoid camera theft, flashing fleets, and agent-activity rankings, because attention is already the shared limit in `/home/factory-user/acan/explore/research/agentic-ux/00-synthesis.md`, "Convergences".
 [inferred] Avoid hiding quiet decisions under one noisy plant by retaining aging, defer-until, and latest-safe-response fields in the global queue.
-[inferred] Avoid confusing the advisory inspection gate with an execution lock, given `/home/factory-user/orrery/explore/research/agentic-ux/decisions.tsv:15`.
+[inferred] Avoid confusing the advisory inspection gate with an execution lock, given `/home/factory-user/acan/explore/research/agentic-ux/decisions.tsv:15`.
 [inferred] Avoid twenty independent histories and render loops masquerading as one canvas, because A10 and Q15 remain aggregate constraints.
 
 [guess] Validate the proposal against tabs and against a named plant list using the same interruptions, return tasks, and planted cross-project mistake.

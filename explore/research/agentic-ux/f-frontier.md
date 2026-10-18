@@ -4,13 +4,13 @@
 [sourced] AgentCraft, VibeCraft, Pixel Agents, and Agent Town already give agents game-like bodies and places.
 [sourced] Maestri already combines local agents, persistent spatial layout, notes, diagrams, and cross-agent connections.
 [sourced] tldraw, Figma, and Archyl already expose shared visual models through MCP.
-[inferred] Orrery's strongest remaining distinction is a system model that connects proposed changes, agent work, and measured runtime consequences.
+[inferred] Acan's strongest remaining distinction is a system model that connects proposed changes, agent work, and measured runtime consequences.
 [inferred] Risk-ranked decisions and visible prediction calibration are promising gaps, not established firsts.
 [sourced] The requested X threads were not recovered, and search rate limiting prevented several final checks.
 
 ## Scope and evidence
 
-[sourced] This report uses `map.md:20-45`, its catalog at `map.md:62-70`, and the two supplied screenshots as Orrery's specification.
+[sourced] This report uses `map.md:20-45`, its catalog at `map.md:62-70`, and the two supplied screenshots as Acan's specification.
 [sourced] The floor screenshot places Droid beside the OTel radar and connects its work to files, checks, budgets, and recorded choices.
 [inferred] That relationship matters more than the construction-bot appearance.
 
@@ -29,28 +29,28 @@
 
 ## Competitors and prior art
 
-| Name | What it is and link | Overlap with Orrery | What it misses |
+| Name | What it is and link | Overlap with Acan | What it misses |
 |---|---|---|---|
 | AgentCraft | [sourced] Its [product page](https://www.getagentcraft.com/) advertises an RTS interface for launching, commanding, and monitoring Claude Code, OpenCode, and Cursor, with containers and multiplayer rooms. | [inferred] Direct competition for game-like fleet control and agents occupying a shared map. | [inferred] The documented map organizes agent management, not the services, queues, and databases those agents change. |
 | VibeCraft | [sourced] An [open-source RTS workspace](https://github.com/rayzhudev/vibecraft) puts agent units, project folders, terminals, browsers, and worktree operations on an infinite canvas. | [inferred] It already takes the "select a unit, inspect its abilities, assign work" interaction. | [inferred] Folders stand for project context, not running system components with measured throughput. |
 | Pixel Agents | [sourced] A [VS Code extension and standalone office](https://github.com/pablodelucca/pixel-agents) animates real Claude activity, permissions, subagents, and project areas. | [inferred] Strong overlap with Floor entities, stable layout, attention signals, and territories. | [sourced] Token health bars and richer RTS orchestration are described as future stages, not finished features. [inferred] The office does not establish architectural causality. |
 | Agent Town | [sourced] A [framework-independent library](https://github.com/rafapetter/agent-town) renders agents, kanban tasks, and activity zones in office, farm, spaceship, and town themes. | [inferred] Game rendering and task movement are reusable prior art, not an original product premise. | [sourced] Its playground uses a simulation engine, while real-agent bridges are separate integrations. [inferred] Theme changes do not make the scene a system model. |
-| Agent Mission Control | [sourced] This [repository](https://github.com/glglak/agent-mission-control) documents Claude hooks, pixel offices, session replay, file hotspots, communication graphs, and stuck-loop detection. | [inferred] Much of Orrery's agent telemetry and replay experience is already represented. | [inferred] Work rooms represent activities such as review and planning, rather than actual runtime dependencies. |
+| Agent Mission Control | [sourced] This [repository](https://github.com/glglak/agent-mission-control) documents Claude hooks, pixel offices, session replay, file hotspots, communication graphs, and stuck-loop detection. | [inferred] Much of Acan's agent telemetry and replay experience is already represented. | [inferred] Work rooms represent activities such as review and planning, rather than actual runtime dependencies. |
 | AgentOffice | [sourced] Its [author's implementation post](https://dev.to/harishkotra/how-i-built-agentoffice-self-growing-ai-teams-in-a-pixel-art-virtual-office-4o0p) describes local Ollama agents that move, communicate, use tools, and hire teammates. | [inferred] Prior art for an inhabited agent workplace rather than a passive dashboard. | [sourced] GitHub integration is listed as future work. [inferred] A social simulation is not evidence of a dependable coding workflow. |
 | Maestri | [sourced] Its [site](https://www.themaestri.app/en) and [documentation](https://www.themaestri.app/en/docs/intro) describe a native macOS canvas with terminals, diagrams, agent connections, and Markdown notes agents can read and write. | [inferred] A particularly close competitor for local-first spatial orchestration and shared external memory. | [inferred] The canvas arranges tools and context, rather than reconciling architectural intent with code and runtime observations. |
 | Gas Town and Gas City | [sourced] Yegge's [January launch](https://steve-yegge.medium.com/welcome-to-gas-town-4f25ee16dd04) coordinates many coding agents, while [October's Gas City](https://steve-yegge.medium.com/welcome-to-gas-city-57f564bb3607) exposes declarative agent topologies and a versioned work ledger. | [inferred] Factory terminology, roles, durable work, supervision, and merge coordination are occupied territory. | [inferred] An agent-production topology is different from a drawing of the software system being produced. |
 | Codex app | [sourced] OpenAI's [launch page](https://openai.com/index/introducing-the-codex-app/) calls it a command center for parallel agents, project threads, diffs, and isolated worktrees. | [inferred] Fleet oversight is now a mainstream product function. | [inferred] Threads and projects organize work, not system behavior. |
-| Google Antigravity | [sourced] Google's [I/O 2026 announcement](https://blog.google/innovation-and-ai/technology/developers-tools/google-io-2026-developer-highlights/) describes a standalone desktop home for parallel agents, dynamic subagents, schedules, and integrations. | [inferred] "Mission control" and background coordination cannot distinguish Orrery. | [inferred] The announcement does not establish an editable runtime architecture model. |
+| Google Antigravity | [sourced] Google's [I/O 2026 announcement](https://blog.google/innovation-and-ai/technology/developers-tools/google-io-2026-developer-highlights/) describes a standalone desktop home for parallel agents, dynamic subagents, schedules, and integrations. | [inferred] "Mission control" and background coordination cannot distinguish Acan. | [inferred] The announcement does not establish an editable runtime architecture model. |
 | OpenHands Agent Canvas | [sourced] Its [product page](https://www.openhands.dev/product/canvas) documents parallel worktrees, ACP-compatible harnesses, MCP connections, and local or remote execution. | [inferred] Bring-your-own-agent orchestration already exists. | [inferred] "Canvas" does not itself establish a spatial system representation or physical simulation. |
 | Haystack | [sourced] Its [source-available repository](https://github.com/haystackeditor/haystack-editor) describes a canvas code editor with navigation and debugging. | [inferred] Spatial code comprehension predates the current agent wave. | [inferred] Arranging code editors does not expose production behavior or what an agent changed architecturally. |
 | tldraw Computer and canvas agents | [sourced] [Steve Ruiz's 2025 demonstration](https://ai.engineer/talks/tldraw-computer) connects multimodal computation blocks, while [the 2026 canvas talk](https://gitnation.com/contents/agents-on-the-canvas-with-tldraw) discusses agents operating through the editor API. | [inferred] Computation, artifacts, and agents sharing an editable canvas are established experiments. | [inferred] These are general visual-computing tools, not automatically grounded models of an existing backend. |
 | tldraw MCP App | [sourced] The [March launch](https://tldraw.dev/blog/tldraw-mcp-app) gives agents create, edit, and delete tools and returns current canvas state into context. | [inferred] This directly anticipates "agents read the same drawing." | [inferred] Shared shapes do not supply domain meaning, architectural evidence, or protected engineering objectives. |
 | Figma | [sourced] The [March MCP announcement](https://www.figma.com/blog/the-figma-canvas-is-now-open-to-agents/) enables canvas writes, and [May's native agent](https://www.figma.com/blog/the-figma-agent-is-here/) works alongside people. [sourced] Its [help page](https://help.figma.com/hc/en-us/articles/37998629035799-Work-with-the-Figma-agent-in-design-files) limits native-agent access to closed beta. | [inferred] Shared visual intent, agent edits, parallel work, and movement between code and canvas are taken. | [inferred] The semantic model concerns product design rather than backend architecture and runtime flows. |
-| LangSmith | [sourced] Its [observability documentation](https://docs.langchain.com/langsmith/observability) covers agent traces, monitoring, feedback, evaluations, and production debugging. | [inferred] It competes with Orrery's ability to answer what happened and where quality failed. | [inferred] Traces describe agent execution, not architectural construction on a persistent system drawing. |
+| LangSmith | [sourced] Its [observability documentation](https://docs.langchain.com/langsmith/observability) covers agent traces, monitoring, feedback, evaluations, and production debugging. | [inferred] It competes with Acan's ability to answer what happened and where quality failed. | [inferred] Traces describe agent execution, not architectural construction on a persistent system drawing. |
 | Langfuse | [sourced] [Agent Graphs](https://langfuse.com/docs/observability/features/agent-graphs) derives graphs from observation timing and nesting, with aggregated and expanded execution views. | [inferred] A readable graph with loops and agent relationships is established observability UX. | [inferred] Reconstructing execution is different from displaying intended topology and proposed changes. |
 | AgentOps and Braintrust | [sourced] [AgentOps](https://www.agentops.ai/) advertises visual events, replay, and spend tracking, while [Braintrust](https://www.braintrust.dev/docs/evaluate) connects production traces, experiments, online scoring, and CI gates. | [inferred] Cost visibility, replay, and feedback-driven improvement are not white space. | [inferred] Neither reviewed page establishes a common architectural drawing that serves as the place to design and verify a change. |
 | Archyl | [sourced] Its [site](https://www.archyl.com/) documents C4 modeling, code discovery, YAML, and ADR import, its [comparison page](https://www.archyl.com/compare/archyl-vs-icepanel) claims drift detection, and its [MCP guide](https://www.archyl.com/blog/mcp-server-architecture-documentation) exposes architecture queries and modifications. | [inferred] This is direct prior art for a machine-readable architecture model shared with coding agents. | [inferred] The reviewed material does not establish OTel-backed three-source reconciliation or forecast calibration. [sourced] The drift evidence is vendor marketing, not a tested result. |
-| Comper | [sourced] Its CTO's [May talk](https://blog.waleson.com/2026/05/navigating-fog-of-war-age-of-empires-ai.html) describes a collaborative Git-derived system canvas and explicitly uses Age of Empires fog of war to explain software visibility. | [inferred] The conceptual combination of strategy games, system maps, and lost understanding already exists. | [inferred] The post does not prove a shipped fog layer with Orrery's evidence signals or churn-based decay. |
+| Comper | [sourced] Its CTO's [May talk](https://blog.waleson.com/2026/05/navigating-fog-of-war-age-of-empires-ai.html) describes a collaborative Git-derived system canvas and explicitly uses Age of Empires fog of war to explain software visibility. | [inferred] The conceptual combination of strategy games, system maps, and lost understanding already exists. | [inferred] The post does not prove a shipped fog layer with Acan's evidence signals or churn-based decay. |
 | Multiplayer | [sourced] Its [collector documentation](https://www.multiplayer.app/docs/configure/otlp-collector/) correlates frontend actions with backend traces and logs through OpenTelemetry. | [inferred] Cross-stack causal context already exists outside agent interfaces. | [inferred] This page establishes observation, not blueprint execution or a shared model of design decisions. |
 | Palladio and StrongDM | [sourced] [Palladio](https://www.palladio-simulator.com/) predicts architecture performance and reliability, while [StrongDM](https://www.strongdm.com/blog/the-strongdm-software-factory-building-software-with-ai) describes scenario validation against a Digital Twin Universe. | [inferred] Architectural what-if analysis and testing agents against simulated dependencies are existing approaches. | [inferred] Neither reviewed page establishes a per-component history comparing forecasts with subsequent production outcomes. |
 | Autoresearch and Chi | [sourced] [Karpathy's repository](https://github.com/karpathy/autoresearch) iterates against validation loss under a fixed training-time budget, while [Chi](https://kdpisda.in/chi-autoresearch-harness-llm-coding-agents/) adds correctness gates, enforced spending limits, durable evidence, and watchdogs. | [inferred] Agents hillclimbing against measurable objectives are already implemented. | [inferred] The opportunity is putting protected system objectives and their verification on the architecture itself. |
@@ -71,7 +71,7 @@
 
 > [sourced] "In order to remain efficient, I found that it was my job as a human to be in control of when I interrupt the agent, not the other way around."
 
-[inferred] Orrery needs a useful unattended state and a bounded queue of decisions.
+[inferred] Acan needs a useful unattended state and a bounded queue of decisions.
 [inferred] Continuous animation and interruption would reproduce the problem these developers describe.
 
 ### Verification overload and unreliable evidence
@@ -114,7 +114,7 @@
 > [sourced] "Nothing noticed, because nothing was watching."
 
 [sourced] His post reports roughly thirty hours of repeated work without a GPU benchmark datapoint.
-[inferred] Belts moving and bots typing cannot be Orrery's measure of useful progress.
+[inferred] Belts moving and bots typing cannot be Acan's measure of useful progress.
 [inferred] A stronger indicator is the age of the latest independently evaluated result.
 
 ### Keeping up with changing capabilities
@@ -142,24 +142,24 @@
 
 ## Novelty check
 
-| Orrery idea | Verdict | Evidence and boundary |
+| Acan idea | Verdict | Evidence and boundary |
 |---|---|---|
 | System-as-factory visualization | Partly taken | [sourced] [Gas City](https://steve-yegge.medium.com/welcome-to-gas-city-57f564bb3607) calls its agent organizations factories, and [VibeCraft](https://github.com/rayzhudev/vibecraft) implements an RTS workspace. [inferred] No reviewed implementation establishes services as machines and runtime traffic as belts. [inferred] The broad pitch is taken, while the exact system representation remains unproven prior art. |
 | Agents shown in the system they change | Partly taken | [sourced] [Figma](https://www.figma.com/blog/the-figma-agent-is-here/) puts agents in the design artifact, and [VibeCraft](https://github.com/rayzhudev/vibecraft) attaches units to project folders. [inferred] Locating work on actual services and flows is the narrower opportunity. |
 | Blueprint ghosts that agents build | Partly taken | [sourced] [Code Shaping](https://dl.acm.org/doi/10.1145/3706598.3713822) turns visual edits into code, and [Figma's MCP workflow](https://www.figma.com/blog/the-figma-canvas-is-now-open-to-agents/) connects visual intent with implementation. [inferred] A persistent proposed backend component that becomes solid only after code and runtime verification was not established. |
-| Budgets as agents' objectives | Partly taken | [sourced] [Autoresearch](https://github.com/karpathy/autoresearch) optimizes a measured objective under a fixed compute-time budget, and [Chi](https://kdpisda.in/chi-autoresearch-harness-llm-coding-agents/) separates correctness gates, scores, and spending caps. [inferred] Orrery's distinction would be human-protected latency, reliability, and resource objectives attached to system entities, not spend counters. |
+| Budgets as agents' objectives | Partly taken | [sourced] [Autoresearch](https://github.com/karpathy/autoresearch) optimizes a measured objective under a fixed compute-time budget, and [Chi](https://kdpisda.in/chi-autoresearch-harness-llm-coding-agents/) separates correctness gates, scores, and spending caps. [inferred] Acan's distinction would be human-protected latency, reliability, and resource objectives attached to system entities, not spend counters. |
 | Fog of war over a codebase | Partly taken | [sourced] [Comper's CTO](https://blog.waleson.com/2026/05/navigating-fog-of-war-age-of-empires-ai.html) explicitly connects fog of war with software maps and dark code. [inferred] The concept is prior art. [inferred] A shipped six-signal fog score with churn-driven decay was not verified. |
 | Designed versus declared versus observed drift | Partly taken | [sourced] [Archyl](https://www.archyl.com/compare/archyl-vs-icepanel) claims architecture drift detection, while [Multiplayer](https://www.multiplayer.app/docs/configure/otlp-collector/) correlates runtime observations across the stack. [inferred] Explicit three-source disagreements on one stable model remain a possible distinction, not a cleared first. |
 | Risk-ranked choices ledger | Open | [sourced] [Gas City](https://steve-yegge.medium.com/welcome-to-gas-city-57f564bb3607) records versioned work and [Archyl](https://www.archyl.com/) imports architecture decisions. [inferred] No reviewed source establishes a human decision queue ranked by `(1 - confidence) × reversal cost`. [inferred] "Open" applies to that integrated review mechanism, not decision logs generally. |
 | Calibrated simulation of a change | Partly taken | [sourced] [Palladio](https://www.palladio-simulator.com/) predicts architectural consequences and [StrongDM](https://www.strongdm.com/blog/the-strongdm-software-factory-building-software-with-ai) validates against simulated dependencies. [inferred] Per-machine forecast-versus-outcome history and visible limits on trustworthy predictions were not established. |
-| Shared drawing exposed through MCP | Taken | [sourced] [tldraw](https://tldraw.dev/blog/tldraw-mcp-app), [Figma](https://www.figma.com/blog/the-figma-canvas-is-now-open-to-agents/), and [Archyl](https://www.archyl.com/blog/mcp-server-architecture-documentation) document this directly. [inferred] Orrery must distinguish the drawing's semantics and evidence, not its protocol. |
+| Shared drawing exposed through MCP | Taken | [sourced] [tldraw](https://tldraw.dev/blog/tldraw-mcp-app), [Figma](https://www.figma.com/blog/the-figma-canvas-is-now-open-to-agents/), and [Archyl](https://www.archyl.com/blog/mcp-server-architecture-documentation) document this directly. [inferred] Acan must distinguish the drawing's semantics and evidence, not its protocol. |
 
 ## White space
 
 ### A persistent system model that survives a change
 
 [inferred] The reviewed interfaces usually organize agents, artifacts, or observations separately.
-[inferred] Orrery could make one stable entity persist through intention, implementation, deployment, and measurement.
+[inferred] Acan could make one stable entity persist through intention, implementation, deployment, and measurement.
 [inferred] A proposed queue would retain its identity while an agent creates code, CI verifies behavior, and telemetry confirms traffic.
 [inferred] This connects the architect's decision to a running consequence without requiring reconstruction across chat, Git, and monitoring.
 [inferred] The hard part is reliable identity and evidence, not the queue's illustration.
@@ -170,14 +170,14 @@
 [inferred] It should distinguish missing telemetry, missing tests, stale design assumptions, and absent human review.
 [inferred] Reading files should not automatically clear fog.
 [inferred] Fresh churn should invalidate specific evidence rather than arbitrarily dim an entire district.
-[sourced] Comper's argument and Trailblazer's annotated traces already identify this problem, so Orrery would compete on execution rather than discovering the need.
+[sourced] Comper's argument and Trailblazer's annotated traces already identify this problem, so Acan would compete on execution rather than discovering the need.
 
 ### A decision queue that conserves human attention
 
 [inferred] The strongest choices ledger would show the assumption, supporting evidence, affected entities, and reversal cost before asking for approval.
 [inferred] A task queue answers what needs doing, while this queue answers which uncertainty is expensive to ignore.
 [inferred] Confidence must be tied to evidence rather than an uncalibrated model self-rating.
-[inferred] Otherwise Orrery's risk formula would produce precise-looking rankings without a defensible basis.
+[inferred] Otherwise Acan's risk formula would produce precise-looking rankings without a defensible basis.
 [inferred] No reviewed page establishes this complete workflow.
 
 ### Predictions that can admit ignorance
@@ -191,16 +191,16 @@
 ### Objectives attached to the system, not the agent
 
 [inferred] An agent's token budget and a service's latency budget are different contracts.
-[inferred] Orrery could let an architect fix the objective, authorize a territory, and let agents improve the implementation without changing the check.
+[inferred] Acan could let an architect fix the objective, authorize a territory, and let agents improve the implementation without changing the check.
 [inferred] A successful run would preserve correctness and demonstrate the required system outcome.
 [sourced] Autoresearch and Chi already implement important parts of that optimization discipline.
 [inferred] The unestablished combination is spatial specification, protected acceptance conditions, and post-deployment evidence.
 
 ### What the bakeoff should prove
 
-[inferred] Compare a Maestri-like agent canvas, an RTS office, and Orrery on the same change.
+[inferred] Compare a Maestri-like agent canvas, an RTS office, and Acan on the same change.
 [inferred] Ask a developer to locate a bottleneck, approve a proposed fix, understand the agent's modifications, and verify the outcome.
-[inferred] Orrery earns its complexity only if the system drawing reduces reconstruction and catches a mistaken assumption the other interfaces miss.
+[inferred] Acan earns its complexity only if the system drawing reduces reconstruction and catches a mistaken assumption the other interfaces miss.
 [guess] A memorable factory aesthetic may attract attention, but evidence-linked change control is the more durable reason to keep the app open.
 
 ## Sources opened

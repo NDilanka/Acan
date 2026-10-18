@@ -90,7 +90,7 @@ This is the one that looks finished. The forecast is a range, the queue is ranke
 
 2. The badge says 7 and the queue has 8 rows, and neither is the floor list. `setWaitingCount(present().length)` (`concepts/gate.mjs:230`) writes 7, which is the present items, not the 8 rows on screen (7 present plus "Seal radar-otel", which is expected). The floor panel still lists 3 agents. The "you" chip says `7 waiting`. Three numbers, three meanings, one label. The badge should be the count of the section it names. If "Waiting on you" means the floor list, count the floor list. If it means the gate queue, say "7 reviews" on the station and leave the floor badge alone.
 
-3. "Blocks publication" and "Advisory" share a card ending. The webhook card says `Blocks publication · Kvarm #212` and then ends `Advisory. Droid decides whether to park; Orrery never stops an agent.` (`gate-mouse` probe, `.gate-note` at `concepts/gate.mjs:117`). Both sentences are true and they read as a contradiction. The block is on publication, not on the agent. Say that in the note when `i.kvarm` is set: "Blocks publication. The agent is not stopped." The advisory note belongs on advisory cards only.
+3. "Blocks publication" and "Advisory" share a card ending. The webhook card says `Blocks publication · Kvarm #212` and then ends `Advisory. Droid decides whether to park; Acan never stops an agent.` (`gate-mouse` probe, `.gate-note` at `concepts/gate.mjs:117`). Both sentences are true and they read as a contradiction. The block is on publication, not on the agent. Say that in the note when `i.kvarm` is set: "Blocks publication. The agent is not stopped." The advisory note belongs on advisory cards only.
 
 ### Should fix
 

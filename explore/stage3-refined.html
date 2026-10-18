@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Orrery · Stage 3 · Refined direction D</title>
+<title>Acan · Stage 3 · Refined direction D</title>
 <style>
 :root{
   --sans:"IBM Plex Sans","Inter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
@@ -47,7 +47,7 @@ body.still .a-blink,body.still .a-glow,body.still .smoke{animation:none}
 </head>
 <body>
 <div class="wrap">
-  <h1>Orrery · Explore unknowns · Stage 3 · Refined direction</h1>
+  <h1>Acan · Explore unknowns · Stage 3 · Refined direction</h1>
   <h2>Brass instruments, with machine silhouettes and mounted gauges</h2>
   <p class="note">Direction D after S1 to S4: each catalog machine keeps its own silhouette, drawn in brass and graphite, and carries a gauge for its primary reading. Switch the four dark mode papers, flat versus 3/4 depth, and the share-safe redaction you would use before showing a client or posting a screenshot.</p>
   <div class="bar">
@@ -214,7 +214,7 @@ function render(){
   const tb = {x:OX+9.55*T, y:OY+6.85*T, w:3.4*T, h:1.15*T};
   s.push(rect(tb, P.front, SIG.brass, 1.2));
   s.push(`<path d="M${tb.x} ${tb.y+23}H${tb.x+tb.w}M${tb.x} ${tb.y+46}H${tb.x+tb.w}M${tb.x+92} ${tb.y+23}V${tb.y+tb.h}" stroke="${SIG.brass}" stroke-width=".7"/>`);
-  s.push(text(tb.x+8, tb.y+16, 'ORRERY', `class="lbl-svg" font-size="11" fill="${SIG.brassHi}" letter-spacing="2.5"`));
+  s.push(text(tb.x+8, tb.y+16, 'ACAN', `class="lbl-svg" font-size="11" fill="${SIG.brassHi}" letter-spacing="2.5"`));
   s.push(text(tb.x+tb.w-8, tb.y+16, opt.redact ? 'SHARE-SAFE' : 'ACQUIT · PLANT', `text-anchor="end" class="lbl-svg" font-size="9" fill="${opt.redact ? '#7FA89A' : P.val}"`));
   s.push(text(tb.x+8, tb.y+38, 'VIEW PLAN', `class="mono-svg" font-size="9" fill="${P.val}"`));
   s.push(text(tb.x+100, tb.y+38, 'MODE ' + P.name.toUpperCase(), `class="mono-svg" font-size="9" fill="${P.val}"`));

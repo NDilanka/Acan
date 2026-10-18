@@ -13,7 +13,7 @@ The user's calls that shape it are these. An agent claims on its own after its r
 **Persistent chrome.** These four never unmount and never move.
 - **Waiting on you.** One queue for the whole session, as a pill in the bottom bar with its count. U opens it as the left drawer. Its count is the only waiting count on screen. The ui-v1 status panel's `.bl .wait b` shows the same number.
 - **Egress pill.** Top bar, right. It reads `local + kvarm · N B out`, where N is the sum of the session ledger (section 5). Click or Shift V opens the network log in the left drawer.
-- **Kvarm strip.** Bottom bar, after the queue pill. It shows connection state and the live lease, for example `Kvarm · git.orrery.local · connected · lease g1 · Claude Code · t-41`. Click opens the network log.
+- **Kvarm strip.** Bottom bar, after the queue pill. It shows connection state and the live lease, for example `Kvarm · git.acan.local · connected · lease g1 · Claude Code · t-41`. Click opens the network log.
 - **Appearance switch.** Top bar, before the pill, as a select with System, Light and Dark. F8 cycles System, Light, Dark. The choice is stored in `sessionStorage`, so it holds per window.
 
 **Top bar** (48 px). Back and forward buttons, then the breadcrumb `My world / Acquit / paypal-payouts`, then the jump field `Jump to a place, machine, or decision · Ctrl K`, then the appearance switch and the egress pill.
@@ -97,7 +97,7 @@ Retired in the journey are bench U (Extend is Enter when the attempt is spent), 
 | Clash seeds the orders end state and its own Kvarm log | Seeding happens only when standalone. Hosted, clash mounts on the live orders state and appends to the ledger. |
 | Orders opens in Replay at 15:44:30 | Only on the first entry to Acquit, before any pin. Later entries keep the last mode and time. |
 | Gate's away window replays 16:00 to 16:30 | The journey steps away forward, 17:00 to 17:30, from a new away fixture. Gate's past window stays for standalone. |
-| World queue has p-2307 and c1 at boot, and an orrery `claim` row where Codex holds g1 | p-2307, c1 and c2 rows come from journey events. The orrery `claim` row is dropped under `kv=ok`. Under `kv=unmatched` it appears on Acquit, where orders' unmatched script puts Codex on g1. |
+| World queue has p-2307 and c1 at boot, and an acan `claim` row where Codex holds g1 | p-2307, c1 and c2 rows come from journey events. The acan `claim` row is dropped under `kv=ok`. Under `kv=unmatched` it appears on Acquit, where orders' unmatched script puts Codex on g1. |
 | Gate items not in the loop (webhook #212, traceparent, DatabaseSync, radar choices, verifier, retry x2) | Not in the journey queue. The retry x2 item conflicts with the live claude-payouts session. |
 | World review #184 exists at boot on the Kvarm plant | #184 is created at beat 13 as Claude Code's paypal-payouts change. Its row lives on Acquit. The Kvarm site's condition reads `Review #184 blocks publication` while it waits, and `fresh · nothing waits` before. |
 | World Acquit stage art against the ui-v1 stage | The ui-v1 stage is Acquit. World draws no stage for Acquit when hosted. |
@@ -137,7 +137,7 @@ New file `concepts/journey-data.mjs`. It imports the other data files and adds o
 
 **Activation** (a shared change in `build.mjs`). `conceptActive(id)` reads the hash on each call. It is true when `c=<id>`, or when `c=journey` and the journey has mounted `id`. A new `conceptKeys(id)` is true only when `c=<id>`. Each concept guards its raw key listener with `conceptKeys` and its logic with `conceptActive`. With no hash, nothing is active, so ui-v1 modes 1 to 4 behave as today. The camera gains `fitRect(rect)` for the free rect.
 
-**What each concept exposes.** Each registers `window.orreryConcepts[id] = { mount(seed), unmount(), act(verb, ...args), state(), hint(), advance(ms) }`. `act` reaches every step the keys reach. `advance` steps its scripted timers synchronously, for `beat=` seeding. Concepts emit `orrery:<event>` DOM events and never call each other.
+**What each concept exposes.** Each registers `window.acanConcepts[id] = { mount(seed), unmount(), act(verb, ...args), state(), hint(), advance(ms) }`. `act` reaches every step the keys reach. `advance` steps its scripted timers synchronously, for `beat=` seeding. Concepts emit `acan:<event>` DOM events and never call each other.
 
 | Concept | Seed in | Verbs | Events out |
 |---|---|---|---|

@@ -18,7 +18,7 @@ export const SH_HTML = `
     <div><b>MCP</b><span>127.0.0.1:4319</span><em>2 clients</em></div>
   </div>
   <label>Offline <small>blocks all egress</small><input type="checkbox" id="netOff"><span class="sw"></span></label>
-  <h4>What Orrery can ever send</h4>
+  <h4>What Acan can ever send</h4>
   <div class="netst">
     <div><b>Update check</b><span>version number only · off until you turn it on</span></div>
     <div><b>Crash report</b><span>stack trace, no paths · asks each time</span></div>
@@ -141,7 +141,7 @@ function setOffline(v) {
   if ($("#net").classList.contains("open")) netToggle(true);
 }
 $(".egress").addEventListener("click", (ev) => { ev.stopPropagation(); netToggle(); });
-$("#netOff").onchange = (ev) => { setOffline(ev.target.checked); toast(ev.target.checked ? "Offline. Orrery can't reach anything outside this machine." : "Online. Still nothing is sent unless you turn it on."); };
+$("#netOff").onchange = (ev) => { setOffline(ev.target.checked); toast(ev.target.checked ? "Offline. Acan can't reach anything outside this machine." : "Online. Still nothing is sent unless you turn it on."); };
 addEventListener("click", (ev) => {
   if (!ev.target.closest("#net,.egress")) $("#net").classList.remove("open");
   if (exOpen() && !ev.target.closest("#ex,#exportBtn,#stage")) exToggle(false);

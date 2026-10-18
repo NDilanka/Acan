@@ -21,7 +21,7 @@ export const BENCH = {
   environment: "Sealed replay, today 15:30 to 16:30. No call reaches PayPal.",
   budget: { tokens: 300000, minutes: 20, review: 6, extend: { tokens: 100000, minutes: 5 } },
   cannotRun: { agent: "Codex", why: "Passive session, no MCP." },
-  kvarm: { origin: "git.orrery.local", arena: "ar-12", change: 191, choice: "choices/bench-1.yaml" },
+  kvarm: { origin: "git.acan.local", arena: "ar-12", change: 191, choice: "choices/bench-1.yaml" },
   zone: { x0: 56, x1: 282, y0: 122, y1: 204 },
 };
 
@@ -55,7 +55,7 @@ export const EXTENSION = { at: 1300, attempt: "a3", witness: "w3", result: "hold
 
 export const KVARM_OPS = {
   fund: [{ op: "create_arena", bytes: 1184, reason: "Brief and 3 candidate workspaces at 3f2a91c. Kvarm spawns nothing." }],
-  results: [{ op: "rank_arena", bytes: 412, reason: "Read the duplication report only. Orrery orders attempts by witnesses.", note: "a1 and a3 both edit packages/core/src/retry.ts" }],
+  results: [{ op: "rank_arena", bytes: 412, reason: "Read the duplication report only. Acan orders attempts by witnesses.", note: "a1 and a3 both edit packages/core/src/retry.ts" }],
   pick: [
     { op: "record_decision", bytes: 736, reason: "Chosen and rejected attempts, each with its reason" },
     { op: "select_arena_winner", bytes: 288, reason: "Opens the final-selection escalation on #191" },

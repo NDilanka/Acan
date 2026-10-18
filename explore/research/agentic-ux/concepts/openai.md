@@ -1,4 +1,4 @@
-# Orrery interaction concepts
+# Acan interaction concepts
 
 17 October 2026.
 
@@ -20,7 +20,7 @@ At 10 seconds, drag a "lose response after remote acceptance" fault onto the Pay
 
 At 20 seconds, Shift-click a normal payout and choose "Preserve." A predicate strip now says "At most one remote payout per payout ID" and "Normal payouts still settle." These are explicit checker templates, not inferred promises.
 
-At 30 seconds, two scout bots play different readbacks on the same belt. One stops retries forever. The other retries with the same idempotency identity and reconciles the pending local record. The first satisfies the duplicate constraint but leaves a payout unresolved. Orrery asks one question beside that SQLite record. Must this case eventually settle, or remain explicitly pending during an outage?
+At 30 seconds, two scout bots play different readbacks on the same belt. One stops retries forever. The other retries with the same idempotency identity and reconciles the pending local record. The first satisfies the duplicate constraint but leaves a payout unresolved. Acan asks one question beside that SQLite record. Must this case eventually settle, or remain explicitly pending during an outage?
 
 At 45 seconds, click "Pending during outage, settle after recovery." A third tape demonstrates recovery. Press `Enter` to issue the order. Approved predicates become protected checks. The payout territory gains a behavior ribbon. Builders receive the examples, boundaries, and unresolved cases rather than the replay conversation.
 
@@ -28,7 +28,7 @@ At 45 seconds, click "Pending during outage, settle after recovery." A third tap
 
 This attacks pain 1. The engineer edits outcomes and resolves consequential ambiguity before implementation. Today's loop discovers the wrong interpretation after a large diff. Here, the agent must expose its interpretation through a witness first.
 
-Unsupported expectations remain prose with a visible verification hole. Orrery must not pretend that every gesture produces an executable test.
+Unsupported expectations remain prose with a visible verification hole. Acan must not pretend that every gesture produces an executable test.
 
 ### Data
 
@@ -124,7 +124,7 @@ Change one system rule and require every affected agent to acknowledge its concr
 
 At 0 seconds, click the stale `gate-sessions` seal. The plant shows the basic-auth exemption for `/paypal/webhook`, radar edits to `server.ts`, and the payout path. Press `R` for "Revise issued intent."
 
-At 10 seconds, choose a security predicate at the Gate. "Verify the PayPal signature before a webhook can mutate payout state." The exemption from basic auth remains a separate decision. Orrery must not equate the two.
+At 10 seconds, choose a security predicate at the Gate. "Verify the PayPal signature before a webhook can mutate payout state." The exemption from basic auth remains a separate decision. Acan must not equate the two.
 
 At 20 seconds, approve the new check and inspect an impact preview. It marks the webhook handler and payout mutation path. It leaves the hand-written DatabaseSync timing wrapper outside the known impact. Every mark links to a declared dependency or says "Inferred."
 
@@ -188,7 +188,7 @@ At 30 seconds, click "Rehearse absence." The mock advances to a radar failure th
 
 At 45 seconds, click "Commit window." Managed bots receive those grants and parking rules. Each mission reserves a return slot or must park before requesting another decision. This bounds ready work without predicting every future question. Existing choices retain their risk order.
 
-At 55 seconds, return to Live. The plant becomes quiet and displays "Managed work bounded until your return. One observed-only session excluded." Click that exclusion to open Codex's terminal if desired. Orrery makes no promise about an uncontrolled process.
+At 55 seconds, return to Live. The plant becomes quiet and displays "Managed work bounded until your return. One observed-only session excluded." Click that exclusion to open Codex's terminal if desired. Acan makes no promise about an uncontrolled process.
 
 ### The changed loop
 

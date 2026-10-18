@@ -91,7 +91,7 @@
 ## 4. Runtime fit
 
 [sourced] Kvarm is one Cloudflare Worker. Artifacts is remote-only, D1 holds metadata rather than file content, and server-side git writes use receive-pack with expected-old values (`/tmp/kvarm/docs/architecture.md:3`, `/tmp/kvarm/docs/architecture.md:87-93`, `/tmp/kvarm/CONTRIBUTING.md:18`).
-[inferred] There is no local-first git fallback here. A desktop shared buffer would be a separate Orrery capability until checkpointed remotely.
+[inferred] There is no local-first git fallback here. A desktop shared buffer would be a separate Acan capability until checkpointed remotely.
 
 [inferred] Advisory ranges, bounded D1 metadata, and deterministic JS or WASM merging fit. Native git custom-driver executables or a persistent checkout do not fit the existing Worker merge path. Unbounded repository-wide AST analysis conflicts with its budget discipline.
 [sourced] Merge budgets include 4 MiB per blob, 300 blob reads, 16 MiB created objects and one concurrent content merge (`/tmp/kvarm/apps/platform/src/services/merge.ts:63-73`).
@@ -105,10 +105,10 @@
 ## Recommended smallest first step
 
 [sourced] Existing `get_file_diff` already exposes per-file hunks between explicit commit SHAs (`/tmp/kvarm/packages/ops/src/index.js:319-330`).
-[inferred] Orrery can first prototype the revision-anchored overlap view with that read API, without upstream changes.
+[inferred] Acan can first prototype the revision-anchored overlap view with that read API, without upstream changes.
 
 [inferred] Add optional same-file region evidence to Nexus, not locks or a shared buffer. First compute bounded observed changed-line spans from a common immutable base blob for already path-overlapping workspace pairs. Reuse diffcore, but distinguish context hunks from actual edits. Include insertion anchors, side SHAs, stale/approximate/truncated status and whole-file fallback.
 
 [inferred] Next add optional declared ranges shaped as `{path, revision, startLine, endLine}`. Compare only coordinates mapped to the same revision. Never suppress the coarse path warning when mapping is uncertain. Defer AST identities, mandatory leases and hunk-selecting composition.
 
-[inferred] Orrery should label this “same file, separate observed edits,” not “safe.” Continue independent workspace commits and exact-tree integration. Validate non-overlapping edits, adjacent insertions, identical edits, moved lines, renames, stale pushes and budget exhaustion before enabling the advisory view.
+[inferred] Acan should label this “same file, separate observed edits,” not “safe.” Continue independent workspace commits and exact-tree integration. Validate non-overlapping edits, adjacent insertions, identical edits, moved lines, renames, stale pushes and budget exhaustion before enabling the advisory view.

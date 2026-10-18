@@ -21,10 +21,10 @@
   {"wait":1700},
   {"eval":"[ordersState.order.state,ordersState.kvarm.claim&&ordersState.kvarm.claim.state,ordersState.kvarm.lease.holder,document.querySelector('#toast').textContent]","expect":["open","rejected","Codex","Kvarm rejected the claim from Claude Code. Codex holds g1 with no readback."]},
   {"click":"#orders-plate","after":50},
-  {"eval":"[document.querySelector('#orders-card-status').textContent,document.querySelector('#orders-card-status').dataset.tone,!!document.querySelector('#orders-card [data-orders-binding=holder]'),document.querySelector('#orders-bindings-list').children.length>0,document.querySelector('#orders-claim-session').textContent]","expect":["UNMATCHED · Codex holds g1 · no readback","wait",true,true,"Codex holds g1 in Kvarm · no Orrery readback"]},
+  {"eval":"[document.querySelector('#orders-card-status').textContent,document.querySelector('#orders-card-status').dataset.tone,!!document.querySelector('#orders-card [data-orders-binding=holder]'),document.querySelector('#orders-bindings-list').children.length>0,document.querySelector('#orders-claim-session').textContent]","expect":["UNMATCHED · Codex holds g1 · no readback","wait",true,true,"Codex holds g1 in Kvarm · no Acan readback"]},
   {"shot":"orders-kv-unmatched"},
   {"eval":"ordersProvOpen('holder', document.querySelector('[data-orders-binding=holder]'));true","expect":true},
-  {"eval":"[document.querySelector('#orders-prov').hidden,document.querySelector('#orders-prov').textContent.includes('No Orrery readback'),document.querySelector('#orders-prov-text').textContent.includes('authenticated')]","expect":[false,true,true]},
+  {"eval":"[document.querySelector('#orders-prov').hidden,document.querySelector('#orders-prov').textContent.includes('No Acan readback'),document.querySelector('#orders-prov-text').textContent.includes('authenticated')]","expect":[false,true,true]},
   {"shot":"orders-kv-provenance"},
   {"key":"Escape"},
   {"eval":"document.querySelector('#orders-prov').hidden","expect":true}

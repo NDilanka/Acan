@@ -1,8 +1,8 @@
 export const WORLD = {
   revision: "55825fe",
-  origin: "https://git.orrery.local",
+  origin: "https://git.acan.local",
   plants: [
-    { id: "orrery", name: "Orrery", x: 720, y: 395, env: "local", revision: "71cfe09", branch: "main", worktree: "~/orrery", decisions: 1, condition: "Unmatched claim", freshness: "runtime not reported", binding: "receiver", machines: ["receiver", "telemetry ring", "matcher", "evaluator", "SQLite", "webview renderer"],
+    { id: "acan", name: "Acan", x: 720, y: 395, env: "local", revision: "71cfe09", branch: "main", worktree: "~/acan", decisions: 1, condition: "Unmatched claim", freshness: "runtime not reported", binding: "receiver", machines: ["receiver", "telemetry ring", "matcher", "evaluator", "SQLite", "webview renderer"],
       scene: {
         entities: [
           { id: "receiver", kind: "intake", x: -160, y: -10 },
@@ -41,7 +41,7 @@ export const WORLD = {
           { from: "Worker", to: "Artifacts", pts: [[-70, 37], [-70, 74]] }
         ]
       } },
-    { id: "format", name: "orrery-format", x: 375, y: 225, env: "local", revision: "e7cb210", branch: "main", worktree: "~/orrery-format", decisions: 1, condition: "Check digest needs review", freshness: "lifecycle · 12 s", binding: "validator", machines: ["schema", "reference validator", "checks"],
+    { id: "format", name: "acan-format", x: 375, y: 225, env: "local", revision: "e7cb210", branch: "main", worktree: "~/acan-format", decisions: 1, condition: "Check digest needs review", freshness: "lifecycle · 12 s", binding: "validator", machines: ["schema", "reference validator", "checks"],
       scene: {
         entities: [
           { id: "schema", kind: "crate", x: 0, y: -80, variant: "{ }" },
@@ -53,7 +53,7 @@ export const WORLD = {
           { from: "reference validator", to: "checks", pts: [[0, 30], [0, 49]] }
         ]
       } },
-    { id: "site", name: "orrery-site", x: 1085, y: 665, env: "preview", revision: "09bf732", branch: "waitlist", worktree: "~/orrery-site", decisions: 0, condition: "Preview only", freshness: "simulated · not live", binding: "preview", machines: ["artifact receiver", "static waitlist", "CDN"],
+    { id: "site", name: "acan-site", x: 1085, y: 665, env: "preview", revision: "09bf732", branch: "waitlist", worktree: "~/acan-site", decisions: 0, condition: "Preview only", freshness: "simulated · not live", binding: "preview", machines: ["artifact receiver", "static waitlist", "CDN"],
       scene: {
         entities: [
           { id: "artifact receiver", kind: "intake", size: 0.7, x: -112, y: 0 },
@@ -67,15 +67,15 @@ export const WORLD = {
       } }
   ],
   bindings: {
-    receiver: { entity: "Orrery / receiver", channel: "runtime.active", value: null, state: "unknown", sourceClass: "observed", locator: "otel://local/receiver/active", revision: "71cfe09", age: null, unit: "requests", meaning: "Runtime not reported", policy: "5 s heartbeat", reason: "No collector attached" },
+    receiver: { entity: "Acan / receiver", channel: "runtime.active", value: null, state: "unknown", sourceClass: "observed", locator: "otel://local/receiver/active", revision: "71cfe09", age: null, unit: "requests", meaning: "Runtime not reported", policy: "5 s heartbeat", reason: "No collector attached" },
     otlp: { entity: "Acquit / OTLP boundary", channel: "runtime.rate", value: 12, state: "stale", sourceClass: "observed", locator: "otel://sandbox/acquit/export", revision: "55825fe", age: 41, unit: "spans/s", meaning: "Last rate, not a current rate", policy: "stale after 5 s" },
     train: { entity: "Kvarm / train", channel: "train.queue_depth", value: 0, state: "zero", sourceClass: "authenticated", locator: "kvarm://own-origin/train/queue", revision: "8ae91d2", age: 8, unit: "changes", meaning: "Queue depth is known zero", policy: "stale after two missed polls", remote: true },
-    validator: { entity: "orrery-format / validator", channel: "process.lifecycle", value: "stopped", state: "stopped", sourceClass: "declared", locator: "local://validator/exit/0", revision: "e7cb210", age: 12, unit: "lifecycle", meaning: "Process exited, code 0", policy: "lifecycle event" },
-    preview: { entity: "orrery-site / preview", channel: "simulation.waitlist", value: 24, state: "simulated", sourceClass: "designed", locator: "scenarios/waitlist.yaml:8", revision: "09bf732", age: 0, unit: "visits", meaning: "SIM · generated visits, not traffic", policy: "scenario, seed 24" },
+    validator: { entity: "acan-format / validator", channel: "process.lifecycle", value: "stopped", state: "stopped", sourceClass: "declared", locator: "local://validator/exit/0", revision: "e7cb210", age: 12, unit: "lifecycle", meaning: "Process exited, code 0", policy: "lifecycle event" },
+    preview: { entity: "acan-site / preview", channel: "simulation.waitlist", value: 24, state: "simulated", sourceClass: "designed", locator: "scenarios/waitlist.yaml:8", revision: "09bf732", age: 0, unit: "visits", meaning: "SIM · generated visits, not traffic", policy: "scenario, seed 24" },
     verifier: { entity: "Acquit / verifier", channel: "declared.concurrency", value: 1, state: "valid", sourceClass: "declared", locator: "deploy/runtime.env:12", revision: "55825fe", age: 8, unit: "cell", meaning: "one cell", policy: "revision bound", runtime: "runtime concurrency not reported", text: "one cell · declared concurrency 1 · deploy/runtime.env:12 · fixture revision 55825fe · runtime concurrency not reported" }
   },
   queue: [
-    { id: "claim", plant: "orrery", title: "Unmatched claim", why: "Codex holds g1 without a readback", cost: "Territory remains fogged", safe: "Before the next lease", estimate: "1–2 min", kind: "recommended hold", entity: "matcher" },
+    { id: "claim", plant: "acan", title: "Unmatched claim", why: "Codex holds g1 without a readback", cost: "Territory remains fogged", safe: "Before the next lease", estimate: "1–2 min", kind: "recommended hold", entity: "matcher" },
     { id: "p-2307", plant: "acquit", title: "p-2307 · keep pending?", why: "Two readbacks disagree at sqlite", cost: "Payout retry cannot be witnessed", safe: "Before the next retry", estimate: "2–4 min", kind: "question", entity: "sqlite", departure: "You left p-2307 unanswered. Two readings disagree on whether a failed payout stays pending. Next, compare w3 at sqlite." },
     { id: "c1", plant: "acquit", title: "c1 · retry meets breaker", why: "Two declared writes share one belt", cost: "The proposal can break w3", safe: "Before any code is edited", estimate: "3–5 min", kind: "recommended hold", entity: "retry" },
     { id: "review", plant: "kvarm", title: "Review #184", why: "Required reviewer is not the author", cost: "Publication waits on approval", safe: "Before the train publishes", estimate: "4–7 min", kind: "blocks publication", entity: "train" },
@@ -83,10 +83,10 @@ export const WORLD = {
   ],
   arrival: { id: "artifact", plant: "site", title: "Check waitlist artifact", why: "Preview differs from the pinned build", cost: "Delivery remains a local proposal", safe: "Before the next delivery", estimate: "1–2 min", kind: "recommended hold", entity: "artifact receiver" },
   contracts: [
-    { id: "otlp", from: "acquit", to: "orrery", fromEntity: "OTLP boundary", toEntity: "receiver", kind: "runtime", label: "OTLP / HTTP", detail: "sandbox · acquit@55825fe → local · orrery@71cfe09", evidence: "declared · runtime rate unknown", path: "M445 503 L550 503 L550 420 L615 420", labelAt: [533, 482] },
-    { id: "rest", from: "orrery", to: "kvarm", fromEntity: "matcher", toEntity: "Worker", kind: "egress", label: "REST · declared egress", detail: "local · orrery@71cfe09 → own origin · kvarm@8ae91d2", evidence: "opt-in connection · scripted fixture", path: "M820 385 L1045 385", labelAt: [943, 365] },
-    { id: "package", from: "format", to: "orrery", fromEntity: "schema", toEntity: "evaluator", kind: "package", label: "package · v0.3.2", detail: "orrery-format@e7cb210 → orrery@71cfe09", evidence: "declared dependency · compatibility not reported", path: "M463 260 L550 260 L550 340 L620 340", labelAt: [505, 248] },
-    { id: "artifact", from: "orrery", to: "site", fromEntity: "webview renderer", toEntity: "artifact receiver", kind: "artifact", label: "artifact · web bundle", detail: "orrery@71cfe09 → orrery-site@09bf732", evidence: "declared delivery · preview only", path: "M800 415 L900 415 L900 620 L1040 620", labelAt: [975, 540] }
+    { id: "otlp", from: "acquit", to: "acan", fromEntity: "OTLP boundary", toEntity: "receiver", kind: "runtime", label: "OTLP / HTTP", detail: "sandbox · acquit@55825fe → local · acan@71cfe09", evidence: "declared · runtime rate unknown", path: "M445 503 L550 503 L550 420 L615 420", labelAt: [533, 482] },
+    { id: "rest", from: "acan", to: "kvarm", fromEntity: "matcher", toEntity: "Worker", kind: "egress", label: "REST · declared egress", detail: "local · acan@71cfe09 → own origin · kvarm@8ae91d2", evidence: "opt-in connection · scripted fixture", path: "M820 385 L1045 385", labelAt: [943, 365] },
+    { id: "package", from: "format", to: "acan", fromEntity: "schema", toEntity: "evaluator", kind: "package", label: "package · v0.3.2", detail: "acan-format@e7cb210 → acan@71cfe09", evidence: "declared dependency · compatibility not reported", path: "M463 260 L550 260 L550 340 L620 340", labelAt: [505, 248] },
+    { id: "artifact", from: "acan", to: "site", fromEntity: "webview renderer", toEntity: "artifact receiver", kind: "artifact", label: "artifact · web bundle", detail: "acan@71cfe09 → acan-site@09bf732", evidence: "declared delivery · preview only", path: "M800 415 L900 415 L900 620 L1040 620", labelAt: [975, 540] }
   ],
   operations: [
     { op: "list_repos", bytes: 768, reason: "Read the three connected repository identities" },
@@ -94,5 +94,5 @@ export const WORLD = {
     { op: "get_leases", bytes: 384, reason: "Check g1 before presenting an unmatched claim" }
   ],
   pending: [{ op: "record_decision", path: "choices/p-2307.yaml", bytes: 248, reason: "Scripted local choice, not published" }],
-  bots: [{ principal: "Codex", session: "cx-17", evidence: "authenticated", note: "holds g1 · no Orrery readback" }, { principal: "Claude Code", session: "cc-42", evidence: "declared", note: "readback · Orrery · 3 of 3" }]
+  bots: [{ principal: "Codex", session: "cx-17", evidence: "authenticated", note: "holds g1 · no Acan readback" }, { principal: "Claude Code", session: "cc-42", evidence: "declared", note: "readback · Acan · 3 of 3" }]
 };

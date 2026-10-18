@@ -264,7 +264,7 @@ function benchMount(D) {
     h += attempts.map((a) => '<div class="bench-arow" title="' + esc(a.says) + '"><b>' + a.tag + "</b><span>" + esc(a.label) + "</span><i>" + esc(a.agent) + " · " + esc(a.diff) + "</i></div>").join("");
     h += '<small class="bench-note">' + esc(bench.cannotRun.agent) + " cannot run an attempt. " + esc(bench.cannotRun.why) + "</small></section>";
     h += '<section class="bench-sec"><h3>Budget <small>an attempt stops when it runs out</small></h3><div class="bench-budget"><span><b>' + bench.budget.minutes + " min</b>per attempt</span><span><b>" + kfmt(bench.budget.tokens) + "</b>tokens per attempt</span><span><b>" + bench.budget.review + " min</b>your review, estimate</span></div><small class=\"bench-note\">" + esc(bench.environment) + "</small></section>";
-    h += '<footer class="bench-foot"><button class="bench-primary" data-bench-fund>Fund the bench <kbd>Enter</kbd></button><small>Kvarm keeps the arena. Orrery keeps the criterion, budget and replay.</small></footer>';
+    h += '<footer class="bench-foot"><button class="bench-primary" data-bench-fund>Fund the bench <kbd>Enter</kbd></button><small>Kvarm keeps the arena. Acan keeps the criterion, budget and replay.</small></footer>';
     return h;
   };
   const resultsHtml = () => {

@@ -199,7 +199,7 @@ function reviewHtml(c) {
 }
 function decidedHtml(c) {
   const D = (t) => '<span class="del">' + t + "</span>", A = (t) => '<span class="add">' + t + "</span>", C = (t) => '<span class="ctx">' + t + "</span>";
-  let y = '<span class="f">.orrery/choices/' + c.id + ".yaml</span>" + C("id: " + c.id) + C("on: " + c.on) + D("status: open") + A("status: " + c.status) + A("reviewed_by: you");
+  let y = '<span class="f">.acan/choices/' + c.id + ".yaml</span>" + C("id: " + c.id) + C("on: " + c.on) + D("status: open") + A("status: " + c.status) + A("reviewed_by: you");
   if (c.status === "replaced") y += D("choice: " + c.text) + A("choice: " + c.alts[c.picked].text) + D("confidence: " + c.conf.toFixed(2)) + A("confidence: 1.00");
   if (c.status === "rejected") y += A("reason: " + JSON.stringify(c.why || "no reason given"));
   const note = { accepted: "Accepted. It stays pinned, filled in, and drops out of the queue.", replaced: "Replaced with your pick at confidence 1.00. " + (c.session ? c.by + " is told to rework it." : "The next agent here inherits it."), rejected: "Rejected. " + (c.consequence || "") }[c.status];
@@ -248,7 +248,7 @@ function summary() {
   review = { i: -1 }; selected = null;
   $("#ih").dataset.state = "ok"; $("#iMono").textContent = "✓"; $("#iName").textContent = "Walk finished"; $("#iKind").textContent = CH.length + " choices · riskiest first";
   $("#ibody").innerHTML = '<div class="rv-sum">' + ["accepted", "replaced", "rejected", "later"].map((s) => '<div data-s="' + s + '"><b>' + n(s) + "</b>" + s + "</div>").join("") + "</div>"
-    + '<div class="note">Every decision is a line in .orrery/choices/. Agents read them over MCP before they touch these machines again. ' + (n("later") ? n("later") + " kept for later stay pinned and count in Waiting on you." : "") + "</div>"
+    + '<div class="note">Every decision is a line in .acan/choices/. Agents read them over MCP before they touch these machines again. ' + (n("later") ? n("later") + " kept for later stay pinned and count in Waiting on you." : "") + "</div>"
     + '<div class="acts">' + (n("later") ? '<button data-walk="1">Walk the later ones</button>' : "") + '<button data-rv="close">Back to the plant</button></div>';
   paintSelection(); floorAfterRender(); choicesAfterRender(); fit();
 }

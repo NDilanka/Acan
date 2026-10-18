@@ -21,7 +21,7 @@
               "op": "get_intent",
               "reason": "Read declared intents for paypal-payouts · cached 12 s",
               "bytes": 412,
-              "destination": "git.orrery.local",
+              "destination": "git.acan.local",
               "state": "sent",
               "count": 1
             },
@@ -29,7 +29,7 @@
               "op": "forecast",
               "reason": "Forecast path overlap for d1 and d3 · cached 12 s",
               "bytes": 538,
-              "destination": "git.orrery.local",
+              "destination": "git.acan.local",
               "state": "sent",
               "count": 1
             }

@@ -33,7 +33,7 @@
       "rows": 8,
       "blockedFirst": "Exempt the webhook from basic auth",
       "advisoryFirst": "Approve the paypal breaker",
-      "kvarm": "↗ git.orrery.local · 3 ops1,664 B"
+      "kvarm": "↗ git.acan.local · 3 ops1,664 B"
     }
   },
   {
@@ -213,7 +213,7 @@
     "eval": "({open:gateState.open,meanwhile:document.querySelectorAll('.gate-facts dd')[1].textContent,advice:document.querySelectorAll('.gate-facts dd')[2].textContent})",
     "expect": {
       "open": "codex",
-      "meanwhile": "Codex stopped itself at its terminal prompt. Orrery did not stop it.",
+      "meanwhile": "Codex stopped itself at its terminal prompt. Acan did not stop it.",
       "advice": "Codex cannot read advice. Passive session, no MCP."
     }
   },

@@ -1,6 +1,6 @@
 # Engineering disciplines that direct work through a shared model
 
-[inferred] Orrery's strongest precedent is a coordinated construction model, not a dashboard of agent activity.
+[inferred] Acan's strongest precedent is a coordinated construction model, not a dashboard of agent activity.
 [inferred] The drawing should issue bounded work, record questions, expose incompatible plans, and accept completed work against independent evidence.
 [inferred] Steal submittals, semantic clash detection, tolerance analysis, and as-built handover before adding more agent controls.
 [inferred] Review changes to the system through dailies rather than reading transcripts from every contractor.
@@ -10,9 +10,9 @@
 ## Scope and evidence
 
 [sourced] Research date is 2026-10-17, as supplied in the assignment.
-[sourced] Orrery already separates designed, declared, and observed sources, protects budgets and checks, and stores blueprints in repository YAML in `/home/factory-user/orrery/explore/map.md:26-45`.
-[sourced] The catalog includes construction bots, scaffolding, a CI crane, and an inspection station in `/home/factory-user/orrery/explore/map.md:62-70`.
-[sourced] The supplied screenshots show a plant overview, agent locations, a floor timeline, and an agent inspector with checks and files in `/home/factory-user/orrery/explore/ui-v1/shots/l-default.png` and `/home/factory-user/orrery/explore/ui-v1/shots/p5-floor.png`.
+[sourced] Acan already separates designed, declared, and observed sources, protects budgets and checks, and stores blueprints in repository YAML in `/home/factory-user/acan/explore/map.md:26-45`.
+[sourced] The catalog includes construction bots, scaffolding, a CI crane, and an inspection station in `/home/factory-user/acan/explore/map.md:62-70`.
+[sourced] The supplied screenshots show a plant overview, agent locations, a floor timeline, and an agent inspector with checks and files in `/home/factory-user/acan/explore/ui-v1/shots/l-default.png` and `/home/factory-user/acan/explore/ui-v1/shots/p5-floor.png`.
 [inferred] The proposals below change the contract between architect and agents rather than expand that activity inspector.
 
 [sourced] WebSearch ran with `text=true` to retrieve source page bodies, including primary-source abstracts.
@@ -22,7 +22,7 @@
 
 ## Artifacts and rituals
 
-| Discipline | Artifact or ritual | Problem it solves | Orrery translation |
+| Discipline | Artifact or ritual | Problem it solves | Acan translation |
 |---|---|---|---|
 | Construction | [sourced] Drawing baselines and revision control establish the approved configuration. [S11] | [sourced] Later modifications need an identifiable, verified baseline. [S11] | [inferred] Issue a revision-bound drawing set for a territory, with ports, budgets, and accepted choices. |
 | Construction | [sourced] BIM Collaboration Format links issues to model element GUIDs, views, and coordinates. [S1] | [sourced] Different BIM applications need to exchange model-based issues without proprietary workflows. [S1] | [inferred] Every question and review comment references stable machine and belt IDs through both UI and MCP. |
@@ -57,7 +57,7 @@
 | Collaborative documents | [sourced] Google Docs' published protocol tracks revisions, pending edits, sent edits, and acknowledgments. [S28] | [sourced] Concurrent editing needs both transformed edits and a coordination protocol. [S28] | [inferred] Distinguish an agent's proposed, persisted, validated, and accepted model changes. |
 | BIM collaboration | [sourced] Revit worksets and element borrowing assign editable portions of a shared model. [S29] | [sourced] Functional work divisions and protected elements reduce accidental changes. [S29] | [inferred] Territories advertise authority and bounded reservations, while shared interfaces require explicit coordination. |
 
-## Ideas Orrery could steal or invert
+## Ideas Acan could steal or invert
 
 ### 1. Issued-for-agents drawing sets
 
@@ -120,7 +120,7 @@
 [inferred] This separates failure to meet a target from an authorized decision that the target no longer fits the product.
 [sourced] Construction change orders explicitly amend scope and agreed price. [S4]
 [sourced] Nygard's ADR pattern retains proposed, accepted, deprecated, and superseded decisions. [S22]
-[sourced] Orrery orders choices by risk = (1 - confidence) x reversal cost in `/home/factory-user/orrery/explore/map.md:42`.
+[sourced] Acan orders choices by risk = (1 - confidence) x reversal cost in `/home/factory-user/acan/explore/map.md:42`.
 [inferred] The agentic change is that agents cannot quietly redefine success, but they can request a reasoned change to their assignment.
 [guess] A model-generated cost estimate could appear more certain than it is, so retain its assumptions and label unsupported estimates.
 
@@ -175,7 +175,7 @@
 [sourced] NBS's 2018 survey summary names missing in-house expertise as the main BIM adoption barrier, with training, time, and client demand also obstacles. [S30]
 [inferred] This historical finding does not establish today's adoption rates, but it contradicts the assumption that an attractive shared model creates its own adoption.
 [sourced] Henderson's MBSE study reports upfront setup, tool costs, training demands, and models neglected under project pressure. [S31]
-[inferred] Orrery should create useful coordination artifacts from real work, then ask humans only for intent and judgment that cannot be derived.
+[inferred] Acan should create useful coordination artifacts from real work, then ask humans only for intent and judgment that cannot be derived.
 [guess] Requiring a complete plant before the first useful delegation would reproduce the adoption failure.
 
 ### A universal formal language as the admission price
@@ -189,7 +189,7 @@
 
 [sourced] ISA's guidance warns against alarm colors used for ordinary states, color-only status, and screens dominated by raw values. [S15]
 [sourced] It recommends embedded trends with desirable ranges and progressive exposure of detail. [S15]
-[inferred] Orrery's brass machines should retain their identity while making diagnosis possible without interpreting decorative animation.
+[inferred] Acan's brass machines should retain their identity while making diagnosis possible without interpreting decorative animation.
 [inferred] During an incident, show the violated limit, affected path, direction of change, and permitted actions before agent theatrics.
 
 ### Convergence mistaken for agreement

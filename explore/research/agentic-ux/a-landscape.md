@@ -2,15 +2,15 @@
 [inferred] The common endpoint remains a human inspecting changes, evidence, or a pull request, even when another agent performs the first review.
 [sourced] Visual verification, worktree isolation, cross-device sessions, agent teams, and task boards already have substantial precedents. [S02, S09, S26, S27, S35]
 [inferred] No opened source establishes how many agents one person can sustainably supervise.
-[inferred] Orrery's strongest opportunity is to make system consequences and unresolved decisions the units of supervision, rather than decorate another session list.
+[inferred] Acan's strongest opportunity is to make system consequences and unresolved decisions the units of supervision, rather than decorate another session list.
 [sourced] Two cautionary precedents are Terragon's shutdown and Vibe Kanban's transition to a community-maintained local product. [S38, S42]
 
 # Agent development interfaces in October 2026
 
 ## Scope and evidence
 
-[sourced] Orrery already commits to designed, declared, and observed system sources, protected budgets, territories, and risk-ranked choices in `/home/factory-user/orrery/explore/map.md:26-45`.
-[sourced] Its supplied screenshots show a system plant, agent badges, a waiting queue, and a Floor timeline with verification details in `/home/factory-user/orrery/explore/ui-v1/shots/l-default.png` and `/home/factory-user/orrery/explore/ui-v1/shots/p5-floor.png`.
+[sourced] Acan already commits to designed, declared, and observed system sources, protected budgets, territories, and risk-ranked choices in `/home/factory-user/acan/explore/map.md:26-45`.
+[sourced] Its supplied screenshots show a system plant, agent badges, a waiting queue, and a Floor timeline with verification details in `/home/factory-user/acan/explore/ui-v1/shots/l-default.png` and `/home/factory-user/acan/explore/ui-v1/shots/p5-floor.png`.
 [inferred] Those commitments make a better session dashboard insufficient as a concept-bakeoff entry.
 
 [sourced] This is a documentary survey of page text opened through WebSearch full-text results and FetchUrl, not a hands-on product benchmark.
@@ -52,7 +52,7 @@
 [sourced] Amp explicitly calls threads its unit of work, while Zed isolates context windows per thread. [S26, S33]
 [sourced] Claude's guidance says performance degrades as context fills and recommends concise persistent instructions and fresh verification. [S08]
 [inferred] Saving every transcript does not guarantee preservation of the reason a constraint exists.
-[inferred] Orrery should distinguish durable system decisions from disposable execution conversations.
+[inferred] Acan should distinguish durable system decisions from disposable execution conversations.
 
 ### The isolated task factory ends at a review queue
 
@@ -106,7 +106,7 @@
 [inferred] A fourth is experimentally comparable alternatives whose success criteria belong to the system owner, rather than to the producing agent.
 [sourced] Multi-vendor aggregation, a canvas, persistent sessions, and automated acceptance checks already exist independently. [S23, S27, S26, S08]
 
-## Ideas Orrery could steal or invert
+## Ideas Acan could steal or invert
 
 ### 1. Runtime audition
 
@@ -114,14 +114,14 @@
 [inferred] The user auditions a candidate, inspects latency, error, and resource differences, then promotes or rejects it before opening the code diff.
 [inferred] This changes review from reconstructing intent out of patches to checking consequences against intent.
 [sourced] Sculptor brings a candidate into the local environment, while Replit and Cursor expose recorded verification. [S40, S28, S02]
-[inferred] Orrery's distinctive step would be a repeatable, matched audition of system behavior across alternatives, linked to designed, declared, and observed sources.
+[inferred] Acan's distinctive step would be a repeatable, matched audition of system behavior across alternatives, linked to designed, declared, and observed sources.
 [inferred] The owner keeps budgets and checks protected under K16 rather than allowing workers to redefine success.
 [guess] The main risks are unsafe replay, unrepresentative workloads, and false precision from an uncalibrated simulation.
 
 ### 2. Review-capacity dispatch
 
 [inferred] The inspection station shows actionable decisions, evidence still missing, and estimated human effort, rather than one notification for every agent.
-[inferred] The user sets a review-capacity allowance and tells Orrery to admit, park, or redirect construction accordingly.
+[inferred] The user sets a review-capacity allowance and tells Acan to admit, park, or redirect construction accordingly.
 [inferred] Verification can continue while new implementation waits for the inspection queue to shrink.
 [sourced] cmux provides contextual attention signals, Codex has an automation review queue, and Factory exposes workers and credits. [S44, S11, S15]
 [inferred] The new behavior is letting the human bottleneck govern dispatch, instead of making attention management a passive sidebar.
@@ -134,7 +134,7 @@
 [inferred] Clicking an overlap reveals competing assumptions and offers separate experiments, an agreed interface, or a dependency order.
 [inferred] The problem is semantic collision before a textual merge conflict exists.
 [sourced] Conductor distinguishes independent and shared workspaces, and Cursor documents coordination failures under both too little and too much structure. [S35, S05]
-[inferred] Orrery would move that choice into system topology and make interface assumptions reviewable before workers implement them.
+[inferred] Acan would move that choice into system topology and make interface assumptions reviewable before workers implement them.
 [inferred] This extends the existing territory concept instead of treating a worktree as proof of independence.
 [guess] Static analysis and incomplete telemetry may miss a dependency or invent an overlap, so inferred edges must retain their provenance and uncertainty.
 
@@ -145,7 +145,7 @@
 [inferred] The goal is to buy information before funding construction, not to generate several full implementations by default.
 [sourced] Windsurf Arena compares model trajectories in isolated worktrees, and Crystal supports different approaches to the same problem. [S31, S39]
 [inferred] The new unit would be an architectural hypothesis tested against the same system contract, rather than a preference for one model's answer.
-[inferred] Orrery's existing risk-ranked choices determine which bench deserves attention first.
+[inferred] Acan's existing risk-ranked choices determine which bench deserves attention first.
 [guess] A weak contract can make every alternative look successful, and experiment costs can exceed the reversal cost they were meant to reduce.
 
 ### 5. Evidence-carrying territory handoff
@@ -154,7 +154,7 @@
 [inferred] Dispatch hands an agent that bounded context, and completion returns a proposed change to both the system and its evidence.
 [inferred] The user approves changed assumptions once, rather than repeating them in each replacement session.
 [sourced] Amp links threads to commits and later threads, Claude recommends short durable instructions, and Sculptor preserves complete session histories. [S26, S08, S40]
-[inferred] Orrery's new contribution would be context compiled from reconciled system facts with explicit missing knowledge, not another generated summary of a chat.
+[inferred] Acan's new contribution would be context compiled from reconciled system facts with explicit missing knowledge, not another generated summary of a chat.
 [inferred] This could make a territory, rather than a conversation, the durable unit of agency across vendors.
 [guess] Incorrect entity matching could give an agent stale authority, so every context packet needs source revision, timestamp, and a visible invalidation rule.
 
@@ -175,7 +175,7 @@
 
 [inferred] Avoid promising that isolated branches eliminate all conflicts.
 [sourced] Sculptor still flags merge conflicts, and Conductor explicitly documents shared-file risks. [S40, S35]
-[inferred] Orrery should show unresolved compatibility as uncertainty rather than paint a clean worktree green.
+[inferred] Acan should show unresolved compatibility as uncertainty rather than paint a clean worktree green.
 
 [inferred] Avoid dependent hosted memory without local export and recovery.
 [sourced] Terragon terminated all hosted sandboxes, while Vibe Kanban announced removal of remote issues, comments, projects, and organizations after a thirty-day export window. [S42, S38]

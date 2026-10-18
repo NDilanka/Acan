@@ -1,6 +1,6 @@
 # Generative UI with a fast System 1 model
 
-Research note for Orrery. Read with `orrery/explore/map.md`. This note proposes amendments but does not change the map.
+Research note for Acan. Read with `acan/explore/map.md`. This note proposes amendments but does not change the map.
 
 Every claim carries one label:
 - **[sourced]** means a page I opened says it. The link is next to it or in the source list.
@@ -11,11 +11,11 @@ Every claim carries one label:
 
 ## Recommendation
 
-**Bound, not generated.** Orrery adopts the System 1 *contract*, not a System 1 vendor. The Rust core builds every possible card, callout and what-if from the twin, with every number held as a data binding. A fast System 1 only *chooses* among those candidates and puts the winners into fixed slots. It never writes a number, a label or a layout. A slower System 2 (the user's own agent over MCP, or an opt-in remote model) can propose new candidate recipes and short notes in the background. It never writes numbers either. System 1 ships first as a deterministic rule scorer that runs in microseconds and works offline. A small local model replaces it only where a replay test shows it picks better. TypeSafe's Jev is an opt-in remote tier that shows on the egress counter. Chrome, layout, budgets, checks, choice order and export redaction are never generated.
+**Bound, not generated.** Acan adopts the System 1 *contract*, not a System 1 vendor. The Rust core builds every possible card, callout and what-if from the twin, with every number held as a data binding. A fast System 1 only *chooses* among those candidates and puts the winners into fixed slots. It never writes a number, a label or a layout. A slower System 2 (the user's own agent over MCP, or an opt-in remote model) can propose new candidate recipes and short notes in the background. It never writes numbers either. System 1 ships first as a deterministic rule scorer that runs in microseconds and works offline. A small local model replaces it only where a replay test shows it picks better. TypeSafe's Jev is an opt-in remote tier that shows on the egress counter. Chrome, layout, budgets, checks, choice order and export redaction are never generated.
 
 Why this shape, in four lines:
 1. Senior engineers need a screen that does not move under them. Adaptive menus lose to static ones on speed, and users prefer control they can adjust. [sourced, Findlater and McGrenere 2004; Gajos et al. 2008]
-2. A model that cannot leave its schema can still pick the wrong value. Choosing from true candidates bounds the damage to "wrong emphasis," never "wrong number." [sourced, TrueFoundry on Jev; json-render Jev docs] [inferred for the Orrery consequence]
+2. A model that cannot leave its schema can still pick the wrong value. Choosing from true candidates bounds the damage to "wrong emphasis," never "wrong number." [sourced, TrueFoundry on Jev; json-render Jev docs] [inferred for the Acan consequence]
 3. The fastest real "System 1" product is hosted only, which conflicts with local-first and the zero-egress promise (Q16). [sourced, TypeSafe models page; TrueFoundry] [inferred for the conflict]
 4. Full generation of HTML or of new layouts takes seconds to minutes and still makes errors. [sourced, Google Research Generative UI; OUI-1]
 
@@ -23,13 +23,13 @@ Why this shape, in four lines:
 
 ### Three families of generative UI
 
-| Family | How it works | Speed | Fit for Orrery |
+| Family | How it works | Speed | Fit for Acan |
 |---|---|---|---|
 | Model writes code | The model writes HTML, CSS and JS per prompt. Google's Generative UI uses Gemini 3 Pro this way. | "A minute or more" in some cases, with "occasional inaccuracies." [sourced, Google Research] | No. Too slow, unbounded, and it would put untrusted script next to live telemetry. [inferred] |
 | Model fills a catalog | The model emits a declarative spec using only components the app trusts. A2UI uses a flat list of components with IDs and binds data with JSON Pointer paths (RFC 6901). json-render does the same with zod-typed catalogs, `$state` bindings and streaming. [sourced, a2ui.org; A2UI data binding; json-render repo] | Bounded by text generation speed. OUI-1, a model trained for this, takes about 1.9 s per output on an A100. [sourced, OUI-1 blog] | The right *format*. Too slow and too free if the model writes props. [inferred] |
 | Model selects from candidates | The app builds atomic candidates with concrete props. The model decides which to include, their order and their placement. json-render's Jev mode works this way and states that "Jev cannot invent missing prose or data." Raw props and state are not sent to the evaluator. [sourced, json-render Jev docs] | 70 to 500 ms end to end on Jev. [sourced, TypeSafe launch post] | The right *behavior*. [inferred] |
 
-MCP Apps is a fourth path. An MCP server ships an HTML resource (`ui://`) that the host shows in a sandboxed iframe and talks to over postMessage JSON-RPC. Claude, ChatGPT, VS Code and Goose host it. [sourced, MCP Apps overview; MCP Apps blog post] Orrery should not host agent-supplied HTML in v0.1. A sandboxed iframe from an arbitrary agent inside a closed, trust-sensitive app is a new attack surface and breaks the visual identity. [inferred]
+MCP Apps is a fourth path. An MCP server ships an HTML resource (`ui://`) that the host shows in a sandboxed iframe and talks to over postMessage JSON-RPC. Claude, ChatGPT, VS Code and Goose host it. [sourced, MCP Apps overview; MCP Apps blog post] Acan should not host agent-supplied HTML in v0.1. A sandboxed iframe from an arbitrary agent inside a closed, trust-sensitive app is a new attack surface and breaks the visual identity. [inferred]
 
 ### "System One" as a product
 
@@ -42,11 +42,11 @@ TypeSafe AI launched "System One models" and Jev on 2026-09-15. [sourced, TypeSa
 - jev-1.14 shipped 2026-10-14 with a 64k context. It runs on a cloud endpoint. Zero data retention is enterprise only. [sourced, TypeSafe models page; TypeSafe enterprise page]
 - It is hosted only, behind a waitlist, with no weights and no on-premises option. "Can't hallucinate" means it can't leave the schema. It can still pick a wrong value. [sourced, TrueFoundry review]
 
-So the *pattern* fits Orrery exactly, and the *product* cannot be the default. Every Jev call is an outbound connection that Q16 must log, and the weak spots (math, large state, injection) are exactly what a telemetry twin is full of. [inferred]
+So the *pattern* fits Acan exactly, and the *product* cannot be the default. Every Jev call is an outbound connection that Q16 must log, and the weak spots (math, large state, injection) are exactly what a telemetry twin is full of. [inferred]
 
 ### Fast and slow, split by design
 
-Figure's Helix robot splits control into a 7B "System 2" model at 7 to 9 Hz and an 80M "System 1" policy at 200 Hz. System 2 writes a shared latent asynchronously, and System 1 always acts on the latest one. [sourced, Figure Helix] For Orrery the analog is a slow planner that prepares candidate recipes and notes off the hot path, and a fast selector that reads whatever is ready when the user acts. [inferred]
+Figure's Helix robot splits control into a 7B "System 2" model at 7 to 9 Hz and an 80M "System 1" policy at 200 Hz. System 2 writes a shared latent asynchronously, and System 1 always acts on the latest one. [sourced, Figure Helix] For Acan the analog is a slow planner that prepares candidate recipes and notes off the hot path, and a fast selector that reads whatever is ready when the user acts. [inferred]
 
 ### Latency and predictability
 
@@ -104,7 +104,7 @@ The rule is the same everywhere. A surface has a fixed frame and a small number 
 
 ### Reading the twin without inventing numbers
 
-- The core exposes a read model as a JSON tree. Every card prop that shows a value is a binding like `{"$bind": "/inspect/verifier/budgets/0/value"}`, resolved by the core at render time. This is A2UI's JSON Pointer approach. [sourced for A2UI; inferred for Orrery]
+- The core exposes a read model as a JSON tree. Every card prop that shows a value is a binding like `{"$bind": "/inspect/verifier/budgets/0/value"}`, resolved by the core at render time. This is A2UI's JSON Pointer approach. [sourced for A2UI; inferred for Acan]
 - System 1 sees **feature bins**, not values. For example `over_ratio: "1.25-1.5"`, `sev: "drift"`, `stage: "verifying"`, `waiting_on: "you"`. The core does every comparison and count. This avoids Jev's known weak spots in math, counting and large state. [sourced weak spots; inferred design]
 - Telemetry strings (span names, file paths, error messages) never go into a System 1 prompt. They can contain injected instructions. [sourced that Jev is injection-susceptible; inferred that telemetry is an injection channel]
 - Card text comes from catalog templates with bound holes, or from text the twin already holds, such as drift lines ("Queue wait is over budget: 41 s against 30 s"). [inferred]
@@ -150,14 +150,14 @@ Tier 2 → Tier 1 → Tier 0 → static default order. Offline mode or a missing
 - Tier 0 and Tier 1 send nothing. The pill stays at `local · 0 out`. [inferred]
 - Downloading a Tier 1 model is an outbound connection. It is logged with destination, bytes and the reason "model download," and it is listed in the data statement. The offline switch blocks it. [inferred from Q16; Foundry Local downloads on first run, sourced]
 - A Tier 2 call sends candidate IDs and feature bins only, never bound values or strings. It is logged per call and counted on the pill. [inferred]
-- A System 2 agent over MCP talks to Orrery on loopback, which Q16 keeps open in offline mode. What that agent sends to its own vendor is the agent's egress, not Orrery's. The data statement should say so plainly. [inferred]
+- A System 2 agent over MCP talks to Acan on loopback, which Q16 keeps open in offline mode. What that agent sends to its own vendor is the agent's egress, not Acan's. The data statement should say so plainly. [inferred]
 
 ### Stability rules
 
 1. **Fixed slots.** Each surface has named slots of fixed size and position. A slot never grows into its neighbors.
 2. **No late swaps.** See the latency section.
 3. **Change only on events.** A slot's content changes only after a user action or a wake event, and only if the new winner beats the current one by a margin. At most one change per slot per 30 s, except when a new failure arrives, which always shows at once. [guess for the numbers]
-4. **Pin.** Any generated card or view can be pinned. A pin writes `.orrery/views/<slug>.yaml` (a proposed new folder for D11) with the component and its bindings. Pinned content always wins its slot, keeps its structure forever, and only its bound values update.
+4. **Pin.** Any generated card or view can be pinned. A pin writes `.acan/views/<slug>.yaml` (a proposed new folder for D11) with the component and its bindings. Pinned content always wins its slot, keeps its structure forever, and only its bound values update.
 5. **Why this.** Every generated card has a small "why" mark that shows the source rule, the tier that chose it and the confidence band (HAX G11). [sourced guideline]
 6. **Dismiss.** Dismissing a card suppresses it for that entity until its state changes, and lowers its Tier 0 weight (HAX G8, G9). [sourced guideline]
 7. **One switch.** Settings has an "Adaptive slots" toggle. Turning it off gives the deterministic default everywhere (HAX G17; adaptable beats adaptive in Findlater). [sourced]
@@ -267,7 +267,7 @@ One week, after the week-6 demo, at the start of weeks 7 to 9. [guess for the ti
 3. **2 slots.** The inspector "Now" slot and the 3 canvas callouts. Nothing else is adaptive.
 4. **Tier 0 only.** The rule scorer, plus learning from pins and dismissals.
 5. **The validator**, all six checks, with a fallback to the default.
-6. **Pin to `.orrery/views/`**, the "why" mark, dismiss, and the global off switch.
+6. **Pin to `.acan/views/`**, the "why" mark, dismiss, and the global off switch.
 7. **A replay test harness.** Record selection sessions on Acquit, then measure "the card the user opened next" for Tier 0 against a fixed default. Later, the same harness decides whether Tier 1 earns its place.
 8. **Budget checks** in CI. No System 1 work while idle (the Q15 harness), zero egress with adaptive slots on, and the inspector default in the same frame as the selection.
 
@@ -284,14 +284,14 @@ Out of the slice: Tier 1, Tier 2, System 2 recipes, the Ctrl K answer area and S
 ### Other risks
 
 - **Prompt injection through telemetry.** Span names and error messages are attacker-controlled in some systems. Strings never reach System 1 or System 2 prompts unless they pass through MCP to an agent the user already trusts. [inferred]
-- **No central learning.** Orrery is local-first and closed, so it cannot learn from other users' clicks without breaking the data statement. Tier 0 priors must be good by design, and the replay harness runs on fixtures. [inferred]
+- **No central learning.** Acan is local-first and closed, so it cannot learn from other users' clicks without breaking the data statement. Tier 0 priors must be good by design, and the replay harness runs on fixtures. [inferred]
 - **Candidate explosion.** At 2,000 machines, candidate building on each wake must be incremental, touching only entities whose bins changed. [inferred]
 - **Vendor risk on Jev.** It is on a waitlist, hosted only, and two months old. [sourced, TrueFoundry; TypeSafe models page]
 
 ### Open questions
 
 1. Does the Ctrl K answer area belong in v0.1? D1 does not list it. This note assumes v0.2 unless the user wants it in the slice.
-2. Should pinned views live in git (`.orrery/views/`, shared with the team) or only in app state? This note proposes git, because pins are the architect's authored view, like layout (K5).
+2. Should pinned views live in git (`.acan/views/`, shared with the team) or only in app state? This note proposes git, because pins are the architect's authored view, like layout (K5).
 3. Who accepts a System 2 recipe? This note proposes the architect accepts each new recipe once, in the spirit of K16, because a recipe decides what the team sees first.
 4. May agent notes ever appear in a share-safe export? This note proposes no by default.
 5. Which local runtime for Tier 1, Foundry Local or llama.cpp? Foundry Local has a Rust SDK and WinML. [sourced] Its behavior under WebView2 memory pressure is untested. [guess]
@@ -300,11 +300,11 @@ Out of the slice: Tier 1, Tier 2, System 2 recipes, the Ctrl K answer area and S
 
 For the parent or the user to apply. Not applied here.
 
-- **New A11, generative UI.** "Generated content appears only in named, fixed slots: the inspector 'Now' slot, up to 3 canvas callouts, and later the Ctrl K answer area, Simulate preset chips, session summaries and choice evidence focus. The Rust core builds candidates from the twin with every value as a data binding. A System 1 selector picks among them and never writes numbers, labels, prose or positions. v0.1 ships the deterministic Tier 0 scorer only. Pins write `.orrery/views/*.yaml`. One setting turns adaptive slots off."
+- **New A11, generative UI.** "Generated content appears only in named, fixed slots: the inspector 'Now' slot, up to 3 canvas callouts, and later the Ctrl K answer area, Simulate preset chips, session summaries and choice evidence focus. The Rust core builds candidates from the twin with every value as a data binding. A System 1 selector picks among them and never writes numbers, labels, prose or positions. v0.1 ships the deterministic Tier 0 scorer only. Pins write `.acan/views/*.yaml`. One setting turns adaptive slots off."
 - **Q16, extended.** "The outbound log and data statement cover model downloads and any remote model call (Tier 2 Jev, opt-in). Remote calls send candidate IDs and feature bins only. The offline switch blocks both."
 - **A10 and Q15, extended.** "System 1 runs only on user input and wake events, never on a timer. The inspector default renders in the same frame as the selection. A System 1 answer that misses its 100 ms deadline is cached, not shown. Any local model's memory counts against the 500 MB target and the 24-hour soak."
 - **A6, extended.** "MCP adds a `views` resource (candidates and their bins, no strings) and a `propose_view_recipe` tool. Recipes land as files and need the architect's accept once."
-- **D11, extended.** "Add `.orrery/views/` for pinned views and accepted recipes."
+- **D11, extended.** "Add `.acan/views/` for pinned views and accepted recipes."
 - **S3 and R2, extended.** "Export includes pinned views only. Agent notes are excluded by default. Redaction tags flow from bound values into cards."
 - **K5 and K17, reaffirmed.** "Generated callouts never move or place entities. Generated focus never reorders the choice queue."
 

@@ -18,7 +18,7 @@ const auditLib = AUDIT ? await import("./audit.mjs") : null;
 const audits = [], auditCarry = [];
 mkdirSync(outDir, { recursive: true });
 
-const profile = mkdtempSync(join(tmpdir(), "orrery-drive-"));
+const profile = mkdtempSync(join(tmpdir(), "acan-drive-"));
 const chrome = spawn("google-chrome", ["--headless=new", "--remote-debugging-port=0", "--user-data-dir=" + profile, "--no-first-run", "--hide-scrollbars", "--window-size=1600,900", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
 const port = await new Promise((ok, no) => {
   let buf = "";

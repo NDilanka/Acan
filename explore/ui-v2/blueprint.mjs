@@ -130,7 +130,7 @@ function agentRow(name, text, since) { for (const r of document.querySelectorAll
 function ghostCounts() {
   const g = Object.entries(GHOST).filter(([id]) => ENT[id]);
   const live = g.filter(([, v]) => v.stage !== "built" && v.stage !== "proposed").length, prop = g.filter(([, v]) => v.stage === "proposed").length;
-  MODES.blueprint = "BLUEPRINT · " + live + " GHOST" + (live === 1 ? "" : "S") + (prop ? " · " + prop + " PROPOSED" : "") + " · .orrery/system.yaml";
+  MODES.blueprint = "BLUEPRINT · " + live + " GHOST" + (live === 1 ? "" : "S") + (prop ? " · " + prop + " PROPOSED" : "") + " · .acan/system.yaml";
   if (document.body.dataset.mode === "blueprint") $("#watermark").textContent = MODES.blueprint;
 }
 function addChip(e) {
@@ -233,7 +233,7 @@ function commit() {
   document.body.classList.remove("placing"); phint("");
   for (const t of document.querySelectorAll(".tile")) t.setAttribute("aria-pressed", false);
   addChip(ne); renderPlant(); select(id); ghostCounts();
-  toast("Wrote " + id + " to .orrery/system.yaml and layout.yaml");
+  toast("Wrote " + id + " to .acan/system.yaml and layout.yaml");
 }
 
 function routeCost(pts, a, b) {
@@ -287,13 +287,13 @@ function stageIndex(g) { return g.stage === "proposed" ? -1 : STAGES.findIndex((
 function yamlFor(id) {
   const e = ENT[id], g = GHOST[id], flows = SCENE.belts.filter((b) => b.from === id || b.to === id), merged = g.stage === "built";
   const L = (t) => '<span class="' + (merged ? "ctx" : "add") + '">' + t + "</span>";
-  let s = '<span class="f">.orrery/system.yaml</span><span class="ctx">entities:</span>' + L("  " + id + ":") + L("    kind: " + e.kind);
+  let s = '<span class="f">.acan/system.yaml</span><span class="ctx">entities:</span>' + L("  " + id + ":") + L("    kind: " + e.kind);
   s += L("    status: " + (merged ? "live" : g.stage === "proposed" ? "proposed" : "ghost")) + L("    designed_by: " + (g.by === "you" ? "architect" : g.by.toLowerCase().replace(" ", "-")));
   if (g.on) s += L("    on: " + g.on);
   if (g.budget) s += L("    budgets:") + L("      " + g.budget.metric.replace(/ /g, "_") + ": < " + g.budget.value + (g.budget.unit ? " " + g.budget.unit : ""));
   if (flows.length) { s += L("    flows:"); for (const b of flows) s += L("      - " + (b.from === id ? "to: " + b.to : "from: " + b.from)); }
   if (g.agent) s += L("    territory: " + g.branch);
-  s += '<span class="f">.orrery/layout.yaml</span>' + L("  " + id + ": [" + Math.round(e.x) + ", " + Math.round(e.y) + "]");
+  s += '<span class="f">.acan/layout.yaml</span>' + L("  " + id + ": [" + Math.round(e.x) + ", " + Math.round(e.y) + "]");
   return s;
 }
 function ghostHtml(e) {

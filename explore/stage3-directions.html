@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Orrery · Stage 3 · Four design directions</title>
+<title>Acan · Stage 3 · Four design directions</title>
 <style>
 :root{
   --paper:#F4F1EA; --ink:#1E2329; --graphite:#6B7280; --brass:#B08D57; --rule:#D9D3C5;
@@ -66,7 +66,7 @@ body.still .a-press,body.still .a-blink,body.still .a-glow,body.still .smoke{ani
 </head>
 <body>
 <header>
-  <h1>Orrery · Explore unknowns · Stage 3 · Unknown knowns</h1>
+  <h1>Acan · Explore unknowns · Stage 3 · Unknown knowns</h1>
   <h2>Four design directions for the plan view, one real plant</h2>
   <p class="note">All four draw the same model: Acquit, with its parts taken from its README (API, verifier, SQLite, PayPal, GitHub App, model calls, the sweep job, the agent CLI and MCP). Hover any machine for its readout. Click the chips under each direction to mark what to <b>steal</b> or <b>skip</b>; your reply assembles itself at the bottom.</p>
   <p class="note">Includes one ghost (the OTel radar from D13), one fogged part (<code>packages/house</code>, purpose unknown), one strained machine and one failing dock, so every state is on screen.</p>
@@ -82,7 +82,7 @@ body.still .a-press,body.still .a-blink,body.still .a-glow,body.still .smoke{ani
 <section class="reply">
   <div class="panel">
     <h3>Your reaction</h3>
-    <div class="q"><div class="qt">1. Which direction is closest to Orrery overall?</div><div class="opts" data-q="closest"></div></div>
+    <div class="q"><div class="qt">1. Which direction is closest to Acan overall?</div><div class="opts" data-q="closest"></div></div>
     <div class="q"><div class="qt">2. Where should live numbers sit?</div><div class="opts" data-q="numbers"></div></div>
     <div class="q"><div class="qt">3. Labels on the drawing?</div><div class="opts" data-q="labels"></div></div>
     <div class="q"><div class="qt">4. Depth in the plan view?</div><div class="opts" data-q="depth"></div></div>
@@ -282,7 +282,7 @@ function renderA(){
   const tb = {x:OX+9.95*T, y:OY+6.55*T, w:3.05*T, h:1.2*T};
   s.push(rect(tb, P.bg, P.ink, 1.4));
   s.push(`<path d="M${tb.x} ${tb.y+24}H${tb.x+tb.w}M${tb.x} ${tb.y+48}H${tb.x+tb.w}M${tb.x+82} ${tb.y+24}V${tb.y+tb.h}" stroke="${P.ink}" stroke-width=".8"/>`);
-  s.push(text(tb.x+8, tb.y+16, 'ORRERY', `class="lbl-svg" font-size="11" fill="${P.ink}" letter-spacing="2.5"`));
+  s.push(text(tb.x+8, tb.y+16, 'ACAN', `class="lbl-svg" font-size="11" fill="${P.ink}" letter-spacing="2.5"`));
   s.push(text(tb.x+tb.w-8, tb.y+16, 'ACQUIT · PLANT', `text-anchor="end" class="lbl-svg" font-size="9" fill="${P.ink}"`));
   s.push(text(tb.x+8, tb.y+40, 'VIEW PLAN', `class="mono-svg" font-size="9" fill="${P.ink}"`));
   s.push(text(tb.x+90, tb.y+40, 'MODE ' + P.name.toUpperCase(), `class="mono-svg" font-size="9" fill="${P.ink}"`));
@@ -356,7 +356,7 @@ function renderC(){
   s.push(`<rect width="${W}" height="${H}" fill="${bg}"/><rect width="${W}" height="${H}" fill="url(#gridf-${p})"/>`);
   s.push(`<rect x="6" y="6" width="${W-12}" height="${H-12}" fill="none" stroke="${L}" stroke-width="1.4"/><rect x="11" y="11" width="${W-22}" height="${H-22}" fill="none" stroke="${L}" stroke-width=".5"/>`);
   s.push(text(22, 34, 'ACQUIT — PLAN — SHEET 1 OF 1', `class="lbl-svg" font-size="11" fill="${L}" letter-spacing="2"`));
-  s.push(text(22, 48, 'ORRERY · REV 55825fe · 2026-10-13 14:22', `class="mono-svg" font-size="9" fill="${soft}"`));
+  s.push(text(22, 48, 'ACAN · REV 55825fe · 2026-10-13 14:22', `class="mono-svg" font-size="9" fill="${soft}"`));
   s.push(`<g transform="translate(6,70) scale(.74)">`);
   const wx = OX + WALL*T;
   s.push(`<path d="M${wx} ${OY+.2*T}V${OY+6.5*T}" stroke="${L}" stroke-width="1.2" stroke-dasharray="14 4 2 4"/>`);
@@ -522,7 +522,7 @@ document.querySelectorAll('.opts').forEach(o => {
 document.getElementById('notes').addEventListener('input', compose);
 
 function compose(){
-  const lines = ['Stage 3 reaction: Orrery design directions'];
+  const lines = ['Stage 3 reaction: Acan design directions'];
   lines.push('Closest overall: ' + (answers.closest || '(not chosen)'));
   for (const c of CARDS){
     const st = chipState[c.id], steal = [], skip = [];

@@ -347,7 +347,7 @@ $("#ibody").addEventListener("click", (ev) => {
   const row = ev.target.closest("[data-seek-to]"); if (row) return rpSeek(+row.dataset.seekTo);
   const b = ev.target.closest("[data-rp]"); if (!b) return;
   if (b.dataset.rp === "brief") copyBrief();
-  if (b.dataset.rp === "link") { copyText("orrery://acquit/replay?t=" + rpClock(RP.t) + (selected ? "&sel=" + selected : "")); toast("Link to " + rpClock(RP.t) + " copied."); }
+  if (b.dataset.rp === "link") { copyText("acan://acquit/replay?t=" + rpClock(RP.t) + (selected ? "&sel=" + selected : "")); toast("Link to " + rpClock(RP.t) + " copied."); }
   if (b.dataset.rp === "sim") { SIMS.down.add(RP.first); setMode("simulate"); toast(rpName(RP.first) + " is down on yesterday's recorded traffic, with the breaker ghost in."); }
 });
 addEventListener("keydown", (ev) => {

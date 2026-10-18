@@ -361,7 +361,7 @@ function pageAudit(cfg) {
     contrast.push({ ...base, fg, alpha, need: large ? 3 : 4.5, large, rects: it.seen.map(box) });
     moving.push([it.p, it.p.getBoundingClientRect()]);
   }
-  window.__orreryAuditMoving = moving;
+  window.__acanAuditMoving = moving;
   stats.contrastItems = contrast.length;
   stats.collectMs = Math.round(performance.now() - t0);
   return { findings, unknown, stats, contrast, view: [W, H] };
@@ -422,12 +422,12 @@ function background(img, [l, t, r, b], fg, sx, sy) {
 // An element counts as unchanged when one with the same tag, class, own text and box was there at
 // the shot, so a re-render that swaps in an identical node keeps its contrast check.
 const SHOT_SIG = `const shotSig = (e, r) => { let t = ""; for (const n of e.childNodes) if (n.nodeType === 3) t += n.data; const h = (v) => Math.round(v * 2) / 2; return e.localName + "|" + e.getAttribute("class") + "|" + t.trim().slice(0, 80) + "|" + h(r.left) + "," + h(r.top) + "," + h(r.width) + "," + h(r.height); };`;
-export const SHOT_MARK = `(() => { ${SHOT_SIG} const m = new Set(); for (const e of document.querySelectorAll("body *")) m.add(shotSig(e, e.getBoundingClientRect())); window.__orreryShotRects = m; return true; })()`;
+export const SHOT_MARK = `(() => { ${SHOT_SIG} const m = new Set(); for (const e of document.querySelectorAll("body *")) m.add(shotSig(e, e.getBoundingClientRect())); window.__acanShotRects = m; return true; })()`;
 
 const CONTRAST_MOVED = `new Promise((ok) => {
   ${SHOT_SIG}
-  const m = window.__orreryAuditMoving || [], shot = window.__orreryShotRects;
-  delete window.__orreryAuditMoving; delete window.__orreryShotRects;
+  const m = window.__acanAuditMoving || [], shot = window.__acanShotRects;
+  delete window.__acanAuditMoving; delete window.__acanShotRects;
   const diff = (a, b) => Math.max(Math.abs(a.left - b.left), Math.abs(a.top - b.top), Math.abs(a.width - b.width), Math.abs(a.height - b.height));
   const say = (d, when) => d > 0.5 ? "text moved " + Math.round(d * 10) / 10 + " px " + when : "";
   const done = () => ok(m.map(([e, a]) => {
@@ -478,8 +478,8 @@ function pageFocusList(cap) {
     if (!face.getClientRects().length || getComputedStyle(face).visibility !== "visible" || opacity(face) <= 0.05) return false;
     return r.right > 0 && r.bottom > 0 && r.left < W && r.top < H;
   });
-  window.__orreryFocusTotal = all.length;
-  window.__orreryFocusBefore = document.activeElement;
+  window.__acanFocusTotal = all.length;
+  window.__acanFocusBefore = document.activeElement;
   return all.slice(0, cap);
 }
 
@@ -528,8 +528,8 @@ export async function auditFocus({ send, evaluate }, { cap = 80 } = {}) {
         findings.push({ rule: "focus-ring", selector: who.selector, text: who.text, detail: "focused style equals unfocused style" + (plain.ring ? " (" + plain.ring + " in both)" : ", no outline, box-shadow or border change") });
     } catch (e) { unknown.push({ rule: "focus-ring", selector: who.selector, text: who.text, detail: e.message }); }
   }
-  const total = await evaluate("window.__orreryFocusTotal");
-  const moved = await evaluate("(() => { const b = window.__orreryFocusBefore; delete window.__orreryFocusBefore; delete window.__orreryFocusTotal; if (document.activeElement === b) return false; if (b && b.isConnected) b.focus({ preventScroll: true }); return true; })()");
+  const total = await evaluate("window.__acanFocusTotal");
+  const moved = await evaluate("(() => { const b = window.__acanFocusBefore; delete window.__acanFocusBefore; delete window.__acanFocusTotal; if (document.activeElement === b) return false; if (b && b.isConnected) b.focus({ preventScroll: true }); return true; })()");
   await send("CSS.disable"); await send("DOM.disable");
   return { findings, unknown, stats: { focusable: total, checked: ids.length, restored: moved } };
 }
@@ -537,11 +537,11 @@ export async function auditFocus({ send, evaluate }, { cap = 80 } = {}) {
 // A re-render that swaps the focused node for an equal one and refocuses it has not moved focus,
 // so the mark keeps a description to compare when the old node is gone.
 const FOCUS_SAY = `const d = (e) => !e || e === document.body ? "body|" : (e.id ? "#" + e.id : e.localName + [...e.classList].slice(0, 2).map((c) => "." + c).join("")) + "|" + (e.getAttribute("aria-label") || e.textContent || "").replace(/\\s+/g, " ").trim().slice(0, 60);`;
-export const FOCUS_MARK = `(() => { ${FOCUS_SAY} window.__orreryFocusMark = { el: document.activeElement, say: d(document.activeElement) }; return true; })()`;
+export const FOCUS_MARK = `(() => { ${FOCUS_SAY} window.__acanFocusMark = { el: document.activeElement, say: d(document.activeElement) }; return true; })()`;
 export const FOCUS_CHECK = `(() => {
   ${FOCUS_SAY}
-  const mark = window.__orreryFocusMark, was = mark.el, now = document.activeElement;
-  delete window.__orreryFocusMark;
+  const mark = window.__acanFocusMark, was = mark.el, now = document.activeElement;
+  delete window.__acanFocusMark;
   if (was === now || (mark.say === d(now) && (!was || was === document.body || !was.isConnected))) return null;
   const sayWas = mark.say.split("|")[0];
   const [sel, text] = d(now).split("|");
@@ -626,7 +626,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [cmd, ...rest] = process.argv.slice(2);
   if (cmd === "report") console.log(report(rest));
   else if (cmd === "selftest" && rest[0]) {
-    const dir = mkdtempSync(join(tmpdir(), "orrery-audit-selftest-")), steps = join(dir, "selftest.steps.json");
+    const dir = mkdtempSync(join(tmpdir(), "acan-audit-selftest-")), steps = join(dir, "selftest.steps.json");
     writeFileSync(steps, JSON.stringify(SELFTEST_STEPS));
     const run = spawnSync(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), "drive.mjs"), rest[0], "", steps, dir], { env: { ...process.env, AUDIT: "1" }, encoding: "utf8" });
     const s = JSON.parse(readFileSync(join(dir, "audit-summary.json"), "utf8"));

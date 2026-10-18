@@ -134,17 +134,17 @@ export const TSTATES = ["unclaimed", "claimed", "building", "verifying", "passed
 
 export const TERRITORIES = {
   "radar-otel": {
-    goal: "Every Acquit machine has an observed source", file: ".orrery/territories/radar-otel.yaml", owner: "Droid",
+    goal: "Every Acquit machine has an observed source", file: ".acan/territories/radar-otel.yaml", owner: "Droid",
     entities: ["radar", "api", "sqlite", "verifier"], depends: [], state: "verifying",
     budgets: ["radar.cpu_overhead < 2%", "api.p99_ms < 250"],
   },
   "gate-sessions": {
-    goal: "Basic auth in front, app sessions behind, webhook exempt", file: ".orrery/territories/gate-sessions.yaml", owner: "Droid",
+    goal: "Basic auth in front, app sessions behind, webhook exempt", file: ".acan/territories/gate-sessions.yaml", owner: "Droid",
     entities: ["gate"], depends: [], state: "passed", stale: "apps/api/src/server.ts changed 16 min ago, after the seal",
     budgets: ["gate.p99_ms < 5"],
   },
   "paypal-payouts": {
-    goal: "Payouts survive a PayPal outage without retry storms", file: ".orrery/territories/paypal-payouts.yaml", owner: null,
+    goal: "Payouts survive a PayPal outage without retry storms", file: ".acan/territories/paypal-payouts.yaml", owner: null,
     entities: ["paypal", "retry", "breaker"], depends: ["radar-otel"], state: "unclaimed", fog: "Fog 0.42. Nobody owns paypal, and it is half understood. Scout first.",
     budgets: ["paypal.error_rate < 2%"],
   },
@@ -154,7 +154,7 @@ export const SESSIONS = [
   {
     id: "droid-radar", agent: "Droid", bot: "bot", model: "claude-opus (from genai spans)", goal: "Install radar on Acquit (D13)", state: "verifying",
     now: "run_checks radar-otel · 3 of 5 passed", since: "38m", perm: "can build", territory: "radar-otel",
-    via: [["MCP", true, "register_session, claim_territory, record_choice"], ["Native OTel", true, "genai spans per turn, session.id"], ["Hooks", true, "orrery-hook relay"], ["Transcript", false, "backfill only"]],
+    via: [["MCP", true, "register_session, claim_territory, record_choice"], ["Native OTel", true, "genai spans per turn, session.id"], ["Hooks", true, "acan-hook relay"], ["Transcript", false, "backfill only"]],
     files: [["packages/core/src/telemetry.ts", "radar", 14], ["packages/core/src/effects.ts", "api", 6], ["apps/api/src/server.ts", "api", 4], ["packages/verifier/service.ts", "verifier", 3], ["packages/core/src/db.ts", "sqlite", 2]],
     spend: [["turns", "64"], ["tool calls", "211"], ["tokens", "412k"], ["cost", "$1.92"]],
     choices: [{ text: "Queue rows carry traceparent, with span links", conf: 0.7, on: "api" }, { text: "Wrap DatabaseSync by hand", conf: 0.85, on: "sqlite" }],
@@ -184,7 +184,7 @@ export const SESSIONS = [
 ];
 
 export const CI = {
-  crane: "crane", session: "droid-radar", runner: "local harness · .orrery/checks/",
+  crane: "crane", session: "droid-radar", runner: "local harness · .acan/checks/",
   runs: [
     { n: 414, t0: -58, t1: -53, status: "passed", what: "gate-sessions · 4 of 4" },
     { n: 416, t0: -21, t1: -18, status: "failed", what: "radar-otel · 1 of 5" },
@@ -284,7 +284,7 @@ export const FIRST = {
     { src: "declared", label: ".env loaded in code", detail: "apps/api/src/config.ts:14-15 · fogged, not read", files: 2, fog: true, finds: [] },
     { src: "declared", label: "docker-compose, Kubernetes", detail: "none in this repo", files: 0, finds: [] },
     { src: "observed", label: "OTLP on 127.0.0.1:4318", detail: "listening · no spans yet", files: 0, waiting: true, finds: [] },
-    { src: "designed", label: ".orrery/", detail: "none yet · Orrery drafts one for you", files: 0, finds: [] },
+    { src: "designed", label: ".acan/", detail: "none yet · Acan drafts one for you", files: 0, finds: [] },
   ],
   match: {
     intake: "site block in deploy/Caddyfile", gate: "unit caddy.service", api: "unit acquit-api.service, port 4310", verifier: "unit acquit-verifier.service, port 4311",
@@ -305,15 +305,15 @@ export const FIRST = {
   agents: [
     { id: "droid", name: "Droid", found: ".factory/ in the repo · droid on PATH", writes: [
       { to: "~/.zshenv", lines: ['export OTEL_TELEMETRY_ENDPOINT="http://127.0.0.1:4318"', 'export OTEL_TELEMETRY_FORMAT="genai"'] },
-      { to: "~/.factory/mcp.json", via: "droid mcp add orrery http://127.0.0.1:4319/mcp --type http", lines: ['"orrery": { "type": "http", "url": "http://127.0.0.1:4319/mcp" }'] },
-    ], note: "Droid reads these at launch, so restart open sessions. What Droid sends to Factory does not change. If your org pins a telemetry endpoint, the first two lines do nothing and Orrery tells you.", hooks: "orrery-hook relay · optional", bot: "bot", first: 0.6, backfill: 12 },
+      { to: "~/.factory/mcp.json", via: "droid mcp add acan http://127.0.0.1:4319/mcp --type http", lines: ['"acan": { "type": "http", "url": "http://127.0.0.1:4319/mcp" }'] },
+    ], note: "Droid reads these at launch, so restart open sessions. What Droid sends to Factory does not change. If your org pins a telemetry endpoint, the first two lines do nothing and Acan tells you.", hooks: "acan-hook relay · optional", bot: "bot", first: 0.6, backfill: 12 },
     { id: "claude", name: "Claude Code", found: "~/.claude/settings.json", writes: [
       { to: "~/.claude/settings.json", lines: ['"env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1", "OTEL_METRICS_EXPORTER": "otlp", "OTEL_LOGS_EXPORTER": "otlp", "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json", "OTEL_EXPORTER_OTLP_ENDPOINT": "http://127.0.0.1:4318" }'] },
-      { to: "~/.claude.json", via: "claude mcp add --transport http --scope user orrery http://127.0.0.1:4319/mcp", lines: ['"mcpServers": { "orrery": { "type": "http", "url": "http://127.0.0.1:4319/mcp" } }'] },
-    ], note: "Claude Code sends metrics and events, not spans, so Orrery draws its turns from events. Prompts stay out unless you set OTEL_LOG_USER_PROMPTS.", hooks: "native http hooks · optional", bot: null, first: null, backfill: 4 },
+      { to: "~/.claude.json", via: "claude mcp add --transport http --scope user acan http://127.0.0.1:4319/mcp", lines: ['"mcpServers": { "acan": { "type": "http", "url": "http://127.0.0.1:4319/mcp" } }'] },
+    ], note: "Claude Code sends metrics and events, not spans, so Acan draws its turns from events. Prompts stay out unless you set OTEL_LOG_USER_PROMPTS.", hooks: "native http hooks · optional", bot: null, first: null, backfill: 4 },
     { id: "codex", name: "Codex", found: "~/.codex/config.toml", writes: [
-      { to: "~/.codex/config.toml", lines: ["[otel]", 'exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "json" } }', 'trace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", protocol = "json" } }', "[mcp_servers.orrery]", 'url = "http://127.0.0.1:4319/mcp"'] },
-    ], note: "codex exec sends no metrics (openai/codex issue 12913), so CI runs show from traces and transcripts.", hooks: "orrery-hook relay · optional", bot: "bot-cx", first: 1.1, backfill: 3 },
+      { to: "~/.codex/config.toml", lines: ["[otel]", 'exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/logs", protocol = "json" } }', 'trace_exporter = { otlp-http = { endpoint = "http://127.0.0.1:4318/v1/traces", protocol = "json" } }', "[mcp_servers.acan]", 'url = "http://127.0.0.1:4319/mcp"'] },
+    ], note: "codex exec sends no metrics (openai/codex issue 12913), so CI runs show from traces and transcripts.", hooks: "acan-hook relay · optional", bot: "bot-cx", first: 1.1, backfill: 3 },
   ],
 };
 

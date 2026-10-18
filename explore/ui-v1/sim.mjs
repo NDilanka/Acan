@@ -323,7 +323,7 @@ function paintSimNow(id) {
   if (L && s.c) {
     const rhos = run.steps.map((x) => (x.M[id].rho == null ? 0 : Math.min(2, x.M[id].rho))), top = Math.max(1.2, ...rhos), Y = (v) => 50 - (v / top) * 46, X2 = (i) => (i / (rhos.length - 1)) * 364;
     L.innerHTML = '<svg class="load" viewBox="0 0 364 54" preserveAspectRatio="none"><line class="one" x1="0" x2="364" y1="' + Y(1) + '" y2="' + Y(1) + '"/><path d="' + rhos.map((v, i) => (i ? "L" : "M") + X2(i).toFixed(1) + " " + Y(v).toFixed(1)).join("") + '"/><line class="ph" x1="' + ((SIMS.t / SIMD.secs) * 364).toFixed(1) + '" x2="' + ((SIMS.t / SIMD.secs) * 364).toFixed(1) + '" y1="0" y2="54"/></svg>';
-  } else if (L) L.innerHTML = '<div class="note">External. Orrery sees its errors and call times, not its capacity.</div>';
+  } else if (L) L.innerHTML = '<div class="note">External. Acan sees its errors and call times, not its capacity.</div>';
 }
 function refreshSimInspector() {
   const e = ENT[selected];

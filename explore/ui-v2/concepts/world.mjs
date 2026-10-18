@@ -5,7 +5,7 @@ import { ASSETS } from "../assets.mjs";
 import { renderScene, projectionFor, layoutCallouts, calloutHtml } from "../scene.mjs";
 
 const AZ = 35, EL = 35;
-const BOUND = { "acquit:verifier": "verifier", "acquit:OTLP boundary": "otlp", "orrery:receiver": "receiver", "kvarm:train": "train", "format:reference validator": "validator", "site:static waitlist": "preview" };
+const BOUND = { "acquit:verifier": "verifier", "acquit:OTLP boundary": "otlp", "acan:receiver": "receiver", "kvarm:train": "train", "format:reference validator": "validator", "site:static waitlist": "preview" };
 const bindingKey = (plant, name) => BOUND[plant + ":" + name] || plant + ":" + name;
 const entityId = (plant, name) => (plant.ids && plant.ids[name]) || name;
 for (const p of WORLD.plants) for (const name of p.machines) {
@@ -76,7 +76,7 @@ function worldMount(D, art) {
   if (!conceptActive("world")) return;
   const root = document.querySelector("#worldApp");
   document.body.dataset.world = "active";
-  document.title = "Orrery · My world";
+  document.title = "Acan · My world";
   const q = s => root.querySelector(s), all = s => [...root.querySelectorAll(s)];
   const esc = v => String(v).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const params = new URLSearchParams(location.hash.slice(1));
@@ -362,7 +362,7 @@ function worldMount(D, art) {
       html = `<header><span class="world-eyebrow">Declared contract / ${esc(c.kind)}</span><button data-close="card" aria-label="Close contract">×</button></header><h2>${esc(c.label)}</h2><p>${esc(c.detail)}</p><p class="world-warning">${esc(c.evidence)}</p><p class="world-contract-ends">${esc(plants[c.from].name)} / ${esc(c.fromEntity)}<br>→ ${esc(plants[c.to].name)} / ${esc(c.toEntity)}</p><button class="world-primary" data-far-end="${c.id}">Jump to other end · ${esc(plants[far].name)} ↗</button><small>Back restores this endpoint.</small>`;
     } else {
       const r = state.queue.find(r => r.id === state.question);
-      html = `<header><span class="world-eyebrow">${esc(plants[r.plant].name)} / ${esc(r.entity)}</span><button data-close="card" aria-label="Close question">×</button></header>${r.departure ? `<aside id="worldDeparture"><span class="world-eyebrow">Where you left it</span><p>${esc(r.departure)}</p></aside>` : ""}<span class="world-kind" data-kind="${r.kind}">${KIND[r.kind].glyph} ${esc(r.kind)}</span><h2>${esc(r.title)}</h2><p>${esc(r.why)}. ${esc(r.cost)}. ${esc(r.safe)}.</p>${r.id === "p-2307" ? `<div class="world-readback"><b>readback · Orrery</b><p>Claude Code keeps a failed payout pending.<br>Droid removes it from the effects queue.</p><span class="world-warning">w3 is not locked. No agent has been assigned.</span></div>` : ""}<small>${esc(r.estimate)} estimated review · inspection only</small>`;
+      html = `<header><span class="world-eyebrow">${esc(plants[r.plant].name)} / ${esc(r.entity)}</span><button data-close="card" aria-label="Close question">×</button></header>${r.departure ? `<aside id="worldDeparture"><span class="world-eyebrow">Where you left it</span><p>${esc(r.departure)}</p></aside>` : ""}<span class="world-kind" data-kind="${r.kind}">${KIND[r.kind].glyph} ${esc(r.kind)}</span><h2>${esc(r.title)}</h2><p>${esc(r.why)}. ${esc(r.cost)}. ${esc(r.safe)}.</p>${r.id === "p-2307" ? `<div class="world-readback"><b>readback · Acan</b><p>Claude Code keeps a failed payout pending.<br>Droid removes it from the effects queue.</p><span class="world-warning">w3 is not locked. No agent has been assigned.</span></div>` : ""}<small>${esc(r.estimate)} estimated review · inspection only</small>`;
     }
     if (html !== cardCache) { el.innerHTML = html; cardCache = html; }
   }
@@ -726,7 +726,7 @@ function worldMount(D, art) {
   setTimeout(() => {
     state.queue.push(D.arrival); state.fresh.push(D.arrival.id); state.arrival = true;
     paint();
-    announce("orrery-site needs an artifact check. Added to Waiting on you. Your view has not moved.");
+    announce("acan-site needs an artifact check. Added to Waiting on you. Your view has not moved.");
   }, 3000);
 }
 export { worldArt };
@@ -742,7 +742,7 @@ export default {
     <pattern id="worldSimGrid" width="5" height="5" patternUnits="userSpaceOnUse"><rect width="5" height="5" fill="var(--w-shell)"/><path d="M0 .2H5M.2 0V5" stroke="var(--w-blue)" stroke-width=".5" opacity=".75"/></pattern>
   </defs></svg>
   <header class="world-topbar">
-    <div class="world-brand"><span class="world-logo">◎</span><b>Orrery</b><span class="world-divider"></span><button data-action="world">My world</button><span class="world-slash">/</span><span id="worldBreadcrumb">My world</span><small id="worldScope"></small></div>
+    <div class="world-brand"><span class="world-logo">◎</span><b>Acan</b><span class="world-divider"></span><button data-action="world">My world</button><span class="world-slash">/</span><span id="worldBreadcrumb">My world</span><small id="worldScope"></small></div>
     <button class="world-jump" data-action="search"><span>⌕</span> Jump to a place, machine, or decision <kbd>Ctrl K</kbd></button>
     <div class="world-window-tools"><label class="world-appearance-label">Appearance<select id="worldAppearance" aria-label="Appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><button id="worldEgress" data-action="network"></button></div>
   </header>

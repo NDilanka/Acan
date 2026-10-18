@@ -127,7 +127,7 @@ export const CLASHES = [
 // Bytes, latencies and ages are invented for the mock. Each concept inlines the part it uses, and nothing calls the network.
 // The hash flag kv=ok|unmatched|stale|offline picks the script. No flag is kv=ok.
 export const KVARM = {
-  origin: "https://git.orrery.local", host: "git.orrery.local", repo: "acquit",
+  origin: "https://git.acan.local", host: "git.acan.local", repo: "acquit",
   staleAfter: "two missed polls, or at once on disconnect",
   orders: {
     issue: 41, task: "t-41", generation: "g1", leaseS: 600, heartbeatS: 120,

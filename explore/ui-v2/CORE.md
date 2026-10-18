@@ -1,16 +1,16 @@
 # Core concepts spec: work orders and clash on the belt
 
-Throwaway prototypes that decide how Orrery's core loop feels. Evidence and reasoning are in `../research/agentic-ux/00-synthesis.md` and `../research/agentic-ux/concepts/00-judging.md`. The user's calls are these. Agents claim open orders on their own, after a readback. The review gate is advisory (wave 2, not here). Developer experience must be excellent, and core features come first.
+Throwaway prototypes that decide how Acan's core loop feels. Evidence and reasoning are in `../research/agentic-ux/00-synthesis.md` and `../research/agentic-ux/concepts/00-judging.md`. The user's calls are these. Agents claim open orders on their own, after a readback. The review gate is advisory (wave 2, not here). Developer experience must be excellent, and core features come first.
 
-Round 3 adds three calls. Kvarm is an opt-in connection to your own origin, and every byte to it is drawn as declared egress. A claim needs both a matching Orrery readback and a live Kvarm lease of the same generation; a lease holder with no matching readback is drawn as UNMATCHED, never as CLAIMED. We ask Kvarm to enforce that readback match server-side as a precondition on claim_task. The review gate stays advisory.
+Round 3 adds three calls. Kvarm is an opt-in connection to your own origin, and every byte to it is drawn as declared egress. A claim needs both a matching Acan readback and a live Kvarm lease of the same generation; a lease holder with no matching readback is drawn as UNMATCHED, never as CLAIMED. We ask Kvarm to enforce that readback match server-side as a precondition on claim_task. The review gate stays advisory.
 
 ## The loop these two concepts make
 
-Today the engineer types a prompt into each agent and reads a diff at the end. In Orrery the engineer does this instead.
+Today the engineer types a prompt into each agent and reads a diff at the end. In Acan the engineer does this instead.
 
 1. Point at real moments in Replay and pin them as **must not** or **must keep**. These pins are witnesses.
 2. Post one sentence plus the witnesses as an **order** on the machine. The witnesses become locked checks (K16).
-3. Agents send a **readback**, which is their interpretation replayed against the witnesses before any code. If two readbacks disagree, Orrery asks the engineer one question at the place where they disagree. The answer becomes another witness.
+3. Agents send a **readback**, which is their interpretation replayed against the witnesses before any code. If two readbacks disagree, Acan asks the engineer one question at the place where they disagree. The answer becomes another witness.
 4. An agent whose readback matches every check **claims** the order on its own. Nobody assigns it.
 5. Each claimed agent **declares** what it will change. Where two declarations meet on a belt or a layer, a **clash pin** appears with its consequence. The engineer settles it with one key, before any file is edited.
 
@@ -72,11 +72,11 @@ End state: expose `window.clashState` with `{ footprints: bool, open: id|null, s
 
 ## Kvarm and evidence (wave 3)
 
-Kvarm is an opt-in connection to the user's own origin (`git.orrery.local`), so every op to it is declared egress. Each concept inlines its own scripted fixture from `concepts/core-data.mjs` (`KVARM`) and makes no network requests. A strip under the order plate logs each op with destination, bytes, and reason. The egress pill (top right) adds the bytes and opens the network log. The hash flag `kv=ok`, `kv=unmatched`, `kv=stale`, or `kv=offline` picks the script. No flag is `kv=ok`, and the default stays as calm as before.
+Kvarm is an opt-in connection to the user's own origin (`git.acan.local`), so every op to it is declared egress. Each concept inlines its own scripted fixture from `concepts/core-data.mjs` (`KVARM`) and makes no network requests. A strip under the order plate logs each op with destination, bytes, and reason. The egress pill (top right) adds the bytes and opens the network log. The hash flag `kv=ok`, `kv=unmatched`, `kv=stale`, or `kv=offline` picks the script. No flag is `kv=ok`, and the default stays as calm as before.
 
 **Orders.**
 - Post writes order revision `r1` locally, then logs `create_issue` and `dispatch_issue`. The flag reads `POSTED LOCALLY` until both return, then `OPEN · kvarm #41`.
-- Readback rows say `readback · Orrery`, because Kvarm stores no readback.
+- Readback rows say `readback · Acan`, because Kvarm stores no readback.
 - An answer that creates w3 bumps the order to `r2` and logs `comment_issue`. Readbacks show `re-scored on r2`.
 - A claim logs `claim_task` from the agent's own token. The flag reads `CLAIMED · Claude Code · lease g1` with a countdown. The other matched agent shows `yields`.
 - With `kv=unmatched`, Codex holds the Kvarm lease with no readback. The flag reads `UNMATCHED · Codex holds g1 · no readback` in amber, the territory stays fogged, and a Waiting-on-you row appears. Never draw this state as `CLAIMED`.

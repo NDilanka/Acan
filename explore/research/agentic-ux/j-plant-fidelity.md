@@ -2,7 +2,7 @@
 
 ## Summary
 
-[inferred] Orrery should derive meaningful machine parts from inspectable evidence, while retaining the fixed catalog and authored layout.
+[inferred] Acan should derive meaningful machine parts from inspectable evidence, while retaining the fixed catalog and authored layout.
 [inferred] Structure belongs in repeated parts and connections. [inferred] Live state belongs in bounded fills, gauges, and evidence-driven motion.
 [inferred] Unknown, stale, zero, stopped, and simulated must remain visibly different.
 [inferred] The useful fidelity target is a truthful abstraction, not a miniature of every implementation detail.
@@ -16,7 +16,7 @@
 [sourced] Bertin systematized visual variables in *Sémiologie graphique* in 1967, including position, size, shape, value, hue, orientation, and texture. [Visual variables](https://en.wikipedia.org/wiki/Visual_variable).
 [sourced] Munzner separates marks, which represent items or links, from channels, which vary their appearance with attributes. [Marks and channels](https://www.cs.ubc.ca/~tmm/talks/vad/VAD-marks.pdf).
 [sourced] Her expressiveness principle matches channel type to data type, while effectiveness considers accuracy, discriminability, separability, and popout. [Munzner](https://www.cs.ubc.ca/~tmm/talks/vad/VAD-marks.pdf).
-[inferred] Orrery's catalog silhouette should encode categorical role, while count and length encode quantities.
+[inferred] Acan's catalog silhouette should encode categorical role, while count and length encode quantities.
 [inferred] A language change should change a plate, not make a service twice as wide.
 
 [sourced] Cleveland and McGill's experiments found position judgments more accurate than length and angle judgments, while warning that their ordering is guidance rather than a complete design prescription. [Graphical perception, 1984](https://www.statsclass.com/dsci310/Notes/Cleveland_McGill_EPT.pdf).
@@ -48,7 +48,7 @@
 [sourced] ISA-101 covers the HMI lifecycle and display structures, with supporting reports on philosophy, usability, and performance. [ISA's series overview](https://www.isa.org/standards-and-publications/isa-standards/isa-101-standards).
 [sourced] High-performance HMI practice uses neutral gray normal equipment, contextual ranges, and attention colors for abnormal states. [Design guide](https://wartens.com/us/news/high-performance-hmi-isa-101).
 [sourced] That guide distinguishes this practice from a mandatory ISA palette and recommends less decorative animation. [Same guide](https://wartens.com/us/news/high-performance-hmi-isa-101).
-[inferred] Orrery can retain brass and graphite without painting every healthy machine green.
+[inferred] Acan can retain brass and graphite without painting every healthy machine green.
 [inferred] Reserve saturated amber and red for actionable deviation, and pair them with shape and text.
 [inferred] Blue blueprint ghosts are a mode and provenance convention, not evidence of runtime health.
 
@@ -65,7 +65,7 @@
 [sourced] Its smoke is an explicitly configured animated entity, not a universal failure signal. [Smoke prototype](https://lua-api.factorio.com/latest/prototypes/SmokePrototype.html).
 [sourced] Belt throughput is speed multiplied by item density, and backed-up items expose bottlenecks. [Belt transport](https://wiki.factorio.com/Belt_transport_system).
 [inferred] Borrow the connection between state and tell, not every game's visual meaning.
-[inferred] Orrery's failure smoke needs an explicit failure binding, while moving cargo needs evidence of traffic.
+[inferred] Acan's failure smoke needs an explicit failure binding, while moving cargo needs evidence of traffic.
 [inferred] An alt-mode plate for operation, protocol, and runtime is more honest than inventing a unique silhouette for every framework.
 
 ### Procedural variety is not evidential fidelity
@@ -75,7 +75,7 @@
 [sourced] Townscaper selects compatible prebuilt architectural pieces from player placements and surrounding structure. [Creator interview and technical account](https://www.gamedeveloper.com/game-platforms/how-townscaper-works-a-story-four-games-in-the-making).
 [sourced] No Man's Sky combines a generation pipeline with tools for artistic control. [Generation architecture](https://www.gdcvault.com/play/1024265/Continuous_World_Generation_in__No_Man_s_Sky_) and [art direction](https://www.gdcvault.com/play/1021805/Art-Direction-Bootcamp-How-I).
 [inferred] These examples separate input parameters, compatibility constraints, simulation, and authored art.
-[inferred] Orrery should generate compatible machine parts from evidence, but never generate unknown architecture to make the plant look complete.
+[inferred] Acan should generate compatible machine parts from evidence, but never generate unknown architecture to make the plant look complete.
 [inferred] A stable seed can place cosmetic scratches, not decide ports or traffic.
 
 ### Software cities demonstrate the trade-off
@@ -88,24 +88,24 @@
 
 [sourced] Research used WebSearch full text on 2026-10-17, with no rate-limit errors or retries in this session's search results. `/home/factory-user/.factory/artifacts/scripts/4b4a8595-9831-44d3-bf55-9eda2ab10195/`.
 [sourced] The retrieved ISA page offers the standard for purchase, and the Bennett-Flach page exposes the abstract with full access gated, so the claims above use those public materials rather than inaccessible chapters. [ISA overview](https://www.isa.org/standards-and-publications/isa-standards/isa-101-standards) and [Bennett-Flach abstract](https://doi.org/10.1177/001872089203400502).
-[inferred] No claim of ISA compliance or measured benefit for Orrery follows from this research.
+[inferred] No claim of ISA compliance or measured benefit for Acan follows from this research.
 
 ## 2. A fidelity model for machines
 
 ### Preserve the catalog and derive its semantic parts
 
-[sourced] K4 requires designed, declared, and observed sources, K5 preserves authored layout, and K6 preserves catalog recognition at distance. `/home/factory-user/orrery/explore/map.md:29-31`.
-[sourced] S1 retains mounted gauges, while R1 requires a flat plan in every mode. `/home/factory-user/orrery/explore/map.md:128-142`.
+[sourced] K4 requires designed, declared, and observed sources, K5 preserves authored layout, and K6 preserves catalog recognition at distance. `/home/factory-user/acan/explore/map.md:29-31`.
+[sourced] S1 retains mounted gauges, while R1 requires a flat plan in every mode. `/home/factory-user/acan/explore/map.md:128-142`.
 [inferred] Use a catalog shell, evidence-bound parts, and a separate uncertainty overlay.
 [inferred] Draw tank layers as plan-view sectors or nested bands, with stacked layers available only in section or exploded views.
 [inferred] Represent stacked deployment copies with offset plan outlines, not compulsory perspective.
 
 [sourced] The asset sheet already shares geometry across SQLite, PostgreSQL, and MySQL variants and lists seven universal states. `/home/factory-user/attachments/ae5adbbb-90cc-467f-9499-0ca9036a8e29-mvb27mpz-7e279d60.png`.
-[sourced] The supplied scene shows a multi-cell verifier and an elevated assembly. `/home/factory-user/orrery/explore/ui-v1/shots/l-default.png`.
+[sourced] The supplied scene shows a multi-cell verifier and an elevated assembly. `/home/factory-user/acan/explore/ui-v1/shots/l-default.png`.
 [inferred] Treat those images as visual studies, not measurements or amendments to the Acquit corrections.
 
-[sourced] `ASSETS` separates metadata from `build` functions, and the bank derives its width from `cells` and its raised parts from `busy`. `/home/factory-user/orrery/explore/ui-v1/assets.mjs:95-110`.
-[sourced] Its defaults invent four cells, one busy cell, and seven waiting jobs, while the hopper hardcodes five rings and the tank hardcodes three layers. `/home/factory-user/orrery/explore/ui-v1/assets.mjs:98-150`.
+[sourced] `ASSETS` separates metadata from `build` functions, and the bank derives its width from `cells` and its raised parts from `busy`. `/home/factory-user/acan/explore/ui-v1/assets.mjs:95-110`.
+[sourced] Its defaults invent four cells, one busy cell, and seven waiting jobs, while the hopper hardcodes five rings and the tank hardcodes three layers. `/home/factory-user/acan/explore/ui-v1/assets.mjs:98-150`.
 [inferred] The generator mechanism is useful, but demo defaults cannot enter a live rendering path.
 [inferred] Changing `layers` labels does not establish a binding to actual schema structure.
 
@@ -113,13 +113,13 @@
 
 1. [inferred] Bind catalog type to a designed role and declared entity evidence, with observed role evidence retained separately.
    [guess] Recompute on blueprint or source revision, show an unresolved crate when role is unknown, and keep one shell per entity.
-   [sourced] Acquit's House is a library inside the API, not a separate process. `/home/factory-user/orrery/explore/map.md:195`.
+   [sourced] Acquit's House is a library inside the API, not a separate process. `/home/factory-user/acan/explore/map.md:195`.
    [inferred] House therefore belongs in the API cutaway unless the architect explicitly models a logical component.
 
 2. [inferred] Bind bank cell count to declared concurrency, with runtime-reported effective concurrency as observed evidence.
    [guess] Show one cell per slot through eight, then a compact bank engraved with the exact count, including `200 slots`.
    [guess] Update structure on configuration revision and occupancy every second, with fogged unknown capacity and no guessed busy cells.
-   [sourced] Acquit's production verifier concurrency is one, and its queue is in memory and lost on restart. `/home/factory-user/orrery/explore/map.md:190`.
+   [sourced] Acquit's production verifier concurrency is one, and its queue is in memory and lost on restart. `/home/factory-user/acan/explore/map.md:190`.
    [inferred] One active span proves activity, not that every other slot is idle.
 
 3. [inferred] Bind tray cargo and hopper fill to observed queue depth, not cumulative submissions.
@@ -127,31 +127,31 @@
    [guess] Divide fill by declared capacity or a labeled designed warning threshold, never by a hidden rolling maximum.
    [inferred] An unbounded queue needs a warning scale rather than a fictitious capacity.
    [inferred] Missing measurements fog the tray instead of emptying it.
-   [sourced] Acquit's database effects queue and verifier's volatile queue are distinct mechanisms. `/home/factory-user/orrery/explore/map.md:176,190`.
+   [sourced] Acquit's database effects queue and verifier's volatile queue are distinct mechanisms. `/home/factory-user/acan/explore/map.md:176,190`.
 
 4. [inferred] Bind tank bands to one explicitly selected schema grouping, with declared migrations compared against observed catalog metadata.
    [guess] Refresh on schema revision or a 60-second metadata check, draw at most six groups, and engrave the remaining count.
    [inferred] Unknown schema gets fogged internals, not three default tables.
    [inferred] SQLite side vessels require observed file existence or declared journaling intent, with those provenances distinguished.
-   [sourced] Acquit has one SQLite file per lane and separate model-call and House files. `/home/factory-user/orrery/explore/map.md:180-181`.
+   [sourced] Acquit has one SQLite file per lane and separate model-call and House files. `/home/factory-user/acan/explore/map.md:180-181`.
    [inferred] Draw separate stores rather than relabeling every file as a relational schema.
 
 5. [inferred] Bind repeated outlines to declared replicas or lane instances, and observed readiness to each instance.
    [guess] Refresh on configuration changes and five-second discovery, show three outlines before a count, and fog unknown membership.
    [inferred] Keep replicas and environments separate in the legend.
-   [sourced] Acquit identity is role plus lane, with repeated offset ports, not port alone. `/home/factory-user/orrery/explore/map.md:181`.
+   [sourced] Acquit identity is role plus lane, with repeated offset ports, not port alone. `/home/factory-user/acan/explore/map.md:181`.
    [inferred] Two lanes must not imply load-balanced replicas.
 
 6. [inferred] Bind mounted openings to declared logical interfaces, with observed listeners and connections recorded independently.
    [guess] Update on source revision and five-second discovery, show up to six grouped openings, then an exact interface count.
    [inferred] Missing discovery leaves declared openings visible but unverified, rather than inventing port numbers.
    [inferred] Protocol sockets, HTTP routes, and database connections need different interface classes.
-   [sourced] Acquit needs webhook, redirect, and verifier callback routes, and its production web frontend is Caddy-served static files. `/home/factory-user/orrery/explore/map.md:191-193`.
+   [sourced] Acquit needs webhook, redirect, and verifier callback routes, and its production web frontend is Caddy-served static files. `/home/factory-user/acan/explore/map.md:191-193`.
 
 7. [inferred] Bind engraved runtime plates to declared manifests and launch commands, with observed process version as a separate line.
    [guess] Refresh on revision or process restart, show two short plate lines, and move additional languages into Inspect with a count.
    [inferred] Unknown versions show `version unknown`, never a customary Node release.
-   [sourced] The Acquit fixture records TypeScript executed directly by Node 24. `/home/factory-user/orrery/explore/map.md:250`.
+   [sourced] The Acquit fixture records TypeScript executed directly by Node 24. `/home/factory-user/acan/explore/map.md:250`.
 
 8. [inferred] Bind belt width to a named throughput statistic only in an explicit traffic overlay.
    [guess] Use three labeled width bins from a fixed per-unit scale, update a rolling 60-second rate every five seconds, and use uniform width with fog when unavailable.
@@ -163,24 +163,24 @@
    [guess] Cap visible cargo at twelve groups and show a number above that limit, while the clock respects the existing 20 fps cap.
    [inferred] Unknown traffic has no moving cargo, and known zero has an explicit zero reading.
    [inferred] Sampled traces alone cannot establish a true zero or total throughput without suitable counting evidence.
-   [sourced] Acquit's linked spans cross an effects queue and a later callback. `/home/factory-user/orrery/explore/map.md:176`.
+   [sourced] Acquit's linked spans cross an effects queue and a later callback. `/home/factory-user/acan/explore/map.md:176`.
    [inferred] Preserve those handoffs instead of animating one continuous HTTP request.
 
 10. [inferred] Bind return-loop geometry to declared retry policy and motion to observed retry attempts.
     [guess] Refresh policy on revision and activity each second, draw one loop per flow, and collapse policy complexity into a retry count.
     [inferred] Unknown policy gets a fogged fitting, and a policy without retry evidence stays still.
-    [sourced] Acquit has different MCP PayPal, API PayPal, and callback retry rules. `/home/factory-user/orrery/explore/map.md:188`.
+    [sourced] Acquit has different MCP PayPal, API PayPal, and callback retry rules. `/home/factory-user/acan/explore/map.md:188`.
     [inferred] Verify whether each reported count means attempts or retries before engraving a multiplier.
 
 11. [inferred] Bind a timeout fuse's length to a declared or designed deadline and its burn fraction to observed elapsed time divided by that deadline.
     [guess] Update selected in-flight calls at the capped motion rate, show one fuse for one selected call, and replace concurrent-call detail with a count and timeout rate.
     [inferred] Without a deadline, show elapsed time and a fogged fuse scale.
     [inferred] A percentile latency cannot honestly burn like an individual request.
-    [sourced] The prototype currently defers the Fuse drawing to a belt budget dimension. `/home/factory-user/orrery/explore/ui-v1/assets.mjs:6-13`.
+    [sourced] The prototype currently defers the Fuse drawing to a belt budget dimension. `/home/factory-user/acan/explore/ui-v1/assets.mjs:6-13`.
 
 12. [inferred] Bind cam period to declared scheduling and motion to observed timer events.
     [guess] Refresh on revision and each event, show two mounted cams before a schedule count, and fog phase when timing evidence is absent.
-    [sourced] Acquit has two 30-second API timers, while `sweep` is manual. `/home/factory-user/orrery/explore/map.md:187`.
+    [sourced] Acquit has two 30-second API timers, while `sweep` is manual. `/home/factory-user/acan/explore/map.md:187`.
     [inferred] A configured interval proves intention, not an on-time heartbeat.
 
 [inferred] Give the mounted gauge one named metric, unit, window, and scale, with its threshold notch from a designed budget.
@@ -196,7 +196,7 @@
 [inferred] Include telemetry coverage, sample policy, and collector health when a binding uses observed events.
 [inferred] Preserve designed, declared, and observed values separately rather than coalescing them into an anonymous value.
 [inferred] Feed the gauge, geometry, label, and export from the same evaluated binding result.
-[sourced] This extends the anatomy rule that every displayed number comes from the model that moves its parts. `/home/factory-user/orrery/explore/map.md:14`.
+[sourced] This extends the anatomy rule that every displayed number comes from the model that moves its parts. `/home/factory-user/acan/explore/map.md:14`.
 
 [inferred] Alt+hover should identify the selected part and show its full derivation.
 [guess] A hypothetical verifier explanation reads `one cell; declared concurrency 1; deploy/runtime.env:12; fixture revision 55825fe; runtime concurrency not reported`.
@@ -221,7 +221,7 @@
 [inferred] In Blueprint, emphasize designed structure without silently changing the declared configuration.
 [inferred] In Replay, use historical source revisions and event time.
 [inferred] In Simulate, identify generated activity, model version, and calibration separately from live traffic.
-[sourced] K4 explicitly requires disagreement to remain visible as drift. `/home/factory-user/orrery/explore/map.md:29`.
+[sourced] K4 explicitly requires disagreement to remain visible as drift. `/home/factory-user/acan/explore/map.md:29`.
 [inferred] Never auto-relayout existing machines to resolve drift, and send newly discovered entities to K5's unplaced tray.
 
 ### Test the contract and the picture
@@ -235,7 +235,7 @@
 [inferred] Semantic scene-node assertions alone are insufficient because the pixels can still obscure or contradict the binding.
 [inferred] Render deterministic-clock screenshots for every catalog state, flat-plan projection, overflow label, and fog combination.
 [inferred] Check dimensions and pixel regions against independent expected values, then run recognition tasks with developers.
-[sourced] Existing layout rules place readings left of gauges, lift failure readings above smoke, and keep title blocks and connectors away from labels. `/home/factory-user/orrery/explore/map.md:137`.
+[sourced] Existing layout rules place readings left of gauges, lift failure readings above smoke, and keep title blocks and connectors away from labels. `/home/factory-user/acan/explore/map.md:137`.
 [inferred] Include those rules in screenshot checks.
 [inferred] Replay the corrected Acquit fixture to verify one verifier slot, two mounted timers, separate queues, lane identities, and sealed Docker internals.
 [inferred] Redaction tests must cover provenance popovers and exported metadata as well as visible labels.
@@ -248,17 +248,17 @@
 [guess] The proposed count limits need developer testing and are not perceptual constants established by the cited studies.
 
 [inferred] Avoid decorative traffic and perpetual healthy-state motion.
-[sourced] Q15 caps belts at 20 fps and requires stillness after two minutes without input or state change. `/home/factory-user/orrery/explore/map.md:229`.
+[sourced] Q15 caps belts at 20 fps and requires stillness after two minutes without input or state change. `/home/factory-user/acan/explore/map.md:229`.
 [inferred] Show a motion-paused indicator and current static readings when motion is disabled, so stationary cargo does not imply zero traffic.
 [inferred] Never use sine-wave gauges, random smoke, or warm-up animation as live measurements.
 
 [inferred] Avoid treating software as conserved physical material.
 [inferred] Requests fan out, retries duplicate work, caches suppress downstream calls, and callbacks cross time boundaries.
-[sourced] Acquit specifically needs linked spans across delayed queue and callback work. `/home/factory-user/orrery/explore/map.md:176`.
+[sourced] Acquit specifically needs linked spans across delayed queue and callback work. `/home/factory-user/acan/explore/map.md:176`.
 [inferred] Cargo is a disclosed event representation, not proof that every upstream token must emerge downstream.
 
 [inferred] Avoid false precision from opaque components.
-[sourced] Acquit's Docker subjects are timed from the host and drawn as sealed housings. `/home/factory-user/orrery/explore/map.md:182`.
+[sourced] Acquit's Docker subjects are timed from the host and drawn as sealed housings. `/home/factory-user/acan/explore/map.md:182`.
 [inferred] Host elapsed time cannot justify invented internal stages, token counts, or model progress.
 [inferred] Likewise, absent traces cannot justify an empty queue, and five decorative hopper rings cannot justify five partitions.
 

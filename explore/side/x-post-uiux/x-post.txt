@@ -1,6 +1,6 @@
-Two days of nothing but UI/UX on Orrery. Still zero lines of the actual app.
+Two days of nothing but UI/UX on Acan. Still zero lines of the actual app.
 
-Orrery draws your system as a factory floor. Services are machines, queues are belts, agents show up on the machine they touch.
+Acan draws your system as a factory floor. Services are machines, queues are belts, agents show up on the machine they touch.
 
 So Droid fanned out a research swarm, 76,498 words. Claude, GPT and Grok each pitched concepts on their own, then I got interviewed three times to pick what survived.
 

@@ -1,4 +1,4 @@
-# Orrery concept bakeoff, Anthropic arm
+# Acan concept bakeoff, Anthropic arm
 
 Dated 2026-10-17. Five concepts that change what the engineer does, not how the plant looks.
 
@@ -6,7 +6,7 @@ Dated 2026-10-17. Five concepts that change what the engineer does, not how the 
 
 ## 1. Witnesses instead of prompts
 
-**Pitch.** The engineer stops describing the fix. They pin a real moment on the plant, mark what must never happen again and what must keep working, and Orrery issues those marks to the agent as its contract.
+**Pitch.** The engineer stops describing the fix. They pin a real moment on the plant, mark what must never happen again and what must keep working, and Acan issues those marks to the agent as its contract.
 
 **Scenario.** Replay (key 4) on "today 15:30 to 16:30" (acquit.mjs:249). The paypal-payouts territory is unclaimed and fogged at 0.42 (acquit.mjs:146-150).
 
@@ -57,7 +57,7 @@ Test. Clickable Replay mock with scripted candidates. Eight to ten developers ea
 
 ## 2. The inspection gate holds the work
 
-**Pitch.** The engineer sets how much review they can absorb each hour. Orrery admits new agent work only inside that allowance. Held work waits on a scaffold in front of the inspection station, so the backlog is physical.
+**Pitch.** The engineer sets how much review they can absorb each hour. Acan admits new agent work only inside that allowance. Held work waits on a scaffold in front of the inspection station, so the backlog is physical.
 
 **Scenario.** Live, default plant.
 

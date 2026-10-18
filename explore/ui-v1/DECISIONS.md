@@ -1,4 +1,4 @@
-# Orrery v1 prototype · decision log (pages 8 to 10)
+# Acan v1 prototype · decision log (pages 8 to 10)
 
 Each entry gives the call, why, and what would change it. Guesses are labelled.
 
@@ -6,10 +6,10 @@ Each entry gives the call, why, and what would change it. Guesses are labelled.
 
 1. **Three steps in one left panel: Read, Place, Connect.** The plant stays in the middle the whole time, so you watch it fill in. The inspector side (right) stays free.
 2. **Confident matches go straight onto the plant in grey (D10).** They look idle because no spans have arrived yet. Uncertain ones go to the unplaced tray (K5) as cards with confidence, the rule that fired, one question, and two answers.
-3. **Y always means "agree with Orrery's guess".** N picks the other answer. Each tray item has an outcome pair (`fx`), for example `["dock", "ignore"]`, so one table drives the plant, the yaml, and the wording. ctl and the :4320 lane are phrased so Y is still the guess.
+3. **Y always means "agree with Acan's guess".** N picks the other answer. Each tray item has an outcome pair (`fx`), for example `["dock", "ignore"]`, so one table drives the plant, the yaml, and the wording. ctl and the :4320 lane are phrased so Y is still the guess.
 4. **The focused guess is drawn as a ghost where it would go.** You see the consequence before you answer. Items with no position (the CLI, the lane) say "not drawn until you place it".
 5. **Nothing is written until you continue.** The system.yaml draft updates live under the tray, and new lines are highlighted. Enter agrees with the focused guess. Once every guess is answered, Enter writes. Shift Enter writes early and leaves the rest under `tray:` in the yaml.
-6. **Connect shows the exact lines it adds to each agent's settings file**, with a backup and "message content export stays off" (E1). Enter writes, C copies the lines instead, S skips. Each card also says what that agent can and cannot send. An earlier version said Codex has no MCP client. That was wrong, and Codex now gets an `[mcp_servers.orrery]` table.
+6. **Connect shows the exact lines it adds to each agent's settings file**, with a backup and "message content export stays off" (E1). Enter writes, C copies the lines instead, S skips. Each card also says what that agent can and cannot send. An earlier version said Codex has no MCP client. That was wrong, and Codex now gets an `[mcp_servers.acan]` table.
 7. **The payoff is the first span.** The plant lights up with real states, so paypal is already red the moment Droid connects. The toast says so.
 8. **Setting keys checked against the vendor docs** (proposal V3). Droid's `settings.json` has no `env` key, so its telemetry lines go in the shell profile, and MCP goes through `droid mcp add`. Claude gained `OTEL_METRICS_EXPORTER`, and its MCP server moved to `claude mcp add`, which writes `~/.claude.json`. Codex gained `trace_exporter` and `protocol`. The Codex `protocol` values and the Claude MCP file are still unverified.
 
@@ -31,7 +31,7 @@ Each entry gives the call, why, and what would change it. Guesses are labelled.
 
 ## Trust (Q16)
 
-19. **The egress pill opens the network log.** Empty state: "Nothing has left this machine." Loopback listeners are listed apart, as not counted. The offline switch turns the pill to "offline". The data statement lists the three things Orrery could ever send, all off or asking by default.
+19. **The egress pill opens the network log.** Empty state: "Nothing has left this machine." Loopback listeners are listed apart, as not counted. The offline switch turns the pill to "offline". The data statement lists the three things Acan could ever send, all off or asking by default.
 20. **Update checks are off until you turn them on** (proposal V6). This keeps the pill honest at "0 out" from first launch. The cost is that people stay on old builds until they opt in.
 
 ## Fog and far zoom (K12, A7, L21)
@@ -48,7 +48,7 @@ Each entry gives the call, why, and what would change it. Guesses are labelled.
 
 ## Calls made after the first review
 
-26. **Proposal location.** `orrery/explore/proposals/ui-v1.md`, in map.md's row format, so map.md stays untouched and each row can be pasted in.
+26. **Proposal location.** `acan/explore/proposals/ui-v1.md`, in map.md's row format, so map.md stays untouched and each row can be pasted in.
 27. **D1 is amended, R1 is not** (proposal V1, V2). v0.1 ships the iso working view as the default and the flat plan behind T. R1 already says the plan is flat, so it only needs Top to reach a true 90°.
 28. **One first-run layout, no competing variant** (proposal V5). The open questions there are copy and order, and a second layout would not answer them.
 29. **Ctrl K answer area is v0.2** (proposal V7). v0.1 keeps the lexical jump.

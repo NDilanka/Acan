@@ -1,4 +1,4 @@
-# Interaction concepts for Orrery
+# Interaction concepts for Acan
 
 Six concepts for the Acquit plant. Each one changes what the engineer does, not how the brass looks. The plant stays. The prompt box, the per-session waiting list, and the panel that asks the engineer to accept an agent's sentence do not.
 
@@ -67,7 +67,7 @@ Before any agent writes code, it declares the contracts it intends to change. Wh
 
 **Pain.** Pain 2, the conflict half. Textual merge conflict is the late, cheap symptom. The expensive one is two agents holding incompatible ideas about the same flow.
 
-**Sixty seconds on Acquit.** The belt from acquit-api to the PayPal dock carries two ghost fittings. Droid's breaker trips after 5 fails in 30 seconds. Codex's retry drops to x2 with jitter. Each is legal alone. Together they double-charge yesterday's pinned payout, because both fire on the same 5xx. Orrery draws one brass pin through both fittings. The engineer clicks it and a card opens on the belt, not in a side panel, with the two declarations and one line. "Both fire on the same 5xx. The pinned payout charges twice." Three buttons follow. "Breaker wins." "Retry wins." "Serialize." The engineer clicks the first. Codex's fitting dims with a "yields" tag, Droid's breaker stays proposed, and Codex's bot turns to the next open plate. No file was edited. The conflict ended in one click, while both changes were still declarations.
+**Sixty seconds on Acquit.** The belt from acquit-api to the PayPal dock carries two ghost fittings. Droid's breaker trips after 5 fails in 30 seconds. Codex's retry drops to x2 with jitter. Each is legal alone. Together they double-charge yesterday's pinned payout, because both fire on the same 5xx. Acan draws one brass pin through both fittings. The engineer clicks it and a card opens on the belt, not in a side panel, with the two declarations and one line. "Both fire on the same 5xx. The pinned payout charges twice." Three buttons follow. "Breaker wins." "Retry wins." "Serialize." The engineer clicks the first. Codex's fitting dims with a "yields" tag, Droid's breaker stays proposed, and Codex's bot turns to the next open plate. No file was edited. The conflict ended in one click, while both changes were still declarations.
 
 **What it replaces.** Discovery of the conflict in a pull request, or in the choices ledger after both agents have built their version. The ledger still ranks the resulting choice. The pin stops the choice from being created twice.
 

@@ -1,6 +1,6 @@
 # The go bar
 
-Orrery implementation starts only when every line below is green. Each line names how it is checked, so "perfect" means the same thing to every reviewer. The status column is updated after each round. A line goes back to red when a later change breaks it.
+Acan implementation starts only when every line below is green. Each line names how it is checked, so "perfect" means the same thing to every reviewer. The status column is updated after each round. A line goes back to red when a later change breaks it.
 
 | # | Line | How it is checked | Status |
 |---|---|---|---|

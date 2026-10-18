@@ -1,11 +1,11 @@
-# Orrery light mode
+# Acan light mode
 
 ## Summary
 
 [inferred] Add a daylight edition of direction D, not a replacement identity.
 [inferred] Use Live vellum `#F4F1EA` and engraved brass `#795A27`.
 [inferred] Keep four papers, catalog silhouettes, mounted gauges, and a flat plan.
-[sourced] Primary ink reaches at least 12.65:1 and APCA Lc +90.9 across four papers, computed with `/tmp/orrery-light-contrast/node_modules/apca-w3/src/apca-w3.js`.
+[sourced] Primary ink reaches at least 12.65:1 and APCA Lc +90.9 across four papers, computed with `/tmp/acan-light-contrast/node_modules/apca-w3/src/apca-w3.js`.
 [inferred] Preserve state meanings with darker inks, explicit marks, and readable labels.
 [inferred] Offer System, Light, and Dark, with a local window override for the second monitor.
 [inferred] Give exports an explicit publication appearance independent of the operator's screen.
@@ -20,7 +20,7 @@
 
 [sourced] Buchner and Baumgartner found better proofreading with positive polarity in darkness and office illumination. Their measured strain and self-reported discomfort did not vary with polarity. https://pubmed.ncbi.nlm.nih.gov/17510822/
 
-[inferred] Orrery's labels, budgets, and inspector deserve positive polarity support. These studies do not establish faster detection of a failing machine at second-monitor distance.
+[inferred] Acan's labels, budgets, and inspector deserve positive polarity support. These studies do not establish faster detection of a failing machine at second-monitor distance.
 
 [sourced] H Locke describes halation as bright letters spreading against a dark surround, with particular difficulty for some people with astigmatism. The article also acknowledges that the frequently repeated Harrison explanation is not an accessible controlled study. https://medium.com/@h_locke/why-dark-mode-causes-more-accessibility-issues-than-it-solves-54cddf6466f5
 
@@ -79,13 +79,13 @@
 [inferred] Follow the OS by default, but never equate it with sunlight at a second monitor.
 
 [sourced] Research used WebSearch full text on 2026-10-17 without rate-limit errors. Representative search evidence is `/home/factory-user/.factory/artifacts/scripts/08356d2d-72c3-43a6-897a-154726ab24bf/call_kxFU55vDWxqw8hWj7EWc2rOu.log`. The studies above were available as abstracts, not full experimental datasets.
-[inferred] Remaining gaps are Orrery user testing, calibrated display measurements, CVD simulation of the rendered drawing, and reliable native per-display identifiers.
+[inferred] Remaining gaps are Acan user testing, calibrated display measurements, CVD simulation of the rendered drawing, and reliable native per-display identifiers.
 
 ## 2. Design
 
 ### Four light papers, one identity
 
-[sourced] A5, K15, U4, S1, S2, and R1 lock direction D, four mode papers, distinct silhouettes, mounted gauges, and a flat plan. `/home/factory-user/orrery/explore/map.md:40-55`, `/home/factory-user/orrery/explore/map.md:114-143`.
+[sourced] A5, K15, U4, S1, S2, and R1 lock direction D, four mode papers, distinct silhouettes, mounted gauges, and a flat plan. `/home/factory-user/acan/explore/map.md:40-55`, `/home/factory-user/acan/explore/map.md:114-143`.
 
 [inferred] Add an appearance axis independent of mode. Keep dark unchanged. Make the light papers solid colors, avoiding a vignette that complicates contrast.
 
@@ -98,7 +98,7 @@
 
 [inferred] These rows map `--paper`, `--grid-minor`, `--grid-major`, and `--grid-axis`. Keep mode names and timestamps visible because paper tint alone cannot identify mode.
 
-[sourced] The original vellum was `#F4F1EA`, brass `#B08D57`, and brass highlight `#D9B97A`. `/home/factory-user/orrery/explore/stage3-directions.html:9`, `/home/factory-user/orrery/explore/stage3-refined.html:11`.
+[sourced] The original vellum was `#F4F1EA`, brass `#B08D57`, and brass highlight `#D9B97A`. `/home/factory-user/acan/explore/stage3-directions.html:9`, `/home/factory-user/acan/explore/stage3-refined.html:11`.
 
 [inferred] Use `#795A27` for brass outlines and emphasis, `#E1D1AA` for broad metal fill, and primary ink for lettering. Brass should describe the bezel, not coat every chassis.
 
@@ -158,7 +158,7 @@
 [inferred] Neutral chassis materials stay shared across light papers. Restrict `--anatomy-lo` and `--anatomy-faint` to decorative seams, never required boundaries or text. Use `--anatomy-hi` for silhouettes.
 [inferred] Bind essential `.iso-face-text` to `--text`, not geometry tone defaults. At normal zoom use 1.5 px silhouettes, 1 px internal lines, and 0.75 px drafting dimensions. Keep required strokes non-scaling.
 
-[sourced] Several required roles are hardcoded, not existing custom properties. `/home/factory-user/orrery/explore/ui-v1/build.mjs:43-64`, `/home/factory-user/orrery/explore/ui-v1/lib.mjs:19-74`, `/home/factory-user/orrery/explore/ui-v1/floor.mjs:35-58`.
+[sourced] Several required roles are hardcoded, not existing custom properties. `/home/factory-user/acan/explore/ui-v1/build.mjs:43-64`, `/home/factory-user/acan/explore/ui-v1/lib.mjs:19-74`, `/home/factory-user/acan/explore/ui-v1/floor.mjs:35-58`.
 
 | Role | Dark implementation [sourced][B][L][F][R] | Light mapping [inferred] |
 |---|---|---|
@@ -195,7 +195,7 @@
 
 ### Computed contrast
 
-[sourced] The table reports WCAG ratio followed by signed APCA Lc. Calculations used sRGB, opaque foregrounds, solid papers, and `apca-w3@0.1.9`, algorithm 0.0.98G-4g. `/tmp/orrery-light-contrast/node_modules/apca-w3/package.json`, `/tmp/orrery-light-contrast/node_modules/apca-w3/src/apca-w3.js:143-171`.
+[sourced] The table reports WCAG ratio followed by signed APCA Lc. Calculations used sRGB, opaque foregrounds, solid papers, and `apca-w3@0.1.9`, algorithm 0.0.98G-4g. `/tmp/acan-light-contrast/node_modules/apca-w3/package.json`, `/tmp/acan-light-contrast/node_modules/apca-w3/src/apca-w3.js:143-171`.
 
 | Foreground [inferred] | Live [sourced] | Blueprint [sourced] | Simulate [sourced] | Replay [sourced] |
 |---|---|---|---|---|
@@ -210,11 +210,11 @@
 | Idle, dark `#59616A` | 5.57, +73.1 | 5.62, +73.6 | 5.65, +74.0 | 5.36, +70.5 |
 | Fogged `#626973` | 4.92, +69.5 | 4.96, +70.0 | 4.98, +70.4 | 4.73, +67.0 |
 
-[sourced] Reproduce the table after installing the pinned package under `/tmp` with `npm install --prefix /tmp/orrery-light-contrast apca-w3@0.1.9 --ignore-scripts --no-audit --no-fund`.
+[sourced] Reproduce the table after installing the pinned package under `/tmp` with `npm install --prefix /tmp/acan-light-contrast apca-w3@0.1.9 --ignore-scripts --no-audit --no-fund`.
 
 ```js
 import {APCAcontrast, sRGBtoY} from
-	"/tmp/orrery-light-contrast/node_modules/apca-w3/src/apca-w3.js";
+	"/tmp/acan-light-contrast/node_modules/apca-w3/src/apca-w3.js";
 const rgb = h => h.match(/[a-f0-9]{2}/gi).map(v => parseInt(v, 16));
 const y = h => rgb(h).map(v => v / 255)
 	.map(v => v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4)
@@ -229,9 +229,9 @@ for (const ink of inks) console.log(ink, papers.map(paper => [
 ]));
 ```
 
-[sourced] Black against white produced 21.00:1 and Lc +106.0. Reversal produced 21.00:1 and Lc -107.9. These reference checks passed using the pinned calculator at `/tmp/orrery-light-contrast/node_modules/apca-w3/src/apca-w3.js`.
+[sourced] Black against white produced 21.00:1 and Lc +106.0. Reversal produced 21.00:1 and Lc -107.9. These reference checks passed using the pinned calculator at `/tmp/acan-light-contrast/node_modules/apca-w3/src/apca-w3.js`.
 
-[sourced] Primary ink on brass badge fill produced 9.81:1 and Lc +75.6. Dim ink on opaque glass produced 7.02:1 and Lc +82.5, using `/tmp/orrery-light-contrast/node_modules/apca-w3/src/apca-w3.js`.
+[sourced] Primary ink on brass badge fill produced 9.81:1 and Lc +75.6. Dim ink on opaque glass produced 7.02:1 and Lc +82.5, using `/tmp/acan-light-contrast/node_modules/apca-w3/src/apca-w3.js`.
 
 [inferred] These are mathematical checks, not measured luminance or rendered accessibility certification. Round only for reporting. Check actual composited colors, adjacent machine surfaces, hover, selection, fog, and export.
 
@@ -239,7 +239,7 @@ for (const ink of inks) console.log(ink, papers.map(paper => [
 
 ### Shading, ink-in, exports, and switching
 
-[sourced] The kit already has a light selector on `.iso[data-theme="light"]`, not merely on the body. Paper overrides also live in mode-specific `.iso` rules. `/home/factory-user/.factory/skills/anatomy/kit/iso-kit.mjs:568-588`, `/home/factory-user/orrery/explore/ui-v1/build.mjs:195-201`.
+[sourced] The kit already has a light selector on `.iso[data-theme="light"]`, not merely on the body. Paper overrides also live in mode-specific `.iso` rules. `/home/factory-user/.factory/skills/anatomy/kit/iso-kit.mjs:568-588`, `/home/factory-user/acan/explore/ui-v1/build.mjs:195-201`.
 
 [inferred] Apply one resolved theme to DOM, SVG materials, labels, and renderer in one update. Put theme-plus-mode overrides after existing rules. Setting only a body attribute is insufficient.
 
@@ -248,7 +248,7 @@ for (const ink of inks) console.log(ink, papers.map(paper => [
 [inferred] Keep ghost-to-live "ink-in". Dashed blue geometry becomes a continuous ink outline, then material fills and its mounted gauge appear. Avoid a white flash or expanding glow. Reduced motion gets the same final state immediately.
 [inferred] Switching appearance never triggers ink-in or alters source-matching status.
 
-[sourced] S3 requires share-safe PNG, SVG, and video frames. R2 defines the default redaction set and keeps numbers. `/home/factory-user/orrery/explore/map.md:130-143`.
+[sourced] S3 requires share-safe PNG, SVG, and video frames. R2 defines the default redaction set and keeps numbers. `/home/factory-user/acan/explore/map.md:130-143`.
 
 [inferred] Default exports to a stable Light publication profile, with Current appearance and Dark alternatives. Preview the chosen paper and persist the export choice separately. Bake SVG colors and background instead of inheriting the recipient's OS. Lock appearance through a video take. Redaction is identical under every theme.
 
@@ -260,7 +260,7 @@ for (const ink of inks) console.log(ink, papers.map(paper => [
 
 ## 3. What to avoid
 
-[inferred] Avoid pure `#FFFFFF` as the full-canvas default. This preserves Orrery's paper identity and lowers emitted luminance at equal display settings. It is a design choice, not a claim that white is medically harmful.
+[inferred] Avoid pure `#FFFFFF` as the full-canvas default. This preserves Acan's paper identity and lowers emitted luminance at equal display settings. It is a design choice, not a claim that white is medically harmful.
 
 [sourced] Original brass `#B08D57` on Live vellum yields only 2.74:1 and Lc +49.5. Its highlight `#D9B97A` yields 1.67:1 and Lc +27.3, using the calculation above.
 [inferred] Do not retain that brass for required outlines or small text. Do not darken every metal face into brown. Use engraved dark brass edges around pale fill.
@@ -274,7 +274,7 @@ for (const ink of inks) console.log(ink, papers.map(paper => [
 
 [inferred] Avoid animated crossfades between polarities, ambient sensor polling, and automatic time-of-day switching separate from System. Apply tokens together, invalidate once, and return to idle.
 
-[sourced] U2 requires distance readability and low idle cost. `/home/factory-user/orrery/explore/map.md:115`.
+[sourced] U2 requires distance readability and low idle cost. `/home/factory-user/acan/explore/map.md:115`.
 [inferred] White mode must not become a continuously rendered texture or another reason to wake the canvas.
 
 ## Recommended v0.1 scope
@@ -289,8 +289,8 @@ for (const ink of inks) console.log(ink, papers.map(paper => [
 
 [inferred] Implementation, live display tests, and participant validation remain open. This document proposes the palette and verifies its color arithmetic only.
 
-[B]: /home/factory-user/orrery/explore/ui-v1/build.mjs
-[L]: /home/factory-user/orrery/explore/ui-v1/lib.mjs
+[B]: /home/factory-user/acan/explore/ui-v1/build.mjs
+[L]: /home/factory-user/acan/explore/ui-v1/lib.mjs
 [I]: /home/factory-user/.factory/skills/anatomy/kit/iso-kit.mjs
-[F]: /home/factory-user/orrery/explore/ui-v1/floor.mjs
-[R]: /home/factory-user/orrery/explore/ui-v1/replay.mjs
+[F]: /home/factory-user/acan/explore/ui-v1/floor.mjs
+[R]: /home/factory-user/acan/explore/ui-v1/replay.mjs

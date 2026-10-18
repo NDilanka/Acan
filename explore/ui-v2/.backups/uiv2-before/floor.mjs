@@ -184,13 +184,13 @@ function ciHtml(e) {
   h += '<div class="sec"><h5>On the hook<i>radar/otel · run #418</i></h5><div class="checks">' + checks.map((c, i) => '<div class="' + (c.ok ? "ok" : i === now ? "run-now" : "") + '"><i>' + (c.ok ? "✓" : i === now ? "●" : "·") + "</i>" + c.text + (c.locked ? "<small>🔒 K16</small>" : "") + "</div>").join("") + "</div></div>";
   h += '<div class="sec"><h5>Runs<i>' + CI.runner + '</i></h5><div class="runs">' + CI.runs.slice().reverse().map(runRow).join("") + "</div></div>";
   h += '<div class="sec"><h5>Called by</h5><button class="lnk" data-sess="' + s.id + '">' + DRONE_ICON_JS + "<span><b>" + s.agent + "</b> · " + s.goal + "</span><small>run_checks</small></button></div>";
-  h += '<div class="note">The crane is CI. It lifts a branch through the checks in .orrery/checks/, which agents can read but not edit (K16). Two red runs in a row on one territory wake the canvas.</div>';
+  h += '<div class="note">The crane is CI. It lifts a branch through the checks in .acan/checks/, which agents can read but not edit (K16). Two red runs in a row on one territory wake the canvas.</div>';
   return h;
 }
 
 function sessionHtml(s) {
   let h = '<div class="sstate" data-state="' + s.state + '"><span class="st">' + STATE_LABEL[s.state] + "<i>" + s.since + "</i></span><p>" + s.now + "</p>";
-  if (s.state === "blocked") h += "<small>The prompt lives in Codex's own terminal. Orrery shows that it waits but can't answer for it.</small><div class=\\"row\\"><button data-do='terminal'>Open its terminal</button><button>Snooze 10 min</button></div>";
+  if (s.state === "blocked") h += "<small>The prompt lives in Codex's own terminal. Acan shows that it waits but can't answer for it.</small><div class=\\"row\\"><button data-do='terminal'>Open its terminal</button><button>Snooze 10 min</button></div>";
   h += "</div>";
   const t = s.territory && TERR[s.territory];
   if (t) {
@@ -210,7 +210,7 @@ function sessionHtml(s) {
   if (runs.length) h += '<div class="sec"><h5>Crane runs<i>CI on ' + s.territory + '</i></h5><div class="runs">' + runs.map(runRow).join("") + "</div></div>";
   const mine = CH.filter((c) => c.session === s.id);
   if (mine.length) h += '<div class="sec"><h5>Choices it recorded<i>pinned on machines</i></h5>' + mine.map((c) => '<button class="pin" data-choice="' + c.id + '"><i class="' + (c.conf < 0.75 ? "low" : "") + '"></i>' + c.text + "<small>" + c.conf.toFixed(2) + " · " + ENT[c.on].name + "</small></button>").join("") + "</div>";
-  h += '<div class="sec"><h5>How Orrery sees it<i>' + s.perm + "</i></h5>" + s.via.map(([n, ok, d]) => '<div class="via"><span class="n">' + n + '</span><span class="' + (ok ? "ok" : "no") + '">' + (ok ? "●" : "○") + "</span><span>" + (d || (ok ? "on" : "off")) + "</span></div>").join("") + "</div>";
+  h += '<div class="sec"><h5>How Acan sees it<i>' + s.perm + "</i></h5>" + s.via.map(([n, ok, d]) => '<div class="via"><span class="n">' + n + '</span><span class="' + (ok ? "ok" : "no") + '">' + (ok ? "●" : "○") + "</span><span>" + (d || (ok ? "on" : "off")) + "</span></div>").join("") + "</div>";
   h += '<div class="sec"><h5>Spend<i>this session</i></h5><div class="spend">' + s.spend.map(([k2, v]) => "<div><b>" + v + "</b>" + k2 + "</div>").join("") + "</div></div>";
   h += '<div class="acts"><button data-do="hand">Hand to agent <kbd>H</kbd></button><button data-do="log">Open session log</button>' + (s.bot ? '<button data-act="follow">Follow the drone</button>' : "") + "</div>";
   return h;

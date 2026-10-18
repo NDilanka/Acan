@@ -21,7 +21,7 @@ A10 sets an 8 ms p99 frame. [sourced, `map.md` A10] Nielsen puts "instant" at 0.
 | Sim recompute after a parameter change | Under 100 ms, else marked stale | guess | None |
 | Choice decided to next choice | Under 100 ms on the key, no timer | inferred | None |
 | Copy as brief | Under 50 ms | guess | None |
-| Open in editor, Orrery's part | Under 50 ms to spawn | guess | None |
+| Open in editor, Acan's part | Under 50 ms to spawn | guess | None |
 
 Two rules keep System 1 off the hot path. Tier 1 runs only after a selection dwells for 250 ms, so holding Tab never queues model work. [guess for 250 ms] No keypress ever waits on a model. [inferred]
 
@@ -33,7 +33,7 @@ Every card, selection, choice, session or sim run copies to one shape. It is Mar
 
 ```markdown
 ---
-orrery: brief/1
+acan: brief/1
 about: verifier
 kind: budget_over
 mode: live
@@ -41,8 +41,8 @@ rev: 3f2a91c
 redaction: local
 refs:
   - packages/verifier/service.ts:58
-  - .orrery/choices/verifier-concurrency-2.yaml
-open: orrery://entity/verifier?mode=live
+  - .acan/choices/verifier-concurrency-2.yaml
+open: acan://entity/verifier?mode=live
 ---
 ## What
 Queue wait p95 is over budget. 41 s against 30 s.
@@ -69,12 +69,12 @@ Two redaction profiles. `local` keeps paths, slugs and env var names, because th
 |---|---|---|---|---|
 | Editor | Open the focused ref at its line | O, Shift O to pick | Repo-relative path, line, column, as an argv array | Paths outside the repo, unresolved telemetry paths, shell strings |
 | Terminal | Open at the territory worktree, or focus a blocked agent's terminal | Ctrl ` | Working directory | Env vars, typed keystrokes |
-| Git | Open the branch diff or PR. Shift P copies a `gh pr create` command with a `share-safe` brief | P | Branch, base, territory file, checks, brief | Credentials. Orrery never pushes |
+| Git | Open the branch diff or PR. Shift P copies a `gh pr create` command with a `share-safe` brief | P | Branch, base, territory file, checks, brief | Credentials. Acan never pushes |
 | CI | Open the run log at the failing step. Shift R re-runs via `run_checks` | R | Run number, branch, check IDs | Runner env. Any check edit (K16) |
 | Any agent | Copy as brief | Ctrl C | `brief/1`, `local` | As above |
 | Running agent over MCP | Hand to the territory's session, or pick one | H, preview, Enter | `brief/1` as an MCP resource, territory ID | Budget or check write access, other territories |
 
-Orrery never answers for an agent, as the prototype says. [sourced, `floor.mjs` line 191] VS Code's `--goto` flag and similar templates are unverified. [guess] Windows may block focusing another app's window. [guess] An MCP client may not show a server notification to its model mid-task. [guess] So H shows "delivered" and "read" (the agent fetched the resource), and Ctrl C stays the reliable path. [inferred] Handoffs launch programs and make no connection themselves, so they go in a local handoff log beside the Q16 outbound log. [inferred]
+Acan never answers for an agent, as the prototype says. [sourced, `floor.mjs` line 191] VS Code's `--goto` flag and similar templates are unverified. [guess] Windows may block focusing another app's window. [guess] An MCP client may not show a server notification to its model mid-task. [guess] So H shows "delivered" and "read" (the agent fetched the resource), and Ctrl C stays the reliable path. [inferred] Handoffs launch programs and make no connection themselves, so they go in a local handoff log beside the Q16 outbound log. [inferred]
 
 ## 3. Friction in ui-v1, ranked by impact
 
@@ -83,7 +83,7 @@ File and line facts are [sourced]. Fixes and ranks are [inferred].
 | # | Where | Friction | Fix | Gen UI helps? |
 |---|---|---|---|---|
 | 1 | `build.mjs` line 209, `select` via pointerup line 383 | Selection needs a click. "Search Ctrl K" has no handler. | Ctrl K lexical jump over entities, sessions, choices, territories and files. Tab cycles loud entities by severity. | No. Later, the answer area only |
-| 2 | `build.mjs` `inspectorHtml` line 425, Export line 212. `floor.mjs` `ciHtml` 181, `sessionHtml` 191, 203, 213. `blueprint.mjs` `ghostHtml` 280, 292. `sim.mjs` `simInspector` 290. `choices.mjs` 247 | Every handoff is dead or a toast. The dev leaves Orrery and retypes context. | One action registry with the section 2 keys, all producing `brief/1`. | No |
+| 2 | `build.mjs` `inspectorHtml` line 425, Export line 212. `floor.mjs` `ciHtml` 181, `sessionHtml` 191, 203, 213. `blueprint.mjs` `ghostHtml` 280, 292. `sim.mjs` `simInspector` 290. `choices.mjs` 247 | Every handoff is dead or a toast. The dev leaves Acan and retypes context. | One action registry with the section 2 keys, all producing `brief/1`. | No |
 | 3 | Keydown guards in `build.mjs` 507, `floor.mjs` 255, `choices.mjs` 271, `sim.mjs` 359, `blueprint.mjs` 493 | A focused input swallows all keys. After the traffic slider (`sim.mjs` 12) or budget field (`ghostHtml` 306), Space, D, 1 to 4 and Esc die. Bare keys fire under Ctrl, so Ctrl F fits. Esc leaves Layers, queue and floor open (`build.mjs` 517). | Guard text fields only. Esc blurs, then closes the top layer. Bare keys ignore chords. | No |
 | 4 | `sim.mjs` `simMode` 274 and 283, `blueprint.mjs` `arm` 150, `choices.mjs` `decide` 226 | Entering or leaving Simulate clears the selection, and so does quick add. A 1.4 s timer advances the review while the user reads, against the no-late-swap rule. | Keep selection across modes. Advance only on a key. | No |
 | 5 | `build.mjs` CSS lines 30 and 129, `choices.mjs` CSS 30 | Inspector slides for 0.45 s, paper fades for 0.6 s, the queue animates. L7 says panels have no CSS animation. | Instant swaps. Only the camera eases. | No |

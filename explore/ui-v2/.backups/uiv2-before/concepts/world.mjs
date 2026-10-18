@@ -5,7 +5,7 @@ import { ASSETS } from "../assets.mjs";
 import { renderScene, projectionFor, layoutCallouts, calloutHtml } from "../scene.mjs";
 
 const AZ = 35, EL = 35;
-const BOUND = { "acquit:verifier": "verifier", "acquit:OTLP boundary": "otlp", "orrery:receiver": "receiver", "kvarm:train": "train", "format:reference validator": "validator", "site:static waitlist": "preview" };
+const BOUND = { "acquit:verifier": "verifier", "acquit:OTLP boundary": "otlp", "acan:receiver": "receiver", "kvarm:train": "train", "format:reference validator": "validator", "site:static waitlist": "preview" };
 const bindingKey = (plant, name) => BOUND[plant + ":" + name] || plant + ":" + name;
 const entityId = (plant, name) => (plant.ids && plant.ids[name]) || name;
 for (const p of WORLD.plants) for (const name of p.machines) {
@@ -76,7 +76,7 @@ function worldMount(D, art) {
   if (!conceptActive("world")) return;
   const root = document.querySelector("#worldApp");
   document.body.dataset.world = "active";
-  document.title = "Orrery · My world";
+  document.title = "Acan · My world";
   const q = s => root.querySelector(s), all = s => [...root.querySelectorAll(s)];
   const esc = v => String(v).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   const params = new URLSearchParams(location.hash.slice(1));
@@ -90,7 +90,7 @@ function worldMount(D, art) {
     appearance:params.get("theme")||"system", theme:"dark", overlay:null, question:null, contract:null, arrival:false
   };
   const machineBinding = (plant, name) => ({
-    "acquit:verifier":"verifier", "acquit:OTLP boundary":"otlp", "orrery:receiver":"receiver",
+    "acquit:verifier":"verifier", "acquit:OTLP boundary":"otlp", "acan:receiver":"receiver",
     "kvarm:train":"train", "format:reference validator":"validator", "site:static waitlist":"preview"
   }[plant+":"+name] || plant+":"+name);
   for (const p of D.plants) for (const name of p.machines) {
@@ -257,7 +257,7 @@ function worldMount(D, art) {
       el.innerHTML=`<header><span class="world-eyebrow">Declared contract / ${c.kind}</span><button data-close="card">×</button></header><h2>${c.label}</h2><p>${c.detail}</p><p class="world-warning">${c.evidence}</p><p>${plants[c.from].name} / ${c.fromEntity}<br>→ ${plants[c.to].name} / ${c.toEntity}</p><button class="world-primary" data-far-end="${c.id}">Jump to other end · ${plants[far].name} ↗</button><small>Back restores this endpoint.</small>`;
     } else {
       const r=state.queue.find(r=>r.id===state.question);
-      el.innerHTML=`<header><span class="world-eyebrow">${plants[r.plant].name} / ${r.entity}</span><button data-close="card">×</button></header><span class="world-tag">${r.kind}</span><h2>${r.title}</h2><p>${r.why}.</p><p>${r.cost}. ${r.safe}.</p>${r.id==="p-2307"?`<div class="world-readback"><b>readback · Orrery</b><p>Claude Code keeps a failed payout pending.<br>Droid removes it from the effects queue.</p><span class="world-warning">w3 is not locked. No agent has been assigned.</span></div>`:""}<small>${r.estimate} estimated review · inspection only</small>`;
+      el.innerHTML=`<header><span class="world-eyebrow">${plants[r.plant].name} / ${r.entity}</span><button data-close="card">×</button></header><span class="world-tag">${r.kind}</span><h2>${r.title}</h2><p>${r.why}.</p><p>${r.cost}. ${r.safe}.</p>${r.id==="p-2307"?`<div class="world-readback"><b>readback · Acan</b><p>Claude Code keeps a failed payout pending.<br>Droid removes it from the effects queue.</p><span class="world-warning">w3 is not locked. No agent has been assigned.</span></div>`:""}<small>${r.estimate} estimated review · inspection only</small>`;
     }
   }
   function provenance(id,anchor) {
@@ -484,7 +484,7 @@ function worldMount(D, art) {
     q("#worldQueueCount").textContent=state.queue.length;
     q("#worldQueueTitleCount").textContent=state.queue.length;
     q('[data-world-site="site"] .world-decision-count').innerHTML='1 <span>waiting</span>';
-    announce("orrery-site needs an artifact check. Added to Waiting on you. Your view has not moved.");
+    announce("acan-site needs an artifact check. Added to Waiting on you. Your view has not moved.");
   },3000);
 }
 
@@ -496,14 +496,14 @@ export default {
   html: `
 <main id="worldApp">
   <header class="world-topbar">
-    <div class="world-brand"><span class="world-logo">◎</span><b>Orrery</b><span class="world-divider"></span><button data-action="world">My world</button><span class="world-slash">/</span><span id="worldBreadcrumb">My world</span><small id="worldScope"></small></div>
+    <div class="world-brand"><span class="world-logo">◎</span><b>Acan</b><span class="world-divider"></span><button data-action="world">My world</button><span class="world-slash">/</span><span id="worldBreadcrumb">My world</span><small id="worldScope"></small></div>
     <button class="world-jump" data-action="search"><span>⌕</span> Jump to a place, machine, or decision <kbd>Ctrl K</kbd></button>
     <div class="world-window-tools"><label class="world-appearance-label">Appearance<select id="worldAppearance" aria-label="Appearance"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label><button id="worldEgress" data-action="network"></button></div>
   </header>
   <div class="world-title"><span class="world-eyebrow">Personal workspace</span><h1>Your world.</h1><p>Five stable sites.<br>One place to return to.</p></div>
   <nav class="world-toolbar" aria-label="World navigation"><button id="worldBack" data-action="back" title="Back · Alt Left">←</button><button id="worldForward" data-action="forward" title="Forward · Alt Right">→</button><span></span><button data-action="world">Fit world <kbd>⇧ P</kbd></button><button data-action="fit">Fit plant <kbd>P</kbd></button><button id="worldBeltToggle" data-action="belts" aria-pressed="true">Contracts <kbd>V</kbd></button></nav>
   <div id="worldCanvas" tabindex="-1" aria-label="Infinite canvas of five stable plant sites"><div class="world-drafting-grid"></div><div id="worldViewport"><svg id="worldRoutes" viewBox="0 0 1600 900"></svg><div id="worldSites"></div></div></div>
-  <nav class="world-contract-list" aria-label="Declared contracts"><span class="world-eyebrow">Boundary contracts</span><button data-contract="otlp">Acquit → Orrery <span>OTLP / HTTP ↗</span></button><button data-contract="rest">Orrery → Kvarm <span>REST · egress ↗</span></button><button data-contract="package">orrery-format → Orrery <span>v0.3.2 ↗</span></button><button data-contract="artifact">Orrery → orrery-site <span>web bundle ↗</span></button></nav>
+  <nav class="world-contract-list" aria-label="Declared contracts"><span class="world-eyebrow">Boundary contracts</span><button data-contract="otlp">Acquit → Acan <span>OTLP / HTTP ↗</span></button><button data-contract="rest">Acan → Kvarm <span>REST · egress ↗</span></button><button data-contract="package">acan-format → Acan <span>v0.3.2 ↗</span></button><button data-contract="artifact">Acan → acan-site <span>web bundle ↗</span></button></nav>
   <div class="world-canvas-tools"><button data-action="states">Evidence states <span>? ◷ 0 ⏻ SIM</span></button><button data-action="mark">Mark place <kbd>M</kbd></button><button data-action="bookmarks">Bookmarks <span id="worldBookmarksCount"></span></button></div>
   <div class="world-bottom-left"><button class="world-waiting-button" data-action="queue"><span class="world-amber-dot"></span>Waiting on you <b id="worldQueueCount">5</b><kbd>U</kbd></button><button id="worldKvarm" data-action="connection"></button><span class="world-origin-hint">own origin · 3 repos · fixture</span></div>
   <aside id="worldMinimap"><header><span>Stable sites</span><span>N ↑</span></header><div id="worldMapSites"></div><div id="worldMapView"></div></aside>

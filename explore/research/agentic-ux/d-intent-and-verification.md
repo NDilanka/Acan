@@ -1,6 +1,6 @@
 # Intent and verification beyond chat and diffs
 
-[inferred] Orrery's strongest alternative is to make a runnable contract, rather than a conversation, the unit of delegation.
+[inferred] Acan's strongest alternative is to make a runnable contract, rather than a conversation, the unit of delegation.
 [inferred] Humans should point to examples, edit constraints, compare alternatives, and inspect consequences on the same persistent system drawing.
 [inferred] The return object should connect each requested behavior to independent evidence and disclose what remains untested.
 [sourced] Spec workflows, direct manipulation, live programming, and proof-carrying code supply precedents, not evidence that this combined workflow succeeds. [S1, S5, S20, S26]
@@ -10,7 +10,7 @@
 ## Scope and evidence
 
 [sourced] This research is dated 2026-10-17 and uses the supplied product context, `map.md` lines 20 to 72, and the two supplied screenshots.
-[sourced] Orrery already fixes budgets as objectives, reserves changes to budgets and checks for human approval, and ranks choices by `(1 - confidence) × reversal cost`. [Local grounding]
+[sourced] Acan already fixes budgets as objectives, reserves changes to budgets and checks for human approval, and ranks choices by `(1 - confidence) × reversal cost`. [Local grounding]
 [inferred] The opportunity is to change how those rules become actions, rather than add another dashboard.
 [sourced] WebSearch and FetchUrl were loaded, and source pages were read through WebSearch's full-page-text option.
 [sourced] FetchUrl's tool policy permits explicitly supplied URLs, not newly discovered research URLs, so it was not used for those pages.
@@ -18,7 +18,7 @@
 
 ## Intent
 
-| Approach | What the human does | Precedent | Fit for Orrery |
+| Approach | What the human does | Precedent | Fit for Acan |
 |---|---|---|---|
 | Spec-driven development | [sourced] Read and edit requirements, architecture, and tasks, then approve stages or execute selected tasks. | [sourced] Kiro maintains `requirements.md`, `design.md`, and `tasks.md`. [S1] [sourced] GitHub Spec Kit separates specification, clarification, planning, tasks, implementation, and convergence. [S2] | [inferred] Attach these artifacts to a territory and expose requirement-to-machine links, rather than reproduce Markdown tabs beside a chat box. |
 | Programming by example | [sourced] Supply input-output pairs and answer questions about ambiguous cases. | [sourced] Gulwani's spreadsheet synthesis ranks candidate programs and asks for outputs on inputs with competing interpretations. [S3] | [inferred] Select an actual request, supply its desired response, and mark behaviors that must remain unchanged. |
@@ -37,7 +37,7 @@
 
 ## Verification
 
-| Approach | What the human does | Precedent | Fit for Orrery |
+| Approach | What the human does | Precedent | Fit for Acan |
 |---|---|---|---|
 | Structural and semantic summaries | [sourced] Inspect syntax changes without treating reformatting as equivalent to a logic change. | [sourced] Difftastic compares syntax, rather than lines, and falls back conservatively when parsing fails. [S23] | [inferred] Show changed interfaces, dependencies, permissions, and data flows first, with source diffs underneath. [inferred] Syntax awareness does not establish behavioral equivalence. |
 | Behavioral comparison | [sourced] Send the same traffic to current and candidate versions and inspect response differences. | [sourced] Microsoft's shadow-testing guide describes parallel environments and response comparison. [S24] | [inferred] Scrub synchronized runs and inspect changed outputs, effects, timings, and errors on the corresponding belts. |
@@ -46,7 +46,7 @@
 | Proof-carrying changes | [sourced] Validate a producer-supplied machine-checkable proof against a consumer's safety policy. | [sourced] Necula and Schneck separate proof production from verification and discuss the trusted computing base. [S26] | [inferred] Use formal proofs only for properties and components with a defined model. [inferred] Call ordinary test attachments an evidence bundle, not a proof. |
 | Provenance and attestation | [sourced] Verify which builder produced which artifact from which inputs. | [sourced] SLSA build provenance records build definitions, dependencies, builder identity, and artifacts. [S27] | [inferred] Bind checks to the exact candidate revision, protected contract, environment, and fixtures. [inferred] Provenance establishes origin, not product correctness. |
 | Review the plan before execution | [sourced] Examine a specification and implementation plan before starting the implementation stage. | [sourced] Kiro and Spec Kit expose staged review and approval. [S1, S2] | [inferred] Approve touched territory, intended changes, forbidden effects, and verification obligations. [inferred] Reopen approval when implementation exceeds that envelope. |
-| Risk-ranked review | [sourced] Orrery already orders choices by uncertainty and reversal cost. [Local grounding] | [inferred] Evidence can inform confidence, while deletion, migration, and permission changes inform reversal cost. | [inferred] Open the highest-risk unresolved claim directly on its machine, with missing evidence and rollback options visible. |
+| Risk-ranked review | [sourced] Acan already orders choices by uncertainty and reversal cost. [Local grounding] | [inferred] Evidence can inform confidence, while deletion, migration, and permission changes inform reversal cost. | [inferred] Open the highest-risk unresolved claim directly on its machine, with missing evidence and rollback options visible. |
 | Explorable runtime explanation | [sourced] Inspect live domain objects through contextual views instead of starting with a generic code editor. | [sourced] Glamorous Toolkit recommends starting with objects and incrementally building tools that answer domain questions. [S22] | [inferred] An agent returns a reproducible inspector showing why the change works, including counterexamples and drill-down to source. |
 
 ### What the measured evidence actually says
@@ -58,7 +58,7 @@
 
 [sourced] Faros compares periods of lowest and highest adoption within organizations, across 22,000 developers and more than 4,000 teams. [S32]
 [sourced] It reports average time spent in review increasing 199.6% and median time in review increasing 441.5%. [S32]
-[inferred] These observational vendor measurements support a bottleneck hypothesis, not a causal estimate for Orrery's users.
+[inferred] These observational vendor measurements support a bottleneck hypothesis, not a causal estimate for Acan's users.
 
 [sourced] A 2026 AIDev study finds no recorded review activity for 20,621 of 33,596 agent-authored PRs, or 61.38%. [S33]
 [sourced] The authors explicitly warn that absence of recorded interaction does not establish absence of human inspection. [S33]
@@ -67,9 +67,9 @@
 [sourced] METR's early-2025 randomized study found a 19% slowdown across 246 tasks completed by 16 experienced open-source developers. [S34]
 [sourced] Its February 2026 follow-up says selection effects and concurrent agent work make the newer productivity estimate unreliable. [S35]
 [inferred] Neither study supplies a clean number for review minutes per autonomous PR.
-[inferred] Orrery should measure active inspection, waiting, interruptions, corrections, and escaped failures separately before claiming that its review workflow saves time.
+[inferred] Acan should measure active inspection, waiting, interruptions, corrections, and escaped failures separately before claiming that its review workflow saves time.
 
-## Ideas Orrery could steal or invert
+## Ideas Acan could steal or invert
 
 ### 1. Counterexample-directed repair
 
@@ -85,11 +85,11 @@
 ### 2. Contract gestures on the plant
 
 [inferred] The user selects a belt, inserts a breaker fitting, chooses a latency ceiling, and pins "no duplicate external writes."
-[inferred] Orrery shows the exact contract and proposed affected territory before an agent starts.
+[inferred] Acan shows the exact contract and proposed affected territory before an agent starts.
 [inferred] The user approves that contract with its checks, not the agent's implementation recipe.
 [sourced] Sketch-n-Sketch translates output manipulation into program changes, while architectural fitness functions make nonfunctional aims executable. [S5, S7]
 [inferred] The new element is that a gesture creates a bounded engineering obligation, rather than directly rewriting infrastructure.
-[inferred] This makes architecture editing operational while preserving Orrery's human-owned budgets.
+[inferred] This makes architecture editing operational while preserving Acan's human-owned budgets.
 [inferred] The risk is hidden interpretation, especially confusing authored layout with system topology.
 [inferred] Only explicit port and fitting edits should change design intent.
 
@@ -151,7 +151,7 @@
 [inferred] Avoid replacing a short prompt with mandatory document production for every change.
 [sourced] Kiro recommends quick fixes for straightforward changes and offers a lighter spec path when standard review feels too heavy. [S1]
 [inferred] This documents workflow friction, not a controlled failure rate for specification-driven development.
-[inferred] Orrery should require more explicit intent as ambiguity and reversal cost rise.
+[inferred] Acan should require more explicit intent as ambiguity and reversal cost rise.
 
 [inferred] Avoid a single reward that lets an agent trade correctness for speed.
 [sourced] Anthropic's reward-hacking experiment includes bypassing a test harness with `sys.exit(0)` to appear successful. [S29]
@@ -183,7 +183,7 @@
 
 [inferred] Avoid calling a syntax diff semantic proof, a signed build a correct feature, or a quiet review queue successful oversight.
 [sourced] Difftastic compares syntax, SLSA describes production provenance, and the AIDev study measures recorded interactions. [S23, S27, S33]
-[inferred] Each answers a different question, and Orrery should keep those questions separate.
+[inferred] Each answers a different question, and Acan should keep those questions separate.
 
 ## Sources opened
 
@@ -225,4 +225,4 @@
 - S34. https://metr.org/blog/2025-07-10-early-2025-ai-experienced-os-dev-study/
 - S35. https://metr.org/blog/2026-02-24-uplift-update/
 
-[sourced] Local grounding consists of `/home/factory-user/orrery/explore/map.md:20-72`, `/home/factory-user/orrery/explore/ui-v1/shots/l-default.png`, and `/home/factory-user/orrery/explore/ui-v1/shots/p5-floor.png`.
+[sourced] Local grounding consists of `/home/factory-user/acan/explore/map.md:20-72`, `/home/factory-user/acan/explore/ui-v1/shots/l-default.png`, and `/home/factory-user/acan/explore/ui-v1/shots/p5-floor.png`.

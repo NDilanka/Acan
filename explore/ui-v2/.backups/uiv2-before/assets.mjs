@@ -113,7 +113,7 @@ export const ASSETS = {
   },
 
   hopper: {
-    family: "machine", label: "Hopper + conveyor", maps: "queue: Kafka, SQS, a jobs table, a channel", fixtures: "Astronomy Shop (Kafka), Orrery (channels)", w: 100, d: 56, top: 48,
+    family: "machine", label: "Hopper + conveyor", maps: "queue: Kafka, SQS, a jobs table, a channel", fixtures: "Astronomy Shop (Kafka), Acan (channels)", w: 100, d: 56, top: 48,
     explodes: 25, parts: "topic rim, one ring per partition, the consumer belt",
     build(c, { x, y, depth = 5, explode = 0, layers = ["topic", "partitions", "consumer belt"] }) {
       c.plinth(x + 14, y, 100, 56);

@@ -7,7 +7,7 @@
 [inferred] A write broker can prevent lost updates, but cannot reconcile incompatible plans.
 [sourced] [Agent PR research](https://arxiv.org/html/2607.04697v2) finds substantial textual conflict rates, not a measured benefit from live co-editing.
 [inferred] Registries often need keyed additions, generated files need one producer, and shared functions usually need one implementation owner.
-[guess] Orrery's best first experiment is narrower overlap classification, not a universal multiplayer file editor.
+[guess] Acan's best first experiment is narrower overlap classification, not a universal multiplayer file editor.
 
 ## How the agents edit files
 
@@ -15,7 +15,7 @@
 
 [sourced] [The official tools reference](https://code.claude.com/docs/en/tools-reference#edit-tool-behavior) describes `Edit(file_path, old_string, new_string, replace_all)`. Matching is exact, including whitespace. The old string must occur once, unless `replace_all` is enabled. A changed target can therefore produce a failed match. Repeated boilerplate can produce an ambiguity failure.
 
-[sourced] The same reference qualifies “must read first.” Before v2.1.208, unread files and files changed since the previous read were refused. Current behavior permits newer models to edit unread or externally changed files under documented conditions. The replacement must match current content exactly and unambiguously, and reading must not require another permission prompt. Older models retain stricter read requirements. Orrery must inspect the deployed version and model, not hard-code historical behavior.
+[sourced] The same reference qualifies “must read first.” Before v2.1.208, unread files and files changed since the previous read were refused. Current behavior permits newer models to edit unread or externally changed files under documented conditions. The replacement must match current content exactly and unambiguously, and reading must not require another permission prompt. Older models retain stricter read requirements. Acan must inspect the deployed version and model, not hard-code historical behavior.
 
 [inferred] Under strict guards, another agent changing a distant function can invalidate the whole-file read. Under relaxed guards, that distant edit need not block this replacement. Neither policy proves the agent's reasoning remains valid. An unchanged call site can still depend on a changed contract elsewhere.
 
@@ -33,7 +33,7 @@
 
 [sourced] Factory's [custom-droid documentation](https://docs.factory.ai/cli/configuration/custom-droids) lists `Create`, `Edit`, and `ApplyPatch`. It automatically includes ApplyPatch when Edit is selected with OpenAI models. Its [Exec documentation](https://docs.factory.ai/droid-exec/overview) provides model-specific `--list-tools` and tool restrictions.
 
-[inferred] This session exposes ApplyPatch and instructs reading existing files before updates. Public pages found here do not specify Droid Edit's matching algorithm, stale-read enforcement, or cross-process atomicity. “Droid edits are concurrency-safe” is therefore unestablished. Orrery needs a capability record per installed harness. String replacement, contextual patching, and whole-file replacement are different operations, even when their UI labels all say Edit.
+[inferred] This session exposes ApplyPatch and instructs reading existing files before updates. Public pages found here do not specify Droid Edit's matching algorithm, stale-read enforcement, or cross-process atomicity. “Droid edits are concurrency-safe” is therefore unestablished. Acan needs a capability record per installed harness. String replacement, contextual patching, and whole-file replacement are different operations, even when their UI labels all say Edit.
 
 ### Whole-file writes and the actual race
 
@@ -59,7 +59,7 @@
 
 [sourced] [Mergiraf's examples](https://mergiraf.org/conflicts.html) explain the relevant distinction better than a headline percentage. Independent syntax elements can merge despite sharing a line. Unordered member additions can merge. Statement additions remain conflicted when order matters. Duplicate JSON keys can be detected even when Git's line merge succeeds.
 
-[inferred] No retrieved study supplies a comparable fraction for same-line, same-file-different-region, and semantic collisions across these three agents. Git conflict corpora condition on conflicts, so they omit many harmless same-file edits. Runtime defects require different detection. A credible Orrery estimate needs all attempted overlapping tasks as its denominator.
+[inferred] No retrieved study supplies a comparable fraction for same-line, same-file-different-region, and semantic collisions across these three agents. Git conflict corpora condition on conflicts, so they omit many harmless same-file edits. Runtime defects require different detection. A credible Acan estimate needs all attempted overlapping tasks as its denominator.
 
 ## Hotspot files and why they attract collisions
 
@@ -91,7 +91,7 @@
 
 [sourced] [AgenticFlict](https://arxiv.org/html/2604.03551v1) processed 107,026 open or closed-unmerged agent PRs from a larger collected corpus. It found 29,609 conflicting PRs, or 27.67%, and 336,380 conflict regions. Its comparison is PR versus base-branch integration, not simultaneous agents editing one local file. Its selection excludes already merged PRs.
 
-[sourced] The [separate PR-pair study](https://arxiv.org/html/2607.04697v2) collected 33,596 agent PRs across 2,807 repositories and replayed 747 co-active pairs. Textual conflicts occurred in 19.8% of intra-agent pairs and 41.7% of cross-agent pairs. “Intra-agent” means the same agent product, not necessarily one running process. Cross-agent pairs were rare in the underlying corpus. These observational rates do not prove vendor mixing causes conflicts, or predict a supervised Orrery session's rate.
+[sourced] The [separate PR-pair study](https://arxiv.org/html/2607.04697v2) collected 33,596 agent PRs across 2,807 repositories and replayed 747 co-active pairs. Textual conflicts occurred in 19.8% of intra-agent pairs and 41.7% of cross-agent pairs. “Intra-agent” means the same agent product, not necessarily one running process. Cross-agent pairs were rare in the underlying corpus. These observational rates do not prove vendor mixing causes conflicts, or predict a supervised Acan session's rate.
 
 ## Taxonomy and the best-fitting remedy
 
@@ -118,10 +118,10 @@
 
 [inferred] Live co-edit becomes worth considering when necessary same-file work repeatedly loses time to harmless region overlap. It is not justified merely because multiple agents can reach the file. Text convergence neither updates model reasoning nor makes half-finished combined code a stable test target.
 
-[inferred] Orrery already distinguishes incompatible declarations before code in [CORE.md](/home/factory-user/orrery/explore/ui-v2/CORE.md) and [00-judging.md](/home/factory-user/orrery/explore/research/agentic-ux/concepts/00-judging.md). Keep that semantic layer. Classify each overlap as shared insertion, disjoint regions, shared implementation, or dependency contract. A same-file exception should narrow a clash, not erase it.
+[inferred] Acan already distinguishes incompatible declarations before code in [CORE.md](/home/factory-user/acan/explore/ui-v2/CORE.md) and [00-judging.md](/home/factory-user/acan/explore/research/agentic-ux/concepts/00-judging.md). Keep that semantic layer. Classify each overlap as shared insertion, disjoint regions, shared implementation, or dependency contract. A same-file exception should narrow a clash, not erase it.
 
 [guess] Instrument failed matches, rereads, lost updates, conflict-resolution time, duplicate fixes, and post-integration failures. Compare worktrees alone, structural splits, and narrowly brokered shared-file edits. Count writer tools, formatters, and generators. Without that baseline, a shared editor can make coordination look smoother while shipping the same contradictions faster.
 
 ## Verdict
 
-[inferred] Do not make “multiple agents edit one file simultaneously” the product premise. Make safe independent progress the premise. Structural splits remove artificial central objects. Ownership and contract splits remove duplicated or incompatible work. A write broker removes publication races. None substitutes for the others. Co-editing is a justified exception for cohesive files with composable changes, not a cure for agents pursuing the same algorithm or disagreeing about behavior. Orrery should first prove which clashes are merely physical, then optimize those without weakening its before-code decisions.
+[inferred] Do not make “multiple agents edit one file simultaneously” the product premise. Make safe independent progress the premise. Structural splits remove artificial central objects. Ownership and contract splits remove duplicated or incompatible work. A write broker removes publication races. None substitutes for the others. Co-editing is a justified exception for cohesive files with composable changes, not a cure for agents pursuing the same algorithm or disagreeing about behavior. Acan should first prove which clashes are merely physical, then optimize those without weakening its before-code decisions.

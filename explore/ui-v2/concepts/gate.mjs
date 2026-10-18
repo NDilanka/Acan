@@ -88,7 +88,7 @@ function gateMount(data) {
     h += '<div class="gate-kvlog" id="gateKv" tabindex="-1" aria-label="Kvarm network log"' + (state.logOpen ? " data-open" : "") + '><header><span>↗ ' + kvHost + ' · ' + data.kvarm.ops.length + ' ops</span><b>' + bytesFmt(kvBytes) + '</b></header>'
       + data.kvarm.ops.map((o) => '<div class="gate-kvlog-row" title="' + escape(kvHost + " · " + o.reason) + '"><b>' + o.op + '</b><span>' + escape(o.reason) + '</span><i>' + bytesFmt(o.bytes) + '</i></div>').join("") + '</div>';
     if (state.away) {
-      h += '<div class="gate-away-note">Replaying 16:00, the moment you left. Orrery holds nothing back while you are gone.</div>'
+      h += '<div class="gate-away-note">Replaying 16:00, the moment you left. Acan holds nothing back while you are gone.</div>'
         + '<div class="gate-foot"><button class="gate-go" data-gate-return>Return now <kbd>P</kbd></button></div>';
     } else {
       h += '<div class="gate-foot"><button class="gate-go" data-gate-away>Step away <kbd>P</kbd></button>'
@@ -117,7 +117,7 @@ function gateMount(data) {
       + '<div class="gate-acts">'
       + (i.review ? '<button class="gate-pri" data-gate-review>Open review <kbd>↵</kbd></button>' : '<button class="gate-pri" data-gate-review>Open on the plant <kbd>↵</kbd></button>')
       + '<button data-gate-hold aria-pressed="' + !!held + '">' + (held ? "Hold advised · withdraw" : "Advise hold") + ' <kbd>V</kbd></button>'
-      + '</div><small class="gate-note">Advisory. ' + escape(i.agent) + ' decides whether to park; Orrery never stops an agent.</small>';
+      + '</div><small class="gate-note">Advisory. ' + escape(i.agent) + ' decides whether to park; Acan never stops an agent.</small>';
     card.hidden = false;
     paint();
     card.querySelector("[data-gate-close]").focus({ preventScroll: true });
@@ -173,7 +173,7 @@ function gateMount(data) {
     state.awayChooser = false;
     closeItem();
     setAway(true);
-    toast("Away. Back " + state.backAt.label + ". Orrery holds nothing back; Droid keeps building.");
+    toast("Away. Back " + state.backAt.label + ". Acan holds nothing back; Droid keeps building.");
   };
   const returnNow = () => {
     select(null);

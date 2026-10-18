@@ -1,10 +1,10 @@
-# Parked session: Orrery agentic UX (ui-v2)
+# Parked session: Acan agentic UX (ui-v2)
 
 Resume file for a fresh orchestrator chat. Updated 2026-10-18. No git repo, no loops, no running processes, no running subagents.
 
 ## Hard rules and standing directives
 
-- **No implementation of Orrery until Droid gives the go signal.** The go signal requires every line of `ui-v2/READINESS.md` (G1 to G9) to be green, ending with the user's own browser walkthrough (G8). Until then, iterate on UI and UX only.
+- **No implementation of Acan until Droid gives the go signal.** The go signal requires every line of `ui-v2/READINESS.md` (G1 to G9) to be green, ending with the user's own browser walkthrough (G8). Until then, iterate on UI and UX only.
 - **The user wants UI and UX that are excellent, with core features first.**
 - **All design builds and critiques go to Opus.** Use pv-opus-high for builds and critiques, and pv-opus-medium for prose. The second lab on review panels is Grok (pv-grok-high or pv-grok-xhigh), or Haiku (pv-haiku-max).
 - **One shell.** It is the full-bleed plant with floating glass islands in `ui-v2/shots/orders-kv-unmatched.png`. The user picked it as "the cleanest". The world-style top bar, toolbar row, framed stage and docked inspector (`shots/world-07-levels.png`) are rejected. World and the journey move onto the chosen shell.
@@ -15,6 +15,11 @@ Resume file for a fresh orchestrator chat. Updated 2026-10-18. No git repo, no l
 - **Fresh-chat rule (user AGENTS.md).** At every boundary, update this file. Suggest a fresh chat when the chat is heavy and the moment is cheap. Never suggest while a subagent is running or a change is half-made. When you suggest, end with a copy-paste handoff prompt.
 - **Kvarm** is opt-in to the user's own origin, with declared egress. Agents self-claim after a readback match plus a Kvarm lease. The gate is advisory and blocks publication only. The world is a canvas of systems, not agents.
 
+## Repo and name
+
+- The product was renamed from Orrery to Acan on 2026-10-18, at the user's request. All text files, the folder (`/home/factory-user/orrery` became `/home/factory-user/acan`), the plants (`acan-format`, `acan-site`) and the Kvarm origin (`git.acan.local`) changed. The screenshots and builds were regenerated.
+- This is now a git repo on `main`. The commits are `3db036b` (initial import) and the rename commit after it.
+- The GitHub push is waiting on the user. The token here is a GitHub app token that cannot create repositories. The user creates an empty private `NDilanka/Acan` (no README), then run `git -C /home/factory-user/acan remote add origin https://github.com/NDilanka/Acan.git && git -C /home/factory-user/acan push -u origin main`. If the push is refused, the user runs `gh auth login` with `repo` scope.
 ## Where things stand
 
 - **Done.** Research waves (a to m), syntheses, interviews 1 to 3, and the map proposal (`proposals/ui-v2.md`, including same-file rows W23 to W27).

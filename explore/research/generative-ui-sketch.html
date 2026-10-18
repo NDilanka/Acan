@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Orrery sketch, bound slots with a System 1 selector</title>
+<title>Acan sketch, bound slots with a System 1 selector</title>
 <style>
   :root { --ink:#1d2430; --paper:#f4f1ea; --line:#c9c2b4; --muted:#6b6458; --fail:#b3412e; --drift:#b07a1c; --ok:#3d7a4f; }
   * { box-sizing:border-box; }
@@ -119,7 +119,7 @@ function renderCard(c, tier) {
   const now = document.getElementById("now");
   now.innerHTML = `<span class="tag">Now</span><div class="acts"><button id="pin">pin</button><button id="dis">dismiss</button></div>${body}<div class="why">why: rule ${esc(c.rule)} · chosen by ${esc(tier)}</div>`;
   now.dataset.cid = c.id;
-  document.getElementById("pin").onclick = () => { pins[sel] = c; weight[c.rule] = (weight[c.rule] || 0) + 1; log(`pinned ${c.id} to .orrery/views/${sel}-now.yaml`); showPins(); };
+  document.getElementById("pin").onclick = () => { pins[sel] = c; weight[c.rule] = (weight[c.rule] || 0) + 1; log(`pinned ${c.id} to .acan/views/${sel}-now.yaml`); showPins(); };
   document.getElementById("dis").onclick = () => { dismissed[c.id] = true; weight[c.rule] = (weight[c.rule] || 0) - 1; delete cache[sel]; log(`dismissed ${c.id}`); open(sel); };
 }
 
@@ -159,7 +159,7 @@ function open(e) {
 }
 
 function log(s) { const el = document.getElementById("log"); el.innerHTML = `<div>${esc(s)}</div>` + el.innerHTML; }
-function showPins() { const k = Object.keys(pins); document.getElementById("pins").textContent = k.length ? k.map(e => `.orrery/views/${e}-now.yaml\n  component: ${pins[e].component}\n  bind: ${pins[e].path}`).join("\n") : "none"; }
+function showPins() { const k = Object.keys(pins); document.getElementById("pins").textContent = k.length ? k.map(e => `.acan/views/${e}-now.yaml\n  component: ${pins[e].component}\n  bind: ${pins[e].path}`).join("\n") : "none"; }
 
 const ents = document.getElementById("ents");
 Object.keys(TWIN.inspect).forEach(e => { const b = document.createElement("button"); b.className = "ent"; b.dataset.e = e; b.textContent = e; b.onclick = () => open(e); ents.appendChild(b); });

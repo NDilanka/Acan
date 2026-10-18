@@ -1,6 +1,6 @@
 # Attention is the production limit
 
-[inferred] Orrery should coordinate demands on the engineer, rather than make every working agent more visible.
+[inferred] Acan should coordinate demands on the engineer, rather than make every working agent more visible.
 [sourced] Interruption studies distinguish delayed return, memory reconstruction, stress, and errors, rather than establishing one universal switching penalty [1, 2, 5].
 [inferred] The useful unit of supervision is a bounded decision with evidence, an owner, and a deadline, not an agent transcript.
 [inferred] Keep routine progress peripheral, deliver decisions at human breakpoints, and reserve interruption for consequential harm that cannot wait.
@@ -24,7 +24,7 @@
 
 ## Design rules
 
-| Rule | Source | Evidence strength | Implication for Orrery |
+| Rule | Source | Evidence strength | Implication for Acan |
 |---|---|---|---|
 | [inferred] Optimize recovery and strain, not only completion time. | [sourced] Mark, Gudith, and Klocke [1]. | [sourced] Controlled email experiment with 48 participants, mostly students. | [inferred] Measure fatigue and review mistakes alongside throughput. [inferred] The user sees fewer demands, not a productivity trophy. |
 | [inferred] Distinguish returning to a task from recovering its context. | [sourced] Iqbal and Horvitz [2]. | [sourced] Desktop field study and interviews. | [inferred] Restore the goal, decision history, and next action when a territory is reopened. |
@@ -45,7 +45,7 @@
 
 [sourced] Mark and colleagues found interrupted participants finished the measured email work faster without a significant quality difference, while reporting more stress, frustration, time pressure, and effort [1].
 [inferred] A faster approval queue could therefore conceal a worse workday.
-[inferred] Orrery should ask whether users understood and trusted accepted changes, not whether agents spent less time waiting.
+[inferred] Acan should ask whether users understood and trusted accepted changes, not whether agents spent less time waiting.
 
 [sourced] Iqbal and Horvitz describe chains of diversion after alerts, including visits to other applications before resuming the primary task [2].
 [inferred] An alert's cost includes the path it opens, not only the seconds spent answering it.
@@ -67,13 +67,13 @@
 
 [sourced] Iqbal and Bailey's notification system reduced frustration and reaction time compared with immediate delivery, with average deferral around 1.5 minutes [3].
 [sourced] Their breakpoint models struggled to differentiate breakpoint types [3].
-[inferred] Orrery should begin with explicit checkpoints, not claim to infer mental availability from a keyboard pause.
+[inferred] Acan should begin with explicit checkpoints, not claim to infer mental availability from a keyboard pause.
 [inferred] An agent finishing a test is an agent breakpoint, not necessarily the engineer's breakpoint.
 
 [sourced] Flow research describes just-manageable challenge, clear proximal goals, and immediate feedback about progress [7].
 [sourced] Newport advises that breaks during deep work should avoid unfinished professional obligations that redirect attention [8].
 [inferred] Supervising six open-ended threads is a different activity from concentrating on one design problem.
-[inferred] Orrery can protect a chosen activity, but should not advertise a scientifically measured "flow mode."
+[inferred] Acan can protect a chosen activity, but should not advertise a scientifically measured "flow mode."
 
 ## Calm awareness needs a trustworthy background
 
@@ -84,7 +84,7 @@
 [sourced] MIT's ambientROOM communicated background activity with light, shadow, sound, airflow, and water movement, with physical controls for bringing information forward [10].
 [sourced] Ambient Devices' Energy Orb maps demand conditions to color and pulses during high demand [11].
 [sourced] The Jenkins Hue monitor implements aggregated build states rather than one light event per log line [13].
-[inferred] Orrery could summarize demands on the engineer in one stable peripheral instrument while preserving detailed inspection on the plant.
+[inferred] Acan could summarize demands on the engineer in one stable peripheral instrument while preserving detailed inspection on the plant.
 
 [sourced] Peep maps network events and states into an ecology of natural sounds that administrators compare with a normally functioning network [12].
 [inferred] Agent sonification should communicate a small aggregate condition, not give each bot its own chirp.
@@ -92,7 +92,7 @@
 [inferred] Sound needs an equally effective visual alternative and must default to off in shared rooms.
 
 [sourced] Information radiators put current team information in a visible place for at-a-glance reading [14].
-[inferred] Orrery inverts the team wall display by radiating the state of many workers to one decision-maker.
+[inferred] Acan inverts the team wall display by radiating the state of many workers to one decision-maker.
 [inferred] The second monitor earns its place when not looking is safe.
 [inferred] Q15's stillness rule should remain intact, and render sleep must never imply that telemetry or agent monitoring has stopped.
 [guess] A small freshness timestamp and explicit disconnected state would make silence easier to trust than decorative belt motion.
@@ -126,10 +126,10 @@
 [sourced] METR's early-2025 randomized study found experienced maintainers took 19% longer with the tested AI tools, despite believing they were faster [29].
 [sourced] Its February 2026 update says later estimates are unreliable because of selection effects and difficulties measuring time when developers use concurrent agents [30].
 [inferred] Neither result establishes today's optimum agent count.
-[inferred] Orrery should measure review demand, accepted outcomes, defects, return time, and fatigue together.
+[inferred] Acan should measure review demand, accepted outcomes, defects, return time, and fatigue together.
 [guess] A personal concurrency setting learned from explicit review budgets is more defensible than a product-wide "eight agents" default.
 
-## Ideas Orrery could steal or invert
+## Ideas Acan could steal or invert
 
 ### 1. Safe to leave
 
@@ -205,7 +205,7 @@
 [guess] Clicking it opens the highest-risk waiting choice, while optional sound announces only a meaningful escalation.
 [inferred] This serves the second-monitor case without animating every bot.
 [sourced] The Dangling String, ambientROOM, Energy Orb, Peep, and CI lights establish peripheral state communication [9, 10, 11, 12, 13].
-[inferred] Orrery's inversion is to encode aggregate demand on the human rather than aggregate machine activity.
+[inferred] Acan's inversion is to encode aggregate demand on the human rather than aggregate machine activity.
 [guess] The risk is an ambiguous signal that encourages compulsive checking.
 [inferred] Each state needs a stable meaning, redundant text and shape, and a visible freshness indicator.
 [inferred] Normal background work should produce no celebratory sounds.
@@ -213,7 +213,7 @@
 ### 8. Leave a thought, not a transcript
 
 [guess] Before entering another territory, the engineer can save one sentence about the unresolved question and next test.
-[guess] On return, Orrery restores that sentence beside the relevant machine and shows changes since it was written.
+[guess] On return, Acan restores that sentence beside the relevant machine and shows changes since it was written.
 [inferred] This preserves the human's plan independently of agents' summaries.
 [sourced] Memory-for-goals theory and ready-to-resume studies support preserving retrieval cues and a plan for return [4, 6].
 [inferred] The agentic distinction is an explicit boundary between what the human intended and what workers subsequently did.

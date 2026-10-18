@@ -1,6 +1,6 @@
 # Supervisory control for many coding agents
 
-[inferred] Orrery should increase safe unattended time, not maximize the number of visible agents.
+[inferred] Acan should increase safe unattended time, not maximize the number of visible agents.
 [inferred] Its plant becomes an ecological interface only when it exposes constraints and means-ends relationships, not merely topology.
 [inferred] Delegate bounded missions with explicit authority, stopping conditions, and evidence obligations.
 [inferred] Make returning to a task cheap enough that the engineer can leave it unattended.
@@ -9,7 +9,7 @@
 
 ## Scope and evidence
 
-[sourced] This research is dated 2026-10-17 and uses K1 through K20 and the catalog in `/home/factory-user/orrery/explore/map.md:20-70`, plus the two requested screenshots.
+[sourced] This research is dated 2026-10-17 and uses K1 through K20 and the catalog in `/home/factory-user/acan/explore/map.md:20-70`, plus the two requested screenshots.
 [sourced] WebSearch and FetchUrl were loaded, but FetchUrl's tool contract permits only user-supplied URLs, not discovered research URLs.
 [sourced] Sources were therefore opened through WebSearch's full-page-text option.
 [sourced] Later requests returned HTTP 429 despite backoff, which prevented some targeted follow-ups.
@@ -22,7 +22,7 @@
 
 [inferred] Evidence strength below distinguishes experiments, reviews, conceptual models, and standards guidance rather than treating citation counts as validation.
 
-| Rule | Source and evidence | Evidence strength | Implication for Orrery |
+| Rule | Source and evidence | Evidence strength | Implication for Acan |
 |---|---|---|---|
 | [inferred] Assign authority separately for sensing, analysis, decisions, and execution. | [sourced] Sheridan and Verplank describe supervisory control and graded allocation [S1]. [sourced] Parasuraman, Sheridan, and Wickens distinguish four automation functions [S2]. | [sourced] Foundational models, not a coding-agent trial. | [inferred] Show "may inspect," "may propose," "may edit," and "may merge" separately. [inferred] One autonomy slider hides important differences. |
 | [inferred] Design the handback before permitting unattended execution. | [sourced] Bainbridge identifies problems left with the human responsible for abnormal conditions [S3]. [sourced] The 2024 GenAI synthesis describes the shift from production to evaluation [S14]. | [sourced] Classic analysis and cross-study synthesis. | [inferred] Every delegation needs a safe stopping state, resumable context, and an intervention path that does not require reading the whole transcript. |
@@ -47,7 +47,7 @@
 [sourced] Vicente and Rasmussen distinguish functional purpose, abstract function, generalized function, physical function, and physical form [S7].
 [sourced] Their hierarchy is not a spatial zoom ladder, and its exact levels can vary by domain [S7].
 [inferred] Zooming from a repository to a service to a file therefore does not, by itself, produce an ecological interface.
-[inferred] Orrery needs movement between "why does this exist?" and "how can that purpose be achieved?"
+[inferred] Acan needs movement between "why does this exist?" and "how can that purpose be achieved?"
 
 [inferred] For a payment path, a useful translation would contain the following levels.
 
@@ -84,12 +84,12 @@
 [inferred] That makes intentional parking a capacity tool.
 [inferred] Conversely, agents sharing a repository, dependency, or test service can produce correlated demands that invalidate independent-task assumptions.
 [inferred] Count orientation, evidence inspection, conflict resolution, and manual repair inside IT.
-[guess] Orrery's practical capacity limit may be review bursts rather than concurrent execution.
+[guess] Acan's practical capacity limit may be review bursts rather than concurrent execution.
 
 ## Control-room and cockpit lessons
 
 [sourced] Parasuraman, Sheridan, and Wickens identify reduced situation awareness, complacency, skill loss, and mode confusion among automation's human-performance costs [S2].
-[inferred] For Orrery, the cockpit equivalent is a persistent indication of execution authority beside the system's data mode.
+[inferred] For Acan, the cockpit equivalent is a persistent indication of execution authority beside the system's data mode.
 [inferred] "Replay, cannot write" and "Live, may edit branch, merge requires approval" should remain distinguishable while the engineer inspects a machine.
 [inferred] Show armed actions separately from actions already underway, together with the condition that starts them.
 [inferred] A change of paper cannot communicate all those distinctions.
@@ -112,20 +112,20 @@
 [inferred] That order omits explicit harm magnitude, urgency, and evidence about whether confidence predicts error.
 [inferred] Keep the rule visible and challengeable rather than presenting it as a validated safety measure.
 
-[sourced] `/home/factory-user/orrery/explore/ui-v1/shots/p5-floor.png` shows agent activity, mapped files, CI attempts, checks, a territory progression, and recorded choices.
+[sourced] `/home/factory-user/acan/explore/ui-v1/shots/p5-floor.png` shows agent activity, mapped files, CI attempts, checks, a territory progression, and recorded choices.
 [inferred] Those links are more useful for supervisory comprehension than a transcript-only interface.
 [sourced] The screenshots show "Waiting on you" queues containing three and seven items respectively.
 [inferred] Neither screenshot visibly explains which request can wait safely, how long review takes, or what harm follows delay.
 [inferred] This is a visible gap, not proof that no other screen supplies the information.
 
-[sourced] `/home/factory-user/orrery/explore/ui-v1/shots/l-default.png` gives most screen space to machines and belts, with compact status information.
+[sourced] `/home/factory-user/acan/explore/ui-v1/shots/l-default.png` gives most screen space to machines and belts, with compact status information.
 [inferred] The image communicates topology more strongly than purpose, constraints, or predicted consequences.
 [inferred] Its small, low-contrast labels also deserve testing at second-monitor viewing distance.
 [inferred] No contrast-compliance or usability measurement was performed here.
 [sourced] K15 differentiates Live, Blueprint, Simulate, and Replay through their paper.
 [inferred] Add persistent textual mode and data-age indicators, since those modes do not explain an agent's execution authority.
 
-## Ideas Orrery could steal or invert
+## Ideas Acan could steal or invert
 
 ### 1. The constraint-first plant
 
@@ -140,7 +140,7 @@
 ### 2. Safe-to-leave scheduling
 
 [inferred] Every mission shows its next intervention window, estimated review effort, safe parking point, and reason it can remain unattended.
-[inferred] The user chooses a focus period, and Orrery proposes which missions can run, park, or start without an overlapping review burst.
+[inferred] The user chooses a focus period, and Acan proposes which missions can run, park, or start without an overlapping review burst.
 [inferred] Unknown estimates appear as unknown, not precise countdowns.
 [inferred] This solves overload before the urgent queue grows.
 [sourced] Fan-out research supplies the attention-time precedent, while Horvitz supplies interruption timing [S5, S13].

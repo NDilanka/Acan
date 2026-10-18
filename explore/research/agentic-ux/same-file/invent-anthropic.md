@@ -1,6 +1,6 @@
 # Same-file parallel work for agents, three mechanisms and a pick
 
-Sources. m1, m2 and m3 are the three research files in this folder. CORE is `/home/factory-user/orrery/explore/ui-v2/CORE.md`. W3 is `/home/factory-user/orrery/explore/research/agentic-ux/01-synthesis-wave3.md`. Kvarm paths are under `/tmp/kvarm` at revision c80253b (m2:14). A label covers the sentences after it until the next label.
+Sources. m1, m2 and m3 are the three research files in this folder. CORE is `/home/factory-user/acan/explore/ui-v2/CORE.md`. W3 is `/home/factory-user/acan/explore/research/agentic-ux/01-synthesis-wave3.md`. Kvarm paths are under `/tmp/kvarm` at revision c80253b (m2:14). A label covers the sentences after it until the next label.
 
 ## The premise I keep and the one I drop
 
@@ -8,7 +8,7 @@ Sources. m1, m2 and m3 are the three research files in this folder. CORE is `/ho
 
 ## Mechanism A. Turnstile, an edit-transaction broker
 
-**Pitch.** [inferred] Every write to a shared checkout passes through one local Orrery broker as a transaction against the revision the agent read. A fresh transaction applies. A stale one is rebased with three-way merge or refused with the exact hunks that moved. Whole-file writes become diffs against their read revision, so they cannot silently revert a peer.
+**Pitch.** [inferred] Every write to a shared checkout passes through one local Acan broker as a transaction against the revision the agent read. A fresh transaction applies. A stale one is rebased with three-way merge or refused with the exact hunks that moved. Whole-file writes become diffs against their read revision, so they cannot silently revert a peer.
 
 **Data shape.**
 
@@ -21,13 +21,13 @@ type EditTxn = {
 }
 ```
 
-**Protocol.** [inferred] Claude Code and Droid reach the broker through an MCP edit tool or a pre-tool hook that redirects native edits. A `readRev` that differs from `FileHead.rev` runs line merge3 with `readRev` as base. A clean rebase applies, and a conflict refuses. Orrery snapshots the checkout only between transactions and pushes it to one Kvarm workspace for exact-tree checks. Transactions apply whole, so a crash leaves no partial write, and offline changes nothing. [sourced] Codex is passive with no MCP in CORE (CORE:46), so it must stay in a worktree.
+**Protocol.** [inferred] Claude Code and Droid reach the broker through an MCP edit tool or a pre-tool hook that redirects native edits. A `readRev` that differs from `FileHead.rev` runs line merge3 with `readRev` as base. A clean rebase applies, and a conflict refuses. Acan snapshots the checkout only between transactions and pushes it to one Kvarm workspace for exact-tree checks. Transactions apply whole, so a crash leaves no partial write, and offline changes nothing. [sourced] Codex is passive with no MCP in CORE (CORE:46), so it must stay in a worktree.
 
 **Safety.** [inferred] It removes lost updates. It does not stop an agent from reading a peer's half-finished code and repairing it away (m3:46). Checks still meet mixed states between agents' intents. Shell writes bypass it unless the Droid sandbox denies the path (W3:32).
 
 **Plant UX.** [inferred] The file shows a ticker of applied and refused transactions. The developer has nothing to decide, and that is the weakness.
 
-**Cost and experiment.** [guess] Two to three weeks in Orrery, no Kvarm change. [inferred] Force two agents to edit disjoint functions 50 times. Turnstile survives only if lost edits reach zero and composed-tree check failures stay at the worktree baseline. It serves the lost-update class only.
+**Cost and experiment.** [guess] Two to three weeks in Acan, no Kvarm change. [inferred] Force two agents to edit disjoint functions 50 times. Turnstile survives only if lost edits reach zero and composed-tree check failures stay at the worktree baseline. It serves the lost-update class only.
 
 ## Mechanism B. Slots, keyed contributions inside a file
 
@@ -102,7 +102,7 @@ type Region = {
 
 ### Protocol
 
-1. **Read.** [inferred] The agent's readback lists the regions it will write and the regions it relies on. Orrery fills this from a new `get_file_ledger(path)` op. Codex, which cannot call MCP (CORE:46), gets the list in its prompt and is validated only at push.
+1. **Read.** [inferred] The agent's readback lists the regions it will write and the regions it relies on. Acan fills this from a new `get_file_ledger(path)` op. Codex, which cannot call MCP (CORE:46), gets the list in its prompt and is validated only at push.
 2. **Declare.** [inferred] `set_intent` gains a `regions` field with `{ fileId, regionId, mode, signatureHash }`, where mode is write or rely. It stays separate from `paths`, whose prefix matching would break on `file#symbol` (m2:61). `forecast` reports two new clash kinds. Two writes on one region is `region:write`. A write that declares a signature change on a region another tenant relies on is `region:contract`. Both appear on the belt before code, like CORE's clash step (CORE:15).
 3. **Claim.** [inferred] `claim_regions` reuses `fenced_claims` with kind `region` and subject `repo/fileId/regionId`, all or none in one conditional statement. [sourced] `claimFenced` lets a different `identity` take over a live claim (`/tmp/kvarm/apps/platform/src/services/fencing.ts:78-81`). [inferred] So the identity is the ledger's `basePin.blob`, which is constant for every claimant, and order and task generation go in `owner`. A `claim_task` takeover releases the old owner's regions explicitly.
 4. **Edit.** [inferred] Claude Code `Edit`, Codex `apply_patch` and Droid `Edit` or `Create` work unchanged in the agent's own worktree. An optional Claude Code or Droid pre-tool hook warns locally when an edit leaves held regions.
@@ -128,9 +128,9 @@ type Region = {
 
 ### Cost, slice, experiment
 
-[guess] Kvarm upstream needs four to six weeks for TypeScript. The work is two additive migrations (`file_ledgers`, `ledger_regions`, hashes and spans only), three ops (`get_file_ledger`, `claim_regions`, `refresh_regions`), a `regions` field on `set_intent` and `forecast`, push-time scope validation, and the splice driver behind the blob hook. [sourced] D1 already stores imported names (m2:51), and per-file analysis caps at 256 KiB (m2:53). [guess] Orrery needs two to three weeks for the bay strip, pins and readback region lists.
+[guess] Kvarm upstream needs four to six weeks for TypeScript. The work is two additive migrations (`file_ledgers`, `ledger_regions`, hashes and spans only), three ops (`get_file_ledger`, `claim_regions`, `refresh_regions`), a `regions` field on `set_intent` and `forecast`, push-time scope validation, and the splice driver behind the blob hook. [sourced] D1 already stores imported names (m2:51), and per-file analysis caps at 256 KiB (m2:53). [guess] Acan needs two to three weeks for the bay strip, pins and readback region lists.
 
-[inferred] The smallest shippable slice needs no upstream change. Orrery parses TypeScript locally and keeps an advisory ledger. It maps each workspace diff from `get_file_diff` (m2:107) onto regions, splices disjoint workspaces locally, and pushes the spliced result as one workspace into the normal train. The tenure is unenforced, so the plant labels it `advisory tenure`.
+[inferred] The smallest shippable slice needs no upstream change. Acan parses TypeScript locally and keeps an advisory ledger. It maps each workspace diff from `get_file_diff` (m2:107) onto regions, splices disjoint workspaces locally, and pushes the spliced result as one workspace into the normal train. The tenure is unenforced, so the plant labels it `advisory tenure`.
 
 [inferred] The experiment has two stages. Stage one replays history. [sourced] `git log` shows 125 commits in `/tmp/kvarm`, and `wc -l` gives `apps/platform/src/services/queue.ts` 2,787 lines. [inferred] For every pair of sibling commits that touch one TypeScript file, compute whether their changes are region-disjoint and whether line merge3 conflicts on them. Stage two runs live. Choose 30 task pairs on `queue.ts` and `tasks.ts` that target different functions. Run Claude Code with Codex under worktrees plus merge3, then under advisory Tenure. Tenure is proven if four things hold. Lost edits are zero, so each agent's region bytes appear unchanged in the composed tree. Region-disjoint pairs have zero text conflicts. Composed-tree check failures do not exceed the baseline. Wall time beats serial work by at least 25%. Tenure is killed if out-of-tenure refusals exceed 20% of checkpoints, if the splice ever emits an unparseable tree, or if stage one finds line conflicts on region-disjoint pairs in under 5% of same-file pairs.
 

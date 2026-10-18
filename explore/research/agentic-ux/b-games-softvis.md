@@ -1,6 +1,6 @@
 # Games, software visualization, and agent supervision
 
-[inferred] Orrery should borrow games' control loops, not their demand for constant attention.
+[inferred] Acan should borrow games' control loops, not their demand for constant attention.
 [inferred] The strongest shift is from issuing prompts to maintaining desired, verified system conditions.
 [sourced] Factorio's remote view makes the overview actionable and exposes whether a ghost has an assigned builder [G1].
 [sourced] Software visualization studies support overview tasks, but do not establish routine workplace adoption [S1, S2].
@@ -9,7 +9,7 @@
 
 ## Scope and evidence
 
-[sourced] This research uses the supplied K1 to K20 and catalog in `/home/factory-user/orrery/explore/map.md:20-72`, plus the two supplied screenshots.
+[sourced] This research uses the supplied K1 to K20 and catalog in `/home/factory-user/acan/explore/map.md:20-72`, plus the two supplied screenshots.
 [sourced] The screenshots already show a waiting queue, agent activity, a Floor timeline, checks, budgets, and recorded choices.
 [inferred] Adding those controls again would be incremental, so the proposals below change what the supervisor delegates or optimizes.
 
@@ -69,7 +69,7 @@
 
 [sourced] Kuhn, Loretan, and Nierstrasz argue that arbitrary layouts make different views hard to compare, and propose consistent thematic maps based on vocabulary similarity [S3].
 [inferred] A map loses value when every refresh requires learning its geography again.
-[inferred] Orrery's authored layout is therefore a functional advantage, provided source updates do not silently relocate machines.
+[inferred] Acan's authored layout is therefore a functional advantage, provided source updates do not silently relocate machines.
 [inferred] Software maps remain plausible for orientation and risk discussion, but these papers do not prove they should occupy the screen all day.
 
 ### Gource
@@ -78,7 +78,7 @@
 [sourced] Its site reports a release in March 2026, so describing it as abandoned would be false [S4].
 [inferred] Its durable success is a narrow communication task, explaining project evolution.
 [inferred] Repository activity cannot by itself establish current runtime behavior, causal bottlenecks, or whether a change achieved its goal.
-[inferred] Orrery should use replay to explain a selected event or change, rather than turn perpetual contributor animation into a productivity proxy.
+[inferred] Acan should use replay to explain a selected event or change, rather than turn perpetual contributor animation into a productivity proxy.
 
 ### Observability maps
 
@@ -104,7 +104,7 @@
 [sourced] Multiplayer discovers components and dependencies from full-stack session recordings, then shows session-filtered maps inside those recordings [S12].
 [sourced] Ilograph combines a model-based textual format, automatic layout, and interactive views of flows and components [S13].
 [inferred] These are different maintenance strategies, not proof that any vendor solved daily adoption.
-[inferred] Orrery can distinguish itself by connecting intended changes to agent authority and verification while preserving disagreement between designed, declared, and observed sources.
+[inferred] Acan can distinguish itself by connecting intended changes to agent authority and verification while preserving disagreement between designed, declared, and observed sources.
 
 ### 3D and VR research
 
@@ -112,9 +112,9 @@
 [sourced] The authors explicitly call for further research on effectiveness, usability, and acceptance [S14].
 [inferred] This supports optional collaborative inspection, not a mandatory immersive workspace.
 [inferred] Camera travel and label reading must not become extra work before an engineer can answer a precise question.
-[guess] A headset-first Orrery would probably impose more switching cost than value for routine supervision, but the opened studies do not measure that product.
+[guess] A headset-first Acan would probably impose more switching cost than value for routine supervision, but the opened studies do not measure that product.
 
-## Ideas Orrery could steal or invert
+## Ideas Acan could steal or invert
 
 ### 1. Proof-bearing ghosts
 
@@ -146,7 +146,7 @@
 ### 4. Pareto workshops
 
 [guess] The supervisor requests alternative implementations under the same frozen checks, dataset, and spend cap.
-[guess] Orrery presents verified candidates as a latency-versus-cost plot, with changed-file scope and maintenance concerns beside each point.
+[guess] Acan presents verified candidates as a latency-versus-cost plot, with changed-file scope and maintenance concerns beside each point.
 [guess] The user compares traces and diffs, then selects a tradeoff rather than the agent with the most confident explanation.
 [sourced] Opus Magnum separates cost, cycles, and area, and its community documents why independent histogram records may belong to different solutions [G23].
 [inferred] The new agentic step is making competing experiments a normal design action rather than an informal second opinion.

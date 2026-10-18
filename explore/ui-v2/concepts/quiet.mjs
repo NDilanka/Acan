@@ -280,7 +280,7 @@ function quietClaimLine() {
   const o = quietState.order, l = quietState.kvarm.lease, w = quietWinner();
   if (o.state === "claimed") return l.session + " · readback matched every check";
   if (o.state === "stale") return l.session + " · heartbeat rejected · " + quietData.KV.stale.code;
-  if (quietUnmatched()) return l.holder + " holds " + l.gen + " in Kvarm · no Orrery readback";
+  if (quietUnmatched()) return l.holder + " holds " + l.gen + " in Kvarm · no Acan readback";
   if (o.state === "matched") return w.session + " · readback matched · claim held for Kvarm";
   return "Agents claim after a matching readback.";
 }
@@ -318,7 +318,7 @@ function quietReadback(r) {
   return { arrived, matches, state, status, word, tally, choice: r.answers.q1 === "1" ? "pending" : "failed" };
 }
 function quietSource() {
-  return "readback · Orrery" + (quietState.rev === "r2" && quietState.scoring === "settled" ? " · re-scored on r2" : quietState.rev ? " · " + quietState.rev : "");
+  return "readback · Acan" + (quietState.rev === "r2" && quietState.scoring === "settled" ? " · re-scored on r2" : quietState.rev ? " · " + quietState.rev : "");
 }
 function quietGlyphs(r) {
   const rb = quietReadback(r);
@@ -344,7 +344,7 @@ function quietHolderHtml(mini) {
   const l = quietState.kvarm.lease, name = '<span class="quiet-bezel" data-evidence-state="unknown" title="no readback">?</span>' + l.holder + '<span class="quiet-say"> · ' + l.session + '</span>';
   const right = l.gen + ' · passive<span class="quiet-say"> · holds ' + l.gen + ' · no readback</span>';
   return mini ? '<div class="quiet-mini" data-state="unknown" data-quiet-binding="holder"><div><span>' + name + '</span><small>' + right + '</small></div></div>'
-    : '<div class="quiet-reading" data-state="unknown" data-quiet-binding="holder"><header><b>' + name + '</b><span>' + right + '</span></header><p class="quiet-say">Claimed t-41 in Kvarm with its own token. Orrery has no readback for ' + quietState.rev + ', so the territory stays fogged.</p></div>';
+    : '<div class="quiet-reading" data-state="unknown" data-quiet-binding="holder"><header><b>' + name + '</b><span>' + right + '</span></header><p class="quiet-say">Claimed t-41 in Kvarm with its own token. Acan has no readback for ' + quietState.rev + ', so the territory stays fogged.</p></div>';
 }
 function quietReadingHtml(r) {
   const rb = quietReadback(r);
@@ -378,15 +378,15 @@ function quietBinding(key) {
   const remote = kv.connection === "ok" ? "valid" : "stale";
   if (key === "flag") {
     const f = quietFlag(), l = kv.lease;
-    return { entity: "Order " + quietData.ORDER.id, channel: "order.claim", value: f.text, state: f.ev || (kv.issue ? remote : "valid"), sourceClass: l ? l.evidence + " · Kvarm lease" : kv.issue ? "authenticated · Kvarm issue" : "local", locator: kv.issue ? "kvarm://" + K.host + "/" + K.repo + "/issues/" + kv.issue + " · task " + K.task : "local://.orrery/orders/" + quietData.ORDER.id + ".yaml", revision: rev + " · " + sheet, age: since(kv.lastReturn), policy: "Kvarm fields stale after " + K.staleAfter, meaning: "CLAIMED needs an Orrery readback match and a live Kvarm lease of the same generation" };
+    return { entity: "Order " + quietData.ORDER.id, channel: "order.claim", value: f.text, state: f.ev || (kv.issue ? remote : "valid"), sourceClass: l ? l.evidence + " · Kvarm lease" : kv.issue ? "authenticated · Kvarm issue" : "local", locator: kv.issue ? "kvarm://" + K.host + "/" + K.repo + "/issues/" + kv.issue + " · task " + K.task : "local://.acan/orders/" + quietData.ORDER.id + ".yaml", revision: rev + " · " + sheet, age: since(kv.lastReturn), policy: "Kvarm fields stale after " + K.staleAfter, meaning: "CLAIMED needs an Acan readback match and a live Kvarm lease of the same generation" };
   }
   if (key === "holder") {
     const l = kv.lease;
-    return { entity: l.holder + " · " + l.session, channel: "kvarm.lease", value: "holds " + l.gen, state: remote, sourceClass: l.evidence, locator: "kvarm://" + K.host + "/" + K.repo + "/tasks/" + K.task, revision: rev + " · " + sheet, age: since(kv.lastReturn), policy: "Kvarm fields stale after " + K.staleAfter, meaning: "No Orrery readback on " + rev + ". Never drawn as CLAIMED." };
+    return { entity: l.holder + " · " + l.session, channel: "kvarm.lease", value: "holds " + l.gen, state: remote, sourceClass: l.evidence, locator: "kvarm://" + K.host + "/" + K.repo + "/tasks/" + K.task, revision: rev + " · " + sheet, age: since(kv.lastReturn), policy: "Kvarm fields stale after " + K.staleAfter, meaning: "No Acan readback on " + rev + ". Never drawn as CLAIMED." };
   }
   if (key === "q1") {
     const q = quietData.QUESTION;
-    return { entity: "Question q1 · " + q.entity, channel: "readback.disagreement", value: "p-2307 · pending or failed", state: "valid", sourceClass: "observed · Orrery replay", locator: "orrery://orders/" + quietData.ORDER.id + "/r1/questions/q1", revision: "r1 · " + sheet, age: "replay " + q.clock, policy: "raised when two readbacks differ", meaning: q.text };
+    return { entity: "Question q1 · " + q.entity, channel: "readback.disagreement", value: "p-2307 · pending or failed", state: "valid", sourceClass: "observed · Acan replay", locator: "acan://orders/" + quietData.ORDER.id + "/r1/questions/q1", revision: "r1 · " + sheet, age: "replay " + q.clock, policy: "raised when two readbacks differ", meaning: q.text };
   }
   if (key.startsWith("rb:") || key.startsWith("bot:")) {
     const r = quietData.READBACKS.find((r) => key === "rb:" + r.session || key === "bot:" + r.bot);
@@ -395,15 +395,15 @@ function quietBinding(key) {
       return { entity: quietAgent(r), channel: "agent.principal", value: r.session, state: bot && bot.state === "dark" ? "stopped" : "valid", sourceClass: live ? l.evidence : "declared", locator: live ? "kvarm token · principal " + r.session : "mcp://local/" + r.session, revision: rev + " · " + sheet, age: null, policy: bot && bot.state === "dark" ? "lifecycle · " + K.stale.code : "session handshake", meaning: live ? "Claimed t-41 with its own Kvarm token" : "Connected over MCP. Identity is declared by the session." };
     }
     const rb = quietReadback(r);
-    return { entity: quietAgent(r) + " · " + r.session, channel: "readback.score", value: rb.arrived ? rb.status : "not received", state: !rb.arrived ? "unknown" : quietState.scoring === "rescoring" ? "stale" : "valid", sourceClass: "observed · Orrery replay", locator: "orrery://orders/" + quietData.ORDER.id + "/" + rev + "/readbacks/" + r.session, revision: rev + " · " + sheet, age: null, policy: "re-scored on every order revision", meaning: "readback · Orrery. Kvarm stores no readback." };
+    return { entity: quietAgent(r) + " · " + r.session, channel: "readback.score", value: rb.arrived ? rb.status : "not received", state: !rb.arrived ? "unknown" : quietState.scoring === "rescoring" ? "stale" : "valid", sourceClass: "observed · Acan replay", locator: "acan://orders/" + quietData.ORDER.id + "/" + rev + "/readbacks/" + r.session, revision: rev + " · " + sheet, age: null, policy: "re-scored on every order revision", meaning: "readback · Acan. Kvarm stores no readback." };
   }
   if (key === "budget") {
     const b = quietData.ORDER.budgets[0];
-    return { entity: "Order " + quietData.ORDER.id + " · budget", channel: "order.budget", value: b, state: "valid", sourceClass: "declared · your order", locator: "local://.orrery/orders/" + quietData.ORDER.id + ".yaml#budgets", revision: rev + " · " + sheet, age: null, policy: quietState.order.state === "draft" ? "editable until Post" : "locked on Post", meaning: "Every attempt keeps " + b };
+    return { entity: "Order " + quietData.ORDER.id + " · budget", channel: "order.budget", value: b, state: "valid", sourceClass: "declared · your order", locator: "local://.acan/orders/" + quietData.ORDER.id + ".yaml#budgets", revision: rev + " · " + sheet, age: null, policy: quietState.order.state === "draft" ? "editable until Post" : "locked on Post", meaning: "Every attempt keeps " + b };
   }
   const w = quietState.witnesses.find((x) => x.id === key);
   if (!w) return null;
-  return { entity: "Witness " + w.id + " · " + w.entity, channel: "witness." + w.polarity, value: w.observed.metric + " " + w.observed.value + (w.observed.unit ? " " + w.observed.unit : ""), state: "valid", sourceClass: w.id === "w3" ? "declared · your answer" : "observed · replay", locator: w.id === "w3" ? "orrery://orders/" + quietData.ORDER.id + "/r2#w3" : "replay://" + K.repo + "/" + w.entity + "@" + w.clock, revision: sheet, age: (w.id === "w3" ? "answered at " : "replay ") + w.clock, policy: quietState.order.state === "draft" ? "editable until Post" : "locked on Post", meaning: w.check };
+  return { entity: "Witness " + w.id + " · " + w.entity, channel: "witness." + w.polarity, value: w.observed.metric + " " + w.observed.value + (w.observed.unit ? " " + w.observed.unit : ""), state: "valid", sourceClass: w.id === "w3" ? "declared · your answer" : "observed · replay", locator: w.id === "w3" ? "acan://orders/" + quietData.ORDER.id + "/r2#w3" : "replay://" + K.repo + "/" + w.entity + "@" + w.clock, revision: sheet, age: (w.id === "w3" ? "answered at " : "replay ") + w.clock, policy: quietState.order.state === "draft" ? "editable until Post" : "locked on Post", meaning: w.check };
 }
 function quietBindText(b) {
   return [b.value, b.state, b.sourceClass, b.channel, b.locator, "revision " + b.revision, typeof b.age === "number" ? b.age + " s ago" : b.age || "age not reported"].join(" · ");

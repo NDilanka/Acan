@@ -42,14 +42,14 @@ const twins = `<section><h2>Telling twins apart <small>same drawing, different p
 
 const EXPLODE = Object.entries(ASSETS).filter(([, a]) => a.explodes);
 const WHOLE = [
-  ["Dock", "external. Orrery sees only the calls that cross the wall"],
+  ["Dock", "external. Acan sees only the calls that cross the wall"],
   ["Intake, Splitter", "already flat. Their routes are visible from outside"],
   ["Buffer rack", "shelves are visible without lifting anything (v0.2 candidate: keyspaces)"],
   ["Cam clock, Radar, Crate", "single-purpose parts with nothing to open"],
   ["Fittings, Floor", "too small. Their story is on the belt or in the agent panel"],
 ];
 const exploded = `<section><h2>Exploded views <small>${EXPLODE.length} assets</small></h2>
-<p class="lede">An asset explodes when Orrery can read its insides from code or config. Each layer gets a leader label taken from that source. Press X on a selected machine in the Live window.</p>
+<p class="lede">An asset explodes when Acan can read its insides from code or config. Each layer gets a leader label taken from that source. Press X on a selected machine in the Live window.</p>
 <div class="ctl inline"><label>explode <input id="ex" type="range" min="0" max="100" value="100"> <span id="exv"></span></label><button class="play" id="exPlay">Play</button></div>
 <div class="grid ex">${EXPLODE.map(([kind, a]) => cell(`ex-${kind}`, a.label, [a.parts], one(kind), { explode: true, fixed: true })).join("")}</div>
 <table class="whole">${WHOLE.map(([n, w]) => `<tr><td>${n}</td><td>stays whole: ${w}</td></tr>`).join("")}</table></section>`;
@@ -171,8 +171,8 @@ if (params.get("state")) { state = params.get("state"); for (const o of document
 draw();
 `;
 
-const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Orrery · v1 asset set</title><style>${css}</style></head><body>${FOG_DEFS}
-<header><h1>Orrery · v1 asset set</h1><span class="meta">${Object.keys(ASSETS).length} assets · anatomy kit · drag any cell to orbit all</span>
+const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Acan · v1 asset set</title><style>${css}</style></head><body>${FOG_DEFS}
+<header><h1>Acan · v1 asset set</h1><span class="meta">${Object.keys(ASSETS).length} assets · anatomy kit · drag any cell to orbit all</span>
 <div class="ctl"><label>azimuth <input id="az" type="range" min="0" max="359" value="35"> <span id="azv"></span></label><label>tilt <input id="el" type="range" min="8" max="89" value="30"> <span id="elv"></span></label>
 <div class="seg" id="state">${STATES.map(([s, n], i) => `<button data-s="${s}" aria-pressed="${i === 0}">${n}</button>`).join("")}</div></div></header>
 <main>${sections}${twins}${exploded}${states}${deferred}</main><script>${script}</script></body></html>`;

@@ -9,7 +9,7 @@ Date 2026-10-17. This file merges the seven slices in this folder (a to g). Brac
 3. Six slices agree that motion, tokens, and agent busyness must not read as progress.
 4. For pain 1 (intent into instructions), the evidence favors bounded contracts drawn on the plant, intent expressed through examples and counterexamples, and questions pinned where an ambiguity has high reversal cost.
 5. For pain 2 (many agents), it favors catching semantic clashes on shared interfaces before code exists, one decision queue that says why each item needs you, and a return brief that makes leaving safe.
-6. The game-like agent fleet, "mission control", agent canvases, and MCP-shared drawings are taken. Orrery's remaining distinction is one persistent system entity linking intent, agent work, and measured runtime consequence.
+6. The game-like agent fleet, "mission control", agent canvases, and MCP-shared drawings are taken. Acan's remaining distinction is one persistent system entity linking intent, agent work, and measured runtime consequence.
 7. Evidence is documentation, human-factors theory, and vendor or first-person numbers. Nothing measures how many agents one person can supervise, and no proposed interaction has been tested.
 
 ## Convergences
@@ -52,7 +52,7 @@ These facts come from `f-frontier.md`, "Competitors and prior art" and "Novelty 
 - [sourced] AgentCraft, VibeCraft, Pixel Agents, and Agent Town already give agents game-like bodies and places (line 4). [inferred] "Factorio for agents" is a category, not a novelty claim (line 3).
 - [sourced] Maestri combines local agents, a persistent spatial layout, notes, diagrams, and cross-agent connections (line 5). [inferred] It is the closest competitor for local-first spatial orchestration (line 40).
 - [sourced] tldraw, Figma, and Archyl expose shared visual models through MCP (line 6), which the novelty table marks Taken (line 155).
-- [sourced] The Codex app and Google Antigravity present themselves as homes for parallel agents. [inferred] "Mission control" cannot distinguish Orrery (lines 42 to 43). Slice a documents the same session model across Cursor, Claude Code, Factory Missions, GitHub Agent HQ, and others (`a-landscape.md`, "Comparison of the tools").
+- [sourced] The Codex app and Google Antigravity present themselves as homes for parallel agents. [inferred] "Mission control" cannot distinguish Acan (lines 42 to 43). Slice a documents the same session model across Cursor, Claude Code, Factory Missions, GitHub Agent HQ, and others (`a-landscape.md`, "Comparison of the tools").
 - [sourced] Comper ties fog of war to software maps (line 53), Archyl claims drift detection as vendor marketing (line 52), Palladio and StrongDM cover what-if analysis (line 55), and Autoresearch and Chi cover agents optimizing a measured objective under a spending cap (line 56).
 - The table marks system-as-factory, agents in the system they change, blueprint ghosts, budgets as objectives, fog of war, three-source drift, and calibrated simulation as Partly taken. Only the risk-ranked choices ledger is Open (lines 147 to 154).
 

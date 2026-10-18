@@ -12,7 +12,7 @@ if (!file || !stepsPath) { console.error("usage: node drive.mjs <file.html> <has
 const steps = JSON.parse(readFileSync(stepsPath, "utf8"));
 mkdirSync(outDir, { recursive: true });
 
-const profile = mkdtempSync(join(tmpdir(), "orrery-drive-"));
+const profile = mkdtempSync(join(tmpdir(), "acan-drive-"));
 const chrome = spawn("google-chrome", ["--headless=new", "--remote-debugging-port=0", "--user-data-dir=" + profile, "--no-first-run", "--hide-scrollbars", "--window-size=1600,900", "about:blank"], { stdio: ["ignore", "ignore", "pipe"] });
 const port = await new Promise((ok, no) => {
   let buf = "";

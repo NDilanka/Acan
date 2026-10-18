@@ -55,7 +55,7 @@ function palIndex() {
   if (ctx) for (const id of ["open", "hand", "brief", "brief-safe"]) out.push({ kind: "action", label: ACTIONS[id].label + " · " + nameOf(ctx), sub: "on the current selection", key: ACTIONS[id].key, ic: "›", state: "idle", sev: 1.5, run: () => runAction(id, ctx) });
   out.push({ kind: "action", label: "Walk the choices", sub: "riskiest first", key: "W", ic: "›", state: "idle", sev: 8, run: () => { if (document.body.dataset.mode !== "live") setMode("live"); walk(); } });
   out.push({ kind: "action", label: "Floor timeline", sub: "agents, CI and you over the last hour", key: "G", ic: "›", state: "idle", sev: 8, run: () => toggleFloor() });
-  out.push({ kind: "action", label: document.body.classList.contains("fogged") ? "Hide fog" : "Show fog", sub: "layer · what Orrery doesn't know yet, per machine", ic: "›", state: "idle", sev: 8, run: () => fogToggle() });
+  out.push({ kind: "action", label: document.body.classList.contains("fogged") ? "Hide fog" : "Show fog", sub: "layer · what Acan doesn't know yet, per machine", ic: "›", state: "idle", sev: 8, run: () => fogToggle() });
   out.push({ kind: "action", label: "Export a picture", sub: "PNG, SVG or frames · share-safe by default", ic: "›", state: "idle", sev: 8, run: () => exToggle(true) });
   out.push({ kind: "action", label: "Network log", sub: "every outbound connection · offline switch", ic: "›", state: "idle", sev: 8, run: () => netToggle(true) });
   out.push({ kind: "action", label: NET.off ? "Go online" : "Go offline", sub: "blocks all egress · loopback keeps working", ic: "›", state: "idle", sev: 8, run: () => setOffline(!NET.off) });
