@@ -19,8 +19,8 @@ Resume file for a fresh orchestrator chat. Updated 2026-10-18. No git repo, no l
 ## Repo and name
 
 - The product was renamed from Orrery to Acan on 2026-10-18, at the user's request. All text files, the folder (`/home/factory-user/orrery` became `/home/factory-user/acan`), the plants (`acan-format`, `acan-site`) and the Kvarm origin (`git.acan.local`) changed. The screenshots and builds were regenerated.
-- This is now a git repo on `main`. The commits are `3db036b` (initial import) and the rename commit after it.
-- The GitHub push is waiting on the user. The token here is a GitHub app token that cannot create repositories. The user creates an empty private `NDilanka/Acan` (no README), then run `git -C /home/factory-user/acan remote add origin https://github.com/NDilanka/Acan.git && git -C /home/factory-user/acan push -u origin main`. If the push is refused, the user runs `gh auth login` with `repo` scope.
+- This is now a git repo on `main`: `3db036b` initial import, `e9cbe5a` rename, `1d7661c` open-core decision, then this update.
+- It is pushed to the public repo https://github.com/NDilanka/Acan (`origin`, `main` tracks `origin/main`). Push finished work to `main` after each commit. The repo is public, so never commit secrets.
 ## Where things stand
 
 - **Done.** Research waves (a to m), syntheses, interviews 1 to 3, and the map proposal (`proposals/ui-v2.md`, including same-file rows W23 to W27).
