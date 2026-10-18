@@ -1,6 +1,6 @@
 # Parked session: Acan agentic UX (ui-v2)
 
-Resume file for a fresh orchestrator chat. Updated 2026-10-18. No git repo, no loops, no running processes, no running subagents.
+Resume file for a fresh orchestrator chat. Updated 2026-10-18. No loops. Three subagents running (step 1 below). If this chat is gone, they are dead: launch fresh with the same briefs and tell them about their partial files.
 
 ## Hard rules and standing directives
 
@@ -9,7 +9,7 @@ Resume file for a fresh orchestrator chat. Updated 2026-10-18. No git repo, no l
 - **All design builds and critiques go to Opus.** Use pv-opus-high for builds and critiques, and pv-opus-medium for prose. The second lab on review panels is Grok (pv-grok-high or pv-grok-xhigh), or Haiku (pv-haiku-max).
 - **One shell.** It is the full-bleed plant with floating glass islands in `ui-v2/shots/orders-kv-unmatched.png`. The user picked it as "the cleanest". The world-style top bar, toolbar row, framed stage and docked inspector (`shots/world-07-levels.png`) are rejected. World and the journey move onto the chosen shell.
 - **There is too much text in the UI.** The text system (`TEXT.md`) sets measurable word budgets, and honesty stays one key away.
-- **Run drive.mjs runs one at a time.** Parallel drivers cause timing flakes.
+- **Run drive.mjs runs one at a time.** Parallel drivers cause timing flakes. `ui-v2/run-steps.sh [steps files]` builds and drives under a shared `flock /tmp/acan-drive.lock`, so agents running in parallel still drive one at a time. Every brief tells agents to use it. Env passes through (`AUDIT=1`, `SIZE=WxH`, `OUTROOT`).
 - **Verify every agent's work yourself.** Rerun its steps files and look at the key shots before you accept it. Log each decision with `~/.factory/plugins/marketplaces/pvstack/plugins/pvstack/skills/show-me-your-work/scripts/log.sh research/agentic-ux/decisions.tsv <phase> <decision> <why> <evidence> <result>`.
 - **Write replies to the user in plain sentences.** No em dashes and no mid-sentence colons. Cite principles where they decide something.
 - **Fresh-chat rule (user AGENTS.md).** At every boundary, update this file. Suggest a fresh chat when the chat is heavy and the moment is cheap. Never suggest while a subagent is running or a change is half-made. When you suggest, end with a copy-paste handoff prompt.
@@ -41,7 +41,7 @@ Resume file for a fresh orchestrator chat. Updated 2026-10-18. No git repo, no l
 
 ## Next steps, in order
 
-1. **Relaunch three agents in parallel**, all pv-opus-high, all told to operate as poteto-agent and load `poteto-delegate` first. Try `Task resume=<id>` first. If that fails, launch fresh with the brief below, and tell it about the partial files.
+1. **Relaunch three agents in parallel**, all pv-opus-high, all told to operate as poteto-agent and load `poteto-delegate` first. Relaunched fresh on 2026-10-18 at /home/factory-user/acan paths. Live task ids: shell 218c3950-0a16-4b2e-95f8-e06c2957d297, text 4a995f7c-9767-4426-9a0e-0deb33948f26, audit 56613b91-6569-48a9-9674-fe05495bb482. The old resume ids below are dead. Agents do not commit; the coordinator verifies and commits.
    - **Shell** (resume id 8f886fb1-0f0c-46f1-b44d-6322cba54ce2).
      - Write `ui-v2/SHELL.md`, the one shell spec, based on the liked orders layout. Give island positions and sizes at 1280x800, 1440x900 and 1600x900.
      - Fold world's extras into the islands. The breadcrumb and Back/Forward go in the top-left island, the search becomes Go to (Ctrl K), and the toolbar items become Layers menu items or palette commands with their keys. Appearance goes in Layers or the top-right island. The inspector becomes a floating card. The minimap goes in the compass slot or is dropped.
