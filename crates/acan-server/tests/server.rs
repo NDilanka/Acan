@@ -9,9 +9,9 @@ use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 
-use acan_core::{HumanCmd, MachineKey, MemberId, Role as MemberRole, Stamped};
+use acan_core::{Actor, Event, HumanCmd, MachineKey, MemberId, Role as MemberRole, Stamped};
 use acan_llm::{ChatRequest, Message, ModelClient, Reply, Role, Stub, UsageLedger};
-use acan_server::{Running, ServerConfig, scan, start};
+use acan_server::{Models, Running, ServerConfig, scan, start};
 use futures_util::{SinkExt, StreamExt};
 use reqwest::StatusCode;
 use serde_json::{Value, json};
@@ -562,6 +562,56 @@ async fn a_posted_order_runs_its_split_job_through_the_client() {
     );
 }
 
+#[tokio::test]
+async fn without_a_routing_file_a_posted_order_is_split_by_the_offline_models() {
+    let dir = temp_repo();
+    let models = Models::load(&dir.path().join(".acan/llm.toml"))
+        .expect("a missing routing file selects the offline models");
+    let ledger = models.ledger();
+    let running = start(config(dir.path(), loopback(), false), models, ledger)
+        .await
+        .expect("the server starts");
+    let token = owner_token(&running);
+    let order = HumanCmd::PostOrder {
+        machine: MachineKey::from_str("model").expect("valid machine key"),
+        sentence: "split the store into a reader and a writer".to_owned(),
+        witnesses: Vec::new(),
+    };
+    assert_eq!(
+        post_command(&running, &token, &order).await.status(),
+        StatusCode::OK
+    );
+
+    let deadline = tokio::time::Instant::now() + WAIT;
+    let split = loop {
+        let (_, body) = get_json(&running, "/api/events?from=0", &token).await;
+        let events: Vec<Stamped> = serde_json::from_value(body).expect("events JSON");
+        if let Some(split) = events
+            .iter()
+            .find(|stamped| matches!(stamped.event, Event::OrderSplit { .. }))
+        {
+            break split.clone();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the offline split never landed: {events:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(
+        split.actor,
+        Actor::System,
+        "the split is the job loop's result"
+    );
+    let (_, usage) = get_json(&running, "/api/usage", &token).await;
+    assert_eq!(
+        usage[0]["provider"],
+        json!("offline"),
+        "the call is metered: {usage}"
+    );
+    assert_eq!(usage[0]["calls"], json!(1), "one call split the order");
+    running.stop().await.expect("the server stops");
+}
 /// Polls the usage endpoint until the foreman has a call, or the wait runs out.
 async fn foreman_calls(running: &Running, token: &str) -> u64 {
     let foreman = serde_json::to_value(Role::Foreman).expect("role JSON");

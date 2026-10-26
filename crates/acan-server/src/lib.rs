@@ -12,6 +12,7 @@ mod index;
 mod jobs;
 mod model;
 mod models;
+mod offline;
 mod public;
 mod store;
 mod stream;

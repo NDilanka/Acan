@@ -16,11 +16,32 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-const SPLIT_PROMPT: &str = "You split one order into tasks for AI coding workers. Each task is one piece of work that one worker can finish alone. Scope lists the machine names a task touches. Every witness must still hold once all the tasks have landed.";
+pub(crate) const SPLIT_PROMPT: &str = "You split one order into tasks for AI coding workers. Each task is one piece of work that one worker can finish alone. Scope lists the machine names a task touches. Every witness must still hold once all the tasks have landed.";
 
-const REVIEW_PROMPT: &str = "You review each worker readback against the order's witnesses. For every witness, answer match when the readback respects it, disagrees when it contradicts it, and unclear when it does not say enough. Give a reason for every answer that is not match. If readbacks disagree about what the order means, ask one question with exactly two options. Otherwise ask nothing.";
+pub(crate) const REVIEW_PROMPT: &str = "You review each worker readback against the order's witnesses. For every witness, answer match when the readback respects it, disagrees when it contradicts it, and unclear when it does not say enough. Give a reason for every answer that is not match. If readbacks disagree about what the order means, ask one question with exactly two options. Otherwise ask nothing.";
 
-const EXPLAIN_PROMPT: &str = "You explain a clash between two tasks that touch the same code. Say what goes wrong if both proceed. Name the witness that would break, if one would. Suggest one choice from the menu, or none.";
+pub(crate) const EXPLAIN_PROMPT: &str = "You explain a clash between two tasks that touch the same code. Say what goes wrong if both proceed. Name the witness that would break, if one would. Suggest one choice from the menu, or none.";
+
+/// Which job a model request was built for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Ask {
+    Split,
+    Review,
+    Explain,
+}
+
+/// The job `request` was built for, read from its system prompt.
+pub(crate) fn ask_of(request: &ChatRequest) -> Option<Ask> {
+    request.messages.iter().find_map(|message| match message {
+        Message::System { content } => match content.as_str() {
+            SPLIT_PROMPT => Some(Ask::Split),
+            REVIEW_PROMPT => Some(Ask::Review),
+            EXPLAIN_PROMPT => Some(Ask::Explain),
+            _ => None,
+        },
+        _ => None,
+    })
+}
 
 /// Why a model reply cannot become a command.
 #[derive(Debug, thiserror::Error)]
