@@ -613,3 +613,152 @@ provider = "meta"
         0
     );
 }
+
+/// Asserts that the `Debug` and `Display` text of `err` both omit `secret`.
+fn assert_secret_absent(err: &LlmError, secret: &str) {
+    assert!(
+        !format!("{err:?}").contains(secret),
+        "Debug output contains a configured API key"
+    );
+    assert!(
+        !err.to_string().contains(secret),
+        "Display output contains a configured API key"
+    );
+}
+
+/// Makes one meta call answered by `reply` and returns the error it fails with.
+async fn meta_failure(reply: ResponseTemplate) -> LlmError {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(reply)
+        .mount(&meta)
+        .await;
+
+    client(&meta, &baseten, "baseten")
+        .chat(
+            Role::Foreman,
+            ChatRequest {
+                messages: vec![Message::user("ping")],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("reply must fail")
+}
+
+#[tokio::test]
+async fn reflected_key_is_redacted_from_401_and_402_bodies() {
+    let unauthorized = meta_failure(
+        ResponseTemplate::new(401).set_body_string(format!("invalid api key {META_KEY}")),
+    )
+    .await;
+    match &unauthorized {
+        LlmError::Status {
+            status: 401, body, ..
+        } => assert!(body.contains("<redacted>"), "401 body was not captured"),
+        _ => panic!("expected Status with HTTP 401"),
+    }
+    assert_secret_absent(&unauthorized, META_KEY);
+
+    let unpaid = meta_failure(
+        ResponseTemplate::new(402).set_body_string(format!("no credits for {META_KEY}")),
+    )
+    .await;
+    match &unpaid {
+        LlmError::PaymentRequired { body, .. } => {
+            assert!(body.contains("<redacted>"), "402 body was not captured");
+        }
+        _ => panic!("expected PaymentRequired"),
+    }
+    assert_secret_absent(&unpaid, META_KEY);
+}
+
+#[tokio::test]
+async fn reflected_key_is_redacted_from_malformed_reply_errors() {
+    let err = meta_failure(
+        ResponseTemplate::new(200).set_body_string(format!(r#"{{"choices":"{META_KEY}"}}"#)),
+    )
+    .await;
+
+    match &err {
+        LlmError::MalformedResponse { detail, .. } => {
+            assert!(
+                detail.contains("<redacted>"),
+                "parser detail was not captured"
+            );
+        }
+        _ => panic!("expected MalformedResponse"),
+    }
+    assert_secret_absent(&err, META_KEY);
+}
+
+#[tokio::test]
+async fn reflected_key_is_redacted_from_schema_errors() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(text_reply(&format!(
+            r#"{{"clash":"{META_KEY}","files":[]}}"#
+        )))
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    let err = client(&meta, &baseten, "baseten")
+        .chat_json::<Verdict>(
+            Role::Foreman,
+            ChatRequest {
+                messages: vec![Message::user("Do agents clash?")],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("reply must not parse");
+
+    match &err {
+        LlmError::SchemaValidation { raw, .. } => {
+            assert!(raw.contains("<redacted>"), "reply text was not captured");
+        }
+        _ => panic!("expected SchemaValidation"),
+    }
+    assert_secret_absent(&err, META_KEY);
+}
+
+#[tokio::test]
+async fn key_across_the_error_body_budget_leaves_no_fragment() {
+    // The key starts 5 bytes before the 512-byte budget ends, so the cut would split it.
+    let body = format!("{}{META_KEY}", "a".repeat(507));
+    let err = meta_failure(ResponseTemplate::new(401).set_body_string(body)).await;
+
+    match &err {
+        LlmError::Status { body, .. } => {
+            assert!(body.len() <= 512, "error body exceeds the byte budget");
+            assert!(
+                !body.contains(&META_KEY[..4]),
+                "a fragment of the key survived the budget cut"
+            );
+        }
+        _ => panic!("expected Status with HTTP 401"),
+    }
+    assert_secret_absent(&err, META_KEY);
+}
+
+#[tokio::test]
+async fn oversized_error_body_is_cut_to_the_byte_budget() {
+    // "é" is two bytes, so the 512-byte cut falls inside a character.
+    let body = format!("a{}", "é".repeat(1000));
+    let err = meta_failure(ResponseTemplate::new(400).set_body_string(body)).await;
+
+    match &err {
+        LlmError::Status {
+            status: 400, body, ..
+        } => {
+            assert!(body.len() <= 512, "error body exceeds the byte budget");
+            assert!(body.starts_with('a'), "body lost its leading bytes");
+        }
+        _ => panic!("expected Status with HTTP 400"),
+    }
+}

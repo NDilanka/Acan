@@ -41,8 +41,22 @@ impl Reply {
     }
 
     /// A reply whose text is `value` serialized as JSON.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `value` cannot be represented as JSON. [`Reply::try_json`] returns the error.
     pub fn json(value: &impl Serialize) -> Self {
-        Self::text(serde_json::to_string(value).expect("stub reply serializes to JSON"))
+        Self::try_json(value)
+            .unwrap_or_else(|err| panic!("stub reply must serialize to JSON: {err}"))
+    }
+
+    /// A reply whose text is `value` serialized as JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns the `serde_json` error when `value` cannot be represented as JSON.
+    pub fn try_json(value: &impl Serialize) -> Result<Self, serde_json::Error> {
+        serde_json::to_string(value).map(Self::text)
     }
 
     pub fn with_usage(mut self, usage: Usage) -> Self {

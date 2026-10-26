@@ -1,16 +1,19 @@
 use std::time::{Duration, Instant};
 
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::chat::{ChatRequest, ChatResponse, Message, ToolCall, ToolKind, ToolSpec};
-use crate::client::ModelClient;
+use crate::client::{ModelClient, Structured, parse_structured, with_schema};
 use crate::config::{ConfigError, LlmConfig, ProviderConfig, StructuredOutput};
 use crate::error::LlmError;
 use crate::key::{ApiKey, ApiKeys};
 use crate::role::Role;
 use crate::usage::{CallRecord, Usage, UsageLedger};
 
+/// Most bytes of a provider error body kept in an error, counted after credentials are redacted.
 const ERROR_BODY_LIMIT: usize = 512;
 
 /// Retries for 429 and 5xx replies. Waits `base_delay`, doubling it before each retry.
@@ -40,11 +43,19 @@ pub struct OpenAiCompatible {
 }
 
 impl OpenAiCompatible {
+    /// Builds the client with the default retry policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Client`] when the HTTP client cannot be built.
     pub fn new(config: LlmConfig, keys: ApiKeys) -> Result<Self, ConfigError> {
         Ok(Self {
             config,
             keys,
-            http: reqwest::Client::builder().build()?,
+            // reqwest's own retries would replay requests outside the 429 and 5xx policy.
+            http: reqwest::Client::builder()
+                .retry(reqwest::retry::never())
+                .build()?,
             retry: RetryPolicy::default(),
             ledger: UsageLedger::default(),
         })
@@ -90,7 +101,7 @@ impl OpenAiCompatible {
                     .map_err(|err| transport_error(&provider.name, err))?;
                 return serde_json::from_str(&text).map_err(|err| LlmError::MalformedResponse {
                     provider: provider.name.clone(),
-                    detail: err.to_string(),
+                    detail: self.keys.redact(&err.to_string()),
                 });
             }
 
@@ -112,9 +123,55 @@ impl OpenAiCompatible {
                 continue;
             }
 
-            let body = response.text().await.unwrap_or_default();
-            return Err(status_error(&provider.name, status.as_u16(), attempt, body));
+            return Err(self.status_error(&provider.name, response, attempt).await);
         }
+    }
+
+    /// Builds the error for a final reply. Only variants that keep a body read it.
+    async fn status_error(
+        &self,
+        provider: &str,
+        mut response: reqwest::Response,
+        attempts: u32,
+    ) -> LlmError {
+        let status = response.status().as_u16();
+        let provider = provider.to_owned();
+        match status {
+            429 => LlmError::RateLimited { provider, attempts },
+            500..=599 => LlmError::ServerError {
+                provider,
+                status,
+                attempts,
+            },
+            402 => LlmError::PaymentRequired {
+                provider,
+                body: self.read_error_body(&mut response).await,
+            },
+            _ => LlmError::Status {
+                provider,
+                status,
+                body: self.read_error_body(&mut response).await,
+            },
+        }
+    }
+
+    /// Reads the start of an error body and redacts configured keys.
+    ///
+    /// The read window is the byte budget plus the longest key, so any key that starts inside the
+    /// budget is read whole and redacted before the cut. A failed read keeps the bytes already
+    /// received, because the body is only diagnostic.
+    async fn read_error_body(&self, response: &mut reqwest::Response) -> String {
+        let window = ERROR_BODY_LIMIT + self.keys.longest_len();
+        let mut bytes = Vec::with_capacity(window);
+        while bytes.len() < window {
+            let Ok(Some(chunk)) = response.chunk().await else {
+                break;
+            };
+            let take = chunk.len().min(window - bytes.len());
+            bytes.extend_from_slice(&chunk[..take]);
+        }
+        let text = self.keys.redact(&String::from_utf8_lossy(&bytes));
+        truncate_to_bytes(text, ERROR_BODY_LIMIT)
     }
 }
 
@@ -168,6 +225,18 @@ impl ModelClient for OpenAiCompatible {
             call,
         })
     }
+
+    async fn chat_json<T>(
+        &self,
+        role: Role,
+        request: ChatRequest,
+    ) -> Result<Structured<T>, LlmError>
+    where
+        T: DeserializeOwned + JsonSchema,
+    {
+        let response = self.chat(role, with_schema::<T>(request)).await?;
+        parse_structured(response, |text| self.keys.redact(text))
+    }
 }
 
 fn transport_error(provider: &str, err: reqwest::Error) -> LlmError {
@@ -183,25 +252,16 @@ fn transport_error(provider: &str, err: reqwest::Error) -> LlmError {
     }
 }
 
-fn status_error(provider: &str, status: u16, attempts: u32, body: String) -> LlmError {
-    let provider = provider.to_owned();
-    match status {
-        402 => LlmError::PaymentRequired {
-            provider,
-            body: body.chars().take(ERROR_BODY_LIMIT).collect(),
-        },
-        429 => LlmError::RateLimited { provider, attempts },
-        500..=599 => LlmError::ServerError {
-            provider,
-            status,
-            attempts,
-        },
-        _ => LlmError::Status {
-            provider,
-            status,
-            body: body.chars().take(ERROR_BODY_LIMIT).collect(),
-        },
+/// Cuts `text` to at most `limit` bytes, stepping back to a character boundary if needed.
+fn truncate_to_bytes(mut text: String, limit: usize) -> String {
+    if text.len() > limit {
+        let mut end = limit;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
     }
+    text
 }
 
 /// Without `response_format`, the prompt fallback asks for JSON and `chat_json` validates it.

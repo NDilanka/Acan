@@ -80,6 +80,12 @@ pub(crate) struct ResolvedRoute<'a> {
 
 impl LlmConfig {
     /// Parses and validates a config from TOML text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Parse`] for invalid TOML or unknown fields. Returns the validation
+    /// variants for a duplicate provider, a base URL that is not HTTP or HTTPS, or a route to an
+    /// unknown provider.
     pub fn from_toml_str(text: &str) -> Result<Self, ConfigError> {
         let config: Self = toml::from_str(text)?;
         config.validate()?;
@@ -87,6 +93,11 @@ impl LlmConfig {
     }
 
     /// Reads and validates a config file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Read`] when the file cannot be read. Otherwise returns the errors of
+    /// [`LlmConfig::from_toml_str`].
     pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
         let path = path.as_ref();
         let text = fs::read_to_string(path).map_err(|source| ConfigError::Read {

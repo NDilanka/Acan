@@ -3,6 +3,8 @@ use std::fmt;
 
 use crate::config::LlmConfig;
 
+const REDACTED: &str = "<redacted>";
+
 /// An API key. Debug output is redacted, and the value is only read inside this crate.
 #[derive(Clone)]
 pub struct ApiKey(String);
@@ -49,5 +51,23 @@ impl ApiKeys {
 
     pub(crate) fn get(&self, provider: &str) -> Option<&ApiKey> {
         self.0.get(provider)
+    }
+
+    /// Replaces every configured key in `text` with a fixed marker. Matches the exact key bytes.
+    pub(crate) fn redact(&self, text: &str) -> String {
+        self.0
+            .values()
+            .map(ApiKey::expose)
+            .filter(|key| !key.is_empty())
+            .fold(text.to_owned(), |text, key| text.replace(key, REDACTED))
+    }
+
+    /// Length in bytes of the longest configured key.
+    pub(crate) fn longest_len(&self) -> usize {
+        self.0
+            .values()
+            .map(|key| key.expose().len())
+            .max()
+            .unwrap_or(0)
     }
 }

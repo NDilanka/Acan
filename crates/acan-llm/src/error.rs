@@ -16,6 +16,7 @@ pub enum LlmError {
     #[error("no key for provider {provider}, set {env_var} in the environment or .env")]
     MissingKey { provider: String, env_var: String },
 
+    /// `body` is the provider's reply with configured keys replaced, cut to 512 bytes.
     #[error("{provider} returned 402 payment required")]
     PaymentRequired { provider: String, body: String },
 
@@ -29,6 +30,7 @@ pub enum LlmError {
         attempts: u32,
     },
 
+    /// `body` is the provider's reply with configured keys replaced, cut to 512 bytes.
     #[error("{provider} returned HTTP {status}")]
     Status {
         provider: String,
@@ -46,9 +48,12 @@ pub enum LlmError {
         source: reqwest::Error,
     },
 
+    /// `detail` is the parser message with configured keys replaced.
     #[error("{provider} sent a response Acan cannot read")]
     MalformedResponse { provider: String, detail: String },
 
+    /// `detail` is the parser message. `raw` is the full reply text. Both have configured keys
+    /// replaced.
     #[error("reply does not match the requested schema")]
     SchemaValidation {
         provider: String,

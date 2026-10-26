@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use acan_llm::{ChatRequest, LlmError, Message, ModelClient, Reply, Role, Stub, Usage};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -44,6 +46,14 @@ async fn scripted_foreman_reply_round_trips_through_chat_json() {
     assert_eq!(out.call.provider, "stub");
     assert_eq!(out.call.usage.prompt_tokens, 40);
     assert_eq!(out.call.usage.completion_tokens, 12);
+}
+
+#[test]
+fn reply_json_returns_an_error_for_values_json_cannot_represent() {
+    // JSON object keys must be strings, so a map keyed by tuples cannot serialize.
+    let tuple_keyed = BTreeMap::from([((1_u8, 2_u8), "x")]);
+
+    assert!(Reply::try_json(&tuple_keyed).is_err());
 }
 
 #[tokio::test]
