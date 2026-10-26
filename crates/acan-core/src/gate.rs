@@ -198,7 +198,7 @@ fn close(ctx: &Ctx<'_>, fence: Fence, run: GateRunId, verdict: GateVerdict) -> [
 pub(crate) fn decide_land_result(
     world: &World,
     task: TaskId,
-    head: CommitId,
+    head: &CommitId,
     result: Result<CommitId, String>,
 ) -> Result<Vec<Event>, Rejection> {
     let t = world
@@ -207,7 +207,7 @@ pub(crate) fn decide_land_result(
     let TaskState::Queued { head: queued, .. } = &t.state else {
         return Err(Rejection::wrong_state("task", t.state.name()));
     };
-    if *queued != head {
+    if queued != head {
         return Err(Rejection::invalid(
             "the head is not the commit that passed the gate",
         ));

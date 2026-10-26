@@ -19,7 +19,7 @@ fn gate_once(
     agent: &acan_core::AgentId,
     fence: Fence,
     head: &str,
-    outcome: WitnessOutcome,
+    outcome: &WitnessOutcome,
 ) {
     fx.agent(
         agent,
@@ -143,10 +143,10 @@ fn full_loop() -> Fx {
     let fail = WitnessOutcome::Fail {
         detail: "login test failed".to_owned(),
     };
-    gate_once(&mut fx, &a, f1, "aaa000", fail);
-    gate_once(&mut fx, &a, f1, "aaa111", WitnessOutcome::Pass);
+    gate_once(&mut fx, &a, f1, "aaa000", &fail);
+    gate_once(&mut fx, &a, f1, "aaa111", &WitnessOutcome::Pass);
     land(&mut fx, t1, "aaa111", "m1");
-    gate_once(&mut fx, &b, f2, "bbb222", WitnessOutcome::Pass);
+    gate_once(&mut fx, &b, f2, "bbb222", &WitnessOutcome::Pass);
     assert_eq!(phase(&fx), OrderPhase::Landing);
     land(&mut fx, t2, "bbb222", "m2");
     assert_eq!(phase(&fx), OrderPhase::Landed);

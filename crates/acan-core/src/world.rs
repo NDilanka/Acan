@@ -782,7 +782,7 @@ impl World {
                     .or_default();
                 count.input += u64::from(*input_tokens);
                 count.output += u64::from(*output_tokens);
-                count.calls += 1;
+                count.calls = count.calls.saturating_add(1);
             }
         }
         self.next_seq = stamped.seq.next();
@@ -835,7 +835,7 @@ impl World {
 }
 
 fn bump(counter: &mut u32, seen: u32) {
-    *counter = (*counter).max(seen + 1);
+    *counter = (*counter).max(seen.saturating_add(1));
 }
 
 /// The single decider for a world. Only the origin appends events.
@@ -1045,7 +1045,7 @@ fn decide_system(world: &World, ctx: &Ctx<'_>, cmd: SystemCmd) -> Result<Vec<Eve
             outcome,
         } => gate::decide_witness_result(world, ctx, run, witness, outcome),
         SystemCmd::LandResult { task, head, result } => {
-            gate::decide_land_result(world, task, head, result)
+            gate::decide_land_result(world, task, &head, result)
         }
         SystemCmd::ModelUsed {
             model,
