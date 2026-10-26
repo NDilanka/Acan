@@ -7,7 +7,8 @@
 use std::fmt;
 use std::str::FromStr;
 
-use serde::{Deserialize, Serialize};
+use serde::de::{self, Unexpected, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Error returned when an identifier fails boundary validation.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -34,9 +35,15 @@ pub enum ParseIdError {
 macro_rules! counter_id {
     ($(#[$meta:meta])* $name:ident, $prefix:literal) => {
         $(#[$meta])*
-        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize)]
         #[serde(transparent)]
         pub struct $name(u32);
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                deserializer.deserialize_any(CounterVisitor).map(Self)
+            }
+        }
 
         impl $name {
             pub(crate) const fn new(n: u32) -> Self {
@@ -65,6 +72,33 @@ macro_rules! counter_id {
             }
         }
     };
+}
+
+/// Reads a counter id from a JSON number, or from a numeric string when the id is a map key.
+///
+/// JSON map keys are strings, and serde buffers the content of an internally tagged enum
+/// such as `Event`, so a key reaches the id as `"3"` rather than `3`.
+struct CounterVisitor;
+
+impl Visitor<'_> for CounterVisitor {
+    type Value = u32;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("a non-negative integer id")
+    }
+
+    fn visit_u64<E: de::Error>(self, n: u64) -> Result<u32, E> {
+        u32::try_from(n).map_err(|_| E::invalid_value(Unexpected::Unsigned(n), &self))
+    }
+
+    fn visit_i64<E: de::Error>(self, n: i64) -> Result<u32, E> {
+        u32::try_from(n).map_err(|_| E::invalid_value(Unexpected::Signed(n), &self))
+    }
+
+    fn visit_str<E: de::Error>(self, raw: &str) -> Result<u32, E> {
+        raw.parse()
+            .map_err(|_| E::invalid_value(Unexpected::Str(raw), &self))
+    }
 }
 
 counter_id!(/// An order posted on a machine. Displays as `o-1`.
@@ -238,6 +272,19 @@ mod tests {
             "o-12".parse::<TaskId>().is_err(),
             "prefix must match the type"
         );
+    }
+
+    #[test]
+    fn counter_ids_deserialize_from_numbers_and_map_keys() {
+        let keyed: std::collections::BTreeMap<TaskId, u8> =
+            serde_json::from_str(r#"{"3":1}"#).expect("string key parses");
+        assert_eq!(keyed.keys().next(), Some(&TaskId::new(3)));
+        assert_eq!(
+            serde_json::from_str::<TaskId>("3").expect("number parses"),
+            TaskId::new(3)
+        );
+        assert!(serde_json::from_str::<TaskId>("-1").is_err());
+        assert!(serde_json::from_str::<TaskId>(r#""t-3""#).is_err());
     }
 
     #[test]
