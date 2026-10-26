@@ -6,10 +6,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use acan_core::{
-    AgentCmd, AgentId, Belt, Check, CodeIndex, Command, Ctx, DeclarationInput, Event, Fence,
+    Actor, AgentCmd, AgentId, Belt, Check, CodeIndex, Command, Ctx, DeclarationInput, Event, Fence,
     FilePath, HumanCmd, IndexedFile, IndexedSymbol, Judgement, Locus, MachineKey, MemberId,
-    OrderId, Origin, QuestionDraft, ReadbackId, ReadbackVerdict, Rejection, Role, Stamped,
-    SymbolRef, SystemCmd, TaskId, TaskSpec, TaskState, Timestamp, WitnessId, WitnessSpec, WorldRef,
+    OrderId, Origin, QuestionDraft, ReadbackId, ReadbackVerdict, Rejection, ReplayError, Role, Seq,
+    Stamped, SymbolRef, SystemCmd, TaskId, TaskSpec, TaskState, Timestamp, WitnessId, WitnessSpec,
+    WorldRef,
 };
 
 pub fn path(raw: &str) -> FilePath {
@@ -79,6 +80,12 @@ pub fn index() -> CodeIndex {
 
 pub fn events(batch: &[Stamped]) -> Vec<&Event> {
     batch.iter().map(|s| &s.event).collect()
+}
+
+/// The log as the host stores it: through JSON and back.
+pub fn stored(log: &[Stamped]) -> Vec<Stamped> {
+    let json = serde_json::to_string(log).expect("log serializes");
+    serde_json::from_str(&json).expect("log parses")
 }
 
 /// A world with an owner, a second member `bob`, one agent each, and one order split into two tasks.
@@ -202,6 +209,22 @@ impl Fx {
 
     pub fn system(&mut self, cmd: SystemCmd) -> Result<Vec<Stamped>, Rejection> {
         self.run(Command::System(cmd))
+    }
+
+    /// Appends `event` to the stored log as the next system event and replays the origin
+    /// from that log, as a host would after restarting on a damaged or forged store.
+    pub fn append_stored(&mut self, event: Event) -> Result<(), ReplayError> {
+        let last = self.log.last().expect("the log is open").seq;
+        let mut log = self.log.clone();
+        log.push(Stamped {
+            seq: Seq::new(last.get() + 1),
+            at: self.now,
+            actor: Actor::System,
+            event,
+        });
+        self.origin = Origin::replay(stored(&log))?;
+        self.log = log;
+        Ok(())
     }
 
     pub fn advance(&mut self, ms: u64) {

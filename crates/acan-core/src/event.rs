@@ -3,9 +3,14 @@
 //! [`Stamped`] is stored in the host's event table and sent on the WebSocket as the same
 //! JSON. Renaming a variant or field breaks stored logs.
 
+use std::borrow::Cow;
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
-use crate::clash::{ClashKey, Declaration, DeclarationInput, Explanation, OverlapKind, Settlement};
+use crate::clash::{
+    ClashKey, ContractRef, Declaration, DeclarationInput, Explanation, OverlapKind, Settlement,
+};
 use crate::gate::{GateVerdict, WitnessOutcome};
 use crate::ids::{
     AgentId, ClashId, CodeRev, CommitId, GateRunId, Generation, MachineKey, MemberId, OrderId,
@@ -246,6 +251,7 @@ pub enum Event {
         machine: MachineKey,
         sentence: String,
         witnesses: Vec<Witness>,
+        posted_by: MemberId,
     },
     OrderSplit {
         order: OrderId,
@@ -296,6 +302,7 @@ pub enum Event {
         key: ClashKey,
         kind: OverlapKind,
         found_at: CodeRev,
+        contract: Option<ContractRef>,
     },
     ClashDissolved {
         clash: ClashId,
@@ -354,15 +361,17 @@ pub enum Event {
 }
 
 /// Why the origin refused a command. A refused command appends nothing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, thiserror::Error)]
+///
+/// Serialized in HTTP error bodies and parsed back by a joined desktop, so it round-trips.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[serde(tag = "reason", rename_all = "snake_case")]
 pub enum Rejection {
     /// The principal may not do this.
     #[error("forbidden: {why}")]
-    Forbidden { why: &'static str },
+    Forbidden { why: Cow<'static, str> },
     /// The referenced entity does not exist.
     #[error("unknown {what} {id}")]
-    Unknown { what: &'static str, id: String },
+    Unknown { what: Cow<'static, str>, id: String },
     /// A job result or command was for an older order revision.
     #[error("stale order revision; current is {current:?}")]
     StaleRevision { current: OrderRev },
@@ -384,12 +393,36 @@ pub enum Rejection {
     /// The entity is in the wrong state for this command.
     #[error("{what} is {found}")]
     WrongState {
-        what: &'static str,
-        found: &'static str,
+        what: Cow<'static, str>,
+        found: Cow<'static, str>,
     },
     /// The command is malformed.
     #[error("invalid command: {why}")]
     Invalid { why: String },
+}
+
+impl Rejection {
+    pub(crate) fn forbidden(why: &'static str) -> Self {
+        Self::Forbidden { why: why.into() }
+    }
+
+    pub(crate) fn unknown(what: &'static str, id: impl fmt::Display) -> Self {
+        Self::Unknown {
+            what: what.into(),
+            id: id.to_string(),
+        }
+    }
+
+    pub(crate) fn wrong_state(what: &'static str, found: &'static str) -> Self {
+        Self::WrongState {
+            what: what.into(),
+            found: found.into(),
+        }
+    }
+
+    pub(crate) fn invalid(why: &'static str) -> Self {
+        Self::Invalid { why: why.into() }
+    }
 }
 
 /// Why a log could not be folded.
@@ -401,4 +434,8 @@ pub enum ReplayError {
     /// An event arrived out of order. The caller refetches from `expected`.
     #[error("expected seq {expected:?}, got {got:?}")]
     SeqGap { expected: Seq, got: Seq },
+    /// An event refers to an entity the log never created, or creates one twice. The log is
+    /// damaged or forged; nothing from this event on was applied.
+    #[error("invalid event at seq {seq:?}: {why}")]
+    InvalidEvent { seq: Seq, why: String },
 }

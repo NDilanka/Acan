@@ -1,20 +1,26 @@
 //! The world: the fold of one log, the origin that extends it, and replicas that follow it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::{fmt, mem};
 
 use serde::{Deserialize, Serialize};
 
-use crate::clash::{Clash, ClashKey, Settlement};
-use crate::event::{Command, Rejection, ReplayError, Stamped};
-use crate::gate::GateRun;
+use crate::clash::{self, Clash, ClashKey, ClashState, Declaration, Settlement};
+use crate::event::{
+    Actor, AgentCmd, Command, Event, HumanCmd, Rejection, ReplayError, Stamped, SystemCmd,
+};
+use crate::gate::{self, GateRun, GateVerdict};
 use crate::ids::{
-    AgentId, ClashId, CodeRev, GateRunId, MemberId, OrderId, QuestionId, ReadbackId, Seq, TaskId,
-    Timestamp, WitnessId, WorldId,
+    AgentId, ClashId, CodeRev, GateRunId, MemberId, OrderId, OrderRev, QuestionId, ReadbackId, Seq,
+    TaskId, Timestamp, WitnessId, WorldId,
 };
 use crate::index::CodeIndex;
 use crate::job::Job;
-use crate::member::{AgentPrincipal, Member, SettleRight};
-use crate::order::{Order, OrderPhase, Question, Readback, Task, Witness};
+use crate::lease::{self, Claim};
+use crate::member::{self, AgentPrincipal, Member, Role, SettleRight};
+use crate::order::{
+    self, Order, OrderPhase, OrderState, Question, Readback, Stage, Task, TaskState, Witness,
+};
 
 /// Which repository a world tracks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,15 +72,17 @@ pub struct ModelUsage {
     pub totals: BTreeMap<String, BTreeMap<Step, TokenCount>>,
 }
 
+// Wider than the ids they mint, so one past `u32::MAX` marks a kind as exhausted
+// instead of saturating onto an id already in use.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Counters {
-    order: u32,
-    task: u32,
-    witness: u32,
-    readback: u32,
-    question: u32,
-    clash: u32,
-    gate: u32,
+    order: u64,
+    task: u64,
+    witness: u64,
+    readback: u64,
+    question: u64,
+    clash: u64,
+    gate: u64,
 }
 
 /// The fold of a world log. Read-only outside the crate; only applying events changes it.
@@ -208,25 +216,165 @@ impl World {
     /// See [`OrderPhase`] for the rules. `None` for an unknown order.
     #[must_use]
     pub fn phase(&self, order: OrderId) -> Option<OrderPhase> {
-        todo!()
+        let order = self.orders.get(&order)?;
+        let phase = match order.state {
+            OrderState::Cancelled => OrderPhase::Cancelled,
+            OrderState::Splitting => OrderPhase::Splitting,
+            OrderState::Split => self.split_phase(order.id),
+        };
+        Some(phase)
+    }
+
+    fn split_phase(&self, order: OrderId) -> OrderPhase {
+        let tasks: Vec<&Task> = self.tasks_of(order).collect();
+        let any = |pred: fn(&TaskState) -> bool| tasks.iter().any(|t| pred(&t.state));
+        if tasks
+            .iter()
+            .all(|t| matches!(t.state, TaskState::Landed { .. }))
+        {
+            return OrderPhase::Landed;
+        }
+        if let Some(question) = self.open_question(order) {
+            return OrderPhase::Asking {
+                question: question.id,
+            };
+        }
+        if tasks
+            .iter()
+            .any(|t| self.clashes_for(t.id).any(Clash::blocking))
+        {
+            return OrderPhase::Clashing;
+        }
+        let queued = any(|s| matches!(s, TaskState::Queued { .. }));
+        let active = any(|s| matches!(s, TaskState::Open | TaskState::Claimed { .. }));
+        if queued && !active {
+            OrderPhase::Landing
+        } else if any(|s| {
+            matches!(
+                s,
+                TaskState::Claimed {
+                    stage: Stage::Gating { .. },
+                    ..
+                }
+            )
+        }) {
+            OrderPhase::Gating
+        } else if any(|s| {
+            matches!(
+                s,
+                TaskState::Claimed {
+                    stage: Stage::Building { .. },
+                    ..
+                }
+            )
+        }) {
+            OrderPhase::Building
+        } else {
+            OrderPhase::ReadingBack
+        }
     }
 
     /// Queued tasks in merge order: by the seq at which each was queued.
     #[must_use]
     pub fn land_queue(&self) -> Vec<TaskId> {
-        todo!()
+        let mut queued: Vec<(Seq, TaskId)> = self
+            .tasks
+            .values()
+            .filter_map(|t| match t.state {
+                TaskState::Queued { queued_at, .. } => Some((queued_at, t.id)),
+                _ => None,
+            })
+            .collect();
+        queued.sort_unstable();
+        queued.into_iter().map(|(_, task)| task).collect()
     }
 
     /// The jobs the host should be running now. See [`Job`] for the contract.
     ///
     /// `Split` for each splitting order; `Review` for each split order without an open
-    /// question whose open tasks have readbacks lacking a verdict at the current revision;
+    /// question whose open or claimed tasks have readbacks lacking a verdict at the current
+    /// revision (a readback on a claimed task is a standby, matched so it can claim when the
+    /// lease ends);
     /// `Explain` for each blocking clash without an explanation; `RunWitness` for each
     /// frozen witness of a current gate run without a result; `Land` for the front of the
     /// land queue only.
     #[must_use]
     pub fn jobs(&self) -> Vec<Job> {
-        todo!()
+        let mut jobs = Vec::new();
+        for order in self.orders.values() {
+            match order.state {
+                OrderState::Splitting => jobs.push(Job::Split {
+                    order: order.id,
+                    rev: order.rev,
+                }),
+                OrderState::Split if self.open_question(order.id).is_none() => {
+                    let readbacks = self.unreviewed(order);
+                    if !readbacks.is_empty() {
+                        jobs.push(Job::Review {
+                            order: order.id,
+                            rev: order.rev,
+                            readbacks,
+                        });
+                    }
+                }
+                OrderState::Split | OrderState::Cancelled => {}
+            }
+        }
+        jobs.extend(
+            self.clashes
+                .values()
+                .filter(|c| c.blocking() && c.explanation.is_none())
+                .map(|c| Job::Explain { clash: c.id }),
+        );
+        for task in self.tasks.values() {
+            let TaskState::Claimed {
+                stage: Stage::Gating { run, .. },
+                ..
+            } = &task.state
+            else {
+                continue;
+            };
+            let Some(gate) = self.gates.get(run) else {
+                continue;
+            };
+            jobs.extend(
+                gate.witnesses
+                    .iter()
+                    .filter(|w| !gate.results.contains_key(w))
+                    .map(|&witness| Job::RunWitness { run: *run, witness }),
+            );
+        }
+        let front = self
+            .land_queue()
+            .first()
+            .and_then(|&id| self.tasks.get(&id));
+        if let Some(Task {
+            id,
+            state: TaskState::Queued { head, .. },
+            ..
+        }) = front
+        {
+            jobs.push(Job::Land {
+                task: *id,
+                head: head.clone(),
+            });
+        }
+        jobs
+    }
+
+    /// The readbacks the order's `Review` job covers, ignoring whether a question is open.
+    pub(crate) fn unreviewed(&self, order: &Order) -> BTreeSet<ReadbackId> {
+        self.readbacks
+            .values()
+            .filter(|r| {
+                self.tasks.get(&r.task).is_some_and(|t| {
+                    t.order == order.id
+                        && matches!(t.state, TaskState::Open | TaskState::Claimed { .. })
+                })
+            })
+            .filter(|r| r.verdict.as_ref().is_none_or(|v| v.rev != order.rev))
+            .map(|r| r.id)
+            .collect()
     }
 
     /// What `member` sending `SettleClash { clash, choice }` would do. `None` when the member
@@ -241,7 +389,76 @@ impl World {
         clash: &Clash,
         choice: &Settlement,
     ) -> Option<SettleRight> {
-        todo!()
+        let role = self.members.get(member)?.role;
+        if !clash.menu().contains(choice) {
+            return None;
+        }
+        if role == Role::Owner {
+            return Some(SettleRight::Settle);
+        }
+        let own = choice
+            .yielder(&clash.key)
+            .and_then(|task| self.holder(task))
+            .and_then(|agent| self.agents.get(agent))
+            .is_some_and(|principal| &principal.owner == member);
+        Some(if own {
+            SettleRight::Settle
+        } else {
+            SettleRight::Propose
+        })
+    }
+
+    /// The agent holding `task` under a live claim.
+    pub(crate) fn holder(&self, task: TaskId) -> Option<&AgentId> {
+        match &self.tasks.get(&task)?.state {
+            TaskState::Claimed { claim, .. } => Some(&claim.lease.holder),
+            _ => None,
+        }
+    }
+
+    /// Declarations of every claimed task that has one. Detection runs over these.
+    pub(crate) fn live_declarations(&self) -> impl Iterator<Item = &Declaration> {
+        self.tasks.values().filter_map(|t| match &t.state {
+            TaskState::Claimed { stage, .. } => stage.declaration(),
+            _ => None,
+        })
+    }
+
+    pub(crate) fn next_order_id(&self) -> Result<OrderId, Rejection> {
+        mint(self.ids.order, "order ids are exhausted").map(OrderId::new)
+    }
+
+    pub(crate) fn next_task_ids(&self, n: usize) -> Result<Vec<TaskId>, Rejection> {
+        mint_many(self.ids.task, n, "task ids are exhausted", TaskId::new)
+    }
+
+    pub(crate) fn next_witness_ids(&self, n: usize) -> Result<Vec<WitnessId>, Rejection> {
+        mint_many(
+            self.ids.witness,
+            n,
+            "witness ids are exhausted",
+            WitnessId::new,
+        )
+    }
+
+    pub(crate) fn next_witness_id(&self) -> Result<WitnessId, Rejection> {
+        mint(self.ids.witness, "witness ids are exhausted").map(WitnessId::new)
+    }
+
+    pub(crate) fn next_readback_id(&self) -> Result<ReadbackId, Rejection> {
+        mint(self.ids.readback, "readback ids are exhausted").map(ReadbackId::new)
+    }
+
+    pub(crate) fn next_question_id(&self) -> Result<QuestionId, Rejection> {
+        mint(self.ids.question, "question ids are exhausted").map(QuestionId::new)
+    }
+
+    pub(crate) fn next_clash_ids(&self, n: usize) -> Result<Vec<ClashId>, Rejection> {
+        mint_many(self.ids.clash, n, "clash ids are exhausted", ClashId::new)
+    }
+
+    pub(crate) fn next_gate_id(&self) -> Result<GateRunId, Rejection> {
+        mint(self.ids.gate, "gate run ids are exhausted").map(GateRunId::new)
     }
 
     fn opened(world_ref: WorldRef) -> Self {
@@ -266,13 +483,515 @@ impl World {
 
     /// Folds a whole log. The first event must be `WorldOpened` at seq 0.
     fn from_log(log: impl IntoIterator<Item = Stamped>) -> Result<Self, ReplayError> {
-        todo!()
+        let mut log = log.into_iter();
+        let first = log.next().ok_or(ReplayError::NotOpened)?;
+        let Event::WorldOpened { world, .. } = &first.event else {
+            return Err(ReplayError::NotOpened);
+        };
+        if first.seq != Seq::ZERO {
+            return Err(ReplayError::NotOpened);
+        }
+        let mut folded = Self::opened(world.clone());
+        folded.apply(&first);
+        for stamped in log {
+            if stamped.seq != folded.next_seq {
+                return Err(ReplayError::SeqGap {
+                    expected: folded.next_seq,
+                    got: stamped.seq,
+                });
+            }
+            folded.check(&stamped)?;
+            folded.apply(&stamped);
+        }
+        Ok(folded)
+    }
+
+    /// Rejects a stored or streamed event that refers to an entity the log never created, or
+    /// creates one twice. The origin never records one; a damaged or forged log can, and the
+    /// decide functions rely on these references.
+    fn check(&self, stamped: &Stamped) -> Result<(), ReplayError> {
+        self.check_refs(&stamped.event)
+            .map_err(|why| ReplayError::InvalidEvent {
+                seq: stamped.seq,
+                why,
+            })
+    }
+
+    fn check_refs(&self, event: &Event) -> Result<(), String> {
+        match event {
+            Event::WorldOpened { .. } => Err("the world is already open".to_owned()),
+            Event::MemberAdded { .. }
+            | Event::AgentRegistered { .. }
+            | Event::IndexUpdated { .. }
+            | Event::ModelUsed { .. } => Ok(()),
+            Event::OrderPosted {
+                order, witnesses, ..
+            } => {
+                fresh(&self.orders, order, "order")?;
+                witnesses
+                    .iter()
+                    .try_for_each(|w| fresh(&self.witnesses, &w.id, "witness"))
+            }
+            Event::OrderSplit { order, tasks, .. } => {
+                known(&self.orders, order, "order")?;
+                tasks
+                    .iter()
+                    .try_for_each(|(id, _)| fresh(&self.tasks, id, "task"))
+            }
+            Event::ReadbackPosted { readback } => {
+                known(&self.tasks, &readback.task, "task")?;
+                fresh(&self.readbacks, &readback.id, "readback")
+            }
+            Event::ReadbacksReviewed {
+                order, verdicts, ..
+            } => {
+                known(&self.orders, order, "order")?;
+                verdicts
+                    .iter()
+                    .try_for_each(|(id, _)| known(&self.readbacks, id, "readback"))
+            }
+            Event::QuestionPinned { question } => {
+                known(&self.orders, &question.order, "order")?;
+                fresh(&self.questions, &question.id, "question")
+            }
+            Event::QuestionAnswered {
+                question, witness, ..
+            } => {
+                known(&self.questions, question, "question")?;
+                fresh(&self.witnesses, &witness.id, "witness")
+            }
+            Event::OrderRevised {
+                order, witnesses, ..
+            } => {
+                known(&self.orders, order, "order")?;
+                witnesses
+                    .iter()
+                    .try_for_each(|w| known(&self.witnesses, w, "witness"))
+            }
+            Event::LeaseGranted { task, readback, .. } => {
+                known(&self.tasks, task, "task")?;
+                known(&self.readbacks, readback, "readback")
+            }
+            Event::LeaseRenewed { task, .. }
+            | Event::LeaseEnded { task, .. }
+            | Event::BuildCleared { task }
+            | Event::Landed { task, .. }
+            | Event::LandFailed { task, .. } => known(&self.tasks, task, "task"),
+            Event::Declared { decl } => known(&self.tasks, &decl.task, "task"),
+            Event::ClashFound { clash, key, .. } => {
+                fresh(&self.clashes, clash, "clash")?;
+                if key.a() >= key.b() {
+                    return Err(format!("clash {clash} has an unordered key"));
+                }
+                known(&self.tasks, &key.a(), "task")?;
+                known(&self.tasks, &key.b(), "task")
+            }
+            Event::ClashDissolved { clash }
+            | Event::ClashExplained { clash, .. }
+            | Event::ClashProposed { clash, .. }
+            | Event::ClashSettled { clash, .. } => known(&self.clashes, clash, "clash"),
+            Event::BuildReported {
+                task,
+                run,
+                witnesses,
+                ..
+            } => {
+                known(&self.tasks, task, "task")?;
+                fresh(&self.gates, run, "gate run")?;
+                witnesses
+                    .iter()
+                    .try_for_each(|w| known(&self.witnesses, w, "witness"))
+            }
+            Event::WitnessReported { run, .. } | Event::GateClosed { run, .. } => {
+                known(&self.gates, run, "gate run")
+            }
+            Event::OrderCancelled { order } => known(&self.orders, order, "order"),
+        }
+    }
+
+    /// Stamps `events` at the next seqs, applies each, and appends it to `batch`.
+    fn record(
+        &mut self,
+        at: Timestamp,
+        actor: &Actor,
+        events: Vec<Event>,
+        batch: &mut Vec<Stamped>,
+    ) {
+        for event in events {
+            let stamped = Stamped {
+                seq: self.next_seq,
+                at,
+                actor: actor.clone(),
+                event,
+            };
+            self.apply(&stamped);
+            batch.push(stamped);
+        }
     }
 
     /// The only writer of world state. Never fails, reads a clock, or runs detection;
     /// `seq` continuity is checked by the caller.
     fn apply(&mut self, stamped: &Stamped) {
-        todo!()
+        match &stamped.event {
+            Event::WorldOpened { founder, .. } => {
+                let owner = Member {
+                    id: founder.clone(),
+                    role: Role::Owner,
+                };
+                self.members.insert(founder.clone(), owner);
+            }
+            Event::MemberAdded { member } => {
+                self.members.insert(member.id.clone(), member.clone());
+            }
+            Event::AgentRegistered { agent } => {
+                self.agents.insert(agent.id.clone(), agent.clone());
+            }
+            Event::IndexUpdated { rev } => self.index_rev = Some(rev.clone()),
+            Event::OrderPosted {
+                order,
+                machine,
+                sentence,
+                witnesses,
+                posted_by,
+            } => {
+                bump(&mut self.ids.order, order.get());
+                for witness in witnesses {
+                    bump(&mut self.ids.witness, witness.id.get());
+                    self.witnesses.insert(witness.id, witness.clone());
+                }
+                let posted = Order {
+                    id: *order,
+                    machine: machine.clone(),
+                    sentence: sentence.clone(),
+                    rev: OrderRev::ZERO,
+                    witnesses: witnesses.iter().map(|w| w.id).collect(),
+                    posted_by: posted_by.clone(),
+                    state: OrderState::Splitting,
+                };
+                self.orders.insert(*order, posted);
+            }
+            Event::OrderSplit { order, tasks, .. } => {
+                if let Some(o) = self.orders.get_mut(order) {
+                    o.state = OrderState::Split;
+                }
+                for (id, spec) in tasks {
+                    bump(&mut self.ids.task, id.get());
+                    let task = Task {
+                        id: *id,
+                        order: *order,
+                        spec: spec.clone(),
+                        state: TaskState::Open,
+                        last_generation: None,
+                    };
+                    self.tasks.insert(*id, task);
+                }
+            }
+            Event::ReadbackPosted { readback } => {
+                bump(&mut self.ids.readback, readback.id.get());
+                self.readbacks.insert(readback.id, readback.clone());
+            }
+            Event::ReadbacksReviewed { verdicts, .. } => {
+                for (id, verdict) in verdicts {
+                    if let Some(readback) = self.readbacks.get_mut(id) {
+                        readback.verdict = Some(verdict.clone());
+                    }
+                }
+            }
+            Event::QuestionPinned { question } => {
+                bump(&mut self.ids.question, question.id.get());
+                self.questions.insert(question.id, question.clone());
+            }
+            Event::QuestionAnswered {
+                question,
+                option,
+                witness,
+            } => {
+                if let Some(q) = self.questions.get_mut(question) {
+                    q.answer = Some(*option);
+                }
+                bump(&mut self.ids.witness, witness.id.get());
+                self.witnesses.insert(witness.id, witness.clone());
+            }
+            Event::OrderRevised {
+                order,
+                rev,
+                witnesses,
+            } => {
+                if let Some(o) = self.orders.get_mut(order) {
+                    o.rev = *rev;
+                    o.witnesses.clone_from(witnesses);
+                }
+            }
+            Event::LeaseGranted {
+                task,
+                lease,
+                readback,
+            } => {
+                if let Some(t) = self.tasks.get_mut(task) {
+                    t.last_generation = Some(lease.generation);
+                    t.state = TaskState::Claimed {
+                        claim: Claim {
+                            lease: lease.clone(),
+                            readback: *readback,
+                        },
+                        stage: Stage::Declaring,
+                    };
+                }
+            }
+            Event::LeaseRenewed {
+                task,
+                generation,
+                expires_at,
+            } => {
+                if let Some(TaskState::Claimed { claim, .. }) =
+                    self.tasks.get_mut(task).map(|t| &mut t.state)
+                    && claim.lease.generation == *generation
+                {
+                    claim.lease.expires_at = *expires_at;
+                }
+            }
+            Event::LeaseEnded {
+                task, generation, ..
+            } => {
+                if let Some(t) = self.tasks.get_mut(task)
+                    && matches!(&t.state, TaskState::Claimed { claim, .. } if claim.lease.generation == *generation)
+                {
+                    t.state = TaskState::Open;
+                }
+            }
+            Event::Declared { decl } => {
+                self.restage(decl.task, |_| Stage::Declared { decl: decl.clone() });
+            }
+            Event::ClashFound {
+                clash,
+                key,
+                kind,
+                found_at,
+                contract,
+            } => {
+                bump(&mut self.ids.clash, clash.get());
+                let found = Clash {
+                    id: *clash,
+                    key: key.clone(),
+                    kind: *kind,
+                    found_at: found_at.clone(),
+                    contract: contract.clone(),
+                    explanation: None,
+                    state: ClashState::Open,
+                };
+                self.clashes.insert(*clash, found);
+                self.clash_keys.insert(key.clone(), *clash);
+                // A gating party's run is abandoned, so a late result cannot queue it past
+                // the clash.
+                for party in [key.a(), key.b()] {
+                    self.restage(party, |stage| match stage {
+                        Stage::Building { decl } | Stage::Gating { decl, .. } => {
+                            Stage::Declared { decl }
+                        }
+                        other => other,
+                    });
+                }
+            }
+            Event::ClashDissolved { clash } => {
+                if let Some(c) = self.clashes.get_mut(clash) {
+                    c.state = ClashState::Dissolved;
+                }
+            }
+            Event::ClashExplained { clash, explanation } => {
+                if let Some(c) = self.clashes.get_mut(clash) {
+                    c.explanation = Some(explanation.clone());
+                }
+            }
+            Event::ClashProposed { clash, choice, by } => {
+                if let Some(c) = self.clashes.get_mut(clash) {
+                    c.state = ClashState::Proposed {
+                        choice: choice.clone(),
+                        by: by.clone(),
+                    };
+                }
+            }
+            Event::ClashSettled { clash, choice, by } => {
+                if let Some(c) = self.clashes.get_mut(clash) {
+                    c.state = ClashState::Settled {
+                        choice: choice.clone(),
+                        by: by.clone(),
+                    };
+                }
+                if let Settlement::Narrow { task } = choice {
+                    self.restage(*task, |stage| match stage {
+                        Stage::Declared { .. } | Stage::Building { .. } => Stage::Declaring,
+                        other => other,
+                    });
+                }
+            }
+            Event::BuildCleared { task } => {
+                self.restage(*task, |stage| match stage {
+                    Stage::Declared { decl } => Stage::Building { decl },
+                    other => other,
+                });
+            }
+            Event::BuildReported {
+                task,
+                generation,
+                head,
+                run,
+                rev,
+                witnesses,
+            } => {
+                bump(&mut self.ids.gate, run.get());
+                let started = GateRun {
+                    id: *run,
+                    task: *task,
+                    generation: *generation,
+                    rev: *rev,
+                    head: head.clone(),
+                    witnesses: witnesses.clone(),
+                    results: BTreeMap::new(),
+                };
+                self.gates.insert(*run, started);
+                self.restage(*task, |stage| match stage {
+                    Stage::Building { decl } => Stage::Gating {
+                        decl,
+                        run: *run,
+                        head: head.clone(),
+                    },
+                    other => other,
+                });
+            }
+            Event::WitnessReported {
+                run,
+                witness,
+                outcome,
+            } => {
+                if let Some(gate) = self.gates.get_mut(run) {
+                    gate.results.insert(*witness, outcome.clone());
+                }
+            }
+            Event::GateClosed { run, verdict } => self.close_gate(*run, verdict, stamped.seq),
+            Event::Landed { task, commit } => {
+                if let Some(t) = self.tasks.get_mut(task) {
+                    t.state = TaskState::Landed {
+                        commit: commit.clone(),
+                    };
+                }
+            }
+            Event::LandFailed { task, .. } => {
+                if let Some(t) = self.tasks.get_mut(task) {
+                    t.state = TaskState::Open;
+                }
+            }
+            Event::OrderCancelled { order } => {
+                if let Some(o) = self.orders.get_mut(order) {
+                    o.state = OrderState::Cancelled;
+                }
+                for t in self.tasks.values_mut().filter(|t| t.order == *order) {
+                    if !matches!(t.state, TaskState::Landed { .. }) {
+                        t.state = TaskState::Dropped;
+                    }
+                }
+            }
+            Event::ModelUsed {
+                model,
+                step,
+                input_tokens,
+                output_tokens,
+            } => {
+                let count = self
+                    .usage
+                    .totals
+                    .entry(model.clone())
+                    .or_default()
+                    .entry(*step)
+                    .or_default();
+                count.input += u64::from(*input_tokens);
+                count.output += u64::from(*output_tokens);
+                count.calls = count.calls.saturating_add(1);
+            }
+        }
+        self.next_seq = stamped.seq.next();
+    }
+
+    /// Replaces a claimed task's stage with `f(stage)`. Does nothing for an unclaimed task.
+    fn restage(&mut self, task: TaskId, f: impl FnOnce(Stage) -> Stage) {
+        if let Some(TaskState::Claimed { stage, .. }) =
+            self.tasks.get_mut(&task).map(|t| &mut t.state)
+        {
+            let old = mem::replace(stage, Stage::Declaring);
+            *stage = f(old);
+        }
+    }
+
+    fn close_gate(&mut self, run: GateRunId, verdict: &GateVerdict, seq: Seq) {
+        let Some(task) = self.gates.get(&run).map(|g| g.task) else {
+            return;
+        };
+        let Some(t) = self.tasks.get_mut(&task) else {
+            return;
+        };
+        t.state = match mem::replace(&mut t.state, TaskState::Open) {
+            TaskState::Claimed {
+                claim,
+                stage:
+                    Stage::Gating {
+                        decl,
+                        run: gating,
+                        head,
+                    },
+            } if gating == run => match verdict {
+                GateVerdict::Passed => TaskState::Queued {
+                    head,
+                    run,
+                    queued_at: seq,
+                },
+                // Back through `build_clear`, the one authority on build permission.
+                GateVerdict::Failed { .. } => TaskState::Claimed {
+                    claim,
+                    stage: Stage::Declared { decl },
+                },
+                GateVerdict::Running => TaskState::Claimed {
+                    claim,
+                    stage: Stage::Gating { decl, run, head },
+                },
+            },
+            other => other,
+        };
+    }
+}
+
+fn bump(counter: &mut u64, seen: u32) {
+    *counter = (*counter).max(u64::from(seen) + 1);
+}
+
+fn mint(next: u64, exhausted: &'static str) -> Result<u32, Rejection> {
+    u32::try_from(next).map_err(|_| Rejection::invalid(exhausted))
+}
+
+/// `n` consecutive ids from `next`, or a rejection if any of them does not fit.
+fn mint_many<T>(
+    next: u64,
+    n: usize,
+    exhausted: &'static str,
+    id: fn(u32) -> T,
+) -> Result<Vec<T>, Rejection> {
+    (next..)
+        .take(n)
+        .map(|raw| mint(raw, exhausted).map(id))
+        .collect()
+}
+
+fn known<K: Ord + fmt::Display, V>(map: &BTreeMap<K, V>, id: &K, what: &str) -> Result<(), String> {
+    if map.contains_key(id) {
+        Ok(())
+    } else {
+        Err(format!("unknown {what} {id}"))
+    }
+}
+
+fn fresh<K: Ord + fmt::Display, V>(map: &BTreeMap<K, V>, id: &K, what: &str) -> Result<(), String> {
+    if map.contains_key(id) {
+        Err(format!("{what} {id} already exists"))
+    } else {
+        Ok(())
     }
 }
 
@@ -290,13 +1009,25 @@ impl Origin {
     /// Starts a new world. Returns the `WorldOpened` event (seq 0, founder as owner) to persist.
     #[must_use]
     pub fn open(world: WorldRef, founder: MemberId, now: Timestamp) -> (Self, Stamped) {
-        todo!()
+        let opened = Stamped {
+            seq: Seq::ZERO,
+            at: now,
+            actor: Actor::Member(founder.clone()),
+            event: Event::WorldOpened {
+                world: world.clone(),
+                founder,
+            },
+        };
+        let mut state = World::opened(world);
+        state.apply(&opened);
+        (Self { world: state }, opened)
     }
 
     /// Rebuilds the origin from its stored log.
     ///
     /// # Errors
-    /// Returns [`ReplayError`] if the log does not start with `WorldOpened` or has a gap.
+    /// Returns [`ReplayError`] if the log does not start with `WorldOpened`, has a gap, or
+    /// holds an event that refers to an entity the log never created.
     pub fn replay(log: impl IntoIterator<Item = Stamped>) -> Result<Self, ReplayError> {
         Ok(Self {
             world: World::from_log(log)?,
@@ -313,7 +1044,18 @@ impl Origin {
     /// # Errors
     /// Returns [`Rejection`] when the command is not allowed in the current state.
     pub fn execute(&mut self, ctx: &Ctx<'_>, cmd: Command) -> Result<Vec<Stamped>, Rejection> {
-        todo!()
+        let mut next = self.world.clone();
+        let mut batch = Vec::new();
+        let expired = lease::expire_due(&next, ctx);
+        next.record(ctx.now, &Actor::System, expired, &mut batch);
+        let (actor, decided) = decide(&next, ctx, cmd)?;
+        next.record(ctx.now, &actor, decided, &mut batch);
+        let orphaned = clash::dissolve_orphans(&next);
+        next.record(ctx.now, &Actor::System, orphaned, &mut batch);
+        let cleared = clash::build_clear(&next);
+        next.record(ctx.now, &Actor::System, cleared, &mut batch);
+        self.world = next;
+        Ok(batch)
     }
 
     /// The current state.
@@ -335,7 +1077,8 @@ impl Replica {
     /// Folds a log fetched from the origin. The first event must be `WorldOpened` at seq 0.
     ///
     /// # Errors
-    /// Returns [`ReplayError`] if the log does not start with `WorldOpened` or has a gap.
+    /// Returns [`ReplayError`] if the log does not start with `WorldOpened`, has a gap, or
+    /// holds an event that refers to an entity the log never created.
     pub fn from_log(log: impl IntoIterator<Item = Stamped>) -> Result<Self, ReplayError> {
         Ok(Self {
             world: World::from_log(log)?,
@@ -346,8 +1089,22 @@ impl Replica {
     ///
     /// # Errors
     /// Returns [`ReplayError::SeqGap`] if events were missed; refetch from `next_seq`.
+    /// Returns [`ReplayError::InvalidEvent`], applying nothing, if the event refers to an
+    /// entity the log never created.
     pub fn ingest(&mut self, stamped: &Stamped) -> Result<(), ReplayError> {
-        todo!()
+        let expected = self.world.next_seq;
+        if stamped.seq < expected {
+            return Ok(());
+        }
+        if stamped.seq > expected {
+            return Err(ReplayError::SeqGap {
+                expected,
+                got: stamped.seq,
+            });
+        }
+        self.world.check(stamped)?;
+        self.world.apply(stamped);
+        Ok(())
     }
 
     /// The seq to resume the stream from.
@@ -360,5 +1117,109 @@ impl Replica {
     #[must_use]
     pub fn world(&self) -> &World {
         &self.world
+    }
+}
+
+fn decide(world: &World, ctx: &Ctx<'_>, cmd: Command) -> Result<(Actor, Vec<Event>), Rejection> {
+    match cmd {
+        Command::Human { member, cmd } => {
+            if world.member(&member).is_none() {
+                return Err(Rejection::forbidden("not a member of this world"));
+            }
+            let events = decide_human(world, &member, cmd)?;
+            Ok((Actor::Member(member), events))
+        }
+        Command::Agent { agent, cmd } => {
+            if world.agent(&agent).is_none() {
+                return Err(Rejection::forbidden("agent is not registered"));
+            }
+            let events = decide_agent(world, ctx, &agent, cmd)?;
+            Ok((Actor::Agent(agent), events))
+        }
+        Command::System(cmd) => Ok((Actor::System, decide_system(world, ctx, cmd)?)),
+    }
+}
+
+fn decide_human(world: &World, member: &MemberId, cmd: HumanCmd) -> Result<Vec<Event>, Rejection> {
+    match cmd {
+        HumanCmd::AddMember {
+            member: added,
+            role,
+        } => member::decide_add_member(world, member, added, role),
+        HumanCmd::RegisterAgent { agent } => member::decide_register_agent(world, member, agent),
+        HumanCmd::PostOrder {
+            machine,
+            sentence,
+            witnesses,
+        } => order::decide_post_order(world, member, machine, sentence, witnesses),
+        HumanCmd::AnswerQuestion { question, option } => {
+            order::decide_answer(world, member, question, option)
+        }
+        HumanCmd::SettleClash { clash, choice } => {
+            clash::decide_settle(world, member, clash, choice)
+        }
+        HumanCmd::CancelOrder { order } => order::decide_cancel(world, member, order),
+    }
+}
+
+fn decide_agent(
+    world: &World,
+    ctx: &Ctx<'_>,
+    agent: &AgentId,
+    cmd: AgentCmd,
+) -> Result<Vec<Event>, Rejection> {
+    match cmd {
+        AgentCmd::PostReadback {
+            task,
+            summary,
+            touches,
+        } => order::decide_readback(world, agent, task, summary, touches),
+        AgentCmd::Claim { task } => lease::decide_claim(world, ctx, agent, task),
+        AgentCmd::Renew { fence } => lease::decide_renew(world, ctx, agent, fence),
+        AgentCmd::Release { fence } => lease::decide_release(world, ctx, agent, fence),
+        AgentCmd::Declare { fence, footprint } => {
+            clash::decide_declare(world, ctx, agent, fence, footprint)
+        }
+        AgentCmd::ReportBuilt { fence, head } => {
+            gate::decide_report_built(world, ctx, agent, fence, head)
+        }
+    }
+}
+
+fn decide_system(world: &World, ctx: &Ctx<'_>, cmd: SystemCmd) -> Result<Vec<Event>, Rejection> {
+    match cmd {
+        SystemCmd::IndexUpdated => clash::decide_index_updated(world, ctx),
+        SystemCmd::SplitReady { order, rev, tasks } => {
+            order::decide_split_ready(world, order, rev, tasks)
+        }
+        SystemCmd::ReadbacksReviewed {
+            order,
+            rev,
+            verdicts,
+            question,
+        } => order::decide_reviewed(world, order, rev, verdicts, question),
+        SystemCmd::ClashExplained { clash, explanation } => {
+            clash::decide_explained(world, clash, explanation)
+        }
+        SystemCmd::WitnessResult {
+            run,
+            witness,
+            outcome,
+        } => gate::decide_witness_result(world, ctx, run, witness, outcome),
+        SystemCmd::LandResult { task, head, result } => {
+            gate::decide_land_result(world, task, &head, result)
+        }
+        SystemCmd::ModelUsed {
+            model,
+            step,
+            input_tokens,
+            output_tokens,
+        } => Ok(vec![Event::ModelUsed {
+            model,
+            step,
+            input_tokens,
+            output_tokens,
+        }]),
+        SystemCmd::Tick => Ok(Vec::new()),
     }
 }

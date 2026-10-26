@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
 use acan_core::{
-    Actor, Event, MemberId, ModelUsage, Seq, Stamped, Step, Timestamp, TokenCount, WorldRef,
+    Actor, Event, Generation, MemberId, ModelUsage, Rejection, Seq, Stamped, Step, Timestamp,
+    TokenCount, WorldRef,
 };
 
 #[test]
@@ -64,4 +65,30 @@ fn a_tampered_path_in_stored_json_is_refused() {
         "control parses"
     );
     assert!(serde_json::from_str::<Stamped>(&declared("../etc/passwd")).is_err());
+}
+
+#[test]
+fn a_rejection_round_trips_for_a_joined_desktop() {
+    let rejections = [
+        Rejection::WrongState {
+            what: "task".into(),
+            found: "declaring".into(),
+        },
+        Rejection::Unknown {
+            what: "order".into(),
+            id: "o-7".to_owned(),
+        },
+        Rejection::StaleGeneration {
+            current: Some(Generation::new(3)),
+        },
+        Rejection::LeaseExpired,
+    ];
+    for rejection in rejections {
+        let json = serde_json::to_string(&rejection).expect("serializes");
+        assert_eq!(
+            serde_json::from_str::<Rejection>(&json).expect("deserializes"),
+            rejection,
+            "json {json}"
+        );
+    }
 }

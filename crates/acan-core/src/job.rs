@@ -23,7 +23,9 @@ pub enum Job {
     },
     /// Ask the foreman to review readbacks. Reported as `ReadbacksReviewed`.
     ///
-    /// The readback set is part of the key, so a new readback derives a new job.
+    /// The readback set is part of the key, so a new readback derives a new job. A result is
+    /// accepted for any part of the set current when it arrives, so a job overtaken by a new
+    /// readback still lands its verdicts.
     Review {
         /// The order.
         order: OrderId,
