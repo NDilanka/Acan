@@ -16,15 +16,17 @@ The server stores each `Stamped` event as JSON and streams the same JSON. A clie
 
 Model calls, witness runs and merges are **jobs**. `World::jobs` derives them from state, so a crashed server restarts them by asking again. The server runs each job and reports the result as a `SystemCmd`. A result for a job that is no longer derived is rejected.
 
+A `Review` job covers every readback of the order, on an open or claimed task, that lacks a verdict at the current revision. A readback on a claimed task is a standby: once matched, its agent can claim the moment the lease ends. A review result is accepted only while the job is derived and no question is open, and only for readbacks still in the job, each named once. Any part of the job is accepted, because the job grows while a review runs. A late retry therefore cannot rewrite the verdict a live claim stands on.
+
 Clash detection is the pure function `detect`. The origin runs it inside `execute` and records the blocking results as `ClashFound` and `ClashDissolved` events. Replicas never run detection and never need the code index.
 
 ## Entry points
 
 | Item | Who calls it | What it does |
 | --- | --- | --- |
-| `Origin::open`, `Origin::replay` | server | Start a world, or rebuild it from the stored log. |
+| `Origin::open`, `Origin::replay` | server | Start a world, or rebuild it from the stored log. Reports `ReplayError::InvalidEvent` for a damaged log. |
 | `Origin::execute(&Ctx, Command)` | server | Decide a command. Returns the stamped events to persist and broadcast, or a `Rejection`. A rejected command changes nothing. |
-| `Replica::from_log`, `Replica::ingest` | browser, joined desktop | Fold a fetched log, then apply streamed events. Reports `ReplayError::SeqGap` when events were missed. |
+| `Replica::from_log`, `Replica::ingest` | browser, joined desktop | Fold a fetched log, then apply streamed events. Reports `ReplayError::SeqGap` when events were missed, and `ReplayError::InvalidEvent` for a damaged or forged event. |
 | `World` read methods | everyone | `order`, `tasks_of`, `clashes_for`, `phase`, `land_queue`, `jobs`, `settle_right`, `usage`. |
 | `detect(&[&Declaration], &CodeIndex)` | origin, tests | Pure overlap classification. |
 | `Command`, `HumanCmd`, `AgentCmd`, `SystemCmd` | server, MCP adapter | The write vocabulary. `HumanCmd` is the HTTP body; `AgentCmd` is the MCP tool arguments. |
@@ -55,6 +57,8 @@ fn follow(replica: &mut acan_core::Replica, streamed: &[Stamped]) -> Result<(), 
 }
 ```
 
+Replay checks every event before applying it. An event that refers to an order, task, readback, question, witness, clash or gate run the log never created, creates one twice, or opens the world a second time is refused with `ReplayError::InvalidEvent`, and nothing from it on is applied. The decide functions rely on these references, so a damaged log can never turn a later command into a panic.
+
 `Command` is not deserializable. The server builds it from an authenticated session, so a request can never choose its own principal, and `SystemCmd` can never arrive over the wire.
 
 ## Modules
@@ -84,7 +88,8 @@ Claimed --LeaseEnded(any)--> Open
 Claimed{Declaring|Declared|Building} --Declared--> Claimed{Declared}
 Claimed{Declared} --BuildCleared--> Claimed{Building}
 Claimed{Building} --BuildReported--> Claimed{Gating}
-Claimed{Gating} --GateClosed(Failed)--> Claimed{Building}
+Claimed{Building|Gating} --ClashFound--> Claimed{Declared}   (a gating run is abandoned)
+Claimed{Gating} --GateClosed(Failed)--> Claimed{Declared}    (then BuildCleared if unblocked)
 Claimed{Gating} --GateClosed(Passed)--> Queued        (lease ends as Delivered)
 Queued --Landed--> Landed
 Queued --LandFailed--> Open
@@ -99,7 +104,11 @@ Claimed --Renew(fence)--> Claimed, same generation, later expiry
 Claimed --Release | expiry | question answered | gate passed | order cancelled--> lease ended
 ```
 
-A lease does not expire while its task is gating, because the worker is waiting on witnesses it does not run. A failed gate renews the lease from the moment it closes.
+A lease does not expire while its task is gating, because the worker is waiting on witnesses it does not run. A failed gate renews the lease from the moment it closes. So does a new clash that abandons the run.
+
+Only `build_clear` grants `Building`. A failed gate returns the task to `Declared`, and `build_clear` clears it in the same batch unless a blocking clash or a settled predecessor still holds it. A new blocking clash on a gating task abandons its run, so a late witness result is rejected and can neither restore `Building` nor queue the task past the clash.
+
+Generations, order revisions and counter ids never wrap or saturate. When one is exhausted, the command that needs the next value is rejected before any event is recorded.
 
 **Clash.**
 
@@ -108,11 +117,12 @@ A lease does not expire while its task is gating, because the worker is waiting 
 Open --SettleClash, member may only propose--> Proposed
 Open|Proposed --SettleClash, member may settle--> Settled
 Open|Proposed --redetection no longer finds the overlap--> Dissolved
+Settled(Serialize|SplitAtContract) --a party loses its declaration, or the overlap is gone--> Dissolved
 ```
 
 The owner settles any clash. A member settles a choice whose yielding task is held by one of their own agents, and may only propose otherwise.
 
-A blocking clash dissolves when either party stops holding a declaration (its lease ends, it narrows, or its order is cancelled). A `Contract` clash records which task owns the interface (`Clash::contract`), because its menu offers to split at that interface.
+A blocking clash dissolves when either party stops holding a declaration (its lease ends, it narrows, or its order is cancelled). A settled `Serialize` or `SplitAtContract` clash still holds its waiter, so it dissolves on the same terms, and when redetection no longer finds its overlap. The one exception is a first task that passed its gate and waits in the land queue. It has no declaration left, but its waiter must not build until it lands, so the clash stands until then. A `Contract` clash records which task owns the interface (`Clash::contract`), because its menu offers to split at that interface.
 
 **Order phase** is derived by `World::phase`, not stored. The order stores only `Splitting`, `Split` or `Cancelled`. Everything after the split comes from its tasks, its open question and its clashes, so the phase cannot drift from them.
 
