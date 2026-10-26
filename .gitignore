@@ -1,0 +1,17 @@
+# Rust
+target/
+
+# Node
+node_modules/
+dist/
+
+# Local env and secrets
+.env
+.env.*
+!.env.example
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
