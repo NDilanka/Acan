@@ -1,0 +1,53 @@
+use std::collections::BTreeMap;
+use std::fmt;
+
+use crate::config::LlmConfig;
+
+/// An API key. Debug output is redacted, and the value is only read inside this crate.
+#[derive(Clone)]
+pub struct ApiKey(String);
+
+impl ApiKey {
+    pub fn new(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ApiKey(<redacted>)")
+    }
+}
+
+/// Keys by provider name. A provider without a key fails its calls, not the whole client.
+#[derive(Debug, Clone, Default)]
+pub struct ApiKeys(BTreeMap<String, ApiKey>);
+
+impl ApiKeys {
+    /// Reads each provider's `api_key_env` variable. Unset or blank variables are skipped.
+    pub fn from_env(config: &LlmConfig) -> Self {
+        let keys = config
+            .providers()
+            .iter()
+            .filter_map(|provider| {
+                let value = std::env::var(&provider.api_key_env)
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())?;
+                Some((provider.name.clone(), ApiKey::new(value)))
+            })
+            .collect();
+        Self(keys)
+    }
+
+    pub fn insert(&mut self, provider: impl Into<String>, key: ApiKey) {
+        self.0.insert(provider.into(), key);
+    }
+
+    pub(crate) fn get(&self, provider: &str) -> Option<&ApiKey> {
+        self.0.get(provider)
+    }
+}
