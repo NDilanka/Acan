@@ -1,0 +1,16 @@
+[package]
+name = "acan-witness"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Runs a witness check against a task's worktree and reports the outcome"
+
+[dependencies]
+acan-core = { path = "../acan-core" }
+reqwest = "0.12"
+tokio.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

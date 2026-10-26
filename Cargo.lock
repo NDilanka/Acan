@@ -63,6 +63,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "acan-witness"
+version = "0.1.0"
+dependencies = [
+ "acan-core",
+ "libc",
+ "reqwest",
+ "tokio",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
