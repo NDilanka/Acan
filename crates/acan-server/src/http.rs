@@ -1,5 +1,10 @@
 //! HTTP routes. Every `/api` route except the stream upgrade checks its bearer token here.
 //! The stream checks the same token, and also accepts it as a query parameter for browsers.
+//!
+//! Status codes: a missing or unknown token is 401. A valid token whose principal may not use
+//! the route is 403. That is an auth boundary, so an agent token on `POST /api/commands` gets 403
+//! and never reaches the origin. A command the origin refuses is 409, with the `Rejection` as the
+//! body.
 
 use std::path::PathBuf;
 

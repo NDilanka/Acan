@@ -143,12 +143,37 @@ async fn review<C: ModelClient>(
         .chat_json::<model::ReviewReply>(Role::Foreman, request)
         .await?;
     record_usage(host, job, &reply.call, Step::Review).await;
+    // Another review job may have judged some of these readbacks while the model ran. The origin
+    // refuses a batch that names any readback no longer awaiting review, so drop those here.
+    let awaiting = host.read(|world| awaiting_review(world, order, rev)).await;
+    let allowed: BTreeSet<ReadbackId> = readbacks.intersection(&awaiting).copied().collect();
+    if allowed.is_empty() {
+        return Ok(None);
+    }
     Ok(Some(model::review_result(
         order,
         &machine,
         rev,
+        &allowed,
         reply.value,
     )?))
+}
+
+/// The readbacks the current review job for `order` at `rev` still awaits, or none when that
+/// job is no longer derived.
+fn awaiting_review(world: &World, order: OrderId, rev: OrderRev) -> BTreeSet<ReadbackId> {
+    world
+        .jobs()
+        .into_iter()
+        .find_map(|job| match job {
+            Job::Review {
+                order: derived,
+                rev: derived_rev,
+                readbacks,
+            } if derived == order && derived_rev == rev => Some(readbacks),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 async fn explain<C: ModelClient>(

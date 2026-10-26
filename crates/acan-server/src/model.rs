@@ -249,23 +249,32 @@ pub struct ReviewQuestion {
     pub options: Vec<String>,
 }
 
-/// Maps a review reply to the `ReadbacksReviewed` command. The question, if any, pins on
+/// Maps a review reply to the `ReadbacksReviewed` command for `order` at `rev`.
+///
+/// Only readbacks in `awaiting` get a verdict. A readback the model names twice keeps its first
+/// verdict. Both rules keep the batch to what the origin still accepts, since the origin refuses
+/// the whole batch when any readback in it is not awaiting review. The question, if any, pins on
 /// `machine`, the order's machine.
 ///
 /// # Errors
 ///
-/// Returns [`ReplyError`] when an id is invalid or the question does not have two options.
+/// Returns [`ReplyError`] when a readback or witness id is invalid, or the question does not
+/// have two options.
 pub fn review_result(
     order: OrderId,
     machine: &MachineKey,
     rev: OrderRev,
+    awaiting: &BTreeSet<ReadbackId>,
     reply: ReviewReply,
 ) -> Result<SystemCmd, ReplyError> {
-    let verdicts = reply
-        .readbacks
-        .into_iter()
-        .map(|reviewed| verdict(rev, reviewed))
-        .collect::<Result<Vec<_>, ReplyError>>()?;
+    let mut verdicts: BTreeMap<ReadbackId, ReadbackVerdict> = BTreeMap::new();
+    for reviewed in reply.readbacks {
+        let readback = ReadbackId::from_str(&reviewed.readback)?;
+        if !awaiting.contains(&readback) || verdicts.contains_key(&readback) {
+            continue;
+        }
+        verdicts.insert(readback, verdict(rev, reviewed.witnesses)?);
+    }
     let question = reply
         .question
         .map(|question| question_draft(machine, question))
@@ -273,25 +282,20 @@ pub fn review_result(
     Ok(SystemCmd::ReadbacksReviewed {
         order,
         rev,
-        verdicts,
+        verdicts: verdicts.into_iter().collect(),
         question,
     })
 }
 
-fn verdict(
-    rev: OrderRev,
-    reviewed: ReviewedReadback,
-) -> Result<(ReadbackId, ReadbackVerdict), ReplyError> {
-    let readback = ReadbackId::from_str(&reviewed.readback)?;
-    let per_witness = reviewed
-        .witnesses
+fn verdict(rev: OrderRev, witnesses: Vec<WitnessJudgement>) -> Result<ReadbackVerdict, ReplyError> {
+    let per_witness = witnesses
         .into_iter()
         .map(|judged| {
             let witness = WitnessId::from_str(&judged.witness)?;
             Ok((witness, judgement(judged.judgement)))
         })
         .collect::<Result<BTreeMap<_, _>, ReplyError>>()?;
-    Ok((readback, ReadbackVerdict { rev, per_witness }))
+    Ok(ReadbackVerdict { rev, per_witness })
 }
 
 fn judgement(reply: JudgementReply) -> Judgement {
@@ -444,6 +448,24 @@ mod tests {
         assert!(matches!(err, ReplyError::NoTasks), "got {err:?}");
     }
 
+    fn readback(id: &str) -> ReadbackId {
+        ReadbackId::from_str(id).expect("valid readback id")
+    }
+
+    fn witness_match(witness: &str) -> WitnessJudgement {
+        WitnessJudgement {
+            witness: witness.to_owned(),
+            judgement: JudgementReply::Match,
+        }
+    }
+
+    fn reviewed(id: &str, witnesses: Vec<WitnessJudgement>) -> ReviewedReadback {
+        ReviewedReadback {
+            readback: id.to_owned(),
+            witnesses,
+        }
+    }
+
     #[test]
     fn review_question_must_offer_exactly_two_answers() {
         let reply = ReviewReply {
@@ -454,9 +476,63 @@ mod tests {
             }),
         };
         let machine = MachineKey::from_str("ui").expect("valid key");
-        let err = review_result(order("o-1"), &machine, OrderRev::new(1), reply)
-            .expect_err("three options");
+        let err = review_result(
+            order("o-1"),
+            &machine,
+            OrderRev::new(1),
+            &BTreeSet::new(),
+            reply,
+        )
+        .expect_err("three options");
         assert!(matches!(err, ReplyError::Options(3)), "got {err:?}");
+    }
+
+    #[test]
+    fn review_keeps_only_awaiting_readbacks_and_each_one_once() {
+        let rev = OrderRev::new(2);
+        let awaiting = BTreeSet::from([readback("r-1"), readback("r-3")]);
+        let reply = ReviewReply {
+            readbacks: vec![
+                reviewed("r-3", vec![witness_match("w-1")]),
+                reviewed("r-2", vec![witness_match("w-1")]),
+                reviewed("r-1", vec![witness_match("w-1")]),
+                reviewed(
+                    "r-3",
+                    vec![WitnessJudgement {
+                        witness: "w-1".to_owned(),
+                        judgement: JudgementReply::Disagrees {
+                            reason: "second answer".to_owned(),
+                        },
+                    }],
+                ),
+            ],
+            question: None,
+        };
+        let machine = MachineKey::from_str("ui").expect("valid key");
+
+        let cmd =
+            review_result(order("o-1"), &machine, rev, &awaiting, reply).expect("valid reply");
+
+        let matched = ReadbackVerdict {
+            rev,
+            per_witness: BTreeMap::from([(
+                WitnessId::from_str("w-1").expect("valid witness id"),
+                Judgement::Match,
+            )]),
+        };
+        assert_eq!(
+            cmd,
+            SystemCmd::ReadbacksReviewed {
+                order: order("o-1"),
+                rev,
+                verdicts: vec![
+                    (readback("r-1"), matched.clone()),
+                    (readback("r-3"), matched),
+                ],
+                question: None,
+            },
+            "only awaiting readbacks are judged, each once, keeping the first verdict"
+        );
     }
 
     #[test]

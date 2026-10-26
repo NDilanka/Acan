@@ -1,8 +1,7 @@
 //! The server over real HTTP and WebSocket connections on an ephemeral port.
 //!
-//! Every test that opens a world runs acan-core's `Origin::open`, `execute` and `replay`, which
-//! are still `todo!()` on the scaffold. Those tests are ignored until acan-core lands. Run them
-//! with `cargo test -p acan-server -- --ignored` once it does.
+//! Each test boots a server on a temporary repository, so every command runs through acan-core's
+//! origin and the host. The model client is the offline stub.
 
 use std::fs;
 use std::net::SocketAddr;
@@ -197,7 +196,6 @@ async fn a_non_loopback_bind_is_refused_without_team_and_writes_nothing() {
 }
 
 #[tokio::test]
-#[ignore = "needs acan-core impl"]
 async fn health_is_open_and_every_api_route_refuses_a_bad_token() {
     let dir = temp_repo();
     let running = boot(dir.path()).await;
@@ -245,7 +243,6 @@ async fn health_is_open_and_every_api_route_refuses_a_bad_token() {
 }
 
 #[tokio::test]
-#[ignore = "needs acan-core impl"]
 async fn the_owner_token_is_minted_once_and_survives_a_restart() {
     let dir = temp_repo();
     let first = boot(dir.path()).await;
@@ -273,7 +270,6 @@ async fn the_owner_token_is_minted_once_and_survives_a_restart() {
 }
 
 #[tokio::test]
-#[ignore = "needs acan-core impl"]
 async fn plant_endpoint_returns_the_scanned_plant() {
     let dir = temp_repo();
     let running = boot(dir.path()).await;
@@ -290,7 +286,6 @@ async fn plant_endpoint_returns_the_scanned_plant() {
 }
 
 #[tokio::test]
-#[ignore = "needs acan-core impl"]
 async fn an_accepted_command_is_stored_and_listed_from_its_seq() {
     let dir = temp_repo();
     let running = boot(dir.path()).await;
@@ -315,7 +310,6 @@ async fn an_accepted_command_is_stored_and_listed_from_its_seq() {
 }
 
 #[tokio::test]
-#[ignore = "needs acan-core impl"]
 async fn a_rejected_command_is_409_with_the_rejection_body() {
     let dir = temp_repo();
     let running = boot(dir.path()).await;
@@ -340,7 +334,6 @@ async fn a_rejected_command_is_409_with_the_rejection_body() {
 }
 
 #[tokio::test]
-#[ignore = "needs acan-core impl"]
 async fn an_agent_token_cannot_send_http_commands() {
     let dir = temp_repo();
     let state = dir.path().join(".acan");
@@ -371,7 +364,6 @@ async fn an_agent_token_cannot_send_http_commands() {
 }
 
 #[tokio::test]
-#[ignore = "needs acan-core impl"]
 async fn a_resumed_stream_delivers_the_missed_events_once_and_in_order() {
     let dir = temp_repo();
     let running = boot(dir.path()).await;
@@ -407,7 +399,6 @@ async fn a_resumed_stream_delivers_the_missed_events_once_and_in_order() {
 }
 
 #[tokio::test]
-#[ignore = "needs acan-core impl"]
 async fn a_client_that_falls_behind_is_closed_with_a_resume_reason() {
     let dir = temp_repo();
     let running = boot(dir.path()).await;
@@ -444,7 +435,6 @@ async fn a_client_that_falls_behind_is_closed_with_a_resume_reason() {
 }
 
 #[tokio::test]
-#[ignore = "needs acan-core impl"]
 async fn usage_endpoint_reports_the_calls_the_stub_answered() {
     let dir = temp_repo();
     let stub = Stub::default().when(Role::Foreman, |_| true, Reply::text("{}"));
@@ -476,7 +466,6 @@ async fn usage_endpoint_reports_the_calls_the_stub_answered() {
 }
 
 #[tokio::test]
-#[ignore = "needs acan-core impl"]
 async fn a_posted_order_runs_its_split_job_through_the_client() {
     let dir = temp_repo();
     // The reply is not JSON on purpose. The Stub records a call when it answers, before the
