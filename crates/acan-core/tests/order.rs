@@ -3,8 +3,9 @@ mod common;
 use std::collections::BTreeSet;
 
 use acan_core::{
-    AgentCmd, Check, Event, HumanCmd, Job, Judgement, LeaseEnd, OrderPhase, OrderRev, OrderState,
-    Rejection, ReplayError, Replica, SystemCmd, TaskSpec, TaskState, WitnessKind, WitnessSpec,
+    AgentCmd, Check, Event, HumanCmd, Job, Judgement, LeaseEnd, OrderId, OrderPhase, OrderRev,
+    OrderState, ReadbackVerdict, Rejection, ReplayError, Replica, SystemCmd, TaskSpec, TaskState,
+    WitnessKind, WitnessSpec,
 };
 use common::{Fx, events, machine};
 
@@ -131,13 +132,13 @@ fn disagreeing_readbacks_pin_exactly_one_question() {
         .open_question(fx.order)
         .expect("open question")
         .id;
-    let batch = fx.ask(second).expect("second review accepted");
-    assert!(
-        !events(&batch)
-            .iter()
-            .any(|e| matches!(e, Event::QuestionPinned { .. })),
-        "a second pin: {batch:?}"
-    );
+    let late = fx.ask(second);
+    assert_eq!(late, Err(Rejection::OpenQuestion { question }));
+    let pinned = events(&fx.log)
+        .iter()
+        .filter(|e| matches!(e, Event::QuestionPinned { .. }))
+        .count();
+    assert_eq!(pinned, 1, "a second pin");
     assert_eq!(
         fx.origin.world().phase(fx.order),
         Some(OrderPhase::Asking { question })
@@ -334,4 +335,126 @@ fn an_empty_split_is_rejected() {
         tasks: vec![],
     });
     assert!(matches!(got, Err(Rejection::Invalid { .. })), "got {got:?}");
+}
+
+#[test]
+fn a_late_review_cannot_rewrite_the_verdict_a_live_claim_stands_on() {
+    let mut fx = Fx::new();
+    let (a, t1) = (fx.agent_a.clone(), fx.task1);
+    fx.claim(&a, t1);
+    let TaskState::Claimed { claim, .. } = &fx.origin.world().task(t1).expect("task").state else {
+        panic!("claimed");
+    };
+    let readback = claim.readback;
+    let late = fx.review(
+        readback,
+        Judgement::Unclear {
+            reason: "late retry".to_owned(),
+        },
+    );
+    assert!(late.is_err(), "late review accepted: {late:?}");
+    let world = fx.origin.world();
+    let order = world.order(fx.order).expect("order");
+    let verdict = world
+        .readback(readback)
+        .and_then(|r| r.verdict.as_ref())
+        .expect("verdict");
+    assert!(verdict.matches(order), "the live claim's verdict changed");
+}
+
+#[test]
+fn a_review_naming_a_readback_twice_is_rejected() {
+    let mut fx = Fx::new();
+    let a = fx.agent_a.clone();
+    let readback = fx.read_back(&a, fx.task1);
+    let order = fx.origin.world().order(fx.order).expect("order");
+    let verdict = ReadbackVerdict {
+        rev: order.rev,
+        per_witness: order
+            .witnesses
+            .iter()
+            .map(|&w| (w, Judgement::Match))
+            .collect(),
+    };
+    let rev = order.rev;
+    let got = fx.system(SystemCmd::ReadbacksReviewed {
+        order: fx.order,
+        rev,
+        verdicts: vec![(readback, verdict.clone()), (readback, verdict)],
+        question: None,
+    });
+    assert!(matches!(got, Err(Rejection::Invalid { .. })), "{got:?}");
+}
+
+#[test]
+fn a_standby_readback_on_a_claimed_task_derives_a_review_job() {
+    let mut fx = Fx::new();
+    let (a, b, t1) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1);
+    fx.claim(&a, t1);
+    let standby = fx.read_back(&b, t1);
+    let jobs = fx.origin.world().jobs();
+    assert!(
+        jobs.iter().any(
+            |job| matches!(job, Job::Review { readbacks, .. } if readbacks.contains(&standby))
+        ),
+        "standby readback {standby} has no review job: {jobs:?}"
+    );
+    fx.review(standby, Judgement::Match)
+        .expect("standby review accepted");
+}
+
+#[test]
+fn revision_exhaustion_in_a_stored_log_rejects_the_answer() {
+    let mut fx = Fx::new();
+    let a = fx.agent_a.clone();
+    let readback = fx.read_back(&a, fx.task1);
+    fx.ask(readback).expect("question pinned");
+    let question = fx
+        .origin
+        .world()
+        .open_question(fx.order)
+        .expect("open question")
+        .id;
+    let (order, witnesses) = (fx.order, fx.witnesses());
+    fx.append_stored(Event::OrderRevised {
+        order,
+        rev: OrderRev::new(u32::MAX),
+        witnesses,
+    })
+    .expect("the stored log replays");
+    let owner = fx.owner.clone();
+    let got = fx.human(
+        &owner,
+        HumanCmd::AnswerQuestion {
+            question,
+            option: 0,
+        },
+    );
+    assert!(matches!(got, Err(Rejection::Invalid { .. })), "{got:?}");
+}
+
+#[test]
+fn an_exhausted_order_counter_rejects_a_new_order_instead_of_reusing_an_id() {
+    let mut fx = Fx::new();
+    let max: OrderId = "o-4294967295".parse().expect("valid order id");
+    let owner = fx.owner.clone();
+    fx.append_stored(Event::OrderPosted {
+        order: max,
+        machine: machine("api"),
+        sentence: "keep this order".to_owned(),
+        witnesses: vec![],
+        posted_by: owner.clone(),
+    })
+    .expect("the stored log replays");
+    let before = fx.origin.world().order(max).expect("order").clone();
+    let got = fx.human(
+        &owner,
+        HumanCmd::PostOrder {
+            machine: machine("api"),
+            sentence: "new order".to_owned(),
+            witnesses: vec![],
+        },
+    );
+    assert!(matches!(got, Err(Rejection::Invalid { .. })), "{got:?}");
+    assert_eq!(fx.origin.world().order(max), Some(&before));
 }

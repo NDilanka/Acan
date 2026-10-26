@@ -16,8 +16,8 @@
 //! `LeaseEnded{Expired}` then `LeaseGranted` in one batch, so expiry never waits for a tick.
 //!
 //! A lease does not expire while its task is gating: the worker is waiting on witnesses it
-//! does not control. When the gate fails, the lease is renewed from the close so the worker
-//! has a full window to react.
+//! does not control. When the gate fails, or a new clash abandons the run, the lease is
+//! renewed from that moment so the worker has a full window to react.
 
 use serde::{Deserialize, Serialize};
 
@@ -122,11 +122,16 @@ pub(crate) fn decide_claim(
     }
     let order = world
         .order(t.order)
-        .expect("every task belongs to a posted order");
+        .ok_or_else(|| Rejection::unknown("order", t.order))?;
     let readback = matched_readback(world, order, agent, task)?;
+    let generation = t
+        .last_generation
+        .unwrap_or(Generation::ZERO)
+        .checked_next()
+        .ok_or_else(|| Rejection::invalid("lease generations for this task are exhausted"))?;
     let lease = Lease {
         holder: agent.clone(),
-        generation: t.last_generation.unwrap_or(Generation::ZERO).next(),
+        generation,
         expires_at: ctx.now.plus_millis(LEASE_TTL_MS),
     };
     Ok(vec![Event::LeaseGranted {

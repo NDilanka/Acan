@@ -434,4 +434,8 @@ pub enum ReplayError {
     /// An event arrived out of order. The caller refetches from `expected`.
     #[error("expected seq {expected:?}, got {got:?}")]
     SeqGap { expected: Seq, got: Seq },
+    /// An event refers to an entity the log never created, or creates one twice. The log is
+    /// damaged or forged; nothing from this event on was applied.
+    #[error("invalid event at seq {seq:?}: {why}")]
+    InvalidEvent { seq: Seq, why: String },
 }

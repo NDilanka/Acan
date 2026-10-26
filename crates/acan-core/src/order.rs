@@ -1,6 +1,6 @@
 //! Orders, witnesses, tasks, readbacks and questions.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -203,7 +203,8 @@ pub struct Task {
 /// Claimed{Declaring|Declared|Building} --Declared--> Claimed{Declared}
 /// Claimed{Declared} --BuildCleared--> Claimed{Building}
 /// Claimed{Building} --BuildReported--> Claimed{Gating}
-/// Claimed{Gating} --GateClosed(Failed)--> Claimed{Building}
+/// Claimed{Building|Gating} --ClashFound--> Claimed{Declared}   (a gating run is abandoned)
+/// Claimed{Gating} --GateClosed(Failed)--> Claimed{Declared}   (then BuildCleared if unblocked)
 /// Claimed{Gating} --GateClosed(Passed)--> Queued     (lease ends as Delivered in the same batch)
 /// Queued --Landed--> Landed
 /// Queued --LandFailed--> Open
@@ -412,18 +413,19 @@ pub(crate) fn decide_post_order(
     if sentence.trim().is_empty() {
         return Err(Rejection::invalid("an order needs a sentence"));
     }
-    let first = world.next_witness_id().get();
-    let witnesses = (first..)
+    let witnesses = world
+        .next_witness_ids(witnesses.len())?
+        .into_iter()
         .zip(witnesses)
-        .map(|(n, spec)| Witness {
-            id: WitnessId::new(n),
+        .map(|(id, spec)| Witness {
+            id,
             kind: WitnessKind::Check { check: spec.check },
             reason: spec.reason,
             pinned_by: member.clone(),
         })
         .collect();
     Ok(vec![Event::OrderPosted {
-        order: world.next_order_id(),
+        order: world.next_order_id()?,
         machine,
         sentence,
         witnesses,
@@ -452,13 +454,17 @@ pub(crate) fn decide_split_ready(
     if tasks.is_empty() {
         return Err(Rejection::invalid("a split needs at least one task"));
     }
-    let first = world.next_task_id().get();
-    let tasks = (first..).map(TaskId::new).zip(tasks).collect();
+    let tasks = world
+        .next_task_ids(tasks.len())?
+        .into_iter()
+        .zip(tasks)
+        .collect();
     Ok(vec![Event::OrderSplit { order, rev, tasks }])
 }
 
 /// `PostReadback`: an agent reads back a task. Allowed while the task is `Open` or held by
-/// another agent, so a standby agent can be matched and ready when the lease ends.
+/// another agent, so a standby agent can be matched and ready when the lease ends. Either way
+/// the readback joins the order's `Review` job.
 pub(crate) fn decide_readback(
     world: &World,
     agent: &AgentId,
@@ -477,7 +483,7 @@ pub(crate) fn decide_readback(
     }
     Ok(vec![Event::ReadbackPosted {
         readback: Readback {
-            id: world.next_readback_id(),
+            id: world.next_readback_id()?,
             task,
             agent: agent.clone(),
             summary,
@@ -488,7 +494,12 @@ pub(crate) fn decide_readback(
 }
 
 /// `ReadbacksReviewed`: records verdicts for the current revision and pins at most one
-/// question. A draft is ignored while a question is already open on the order.
+/// question.
+///
+/// Accepted only while the order's `Review` job is derived, and only for readbacks in that
+/// job, each named once. The job's set can grow while a review is running, so any part of it
+/// is accepted; a readback that already has its verdict, or whose task is no longer open or
+/// claimed, is not, so a late retry cannot rewrite the verdict a live claim stands on.
 pub(crate) fn decide_reviewed(
     world: &World,
     order: OrderId,
@@ -507,6 +518,14 @@ pub(crate) fn decide_reviewed(
         OrderState::Splitting => return Err(Rejection::wrong_state("order", "splitting")),
         OrderState::Cancelled => return Err(Rejection::wrong_state("order", "cancelled")),
     }
+    if let Some(open) = world.open_question(order) {
+        return Err(Rejection::OpenQuestion { question: open.id });
+    }
+    let pending = world.unreviewed(o);
+    if pending.is_empty() {
+        return Err(Rejection::wrong_state("order", "not awaiting review"));
+    }
+    let mut named = BTreeSet::new();
     for (id, verdict) in &verdicts {
         let readback = world
             .readback(*id)
@@ -521,6 +540,12 @@ pub(crate) fn decide_reviewed(
                 "a verdict was judged at another revision",
             ));
         }
+        if !named.insert(*id) {
+            return Err(Rejection::invalid("a review names a readback twice"));
+        }
+        if !pending.contains(id) {
+            return Err(Rejection::wrong_state("readback", "not awaiting review"));
+        }
     }
     let mut events = Vec::new();
     if !verdicts.is_empty() {
@@ -530,12 +555,10 @@ pub(crate) fn decide_reviewed(
             verdicts,
         });
     }
-    if let Some(draft) = question
-        && world.open_question(order).is_none()
-    {
+    if let Some(draft) = question {
         events.push(Event::QuestionPinned {
             question: Question {
-                id: world.next_question_id(),
+                id: world.next_question_id()?,
                 order,
                 rev,
                 at: draft.at,
@@ -569,9 +592,13 @@ pub(crate) fn decide_answer(
         .ok_or_else(|| Rejection::invalid("a question has options 0 and 1"))?;
     let order = world
         .order(q.order)
-        .expect("every question belongs to a posted order");
+        .ok_or_else(|| Rejection::unknown("order", q.order))?;
+    let rev = order
+        .rev
+        .checked_next()
+        .ok_or_else(|| Rejection::invalid("order revisions are exhausted"))?;
     let witness = Witness {
-        id: world.next_witness_id(),
+        id: world.next_witness_id()?,
         kind: WitnessKind::Ruling {
             question,
             text: text.clone(),
@@ -589,7 +616,7 @@ pub(crate) fn decide_answer(
         },
         Event::OrderRevised {
             order: order.id,
-            rev: order.rev.next(),
+            rev,
             witnesses,
         },
     ];

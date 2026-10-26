@@ -2,9 +2,9 @@ mod common;
 
 use acan_core::{
     AgentCmd, Clash, ClashKey, ClashState, CodeRev, CommitId, ContractRef, Declaration,
-    DeclarationInput, Event, Explanation, Generation, HumanCmd, IndexedSymbol, Job, Locus, Overlap,
-    OverlapKind, Rejection, SettleRight, Settlement, Stage, SystemCmd, TaskId, TaskState,
-    WitnessOutcome, detect,
+    DeclarationInput, Event, Explanation, Generation, HumanCmd, IndexedSymbol, Job, LEASE_TTL_MS,
+    Locus, Overlap, OverlapKind, Rejection, SettleRight, Settlement, Stage, SystemCmd, TaskId,
+    TaskState, WitnessOutcome, detect,
 };
 use common::{Fx, events, index, machine, path, sym};
 
@@ -712,4 +712,106 @@ fn an_empty_declaration_is_rejected_and_a_repeat_is_a_no_op() {
         .expect("declare accepted");
     let batch = fx.declare(&a, fence, footprint).expect("repeat accepted");
     assert!(batch.is_empty(), "got {batch:?}");
+}
+
+/// `clashing`, settled by the owner so task1 lands before task2.
+fn serialized() -> Fx {
+    let mut fx = clashing();
+    let (owner, t1, t2) = (fx.owner.clone(), fx.task1, fx.task2);
+    let clash = fx.origin.world().clashes().next().expect("clash").id;
+    fx.human(
+        &owner,
+        HumanCmd::SettleClash {
+            clash,
+            choice: Settlement::Serialize {
+                first: t1,
+                then: t2,
+            },
+        },
+    )
+    .expect("settle accepted");
+    assert_eq!(stage_of(&fx, t2), "declared", "task2 waits on task1");
+    fx
+}
+
+/// Lets task1's lease run out while task2 keeps renewing.
+fn expire_task1(fx: &mut Fx) {
+    let b = fx.agent_b.clone();
+    let f2 = fx.fence(fx.task2).expect("claimed");
+    fx.advance(LEASE_TTL_MS / 2);
+    fx.agent(&b, AgentCmd::Renew { fence: f2 })
+        .expect("renew accepted");
+    fx.advance(LEASE_TTL_MS / 2);
+}
+
+#[test]
+fn releasing_a_serialized_predecessor_clears_the_waiter() {
+    let mut fx = serialized();
+    let (a, t1, t2) = (fx.agent_a.clone(), fx.task1, fx.task2);
+    let fence = fx.fence(t1).expect("claimed");
+    fx.agent(&a, AgentCmd::Release { fence })
+        .expect("release accepted");
+    let clash = fx.origin.world().clashes().next().expect("clash");
+    assert_eq!(clash.state, ClashState::Dissolved);
+    assert_eq!(stage_of(&fx, t2), "building");
+}
+
+#[test]
+fn expiring_a_serialized_predecessor_clears_the_waiter() {
+    let mut fx = serialized();
+    let t2 = fx.task2;
+    expire_task1(&mut fx);
+    fx.system(SystemCmd::Tick).expect("tick accepted");
+    assert_eq!(stage_of(&fx, fx.task1), "open");
+    assert_eq!(stage_of(&fx, t2), "building");
+}
+
+#[test]
+fn redeclaring_away_from_a_serialized_overlap_clears_the_waiter() {
+    let mut fx = serialized();
+    let (a, t1, t2) = (fx.agent_a.clone(), fx.task1, fx.task2);
+    let fence = fx.fence(t1).expect("claimed");
+    fx.declare(
+        &a,
+        fence,
+        DeclarationInput {
+            files: vec![path("unrelated.rs")],
+            ..DeclarationInput::default()
+        },
+    )
+    .expect("redeclare accepted");
+    let clash = fx.origin.world().clashes().next().expect("clash");
+    assert_eq!(clash.state, ClashState::Dissolved);
+    assert_eq!(stage_of(&fx, t2), "building");
+}
+
+#[test]
+fn a_settlement_arriving_with_the_predecessors_expiry_does_not_strand_the_waiter() {
+    let mut fx = clashing();
+    let (owner, t1, t2) = (fx.owner.clone(), fx.task1, fx.task2);
+    let clash = fx.origin.world().clashes().next().expect("clash").id;
+    expire_task1(&mut fx);
+    fx.human(
+        &owner,
+        HumanCmd::SettleClash {
+            clash,
+            choice: Settlement::Serialize {
+                first: t1,
+                then: t2,
+            },
+        },
+    )
+    .expect("settle accepted");
+    assert_eq!(stage_of(&fx, t2), "building");
+}
+
+#[test]
+fn an_expired_party_dissolves_an_open_clash_and_clears_the_other() {
+    let mut fx = clashing();
+    let t2 = fx.task2;
+    expire_task1(&mut fx);
+    fx.system(SystemCmd::Tick).expect("tick accepted");
+    let clash = fx.origin.world().clashes().next().expect("clash");
+    assert!(!clash.blocking());
+    assert_eq!(stage_of(&fx, t2), "building");
 }

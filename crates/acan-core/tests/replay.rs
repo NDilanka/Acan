@@ -1,10 +1,11 @@
 mod common;
 
 use acan_core::{
-    AgentCmd, CommitId, Event, Explanation, Fence, HumanCmd, Judgement, OrderPhase, Origin,
-    Replica, Settlement, Stage, Step, SystemCmd, TaskId, TaskState, WitnessOutcome,
+    Actor, AgentCmd, Check, Command, CommitId, Ctx, Event, Explanation, Fence, HumanCmd, Judgement,
+    OrderPhase, OrderRev, Origin, ReplayError, Replica, Settlement, Stage, Stamped, Step,
+    SystemCmd, TaskId, TaskSpec, TaskState, WitnessOutcome, WitnessSpec,
 };
-use common::{Fx, events, sym};
+use common::{Fx, events, machine, stored, sym};
 
 fn commit(raw: &str) -> CommitId {
     raw.parse().expect("valid commit")
@@ -179,4 +180,75 @@ fn the_stored_json_replays_to_the_same_world() {
     let stored: Vec<acan_core::Stamped> = serde_json::from_str(&json).expect("log parses");
     let replica = Replica::from_log(stored).expect("log folds");
     assert_eq!(replica.world(), fx.origin.world());
+}
+
+#[test]
+fn a_stored_event_naming_an_absent_order_is_refused_at_replay() {
+    let mut fx = Fx::new();
+    let task: TaskId = "t-99".parse().expect("valid task id");
+    let got = fx.append_stored(Event::OrderSplit {
+        order: "o-999".parse().expect("valid order id"),
+        rev: OrderRev::new(0),
+        tasks: vec![(
+            task,
+            TaskSpec {
+                title: "orphan".to_owned(),
+                brief: String::new(),
+                scope: vec![],
+            },
+        )],
+    });
+    assert!(
+        matches!(got, Err(ReplayError::InvalidEvent { .. })),
+        "{got:?}"
+    );
+    let a = fx.agent_a.clone();
+    assert!(fx.agent(&a, AgentCmd::Claim { task }).is_err());
+}
+
+#[test]
+fn a_streamed_event_naming_an_absent_task_is_refused_and_not_applied() {
+    let fx = Fx::new();
+    let mut replica = Replica::from_log(fx.log.clone()).expect("log folds");
+    let forged = Stamped {
+        seq: replica.next_seq(),
+        at: fx.now,
+        actor: Actor::System,
+        event: Event::BuildCleared {
+            task: "t-99".parse().expect("valid task id"),
+        },
+    };
+    assert!(matches!(
+        replica.ingest(&forged),
+        Err(ReplayError::InvalidEvent { .. })
+    ));
+    assert_eq!(replica.world(), fx.origin.world());
+}
+
+#[test]
+fn json_replay_then_further_commands_allocate_the_same_ids() {
+    let full = full_loop();
+    let mut replayed = Origin::replay(stored(&full.log)).expect("log folds");
+    let mut fx = full;
+    let cmd = Command::Human {
+        member: fx.owner.clone(),
+        cmd: HumanCmd::PostOrder {
+            machine: machine("api"),
+            sentence: "next order".to_owned(),
+            witnesses: vec![WitnessSpec {
+                check: Check::Test {
+                    command: "test".to_owned(),
+                },
+                reason: "next witness".to_owned(),
+            }],
+        },
+    };
+    let ctx = Ctx {
+        now: fx.now.plus_millis(1),
+        index: &fx.index,
+    };
+    let expected = fx.origin.execute(&ctx, cmd.clone()).expect("order posted");
+    let actual = replayed.execute(&ctx, cmd).expect("order posted");
+    assert_eq!(expected, actual);
+    assert_eq!(fx.origin.world(), replayed.world());
 }

@@ -9,7 +9,8 @@
 //! Open --ClashExplained--> Open (explanation attached; settling never waits for it)
 //! Open --SettleClash with Propose right--> Proposed
 //! Open|Proposed --SettleClash with Settle right--> Settled
-//! Open|Proposed --redetection no longer finds the key--> Dissolved
+//! Open|Proposed --redetection no longer finds the key, or a party has no declaration--> Dissolved
+//! Settled(Serialize|SplitAtContract) --the same, unless its first task is queued to land--> Dissolved
 //! ```
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -22,7 +23,7 @@ use crate::ids::{
     AgentId, ClashId, CodeRev, FilePath, Generation, MachineKey, MemberId, TaskId, WitnessId,
 };
 use crate::index::{CodeIndex, Locus};
-use crate::lease::{self, Fence};
+use crate::lease::{self, Fence, LEASE_TTL_MS};
 use crate::member::SettleRight;
 use crate::order::{Stage, TaskState};
 use crate::world::{Ctx, World};
@@ -489,12 +490,16 @@ impl Settlement {
 
     /// The task that must land before `task` may build under this settlement.
     fn predecessor_of(&self, task: TaskId, key: &ClashKey) -> Option<TaskId> {
+        self.lands_first()
+            .filter(|&first| first != task && key.involves(task))
+    }
+
+    /// The task that lands first under this settlement. `None` for `Narrow`, which orders nothing.
+    fn lands_first(&self) -> Option<TaskId> {
         match *self {
-            Self::Serialize { first, then } if then == task => Some(first),
-            Self::SplitAtContract { owner, .. } if owner != task && key.involves(task) => {
-                Some(owner)
-            }
-            _ => None,
+            Self::Narrow { .. } => None,
+            Self::Serialize { first, .. } => Some(first),
+            Self::SplitAtContract { owner, .. } => Some(owner),
         }
     }
 }
@@ -531,6 +536,22 @@ impl Clash {
     #[must_use]
     pub fn blocking(&self) -> bool {
         matches!(self.state, ClashState::Open | ClashState::Proposed { .. })
+    }
+
+    /// Whether this clash should dissolve once a party loses its declaration or the overlap
+    /// is no longer found: it is blocking, or it is a settled landing order whose first task
+    /// has not yet delivered. A delivered first task has no declaration left, but its waiter
+    /// must still hold until it lands.
+    fn dissolvable(&self, world: &World) -> bool {
+        match &self.state {
+            ClashState::Open | ClashState::Proposed { .. } => true,
+            ClashState::Settled { choice, .. } => choice.lands_first().is_some_and(|first| {
+                !world
+                    .task(first)
+                    .is_some_and(|t| matches!(t.state, TaskState::Queued { .. }))
+            }),
+            ClashState::Dissolved => false,
+        }
     }
 
     /// Whether redetecting this clash's key should leave it alone. A narrow settlement does
@@ -582,7 +603,7 @@ pub(crate) fn decide_declare(
             .filter(|d| d.task != fence.task)
             .collect();
         decls.push(&decl);
-        redetect(world, ctx.index, &decls)
+        redetect(world, ctx, &decls)?
     };
     let mut events = vec![Event::Declared { decl }];
     events.extend(redetected);
@@ -591,57 +612,85 @@ pub(crate) fn decide_declare(
 
 /// `IndexUpdated`: re-runs detection over live declarations against the new index.
 /// A revision already recorded is a no-op, since equal revisions mean equal contents.
-pub(crate) fn decide_index_updated(world: &World, ctx: &Ctx<'_>) -> Vec<Event> {
+pub(crate) fn decide_index_updated(world: &World, ctx: &Ctx<'_>) -> Result<Vec<Event>, Rejection> {
     if world.index_rev() == Some(&ctx.index.rev) {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let decls: Vec<&Declaration> = world.live_declarations().collect();
     let mut events = vec![Event::IndexUpdated {
         rev: ctx.index.rev.clone(),
     }];
-    events.extend(redetect(world, ctx.index, &decls));
-    events
+    events.extend(redetect(world, ctx, &decls)?);
+    Ok(events)
 }
 
 /// `ClashFound` for each blocking key without a standing clash, and `ClashDissolved` for
-/// each blocking clash whose key is no longer found.
-fn redetect(world: &World, index: &CodeIndex, decls: &[&Declaration]) -> Vec<Event> {
-    let found = hits(decls, index);
+/// each dissolvable clash whose key is no longer found.
+///
+/// A new clash abandons any gating run of its parties. Their leases did not run down while
+/// gating, so each is renewed from `ctx.now` rather than expiring at once.
+fn redetect(world: &World, ctx: &Ctx<'_>, decls: &[&Declaration]) -> Result<Vec<Event>, Rejection> {
+    let found = hits(decls, ctx.index);
     let blocking: BTreeMap<&ClashKey, &Hit> = found
         .iter()
         .filter(|(_, hit)| hit.kind.blocking())
         .collect();
-    let mut events = Vec::new();
-    let mut next = world.next_clash_id().get();
-    for (key, hit) in &blocking {
-        let stands = world
-            .clash_keys
-            .get(*key)
-            .and_then(|id| world.clash(*id))
-            .is_some_and(Clash::stands);
-        if !stands {
-            events.push(Event::ClashFound {
-                clash: ClashId::new(next),
-                key: (*key).clone(),
-                kind: hit.kind,
-                found_at: index.rev.clone(),
-                contract: hit.contract.clone(),
-            });
-            next += 1;
-        }
-    }
+    let new: Vec<(&ClashKey, &Hit)> = blocking
+        .iter()
+        .filter(|(key, _)| {
+            !world
+                .clash_keys
+                .get(**key)
+                .and_then(|id| world.clash(*id))
+                .is_some_and(Clash::stands)
+        })
+        .map(|(key, hit)| (*key, *hit))
+        .collect();
+    let ids = world.next_clash_ids(new.len())?;
+    let mut events: Vec<Event> = ids
+        .into_iter()
+        .zip(&new)
+        .map(|(clash, (key, hit))| Event::ClashFound {
+            clash,
+            key: (*key).clone(),
+            kind: hit.kind,
+            found_at: ctx.index.rev.clone(),
+            contract: hit.contract.clone(),
+        })
+        .collect();
+    let abandoned: BTreeSet<(TaskId, Generation)> = new
+        .iter()
+        .flat_map(|(key, _)| [key.a, key.b])
+        .filter_map(|task| match &world.task(task)?.state {
+            TaskState::Claimed {
+                claim,
+                stage: Stage::Gating { .. },
+            } => Some((task, claim.lease.generation)),
+            _ => None,
+        })
+        .collect();
+    events.extend(
+        abandoned
+            .into_iter()
+            .map(|(task, generation)| Event::LeaseRenewed {
+                task,
+                generation,
+                expires_at: ctx.now.plus_millis(LEASE_TTL_MS),
+            }),
+    );
     events.extend(
         world
             .clashes()
-            .filter(|c| c.blocking() && !blocking.contains_key(&c.key))
+            .filter(|c| c.dissolvable(world) && !blocking.contains_key(&c.key))
             .map(|c| Event::ClashDissolved { clash: c.id }),
     );
-    events
+    Ok(events)
 }
 
-/// `ClashDissolved` for every blocking clash a party of which no longer holds a declaration:
-/// its lease ended, its order was cancelled, or it narrowed. The origin runs this after every
-/// accepted command, so a clash never outlives the claim that made it.
+/// `ClashDissolved` for every dissolvable clash a party of which no longer holds a
+/// declaration: its lease ended or was delivered, its order was cancelled, or it narrowed.
+/// The origin runs this after every accepted command, so neither a blocking clash nor a
+/// landing order outlives the claims that made it.
 pub(crate) fn dissolve_orphans(world: &World) -> Vec<Event> {
     let declared = |task: TaskId| {
         world
@@ -650,7 +699,7 @@ pub(crate) fn dissolve_orphans(world: &World) -> Vec<Event> {
     };
     world
         .clashes()
-        .filter(|c| c.blocking() && !(declared(c.key.a) && declared(c.key.b)))
+        .filter(|c| c.dissolvable(world) && !(declared(c.key.a) && declared(c.key.b)))
         .map(|c| Event::ClashDissolved { clash: c.id })
         .collect()
 }

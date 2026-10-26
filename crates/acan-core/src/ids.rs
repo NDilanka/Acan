@@ -137,10 +137,6 @@ macro_rules! ordinal {
             pub const fn get(self) -> $inner {
                 self.0
             }
-
-            pub(crate) const fn next(self) -> Self {
-                Self(self.0 + 1)
-            }
         }
     };
 }
@@ -151,6 +147,28 @@ ordinal!(/// Revision of an order's locked witness set. Bumps when a question is
     OrderRev(u32));
 ordinal!(/// Fencing token of a task's lease. Bumps on every grant and never resets.
     Generation(u32));
+
+impl Seq {
+    // A log is gap-free from 0, so reaching u64::MAX would take 2^64 events.
+    pub(crate) const fn next(self) -> Self {
+        Self(self.0 + 1)
+    }
+}
+
+impl OrderRev {
+    /// The revision after this one, or `None` when revisions are exhausted.
+    pub(crate) fn checked_next(self) -> Option<Self> {
+        self.0.checked_add(1).map(Self)
+    }
+}
+
+impl Generation {
+    /// The generation after this one, or `None` when generations are exhausted. Never wraps:
+    /// a reused generation would let a stale fence pass.
+    pub(crate) fn checked_next(self) -> Option<Self> {
+        self.0.checked_add(1).map(Self)
+    }
+}
 
 /// Unix time in milliseconds, supplied by the host in [`crate::Ctx`]. The core never reads a clock.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize)]

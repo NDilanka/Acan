@@ -4,7 +4,8 @@
 //! Building --ReportBuilt(fence, head)--> Gating          [BuildReported]
 //! Gating --WitnessResult x n--> verdict Running           [WitnessReported]
 //!        verdict Passed --> Queued                        [GateClosed, LeaseEnded Delivered]
-//!        verdict Failed --> Building                      [GateClosed]
+//!        verdict Failed --> Declared                      [GateClosed, then BuildCleared if unblocked]
+//! Gating --ClashFound on the task--> Declared             (run abandoned; late results rejected)
 //! Queued --LandResult Ok--> Landed                        [Landed]
 //! Queued --LandResult Err--> Open                         [LandFailed]
 //! ```
@@ -111,14 +112,14 @@ pub(crate) fn decide_report_built(
     let task = world.task(fence.task).expect("a fenced task exists");
     let order = world
         .order(task.order)
-        .expect("every task belongs to a posted order");
+        .ok_or_else(|| Rejection::unknown("order", task.order))?;
     let witnesses: Vec<WitnessId> = order
         .witnesses
         .iter()
         .copied()
         .filter(|&w| world.witness(w).is_some_and(Witness::gated))
         .collect();
-    let run = world.next_gate_id();
+    let run = world.next_gate_id()?;
     let empty = witnesses.is_empty();
     let mut events = vec![Event::BuildReported {
         task: fence.task,

@@ -4,7 +4,7 @@ use acan_core::{
     AgentCmd, CommitId, DeclarationInput, Event, Fence, Generation, Judgement, LEASE_TTL_MS,
     LeaseEnd, Rejection, Stage, SystemCmd, TaskState, WitnessOutcome,
 };
-use common::{Fx, events};
+use common::{Fx, events, sym};
 
 #[test]
 fn claim_without_matched_readback_is_rejected() {
@@ -236,4 +236,73 @@ fn a_fence_from_another_agent_is_forbidden() {
         matches!(got, Err(Rejection::Forbidden { .. })),
         "got {got:?}"
     );
+}
+
+#[test]
+fn generation_exhaustion_in_a_stored_log_rejects_the_next_claim() {
+    let mut fx = Fx::new();
+    let (a, t1) = (fx.agent_a.clone(), fx.task1);
+    fx.claim(&a, t1);
+    let max = Generation::new(u32::MAX);
+    for stamped in &mut fx.log {
+        if let Event::LeaseGranted { task, lease, .. } = &mut stamped.event
+            && *task == t1
+        {
+            lease.generation = max;
+        }
+    }
+    fx.append_stored(Event::LeaseEnded {
+        task: t1,
+        generation: max,
+        why: LeaseEnd::Released,
+    })
+    .expect("the stored log replays");
+    let before = fx.origin.world().clone();
+    assert!(matches!(
+        fx.agent(&a, AgentCmd::Claim { task: t1 }),
+        Err(Rejection::Invalid { .. })
+    ));
+    assert_eq!(&before, fx.origin.world());
+}
+
+#[test]
+fn every_stale_fenced_command_rolls_back_the_expiry_it_triggered() {
+    let mut fx = Fx::new();
+    let (a, b, t1, t2) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1, fx.task2);
+    let footprint = || DeclarationInput {
+        symbols: vec![sym("src/api/routes.rs", "rate_limit")],
+        ..DeclarationInput::default()
+    };
+    let old = fx.claim(&a, t1);
+    let f2 = fx.claim(&b, t2);
+    fx.declare(&a, old, footprint()).expect("declare accepted");
+    fx.declare(&b, f2, footprint()).expect("declare accepted");
+    fx.agent(&a, AgentCmd::Release { fence: old })
+        .expect("release accepted");
+    fx.claim(&a, t1);
+    fx.advance(LEASE_TTL_MS);
+    for cmd in [
+        AgentCmd::Renew { fence: old },
+        AgentCmd::Release { fence: old },
+        AgentCmd::Declare {
+            fence: old,
+            footprint: footprint(),
+        },
+        AgentCmd::ReportBuilt {
+            fence: old,
+            head: "stale".parse::<CommitId>().expect("valid commit"),
+        },
+    ] {
+        let before = fx.origin.world().clone();
+        let got = fx.agent(&a, cmd);
+        assert!(
+            matches!(got, Err(Rejection::StaleGeneration { .. })),
+            "{got:?}"
+        );
+        assert_eq!(
+            &before,
+            fx.origin.world(),
+            "a rejected command committed expiry effects"
+        );
+    }
 }
