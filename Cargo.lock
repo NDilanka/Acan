@@ -12,6 +12,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "acan-git"
+version = "0.1.0"
+dependencies = [
+ "acan-core",
+ "tempfile",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "acan-llm"
 version = "0.1.0"
 dependencies = [
