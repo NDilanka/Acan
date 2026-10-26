@@ -11,8 +11,9 @@ use crate::ids::{
     Seq, TaskId, WitnessId,
 };
 use crate::index::Locus;
-use crate::lease::Claim;
-use crate::world::{Ctx, World};
+use crate::lease::{Claim, LeaseEnd};
+use crate::member::Role;
+use crate::world::World;
 
 /// A check a human pins when posting an order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -265,6 +266,41 @@ pub enum Stage {
     },
 }
 
+impl TaskState {
+    /// A short name for rejections.
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Claimed { stage, .. } => stage.name(),
+            Self::Queued { .. } => "queued",
+            Self::Landed { .. } => "landed",
+            Self::Dropped => "dropped",
+        }
+    }
+}
+
+impl Stage {
+    /// A short name for rejections.
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            Self::Declaring => "declaring",
+            Self::Declared { .. } => "declared",
+            Self::Building { .. } => "building",
+            Self::Gating { .. } => "gating",
+        }
+    }
+
+    /// The declaration this stage holds, if any.
+    pub(crate) fn declaration(&self) -> Option<&Declaration> {
+        match self {
+            Self::Declaring => None,
+            Self::Declared { decl } | Self::Building { decl } | Self::Gating { decl, .. } => {
+                Some(decl)
+            }
+        }
+    }
+}
+
 /// A worker's restatement of its task before it writes code.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Readback {
@@ -314,13 +350,24 @@ impl ReadbackVerdict {
     /// and every current witness judged [`Judgement::Match`].
     #[must_use]
     pub fn matches(&self, order: &Order) -> bool {
-        todo!()
+        self.rev == order.rev
+            && order
+                .witnesses
+                .iter()
+                .all(|w| matches!(self.per_witness.get(w), Some(Judgement::Match)))
     }
 
     /// The current witnesses that block a claim: missing, disagreeing or unclear.
     #[must_use]
     pub fn failing(&self, order: &Order) -> Vec<WitnessId> {
-        todo!()
+        order
+            .witnesses
+            .iter()
+            .copied()
+            .filter(|w| {
+                self.rev != order.rev || !matches!(self.per_witness.get(w), Some(Judgement::Match))
+            })
+            .collect()
     }
 }
 
@@ -357,13 +404,31 @@ pub struct Question {
 /// `PostOrder`: mints the order and its witnesses. The order starts `Splitting`.
 pub(crate) fn decide_post_order(
     world: &World,
-    ctx: &Ctx<'_>,
     member: &MemberId,
     machine: MachineKey,
     sentence: String,
     witnesses: Vec<WitnessSpec>,
 ) -> Result<Vec<Event>, Rejection> {
-    todo!()
+    if sentence.trim().is_empty() {
+        return Err(Rejection::invalid("an order needs a sentence"));
+    }
+    let first = world.next_witness_id().get();
+    let witnesses = (first..)
+        .zip(witnesses)
+        .map(|(n, spec)| Witness {
+            id: WitnessId::new(n),
+            kind: WitnessKind::Check { check: spec.check },
+            reason: spec.reason,
+            pinned_by: member.clone(),
+        })
+        .collect();
+    Ok(vec![Event::OrderPosted {
+        order: world.next_order_id(),
+        machine,
+        sentence,
+        witnesses,
+        posted_by: member.clone(),
+    }])
 }
 
 /// `SplitReady`: rejects a result for an old revision or an order that is not `Splitting`.
@@ -373,10 +438,27 @@ pub(crate) fn decide_split_ready(
     rev: OrderRev,
     tasks: Vec<TaskSpec>,
 ) -> Result<Vec<Event>, Rejection> {
-    todo!()
+    let o = world
+        .order(order)
+        .ok_or_else(|| Rejection::unknown("order", order))?;
+    match o.state {
+        OrderState::Splitting => {}
+        OrderState::Split => return Err(Rejection::wrong_state("order", "split")),
+        OrderState::Cancelled => return Err(Rejection::wrong_state("order", "cancelled")),
+    }
+    if rev != o.rev {
+        return Err(Rejection::StaleRevision { current: o.rev });
+    }
+    if tasks.is_empty() {
+        return Err(Rejection::invalid("a split needs at least one task"));
+    }
+    let first = world.next_task_id().get();
+    let tasks = (first..).map(TaskId::new).zip(tasks).collect();
+    Ok(vec![Event::OrderSplit { order, rev, tasks }])
 }
 
-/// `PostReadback`: an agent reads back an open task. Allowed while the task is `Open`.
+/// `PostReadback`: an agent reads back a task. Allowed while the task is `Open` or held by
+/// another agent, so a standby agent can be matched and ready when the lease ends.
 pub(crate) fn decide_readback(
     world: &World,
     agent: &AgentId,
@@ -384,7 +466,25 @@ pub(crate) fn decide_readback(
     summary: String,
     touches: Vec<Locus>,
 ) -> Result<Vec<Event>, Rejection> {
-    todo!()
+    let t = world
+        .task(task)
+        .ok_or_else(|| Rejection::unknown("task", task))?;
+    if !matches!(t.state, TaskState::Open | TaskState::Claimed { .. }) {
+        return Err(Rejection::wrong_state("task", t.state.name()));
+    }
+    if summary.trim().is_empty() {
+        return Err(Rejection::invalid("a readback needs a summary"));
+    }
+    Ok(vec![Event::ReadbackPosted {
+        readback: Readback {
+            id: world.next_readback_id(),
+            task,
+            agent: agent.clone(),
+            summary,
+            touches,
+            verdict: None,
+        },
+    }])
 }
 
 /// `ReadbacksReviewed`: records verdicts for the current revision and pins at most one
@@ -396,7 +496,56 @@ pub(crate) fn decide_reviewed(
     verdicts: Vec<(ReadbackId, ReadbackVerdict)>,
     question: Option<QuestionDraft>,
 ) -> Result<Vec<Event>, Rejection> {
-    todo!()
+    let o = world
+        .order(order)
+        .ok_or_else(|| Rejection::unknown("order", order))?;
+    if rev != o.rev {
+        return Err(Rejection::StaleRevision { current: o.rev });
+    }
+    match o.state {
+        OrderState::Split => {}
+        OrderState::Splitting => return Err(Rejection::wrong_state("order", "splitting")),
+        OrderState::Cancelled => return Err(Rejection::wrong_state("order", "cancelled")),
+    }
+    for (id, verdict) in &verdicts {
+        let readback = world
+            .readback(*id)
+            .ok_or_else(|| Rejection::unknown("readback", id))?;
+        if world.task(readback.task).map(|t| t.order) != Some(order) {
+            return Err(Rejection::invalid(
+                "a verdict names a readback of another order",
+            ));
+        }
+        if verdict.rev != rev {
+            return Err(Rejection::invalid(
+                "a verdict was judged at another revision",
+            ));
+        }
+    }
+    let mut events = Vec::new();
+    if !verdicts.is_empty() {
+        events.push(Event::ReadbacksReviewed {
+            order,
+            rev,
+            verdicts,
+        });
+    }
+    if let Some(draft) = question
+        && world.open_question(order).is_none()
+    {
+        events.push(Event::QuestionPinned {
+            question: Question {
+                id: world.next_question_id(),
+                order,
+                rev,
+                at: draft.at,
+                text: draft.text,
+                options: draft.options,
+                answer: None,
+            },
+        });
+    }
+    Ok(events)
 }
 
 /// `AnswerQuestion`: adds a ruling witness, bumps the order revision, and ends every live
@@ -407,14 +556,83 @@ pub(crate) fn decide_answer(
     question: QuestionId,
     option: usize,
 ) -> Result<Vec<Event>, Rejection> {
-    todo!()
+    let q = world
+        .questions
+        .get(&question)
+        .ok_or_else(|| Rejection::unknown("question", question))?;
+    if q.answer.is_some() {
+        return Err(Rejection::wrong_state("question", "answered"));
+    }
+    let text = q
+        .options
+        .get(option)
+        .ok_or_else(|| Rejection::invalid("a question has options 0 and 1"))?;
+    let order = world
+        .order(q.order)
+        .expect("every question belongs to a posted order");
+    let witness = Witness {
+        id: world.next_witness_id(),
+        kind: WitnessKind::Ruling {
+            question,
+            text: text.clone(),
+        },
+        reason: q.text.clone(),
+        pinned_by: member.clone(),
+    };
+    let mut witnesses = order.witnesses.clone();
+    witnesses.push(witness.id);
+    let mut events = vec![
+        Event::QuestionAnswered {
+            question,
+            option,
+            witness,
+        },
+        Event::OrderRevised {
+            order: order.id,
+            rev: order.rev.next(),
+            witnesses,
+        },
+    ];
+    events.extend(end_leases(world, order.id, LeaseEnd::Superseded));
+    Ok(events)
 }
 
 /// `CancelOrder`: any phase but `Landed`. Ends live leases as `Cancelled` and drops tasks.
+/// Only the member who posted the order or an owner may cancel it.
 pub(crate) fn decide_cancel(
     world: &World,
     member: &MemberId,
     order: OrderId,
 ) -> Result<Vec<Event>, Rejection> {
-    todo!()
+    let o = world
+        .order(order)
+        .ok_or_else(|| Rejection::unknown("order", order))?;
+    let owner = world.member(member).is_some_and(|m| m.role == Role::Owner);
+    if &o.posted_by != member && !owner {
+        return Err(Rejection::forbidden(
+            "only the poster or an owner cancels an order",
+        ));
+    }
+    match world.phase(order) {
+        Some(OrderPhase::Cancelled) => return Ok(Vec::new()),
+        Some(OrderPhase::Landed) => return Err(Rejection::wrong_state("order", "landed")),
+        _ => {}
+    }
+    let mut events = end_leases(world, order, LeaseEnd::Cancelled);
+    events.push(Event::OrderCancelled { order });
+    Ok(events)
+}
+
+fn end_leases(world: &World, order: OrderId, why: LeaseEnd) -> Vec<Event> {
+    world
+        .tasks_of(order)
+        .filter_map(|t| match &t.state {
+            TaskState::Claimed { claim, .. } => Some(Event::LeaseEnded {
+                task: t.id,
+                generation: claim.lease.generation,
+                why,
+            }),
+            _ => None,
+        })
+        .collect()
 }

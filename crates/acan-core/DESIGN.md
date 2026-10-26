@@ -2,7 +2,7 @@
 
 `acan-core` is Acan's world model. It holds the rules for orders, readbacks, claims, declarations, clashes, gates and landing. The `acan` server and the browser renderer both use it. It does no I/O, reads no clock, and builds for `wasm32-unknown-unknown`.
 
-The crate is a scaffold. Types, signatures and state machines are final for this stage. Most decision bodies are `todo!()`, and the tests that pin their behavior are marked `#[ignore = "unimplemented"]`.
+The tests in `tests/` pin the rules below: one file per domain, plus a determinism test that replays a full scripted loop through a replica.
 
 ## The model
 
@@ -99,6 +99,8 @@ Claimed --Renew(fence)--> Claimed, same generation, later expiry
 Claimed --Release | expiry | question answered | gate passed | order cancelled--> lease ended
 ```
 
+A lease does not expire while its task is gating, because the worker is waiting on witnesses it does not run. A failed gate renews the lease from the moment it closes.
+
 **Clash.**
 
 ```text
@@ -109,6 +111,8 @@ Open|Proposed --redetection no longer finds the overlap--> Dissolved
 ```
 
 The owner settles any clash. A member settles a choice whose yielding task is held by one of their own agents, and may only propose otherwise.
+
+A blocking clash dissolves when either party stops holding a declaration (its lease ends, it narrows, or its order is cancelled). A `Contract` clash records which task owns the interface (`Clash::contract`), because its menu offers to split at that interface.
 
 **Order phase** is derived by `World::phase`, not stored. The order stores only `Splitting`, `Split` or `Cancelled`. Everything after the split comes from its tasks, its open question and its clashes, so the phase cannot drift from them.
 

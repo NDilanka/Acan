@@ -7,7 +7,6 @@ use acan_core::{
 use common::{Fx, events};
 
 #[test]
-#[ignore = "unimplemented"]
 fn claim_without_matched_readback_is_rejected() {
     let mut fx = Fx::new();
     let (a, t1) = (fx.agent_a.clone(), fx.task1);
@@ -33,7 +32,6 @@ fn claim_without_matched_readback_is_rejected() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn first_claim_grants_generation_one_in_declaring() {
     let mut fx = Fx::new();
     let (a, t1) = (fx.agent_a.clone(), fx.task1);
@@ -55,7 +53,6 @@ fn first_claim_grants_generation_one_in_declaring() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn second_agent_is_told_who_holds_the_task() {
     let mut fx = Fx::new();
     let (a, b, t1) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1);
@@ -74,7 +71,6 @@ fn second_agent_is_told_who_holds_the_task() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn repeated_claim_by_the_holder_appends_nothing() {
     let mut fx = Fx::new();
     let (a, t1) = (fx.agent_a.clone(), fx.task1);
@@ -86,7 +82,6 @@ fn repeated_claim_by_the_holder_appends_nothing() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn renew_keeps_generation_and_extends_expiry() {
     let mut fx = Fx::new();
     let (a, t1) = (fx.agent_a.clone(), fx.task1);
@@ -102,7 +97,6 @@ fn renew_keeps_generation_and_extends_expiry() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn claim_after_expiry_ends_old_lease_and_bumps_generation_in_one_batch() {
     let mut fx = Fx::new();
     let (a, b, t1) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1);
@@ -124,7 +118,6 @@ fn claim_after_expiry_ends_old_lease_and_bumps_generation_in_one_batch() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn stale_generation_write_changes_nothing() {
     let mut fx = Fx::new();
     let (a, b, t1) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1);
@@ -147,7 +140,6 @@ fn stale_generation_write_changes_nothing() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn tick_expires_due_leases_and_reopens_the_task() {
     let mut fx = Fx::new();
     let (a, t1) = (fx.agent_a.clone(), fx.task1);
@@ -168,7 +160,6 @@ fn tick_expires_due_leases_and_reopens_the_task() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn release_reopens_the_task_and_generation_never_resets() {
     let mut fx = Fx::new();
     let (a, t1) = (fx.agent_a.clone(), fx.task1);

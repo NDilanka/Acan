@@ -2,7 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::event::{Event, Rejection};
 use crate::ids::{AgentId, MemberId};
+use crate::world::World;
 
 /// A member's role in a world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -44,4 +46,46 @@ pub enum SettleRight {
     Settle,
     /// The choice is recorded as a proposal and the clash stays blocking.
     Propose,
+}
+
+/// `AddMember`: owner only. Re-adding a member with the same role is a no-op. An owner may
+/// not demote themselves, so a world always keeps someone who can add members.
+pub(crate) fn decide_add_member(
+    world: &World,
+    by: &MemberId,
+    member: MemberId,
+    role: Role,
+) -> Result<Vec<Event>, Rejection> {
+    if world.member(by).map(|m| m.role) != Some(Role::Owner) {
+        return Err(Rejection::forbidden("only an owner adds members"));
+    }
+    if &member == by && role != Role::Owner {
+        return Err(Rejection::invalid("an owner cannot demote themselves"));
+    }
+    if world.member(&member).is_some_and(|m| m.role == role) {
+        return Ok(Vec::new());
+    }
+    Ok(vec![Event::MemberAdded {
+        member: Member { id: member, role },
+    }])
+}
+
+/// `RegisterAgent`: the caller becomes the agent's owner. An agent has exactly one owner.
+pub(crate) fn decide_register_agent(
+    world: &World,
+    by: &MemberId,
+    agent: AgentId,
+) -> Result<Vec<Event>, Rejection> {
+    match world.agent(&agent) {
+        Some(principal) if &principal.owner == by => Ok(Vec::new()),
+        Some(_) => Err(Rejection::forbidden(
+            "agent is registered to another member",
+        )),
+        None => Ok(vec![Event::AgentRegistered {
+            agent: AgentPrincipal {
+                id: agent,
+                owner: by.clone(),
+            },
+        }]),
+    }
 }

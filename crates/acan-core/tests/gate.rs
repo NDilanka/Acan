@@ -39,14 +39,12 @@ fn gate_run(witnesses: &[&str], results: &[(&str, WitnessOutcome)]) -> GateRun {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn verdict_waits_for_every_frozen_witness() {
     let run = gate_run(&["w-0", "w-1"], &[("w-0", WitnessOutcome::Pass)]);
     assert_eq!(run.verdict(), GateVerdict::Running);
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn an_error_never_counts_as_a_pass() {
     let error = WitnessOutcome::Error {
         detail: "server did not start".to_owned(),
@@ -64,13 +62,11 @@ fn an_error_never_counts_as_a_pass() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_run_with_no_gated_witnesses_passes() {
     assert_eq!(gate_run(&[], &[]).verdict(), GateVerdict::Passed);
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn reporting_before_the_build_is_cleared_is_rejected() {
     let mut fx = Fx::new();
     let (a, t1) = (fx.agent_a.clone(), fx.task1);
@@ -89,7 +85,6 @@ fn reporting_before_the_build_is_cleared_is_rejected() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn reporting_a_build_freezes_the_gated_witnesses_and_derives_one_job_each() {
     let mut fx = Fx::new();
     let (a, t1) = (fx.agent_a.clone(), fx.task1);
@@ -116,7 +111,6 @@ fn reporting_a_build_freezes_the_gated_witnesses_and_derives_one_job_each() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_failing_witness_sends_the_task_back_to_building() {
     let mut fx = Fx::new();
     let (a, t1) = (fx.agent_a.clone(), fx.task1);
@@ -157,7 +151,6 @@ fn a_failing_witness_sends_the_task_back_to_building() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_passing_gate_queues_the_task_and_delivers_the_lease() {
     let mut fx = Fx::new();
     let (a, t1) = (fx.agent_a.clone(), fx.task1);
@@ -196,7 +189,6 @@ fn a_passing_gate_queues_the_task_and_delivers_the_lease() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_result_for_a_superseded_run_is_rejected() {
     let mut fx = Fx::new();
     let (a, t1) = (fx.agent_a.clone(), fx.task1);
@@ -270,7 +262,6 @@ fn both_queued() -> Fx {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn only_the_front_of_the_land_queue_gets_a_land_job() {
     let fx = both_queued();
     let lands: Vec<Job> = fx
@@ -290,7 +281,6 @@ fn only_the_front_of_the_land_queue_gets_a_land_job() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_land_result_for_a_task_behind_the_front_is_rejected() {
     let mut fx = both_queued();
     let got = fx.system(SystemCmd::LandResult {
@@ -302,7 +292,6 @@ fn a_land_result_for_a_task_behind_the_front_is_rejected() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_merged_task_lands_and_a_failed_merge_reopens_the_next() {
     let mut fx = both_queued();
     let (t1, t2) = (fx.task1, fx.task2);

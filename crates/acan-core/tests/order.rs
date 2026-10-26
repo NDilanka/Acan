@@ -9,7 +9,6 @@ use acan_core::{
 use common::{Fx, events, machine};
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_posted_order_mints_locked_witnesses_and_derives_a_split_job() {
     let mut fx = Fx::new();
     let owner = fx.owner.clone();
@@ -45,7 +44,6 @@ fn a_posted_order_mints_locked_witnesses_and_derives_a_split_job() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_split_order_reads_back_and_derives_a_review_job_per_new_readback() {
     let mut fx = Fx::new();
     assert_eq!(
@@ -67,7 +65,6 @@ fn a_split_order_reads_back_and_derives_a_review_job_per_new_readback() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_second_split_result_is_rejected() {
     let mut fx = Fx::new();
     let spec = TaskSpec {
@@ -87,7 +84,6 @@ fn a_second_split_result_is_rejected() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_review_for_an_old_revision_is_rejected() {
     let mut fx = Fx::new();
     let a = fx.agent_a.clone();
@@ -123,7 +119,6 @@ fn a_review_for_an_old_revision_is_rejected() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn disagreeing_readbacks_pin_exactly_one_question() {
     let mut fx = Fx::new();
     let (a, b) = (fx.agent_a.clone(), fx.agent_b.clone());
@@ -150,7 +145,6 @@ fn disagreeing_readbacks_pin_exactly_one_question() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_claim_while_a_question_is_open_is_rejected() {
     let mut fx = Fx::new();
     let (a, b, t1) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1);
@@ -172,7 +166,6 @@ fn a_claim_while_a_question_is_open_is_rejected() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn answering_adds_a_ruling_bumps_the_revision_and_supersedes_live_leases() {
     let mut fx = Fx::new();
     let (a, b, t1) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1);
@@ -218,7 +211,6 @@ fn answering_adds_a_ruling_bumps_the_revision_and_supersedes_live_leases() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_verdict_from_an_old_revision_no_longer_lets_its_agent_claim() {
     let mut fx = Fx::new();
     let (a, b, t1) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1);
@@ -251,7 +243,6 @@ fn a_verdict_from_an_old_revision_no_longer_lets_its_agent_claim() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn cancelling_drops_every_task_and_ends_live_leases() {
     let mut fx = Fx::new();
     let (a, t1, t2) = (fx.agent_a.clone(), fx.task1, fx.task2);
@@ -280,7 +271,6 @@ fn cancelling_drops_every_task_and_ends_live_leases() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_replica_folding_the_log_agrees_with_the_origin() {
     let mut fx = Fx::new();
     let a = fx.agent_a.clone();
@@ -291,7 +281,6 @@ fn a_replica_folding_the_log_agrees_with_the_origin() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_replica_ignores_duplicates_and_reports_gaps() {
     let fx = Fx::new();
     let mut replica = Replica::from_log(fx.log[..2].to_vec()).expect("prefix folds");
@@ -306,7 +295,6 @@ fn a_replica_ignores_duplicates_and_reports_gaps() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_log_that_does_not_open_the_world_is_refused() {
     let fx = Fx::new();
     assert_eq!(

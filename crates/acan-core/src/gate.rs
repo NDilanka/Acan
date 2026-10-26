@@ -8,6 +8,9 @@
 //! Queued --LandResult Ok--> Landed                        [Landed]
 //! Queued --LandResult Err--> Open                         [LandFailed]
 //! ```
+//!
+//! A failed gate also renews the lease from the close (`LeaseRenewed`), because the lease
+//! did not run down while the gate was running.
 
 use std::collections::BTreeMap;
 
@@ -15,7 +18,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::{Event, Rejection};
 use crate::ids::{AgentId, CommitId, GateRunId, Generation, OrderRev, TaskId, WitnessId};
-use crate::lease::Fence;
+use crate::lease::{self, Fence, LEASE_TTL_MS, LeaseEnd};
+use crate::order::{Stage, TaskState, Witness};
 use crate::world::{Ctx, World};
 
 /// One run of a task's gated witnesses against one commit. The witness set is frozen at start.
@@ -74,11 +78,25 @@ impl GateRun {
     /// Derives the verdict from the results. A run with no gated witnesses passes.
     #[must_use]
     pub fn verdict(&self) -> GateVerdict {
-        todo!()
+        if self.witnesses.iter().any(|w| !self.results.contains_key(w)) {
+            return GateVerdict::Running;
+        }
+        let failing: Vec<WitnessId> = self
+            .witnesses
+            .iter()
+            .copied()
+            .filter(|w| !matches!(self.results.get(w), Some(WitnessOutcome::Pass)))
+            .collect();
+        if failing.is_empty() {
+            GateVerdict::Passed
+        } else {
+            GateVerdict::Failed { failing }
+        }
     }
 }
 
 /// `ReportBuilt`: from `Building` only. Freezes the order's gated witnesses into a new run.
+/// A run with no gated witnesses closes as passed in the same batch.
 pub(crate) fn decide_report_built(
     world: &World,
     ctx: &Ctx<'_>,
@@ -86,18 +104,94 @@ pub(crate) fn decide_report_built(
     fence: Fence,
     head: CommitId,
 ) -> Result<Vec<Event>, Rejection> {
-    todo!()
+    let stage = lease::check_fence(world, ctx, agent, fence)?;
+    if !matches!(stage, Stage::Building { .. }) {
+        return Err(Rejection::wrong_state("task", stage.name()));
+    }
+    let task = world.task(fence.task).expect("a fenced task exists");
+    let order = world
+        .order(task.order)
+        .expect("every task belongs to a posted order");
+    let witnesses: Vec<WitnessId> = order
+        .witnesses
+        .iter()
+        .copied()
+        .filter(|&w| world.witness(w).is_some_and(Witness::gated))
+        .collect();
+    let run = world.next_gate_id();
+    let empty = witnesses.is_empty();
+    let mut events = vec![Event::BuildReported {
+        task: fence.task,
+        generation: fence.generation,
+        head,
+        run,
+        rev: order.rev,
+        witnesses,
+    }];
+    if empty {
+        events.extend(close(ctx, fence, run, GateVerdict::Passed));
+    }
+    Ok(events)
 }
 
 /// `WitnessResult`: rejected unless `run` is the task's current gating run and `witness` is
-/// frozen in it. Closes the run when the verdict leaves `Running`.
+/// frozen in it without a result. Closes the run when the verdict leaves `Running`.
 pub(crate) fn decide_witness_result(
     world: &World,
+    ctx: &Ctx<'_>,
     run: GateRunId,
     witness: WitnessId,
     outcome: WitnessOutcome,
 ) -> Result<Vec<Event>, Rejection> {
-    todo!()
+    let gate = world
+        .gate(run)
+        .ok_or_else(|| Rejection::unknown("gate run", run))?;
+    let current = world.task(gate.task).is_some_and(|t| {
+        matches!(&t.state, TaskState::Claimed { stage: Stage::Gating { run: r, .. }, .. } if *r == run)
+    });
+    if !current {
+        return Err(Rejection::wrong_state("gate run", "closed"));
+    }
+    if !gate.witnesses.contains(&witness) {
+        return Err(Rejection::invalid("the witness is not frozen in this run"));
+    }
+    if gate.results.contains_key(&witness) {
+        return Err(Rejection::wrong_state("witness", "reported"));
+    }
+    let mut after = gate.clone();
+    after.results.insert(witness, outcome.clone());
+    let verdict = after.verdict();
+    let mut events = vec![Event::WitnessReported {
+        run,
+        witness,
+        outcome,
+    }];
+    if verdict != GateVerdict::Running {
+        let fence = Fence {
+            task: gate.task,
+            generation: gate.generation,
+        };
+        events.extend(close(ctx, fence, run, verdict));
+    }
+    Ok(events)
+}
+
+/// Closes a run: a pass delivers the lease, a failure renews it from now.
+fn close(ctx: &Ctx<'_>, fence: Fence, run: GateRunId, verdict: GateVerdict) -> [Event; 2] {
+    let follow = if verdict == GateVerdict::Passed {
+        Event::LeaseEnded {
+            task: fence.task,
+            generation: fence.generation,
+            why: LeaseEnd::Delivered,
+        }
+    } else {
+        Event::LeaseRenewed {
+            task: fence.task,
+            generation: fence.generation,
+            expires_at: ctx.now.plus_millis(LEASE_TTL_MS),
+        }
+    };
+    [Event::GateClosed { run, verdict }, follow]
 }
 
 /// `LandResult`: rejected unless the task is `Queued` at `head` and at the front of the land queue.
@@ -107,5 +201,26 @@ pub(crate) fn decide_land_result(
     head: CommitId,
     result: Result<CommitId, String>,
 ) -> Result<Vec<Event>, Rejection> {
-    todo!()
+    let t = world
+        .task(task)
+        .ok_or_else(|| Rejection::unknown("task", task))?;
+    let TaskState::Queued { head: queued, .. } = &t.state else {
+        return Err(Rejection::wrong_state("task", t.state.name()));
+    };
+    if *queued != head {
+        return Err(Rejection::invalid(
+            "the head is not the commit that passed the gate",
+        ));
+    }
+    if world.land_queue().first() != Some(&task) {
+        return Err(Rejection::wrong_state(
+            "task",
+            "behind the front of the land queue",
+        ));
+    }
+    let event = match result {
+        Ok(commit) => Event::Landed { task, commit },
+        Err(reason) => Event::LandFailed { task, reason },
+    };
+    Ok(vec![event])
 }

@@ -18,8 +18,8 @@ mod order;
 mod world;
 
 pub use clash::{
-    Clash, ClashKey, ClashState, Declaration, DeclarationInput, Explanation, Overlap, OverlapKind,
-    Settlement, SymbolRef, detect,
+    Clash, ClashKey, ClashState, ContractRef, Declaration, DeclarationInput, Explanation, Overlap,
+    OverlapKind, Settlement, SymbolRef, detect,
 };
 pub use event::{
     Actor, AgentCmd, Command, Event, HumanCmd, Rejection, ReplayError, Stamped, SystemCmd,

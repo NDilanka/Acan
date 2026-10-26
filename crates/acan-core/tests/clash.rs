@@ -41,13 +41,13 @@ fn clash_of(kind: OverlapKind, at: Locus) -> Clash {
         key: ClashKey::new(task(1), task(2), at),
         kind,
         found_at: "rev-1".parse().expect("valid rev"),
+        contract: None,
         explanation: None,
         state: ClashState::Open,
     }
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_shared_implementation_menu_offers_narrow_either_or_serialize() {
     let at = Locus::Symbol {
         file: path("src/api/routes.rs"),
@@ -66,7 +66,6 @@ fn a_shared_implementation_menu_offers_narrow_either_or_serialize() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn yielder_names_the_task_that_gives_way() {
     let key = ClashKey::new(
         task(1),
@@ -100,7 +99,6 @@ fn clash_key_puts_the_lower_task_first() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn same_symbol_is_shared_implementation() {
     let d1 = decl(1, symbols(&[("src/api/routes.rs", "rate_limit")]));
     let d2 = decl(2, symbols(&[("src/api/routes.rs", "rate_limit")]));
@@ -115,7 +113,6 @@ fn same_symbol_is_shared_implementation() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn disjoint_symbols_in_one_file_are_advisory() {
     let d1 = decl(1, symbols(&[("src/api/routes.rs", "rate_limit")]));
     let d2 = decl(2, symbols(&[("src/api/routes.rs", "health")]));
@@ -133,7 +130,6 @@ fn disjoint_symbols_in_one_file_are_advisory() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn two_appends_to_one_registry_are_shared_insertion() {
     let inserts = || DeclarationInput {
         inserts: vec![path("src/api/mod.rs")],
@@ -150,7 +146,6 @@ fn two_appends_to_one_registry_are_shared_insertion() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn whole_file_write_meets_any_symbol_in_it() {
     let d1 = decl(
         1,
@@ -170,7 +165,6 @@ fn whole_file_write_meets_any_symbol_in_it() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn unresolved_symbol_counts_as_a_whole_file_write() {
     let d1 = decl(1, symbols(&[("src/api/routes.rs", "does_not_exist")]));
     let d2 = decl(2, symbols(&[("src/api/routes.rs", "health")]));
@@ -184,7 +178,6 @@ fn unresolved_symbol_counts_as_a_whole_file_write() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn two_lockfile_writers_are_generated_output() {
     let lock = || DeclarationInput {
         files: vec![path("Cargo.lock")],
@@ -201,7 +194,6 @@ fn two_lockfile_writers_are_generated_output() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn interface_change_meets_an_importing_machine_as_contract() {
     let d1 = decl(
         1,
@@ -222,7 +214,6 @@ fn interface_change_meets_an_importing_machine_as_contract() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn interface_change_without_an_importing_belt_is_no_overlap() {
     let d1 = decl(
         1,
@@ -236,7 +227,6 @@ fn interface_change_without_an_importing_belt_is_no_overlap() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_task_never_clashes_with_itself() {
     let d1 = decl(1, symbols(&[("src/api/routes.rs", "rate_limit")]));
     let d1_again = decl(1, symbols(&[("src/api/routes.rs", "rate_limit")]));
@@ -244,7 +234,6 @@ fn a_task_never_clashes_with_itself() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn detection_does_not_depend_on_input_order() {
     let d1 = decl(1, symbols(&[("src/api/routes.rs", "rate_limit")]));
     let d2 = decl(
@@ -285,7 +274,6 @@ fn clashing() -> Fx {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn overlapping_declaration_records_a_blocking_clash_and_holds_both_tasks() {
     let fx = clashing();
     let clashes: Vec<_> = fx.origin.world().clashes().collect();
@@ -304,7 +292,6 @@ fn overlapping_declaration_records_a_blocking_clash_and_holds_both_tasks() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn advisory_overlap_is_not_recorded_and_both_tasks_build() {
     let mut fx = Fx::new();
     let (a, b, t1, t2) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1, fx.task2);
@@ -324,7 +311,6 @@ fn advisory_overlap_is_not_recorded_and_both_tasks_build() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn narrowing_redeclaration_dissolves_the_clash() {
     let mut fx = clashing();
     let (b, t2) = (fx.agent_b.clone(), fx.task2);
@@ -346,7 +332,6 @@ fn narrowing_redeclaration_dissolves_the_clash() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn member_settles_their_own_agents_yield() {
     let mut fx = clashing();
     let (bob, t2) = (fx.bob.clone(), fx.task2);
@@ -378,7 +363,6 @@ fn member_settles_their_own_agents_yield() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn member_may_only_propose_another_members_yield_and_owner_confirms() {
     let mut fx = clashing();
     let (bob, owner, t1) = (fx.bob.clone(), fx.owner.clone(), fx.task1);
@@ -425,7 +409,6 @@ fn member_may_only_propose_another_members_yield_and_owner_confirms() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_choice_off_the_menu_is_rejected() {
     let mut fx = clashing();
     let owner = fx.owner.clone();
@@ -442,7 +425,6 @@ fn a_choice_off_the_menu_is_rejected() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn serialize_clears_first_and_holds_then_until_first_lands() {
     let mut fx = clashing();
     let (owner, t1, t2) = (fx.owner.clone(), fx.task1, fx.task2);

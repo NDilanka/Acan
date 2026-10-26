@@ -12,9 +12,3 @@ thiserror.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
-
-[lints.rust]
-# Scaffold stage: bodies are todo!(), so parameters and crate-private helpers are unused.
-# Remove both lines once the implementation lands.
-unused_variables = "allow"
-dead_code = "allow"
