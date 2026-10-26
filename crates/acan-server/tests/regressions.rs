@@ -127,7 +127,7 @@ async fn a_cancelled_submit_still_commits_and_the_log_stays_contiguous() {
 
     // Reads come from the published snapshot, so the blocked write holds nothing up.
     assert_eq!(
-        host.read(|world| world.next_seq()),
+        host.read(acan_core::World::next_seq),
         Seq::new(1),
         "reads never wait on a database write"
     );

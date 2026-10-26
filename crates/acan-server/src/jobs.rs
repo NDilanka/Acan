@@ -89,7 +89,7 @@ async fn run<C: ModelClient + 'static>(host: Host<C>) {
                 }
                 Ok((job, Err(err))) => {
                     in_flight.retain(|_, running| *running != job);
-                    record_failure(&mut retries, job, err);
+                    record_failure(&mut retries, job, &err);
                 }
                 Err(err) => {
                     tracing::error!(error = %err, "a model job task failed");
@@ -111,7 +111,7 @@ async fn wait_until(next_retry: Option<Instant>) {
     }
 }
 
-fn record_failure(retries: &mut HashMap<Job, Retry>, job: Job, err: JobError) {
+fn record_failure(retries: &mut HashMap<Job, Retry>, job: Job, err: &JobError) {
     let attempts = retries.get(&job).map_or(0, |retry| retry.attempts) + 1;
     if attempts >= MAX_JOB_ATTEMPTS {
         tracing::error!(?job, attempts, error = %err, "model job kept failing; leaving it until it changes");

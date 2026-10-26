@@ -73,21 +73,16 @@ pub async fn upgrade<C: ModelClient + 'static>(
         None => Access::FirstFrame,
     };
     let from = Seq::new(query.from);
-    Ok(ws.on_upgrade(move |socket| track(host, socket, from, access)))
+    Ok(ws.on_upgrade(move |socket| async move { track(&host, socket, from, access) }))
 }
 
 /// Registers the stream so shutdown can wait for it to close, then runs it.
-async fn track<C: ModelClient + 'static>(
-    host: Host<C>,
-    socket: WebSocket,
-    from: Seq,
-    access: Access,
-) {
+fn track<C: ModelClient + 'static>(host: &Host<C>, socket: WebSocket, from: Seq, access: Access) {
     let pump = pump(host.clone(), socket, from, access);
-    host.streams()
-        .lock()
-        .expect("stream set lock poisoned")
-        .spawn(pump);
+    let mut streams = host.streams().lock().expect("stream set lock poisoned");
+    // Reap closed streams so a long-running server does not keep one entry per connection.
+    while streams.try_join_next().is_some() {}
+    streams.spawn(pump);
 }
 
 /// Resolves once the server is shutting down, even when the signal was sent before the call.

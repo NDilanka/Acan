@@ -103,6 +103,10 @@ impl Running {
     /// # Errors
     ///
     /// Returns an error when the listener or the writer task failed. Teardown runs either way.
+    ///
+    /// # Panics
+    ///
+    /// Panics when a stream task panicked while holding the stream set lock.
     pub async fn stop(mut self) -> anyhow::Result<()> {
         self.shutdown.send_replace(true);
         let served = self.wait().await;
