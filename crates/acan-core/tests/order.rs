@@ -302,3 +302,36 @@ fn a_log_that_does_not_open_the_world_is_refused() {
         Some(ReplayError::NotOpened)
     );
 }
+
+#[test]
+fn only_the_poster_or_an_owner_cancels() {
+    let mut fx = Fx::new();
+    let bob = fx.bob.clone();
+    let got = fx.human(&bob, HumanCmd::CancelOrder { order: fx.order });
+    assert!(
+        matches!(got, Err(Rejection::Forbidden { .. })),
+        "got {got:?}"
+    );
+}
+
+#[test]
+fn an_empty_split_is_rejected() {
+    let mut fx = Fx::new();
+    let owner = fx.owner.clone();
+    fx.human(
+        &owner,
+        HumanCmd::PostOrder {
+            machine: machine("auth"),
+            sentence: "Rotate session keys".to_owned(),
+            witnesses: vec![],
+        },
+    )
+    .expect("order posted");
+    let order = fx.origin.world().orders().last().expect("second order").id;
+    let got = fx.system(SystemCmd::SplitReady {
+        order,
+        rev: OrderRev::new(0),
+        tasks: vec![],
+    });
+    assert!(matches!(got, Err(Rejection::Invalid { .. })), "got {got:?}");
+}

@@ -6,7 +6,8 @@ use acan_core::{
     AgentCmd, CommitId, Event, GateRun, GateRunId, GateVerdict, Generation, Job, LeaseEnd,
     OrderRev, Rejection, Stage, SystemCmd, TaskId, TaskState, WitnessId, WitnessOutcome,
 };
-use common::{Fx, events};
+use acan_core::{HumanCmd, TaskSpec};
+use common::{Fx, events, machine};
 
 fn commit(raw: &str) -> CommitId {
     raw.parse().expect("valid commit")
@@ -318,4 +319,56 @@ fn a_merged_task_lands_and_a_failed_merge_reopens_the_next() {
         fx.origin.world().task(t2).expect("task").state,
         TaskState::Open
     );
+}
+
+#[test]
+fn a_build_with_no_gated_witnesses_passes_at_once() {
+    let mut fx = Fx::new();
+    let (owner, a) = (fx.owner.clone(), fx.agent_a.clone());
+    fx.human(
+        &owner,
+        HumanCmd::PostOrder {
+            machine: machine("auth"),
+            sentence: "Tidy the login docs".to_owned(),
+            witnesses: vec![],
+        },
+    )
+    .expect("order posted");
+    fx.order = fx.origin.world().orders().last().expect("second order").id;
+    let spec = TaskSpec {
+        title: "docs".to_owned(),
+        brief: String::new(),
+        scope: vec![machine("auth")],
+    };
+    fx.system(SystemCmd::SplitReady {
+        order: fx.order,
+        rev: OrderRev::new(0),
+        tasks: vec![spec],
+    })
+    .expect("split accepted");
+    let task = fx
+        .origin
+        .world()
+        .tasks_of(fx.order)
+        .next()
+        .expect("task")
+        .id;
+    let fence = fx.build(&a, task);
+    let batch = fx
+        .agent(
+            &a,
+            AgentCmd::ReportBuilt {
+                fence,
+                head: commit("doc1"),
+            },
+        )
+        .expect("report accepted");
+    assert!(events(&batch).iter().any(|e| matches!(
+        e,
+        Event::GateClosed {
+            verdict: GateVerdict::Passed,
+            ..
+        }
+    )));
+    assert_eq!(fx.origin.world().land_queue(), vec![task]);
 }

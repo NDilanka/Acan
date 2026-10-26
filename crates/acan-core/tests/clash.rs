@@ -1,9 +1,10 @@
 mod common;
 
 use acan_core::{
-    Clash, ClashKey, ClashState, CodeRev, Declaration, DeclarationInput, Event, Generation,
-    HumanCmd, Locus, Overlap, OverlapKind, Rejection, SettleRight, Settlement, Stage, TaskId,
-    TaskState, detect,
+    AgentCmd, Clash, ClashKey, ClashState, CodeRev, CommitId, ContractRef, Declaration,
+    DeclarationInput, Event, Explanation, Generation, HumanCmd, IndexedSymbol, Job, Locus, Overlap,
+    OverlapKind, Rejection, SettleRight, Settlement, Stage, SystemCmd, TaskId, TaskState,
+    WitnessOutcome, detect,
 };
 use common::{Fx, events, index, machine, path, sym};
 
@@ -456,4 +457,259 @@ fn serialize_clears_first_and_holds_then_until_first_lands() {
             ..
         }
     ));
+}
+
+fn stage_of(fx: &Fx, task: TaskId) -> &'static str {
+    match &fx.origin.world().task(task).expect("task").state {
+        TaskState::Claimed { stage, .. } => match stage {
+            Stage::Declaring => "declaring",
+            Stage::Declared { .. } => "declared",
+            Stage::Building { .. } => "building",
+            Stage::Gating { .. } => "gating",
+        },
+        TaskState::Open => "open",
+        TaskState::Queued { .. } => "queued",
+        TaskState::Landed { .. } => "landed",
+        TaskState::Dropped => "dropped",
+    }
+}
+
+#[test]
+fn releasing_a_party_dissolves_the_clash_and_clears_the_other() {
+    let mut fx = clashing();
+    let (a, t1, t2) = (fx.agent_a.clone(), fx.task1, fx.task2);
+    let fence = fx.fence(t1).expect("claimed");
+    let batch = fx
+        .agent(&a, AgentCmd::Release { fence })
+        .expect("release accepted");
+    let got = events(&batch);
+    assert!(
+        got.iter()
+            .any(|e| matches!(e, Event::ClashDissolved { .. })),
+        "{got:?}"
+    );
+    assert!(
+        got.iter()
+            .any(|e| matches!(e, Event::BuildCleared { task } if *task == t2)),
+        "{got:?}"
+    );
+    assert_eq!(stage_of(&fx, t2), "building");
+}
+
+#[test]
+fn ignoring_a_narrow_settlement_raises_a_new_clash() {
+    let mut fx = clashing();
+    let (bob, b, t2) = (fx.bob.clone(), fx.agent_b.clone(), fx.task2);
+    let first = fx.origin.world().clashes().next().expect("clash").id;
+    fx.human(
+        &bob,
+        HumanCmd::SettleClash {
+            clash: first,
+            choice: Settlement::Narrow { task: t2 },
+        },
+    )
+    .expect("settle accepted");
+    let f2 = fx.fence(t2).expect("claimed");
+    fx.declare(&b, f2, symbols(&[("src/api/routes.rs", "rate_limit")]))
+        .expect("redeclare accepted");
+    let blocking: Vec<_> = fx
+        .origin
+        .world()
+        .clashes()
+        .filter(|c| c.blocking())
+        .map(|c| c.id)
+        .collect();
+    assert_eq!(blocking.len(), 1, "one new blocking clash");
+    assert_ne!(blocking[0], first);
+}
+
+#[test]
+fn a_contract_clash_offers_to_split_at_the_interface() {
+    let mut fx = Fx::new();
+    let (a, b, bob, t1, t2) = (
+        fx.agent_a.clone(),
+        fx.agent_b.clone(),
+        fx.bob.clone(),
+        fx.task1,
+        fx.task2,
+    );
+    let f1 = fx.claim(&a, t1);
+    let f2 = fx.claim(&b, t2);
+    let interface = DeclarationInput {
+        interfaces: vec![sym("src/auth/session.rs", "verify")],
+        ..DeclarationInput::default()
+    };
+    fx.declare(&a, f1, interface).expect("declare accepted");
+    fx.declare(&b, f2, symbols(&[("src/api/routes.rs", "rate_limit")]))
+        .expect("declare accepted");
+    let clash = fx.origin.world().clashes().next().expect("clash").clone();
+    assert_eq!(clash.kind, OverlapKind::Contract);
+    assert_eq!(
+        clash.contract,
+        Some(ContractRef {
+            owner: t1,
+            interface: sym("src/auth/session.rs", "verify"),
+        })
+    );
+    let split = Settlement::SplitAtContract {
+        owner: t1,
+        contract: "verify".to_owned(),
+    };
+    assert_eq!(
+        clash.menu(),
+        vec![
+            split.clone(),
+            Settlement::Serialize {
+                first: t1,
+                then: t2
+            }
+        ]
+    );
+    assert_eq!(
+        fx.origin.world().settle_right(&bob, &clash, &split),
+        Some(SettleRight::Settle),
+        "bob's agent yields under a split"
+    );
+    fx.human(
+        &bob,
+        HumanCmd::SettleClash {
+            clash: clash.id,
+            choice: split,
+        },
+    )
+    .expect("settle accepted");
+    assert_eq!(
+        (stage_of(&fx, t1), stage_of(&fx, t2)),
+        ("building", "declared")
+    );
+}
+
+#[test]
+fn the_waiting_task_clears_once_its_predecessor_lands() {
+    let mut fx = clashing();
+    let (owner, a, t1, t2) = (fx.owner.clone(), fx.agent_a.clone(), fx.task1, fx.task2);
+    let clash = fx.origin.world().clashes().next().expect("clash").id;
+    fx.human(
+        &owner,
+        HumanCmd::SettleClash {
+            clash,
+            choice: Settlement::Serialize {
+                first: t1,
+                then: t2,
+            },
+        },
+    )
+    .expect("settle accepted");
+    let fence = fx.fence(t1).expect("claimed");
+    let head: CommitId = "aaa111".parse().expect("valid commit");
+    fx.agent(
+        &a,
+        AgentCmd::ReportBuilt {
+            fence,
+            head: head.clone(),
+        },
+    )
+    .expect("report accepted");
+    let run = match &fx.origin.world().task(t1).expect("task").state {
+        TaskState::Claimed {
+            stage: Stage::Gating { run, .. },
+            ..
+        } => *run,
+        other => panic!("not gating: {other:?}"),
+    };
+    let witness = fx.witnesses()[0];
+    fx.system(SystemCmd::WitnessResult {
+        run,
+        witness,
+        outcome: WitnessOutcome::Pass,
+    })
+    .expect("pass accepted");
+    assert_eq!(stage_of(&fx, t2), "declared", "waits while t1 is queued");
+    let batch = fx
+        .system(SystemCmd::LandResult {
+            task: t1,
+            head,
+            result: Ok("m1".parse().expect("valid commit")),
+        })
+        .expect("land accepted");
+    assert!(
+        events(&batch)
+            .iter()
+            .any(|e| matches!(e, Event::BuildCleared { task } if *task == t2))
+    );
+}
+
+#[test]
+fn an_index_update_finds_new_overlaps_once_per_revision() {
+    let mut fx = Fx::new();
+    let (a, b, t1, t2) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1, fx.task2);
+    let f1 = fx.claim(&a, t1);
+    let f2 = fx.claim(&b, t2);
+    fx.declare(&a, f1, symbols(&[("src/api/routes.rs", "rate_limit")]))
+        .expect("declare accepted");
+    fx.declare(&b, f2, symbols(&[("src/api/routes.rs", "health")]))
+        .expect("declare accepted");
+    assert_eq!(fx.origin.world().clashes().count(), 0);
+    fx.index.rev = "rev-2".parse().expect("valid rev");
+    let routes = fx
+        .index
+        .files
+        .get_mut(&path("src/api/routes.rs"))
+        .expect("routes file");
+    routes.symbols.retain(|s| s.name != "health");
+    routes.symbols.push(IndexedSymbol {
+        name: "health".to_owned(),
+        bytes: 150..260,
+        exported: false,
+    });
+    fx.system(SystemCmd::IndexUpdated).expect("rescan accepted");
+    let clashes: Vec<_> = fx.origin.world().clashes().collect();
+    assert_eq!(clashes.len(), 1);
+    assert_eq!(clashes[0].kind, OverlapKind::SharedImplementation);
+    assert_eq!(
+        (stage_of(&fx, t1), stage_of(&fx, t2)),
+        ("declared", "declared"),
+        "a new clash stops both builders"
+    );
+    let again = fx
+        .system(SystemCmd::IndexUpdated)
+        .expect("same revision accepted");
+    assert!(again.is_empty(), "got {again:?}");
+}
+
+#[test]
+fn an_explanation_never_suggests_a_choice_off_the_menu() {
+    let mut fx = clashing();
+    let clash = fx.origin.world().clashes().next().expect("clash").id;
+    assert!(fx.origin.world().jobs().contains(&Job::Explain { clash }));
+    let explanation = Explanation {
+        consequence: "both rewrite the limiter".to_owned(),
+        breaks: None,
+        suggested: Some(Settlement::Narrow { task: task(99) }),
+    };
+    fx.system(SystemCmd::ClashExplained { clash, explanation })
+        .expect("explanation accepted");
+    let stored = fx.origin.world().clash(clash).expect("clash");
+    assert_eq!(
+        stored
+            .explanation
+            .as_ref()
+            .and_then(|e| e.suggested.clone()),
+        None
+    );
+    assert!(!fx.origin.world().jobs().contains(&Job::Explain { clash }));
+}
+
+#[test]
+fn an_empty_declaration_is_rejected_and_a_repeat_is_a_no_op() {
+    let mut fx = Fx::new();
+    let (a, t1) = (fx.agent_a.clone(), fx.task1);
+    let fence = fx.claim(&a, t1);
+    let got = fx.declare(&a, fence, DeclarationInput::default());
+    assert!(matches!(got, Err(Rejection::Invalid { .. })), "got {got:?}");
+    let footprint = symbols(&[("src/api/routes.rs", "rate_limit")]);
+    fx.declare(&a, fence, footprint.clone())
+        .expect("declare accepted");
+    let batch = fx.declare(&a, fence, footprint).expect("repeat accepted");
+    assert!(batch.is_empty(), "got {batch:?}");
 }

@@ -1,8 +1,8 @@
 mod common;
 
 use acan_core::{
-    AgentCmd, DeclarationInput, Event, Fence, Generation, Judgement, LEASE_TTL_MS, LeaseEnd,
-    Rejection, Stage, SystemCmd, TaskState,
+    AgentCmd, CommitId, DeclarationInput, Event, Fence, Generation, Judgement, LEASE_TTL_MS,
+    LeaseEnd, Rejection, Stage, SystemCmd, TaskState, WitnessOutcome,
 };
 use common::{Fx, events};
 
@@ -172,4 +172,68 @@ fn release_reopens_the_task_and_generation_never_resets() {
     );
     let second = fx.claim(&a, t1);
     assert_eq!(second.generation, Generation::new(2));
+}
+
+#[test]
+fn a_lease_does_not_expire_while_its_gate_runs_and_a_failure_renews_it() {
+    let mut fx = Fx::new();
+    let (a, t1) = (fx.agent_a.clone(), fx.task1);
+    let fence = fx.build(&a, t1);
+    let head: CommitId = "abc123".parse().expect("valid commit");
+    fx.agent(&a, AgentCmd::ReportBuilt { fence, head })
+        .expect("report accepted");
+    fx.advance(3 * LEASE_TTL_MS);
+    let batch = fx.system(SystemCmd::Tick).expect("tick accepted");
+    assert!(batch.is_empty(), "a gating lease expired: {batch:?}");
+    let run = match &fx.origin.world().task(t1).expect("task").state {
+        TaskState::Claimed {
+            stage: Stage::Gating { run, .. },
+            ..
+        } => *run,
+        other => panic!("task is not gating: {other:?}"),
+    };
+    let witness = fx.witnesses()[0];
+    let fail = WitnessOutcome::Fail {
+        detail: "login test failed".to_owned(),
+    };
+    let batch = fx
+        .system(SystemCmd::WitnessResult {
+            run,
+            witness,
+            outcome: fail,
+        })
+        .expect("result accepted");
+    let renewed_until = fx.now.plus_millis(LEASE_TTL_MS);
+    assert!(
+        events(&batch).iter().any(|e| matches!(
+            e,
+            Event::LeaseRenewed { expires_at, .. } if *expires_at == renewed_until
+        )),
+        "no renewal on close: {batch:?}"
+    );
+    assert_eq!(fx.fence(t1), Some(fence), "the worker keeps its fence");
+    fx.advance(LEASE_TTL_MS);
+    let batch = fx.system(SystemCmd::Tick).expect("tick accepted");
+    assert!(
+        matches!(
+            events(&batch)[..],
+            [Event::LeaseEnded {
+                why: LeaseEnd::Expired,
+                ..
+            }]
+        ),
+        "expiry resumes after the gate closes: {batch:?}"
+    );
+}
+
+#[test]
+fn a_fence_from_another_agent_is_forbidden() {
+    let mut fx = Fx::new();
+    let (a, b, t1) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1);
+    let fence = fx.claim(&a, t1);
+    let got = fx.agent(&b, AgentCmd::Renew { fence });
+    assert!(
+        matches!(got, Err(Rejection::Forbidden { .. })),
+        "got {got:?}"
+    );
 }
