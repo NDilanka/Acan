@@ -1,0 +1,4 @@
+CREATE TABLE events (
+    seq INTEGER PRIMARY KEY,
+    json TEXT NOT NULL
+);

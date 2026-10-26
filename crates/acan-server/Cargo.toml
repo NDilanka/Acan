@@ -1,0 +1,38 @@
+[package]
+name = "acan-server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "The acan binary: one world's origin served over HTTP and WebSocket, with its event log in SQLite"
+
+[[bin]]
+name = "acan"
+path = "src/main.rs"
+
+[dependencies]
+acan-core = { path = "../acan-core" }
+acan-llm = { path = "../acan-llm" }
+acan-scan = { path = "../acan-scan" }
+anyhow.workspace = true
+axum = { version = "0.8", features = ["ws"] }
+clap = { version = "4", features = ["derive"] }
+dotenvy = "0.15"
+percent-encoding = "2"
+schemars = "1"
+serde.workspace = true
+serde_json.workspace = true
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+thiserror.workspace = true
+tokio.workspace = true
+tower-http = { version = "0.6", features = ["fs"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+futures-util = "0.3"
+reqwest = { version = "0.12", features = ["json"] }
+tempfile = "3"
+tokio-tungstenite = "0.29"
