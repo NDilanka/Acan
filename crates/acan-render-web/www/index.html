@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>acan-render spike</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1b1c1e; color: #d8c08a; font: 12px/1.3 "IBM Plex Mono", Consolas, monospace; overflow: hidden; }
+  #stage { position: absolute; inset: 0; }
+  canvas { width: 100%; height: 100%; display: block; outline: none; }
+  #labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+  .label { position: absolute; transform: translate(0, -100%); padding: 1px 5px; background: #1b1c1ee0; border: 1px solid #b5924c; color: #f0d9a0; white-space: nowrap; }
+  #hud { position: absolute; left: 8px; bottom: 8px; padding: 4px 8px; background: #1b1c1ec0; border: 1px solid #3a3a3c; pointer-events: none; white-space: pre; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <canvas id="plant" tabindex="0"></canvas>
+  <div id="labels"></div>
+  <div id="hud">loading</div>
+</div>
+<script type="module" src="main.js"></script>
+</body>
+</html>
