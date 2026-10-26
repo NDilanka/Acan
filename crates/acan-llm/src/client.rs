@@ -1,0 +1,106 @@
+use std::future::Future;
+
+use schemars::JsonSchema;
+use serde::de::DeserializeOwned;
+
+use crate::chat::{ChatRequest, ChatResponse, JsonSchemaFormat};
+use crate::error::LlmError;
+use crate::role::Role;
+use crate::usage::CallRecord;
+
+/// The one interface the rest of Acan uses for model calls.
+///
+/// Use a concrete client or a `C: ModelClient` bound. The trait is not dyn-compatible,
+/// because its methods return `impl Future`. The returned futures are `Send`.
+pub trait ModelClient: Send + Sync {
+    /// Runs one chat completion for `role`. The provider and model come from routing.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LlmError::Config`] or [`LlmError::MissingKey`] before any request is sent.
+    /// Otherwise returns the HTTP, timeout, or reply error from the provider that answered.
+    fn chat(
+        &self,
+        role: Role,
+        request: ChatRequest,
+    ) -> impl Future<Output = Result<ChatResponse, LlmError>> + Send;
+
+    /// Runs a completion whose reply must parse as `T`. The call is metered even when the
+    /// reply does not parse.
+    ///
+    /// # Errors
+    ///
+    /// Returns every error from [`ModelClient::chat`], plus [`LlmError::SchemaValidation`]
+    /// when the reply does not parse as `T`.
+    fn chat_json<T>(
+        &self,
+        role: Role,
+        request: ChatRequest,
+    ) -> impl Future<Output = Result<Structured<T>, LlmError>> + Send
+    where
+        T: DeserializeOwned + JsonSchema,
+    {
+        async move {
+            let response = self.chat(role, with_schema::<T>(request)).await?;
+            parse_structured(response, str::to_owned)
+        }
+    }
+}
+
+/// A typed reply and the accounting record for the call that produced it.
+#[derive(Debug, Clone)]
+pub struct Structured<T> {
+    pub value: T,
+    pub call: CallRecord,
+}
+
+/// Asks the provider for a reply that matches the JSON Schema of `T`.
+pub(crate) fn with_schema<T: JsonSchema>(mut request: ChatRequest) -> ChatRequest {
+    request.response_format = Some(JsonSchemaFormat::for_type::<T>());
+    request
+}
+
+/// Parses a reply as `T`. `scrub` removes credentials from provider text before the text is
+/// kept in an error.
+pub(crate) fn parse_structured<T: DeserializeOwned>(
+    response: ChatResponse,
+    scrub: impl Fn(&str) -> String,
+) -> Result<Structured<T>, LlmError> {
+    let raw = response.content.as_deref().unwrap_or_default();
+    let parsed: Result<T, serde_json::Error> = serde_json::from_str(strip_code_fence(raw.trim()));
+    match parsed {
+        Ok(value) => Ok(Structured {
+            value,
+            call: response.call,
+        }),
+        Err(err) => Err(LlmError::SchemaValidation {
+            provider: response.call.provider.clone(),
+            detail: scrub(&err.to_string()),
+            raw: scrub(raw),
+        }),
+    }
+}
+
+/// Models often wrap JSON in a Markdown fence even when asked not to.
+fn strip_code_fence(text: &str) -> &str {
+    let Some(rest) = text.strip_prefix("```") else {
+        return text;
+    };
+    let rest = rest.strip_prefix("json").unwrap_or(rest);
+    rest.trim().strip_suffix("```").unwrap_or(rest).trim()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::strip_code_fence;
+
+    #[test]
+    fn fenced_json_is_unwrapped() {
+        assert_eq!(strip_code_fence("```json\n{\"a\":1}\n```"), "{\"a\":1}");
+    }
+
+    #[test]
+    fn bare_json_is_left_alone() {
+        assert_eq!(strip_code_fence("{\"a\":1}"), "{\"a\":1}");
+    }
+}

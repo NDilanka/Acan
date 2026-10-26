@@ -1,0 +1,28 @@
+//! Acan's single model client. Every model call goes through [`ModelClient`].
+//!
+//! Providers are configuration. [`LlmConfig`] lists OpenAI-compatible endpoints and routes each
+//! [`Role`] to one of them. [`OpenAiCompatible`] talks to the configured providers, and [`Stub`]
+//! answers from a script for tests and offline demos.
+
+mod chat;
+mod client;
+mod config;
+mod error;
+mod key;
+mod openai;
+mod role;
+mod stub;
+mod usage;
+
+pub use chat::{
+    ChatRequest, ChatResponse, FunctionCall, JsonSchemaFormat, Message, ToolCall, ToolKind,
+    ToolSpec,
+};
+pub use client::{ModelClient, Structured};
+pub use config::{ConfigError, LlmConfig, ProviderConfig, StructuredOutput};
+pub use error::{LlmError, UnknownRole};
+pub use key::{ApiKey, ApiKeys};
+pub use openai::{OpenAiCompatible, RetryPolicy};
+pub use role::Role;
+pub use stub::{Reply, Stub};
+pub use usage::{CallRecord, Usage, UsageLedger, UsageTotals};

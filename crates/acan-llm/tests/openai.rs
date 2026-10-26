@@ -1,0 +1,764 @@
+use std::time::Duration;
+
+use acan_llm::{
+    ApiKey, ApiKeys, ChatRequest, FunctionCall, LlmConfig, LlmError, Message, ModelClient,
+    OpenAiCompatible, RetryPolicy, Role, ToolCall, ToolKind, ToolSpec,
+};
+use schemars::JsonSchema;
+use serde::Deserialize;
+use serde_json::{Value, json};
+use wiremock::matchers::{body_partial_json, header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+const META_KEY: &str = "meta-test-key";
+const BASETEN_KEY: &str = "baseten-test-key";
+
+#[derive(Debug, PartialEq, Deserialize, JsonSchema)]
+struct Verdict {
+    clash: bool,
+    files: Vec<String>,
+}
+
+fn text_reply(content: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({
+        "choices": [{
+            "index": 0,
+            "finish_reason": "stop",
+            "message": {"role": "assistant", "content": content}
+        }],
+        "usage": {"prompt_tokens": 120, "completion_tokens": 30, "total_tokens": 150}
+    }))
+}
+
+fn client(meta: &MockServer, baseten: &MockServer, worker_provider: &str) -> OpenAiCompatible {
+    let meta_url = meta.uri();
+    let baseten_url = baseten.uri();
+    let toml = format!(
+        r#"
+[[providers]]
+name = "meta"
+base_url = "{meta_url}/v1"
+api_key_env = "META_API_KEY"
+default_model = "muse-spark-1.3"
+structured_output = "json_schema"
+timeout_secs = 2
+
+[[providers]]
+name = "baseten"
+base_url = "{baseten_url}/v1"
+api_key_env = "BASETEN_API_KEY"
+default_model = "meta-models/muse-spark-open-1026"
+structured_output = "prompt"
+timeout_secs = 2
+
+[routing.foreman]
+provider = "meta"
+
+[routing.worker]
+provider = "{worker_provider}"
+
+[routing.fast]
+provider = "baseten"
+"#
+    );
+    let config = LlmConfig::from_toml_str(&toml).expect("test config is valid");
+    let mut keys = ApiKeys::default();
+    keys.insert("meta", ApiKey::new(META_KEY));
+    keys.insert("baseten", ApiKey::new(BASETEN_KEY));
+    OpenAiCompatible::new(config, keys)
+        .expect("client builds")
+        .with_retry_policy(RetryPolicy {
+            max_retries: 3,
+            base_delay: Duration::from_millis(1),
+        })
+}
+
+async fn body_of(server: &MockServer, index: usize) -> Value {
+    let requests = server.received_requests().await.unwrap_or_default();
+    serde_json::from_slice(&requests[index].body).expect("request body is JSON")
+}
+
+#[tokio::test]
+async fn request_matches_openai_chat_completions_and_sends_bearer_key() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("authorization", "Bearer meta-test-key"))
+        .and(body_partial_json(json!({"model": "muse-spark-1.3"})))
+        .respond_with(text_reply("OK"))
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    let request = ChatRequest {
+        messages: vec![
+            Message::system("You plan work."),
+            Message::user("Plan the login fix."),
+        ],
+        tools: vec![ToolSpec {
+            name: "read_file".to_owned(),
+            description: "Read a file".to_owned(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }),
+        }],
+        temperature: Some(0.5),
+        max_tokens: Some(256),
+        response_format: None,
+    };
+    let response = client(&meta, &baseten, "baseten")
+        .chat(Role::Foreman, request)
+        .await
+        .expect("chat succeeds");
+
+    assert_eq!(response.content.as_deref(), Some("OK"));
+    assert_eq!(
+        body_of(&meta, 0).await,
+        json!({
+            "model": "muse-spark-1.3",
+            "messages": [
+                {"role": "system", "content": "You plan work."},
+                {"role": "user", "content": "Plan the login fix."}
+            ],
+            "tools": [{
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read a file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"path": {"type": "string"}},
+                        "required": ["path"]
+                    }
+                }
+            }],
+            "temperature": 0.5,
+            "max_tokens": 256
+        })
+    );
+}
+
+#[tokio::test]
+async fn tool_history_and_tool_calls_use_openai_shapes() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_2",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": "{\"path\":\"b.rs\"}"}
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 50, "completion_tokens": 9}
+        })))
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    let history = vec![
+        Message::user("Read a.rs"),
+        Message::Assistant {
+            content: None,
+            tool_calls: vec![ToolCall {
+                id: "call_1".to_owned(),
+                kind: ToolKind::Function,
+                function: FunctionCall {
+                    name: "read_file".to_owned(),
+                    arguments: "{\"path\":\"a.rs\"}".to_owned(),
+                },
+            }],
+        },
+        Message::Tool {
+            tool_call_id: "call_1".to_owned(),
+            content: "fn main() {}".to_owned(),
+        },
+    ];
+    let response = client(&meta, &baseten, "baseten")
+        .chat(
+            Role::Foreman,
+            ChatRequest {
+                messages: history,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("chat succeeds");
+
+    assert_eq!(response.tool_calls.len(), 1);
+    assert_eq!(response.tool_calls[0].id, "call_2");
+    assert_eq!(response.tool_calls[0].function.name, "read_file");
+    assert_eq!(
+        response.tool_calls[0].function.arguments,
+        "{\"path\":\"b.rs\"}"
+    );
+    assert_eq!(
+        body_of(&meta, 0).await["messages"],
+        json!([
+            {"role": "user", "content": "Read a.rs"},
+            {"role": "assistant", "tool_calls": [{
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "read_file", "arguments": "{\"path\":\"a.rs\"}"}
+            }]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "fn main() {}"}
+        ])
+    );
+}
+
+#[tokio::test]
+async fn json_schema_reply_parses_into_typed_struct() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(text_reply(r#"{"clash":true,"files":["src/lib.rs"]}"#))
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    let out = client(&meta, &baseten, "baseten")
+        .chat_json::<Verdict>(
+            Role::Foreman,
+            ChatRequest {
+                messages: vec![Message::user("Do agents clash?")],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("reply matches the schema");
+
+    assert_eq!(
+        out.value,
+        Verdict {
+            clash: true,
+            files: vec!["src/lib.rs".to_owned()],
+        }
+    );
+    assert_eq!(out.call.provider, "meta");
+    assert_eq!(out.call.usage.prompt_tokens, 120);
+
+    let body = body_of(&meta, 0).await;
+    assert_eq!(body["response_format"]["type"], "json_schema");
+    assert_eq!(body["response_format"]["json_schema"]["name"], "Verdict");
+    assert!(body["response_format"]["json_schema"]["schema"]["properties"]["clash"].is_object());
+}
+
+#[tokio::test]
+async fn schema_invalid_reply_is_a_validation_error_and_still_metered() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(text_reply(r#"{"clash":"maybe"}"#))
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    let client = client(&meta, &baseten, "baseten");
+    let err = client
+        .chat_json::<Verdict>(
+            Role::Foreman,
+            ChatRequest {
+                messages: vec![Message::user("Do agents clash?")],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("reply must not parse");
+
+    match err {
+        LlmError::SchemaValidation { raw, .. } => assert!(raw.contains("maybe")),
+        other => panic!("expected SchemaValidation, got {other:?}"),
+    }
+    assert_eq!(client.ledger().records().len(), 1, "tokens were billed");
+}
+
+#[tokio::test]
+async fn prompt_fallback_puts_schema_in_prompt_and_parses_fenced_json() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("authorization", "Bearer baseten-test-key"))
+        .respond_with(text_reply("```json\n{\"clash\":false,\"files\":[]}\n```"))
+        .expect(1)
+        .mount(&baseten)
+        .await;
+
+    let out = client(&meta, &baseten, "baseten")
+        .chat_json::<Verdict>(
+            Role::Worker,
+            ChatRequest {
+                messages: vec![Message::user("Do agents clash?")],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("fenced JSON parses");
+
+    assert_eq!(
+        out.value,
+        Verdict {
+            clash: false,
+            files: vec![],
+        }
+    );
+    assert_eq!(out.call.provider, "baseten");
+    let body = body_of(&baseten, 0).await;
+    assert!(
+        body.get("response_format").is_none(),
+        "no response_format in prompt mode"
+    );
+    assert_eq!(body["messages"][0]["role"], "system");
+    let schema_prompt = body["messages"][0]["content"].as_str().unwrap_or_default();
+    assert!(schema_prompt.contains("JSON Schema"));
+    assert!(schema_prompt.contains("clash"));
+}
+
+#[tokio::test]
+async fn rate_limit_retries_then_succeeds() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(429))
+        .up_to_n_times(2)
+        .mount(&meta)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(text_reply("OK"))
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    let response = client(&meta, &baseten, "baseten")
+        .chat(
+            Role::Foreman,
+            ChatRequest {
+                messages: vec![Message::user("ping")],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("third attempt succeeds");
+
+    assert_eq!(response.content.as_deref(), Some("OK"));
+    assert_eq!(meta.received_requests().await.unwrap_or_default().len(), 3);
+}
+
+#[tokio::test]
+async fn payment_required_fails_fast_with_its_own_variant() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(402).set_body_string("credits exhausted"))
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    let err = client(&meta, &baseten, "baseten")
+        .chat(
+            Role::Foreman,
+            ChatRequest {
+                messages: vec![Message::user("ping")],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("402 must fail");
+
+    match err {
+        LlmError::PaymentRequired { provider, body } => {
+            assert_eq!(provider, "meta");
+            assert_eq!(body, "credits exhausted");
+        }
+        other => panic!("expected PaymentRequired, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn server_errors_retry_up_to_the_policy_then_report_attempts() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(503))
+        .expect(4)
+        .mount(&meta)
+        .await;
+
+    let err = client(&meta, &baseten, "baseten")
+        .chat(
+            Role::Foreman,
+            ChatRequest {
+                messages: vec![Message::user("ping")],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("503 on every attempt must fail");
+
+    match err {
+        LlmError::ServerError {
+            status, attempts, ..
+        } => {
+            assert_eq!(status, 503);
+            assert_eq!(attempts, 4, "one attempt plus three retries");
+        }
+        other => panic!("expected ServerError, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn other_client_errors_are_not_retried() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("bad model"))
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    let err = client(&meta, &baseten, "baseten")
+        .chat(
+            Role::Foreman,
+            ChatRequest {
+                messages: vec![Message::user("ping")],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("400 must fail");
+
+    assert!(
+        matches!(err, LlmError::Status { status: 400, .. }),
+        "got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn slow_reply_times_out() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(text_reply("late").set_delay(Duration::from_secs(3)))
+        .mount(&meta)
+        .await;
+
+    let err = client(&meta, &baseten, "baseten")
+        .chat(
+            Role::Foreman,
+            ChatRequest {
+                messages: vec![Message::user("ping")],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("reply arrives after the 2 s timeout");
+
+    assert!(matches!(err, LlmError::Timeout { .. }), "got {err:?}");
+}
+
+#[tokio::test]
+async fn usage_lands_in_the_ledger_per_role_and_model() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(json!({"model": "muse-spark-1.3"})))
+        .respond_with(text_reply("OK"))
+        .expect(2)
+        .mount(&meta)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(body_partial_json(
+            json!({"model": "meta-models/muse-spark-open-1026"}),
+        ))
+        .respond_with(text_reply("OK"))
+        .expect(1)
+        .mount(&baseten)
+        .await;
+
+    let client = client(&meta, &baseten, "baseten");
+    for _ in 0..2 {
+        client
+            .chat(
+                Role::Foreman,
+                ChatRequest {
+                    messages: vec![Message::user("plan")],
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("foreman call succeeds");
+    }
+    client
+        .chat(
+            Role::Worker,
+            ChatRequest {
+                messages: vec![Message::user("edit")],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("worker call succeeds");
+
+    let totals = client.ledger().snapshot();
+    assert_eq!(totals.len(), 2);
+    assert_eq!(totals[0].role, Role::Foreman);
+    assert_eq!(totals[0].provider, "meta");
+    assert_eq!(totals[0].model, "muse-spark-1.3");
+    assert_eq!(totals[0].calls, 2);
+    assert_eq!(totals[0].prompt_tokens, 240);
+    assert_eq!(totals[0].completion_tokens, 60);
+    assert_eq!(totals[1].role, Role::Worker);
+    assert_eq!(totals[1].provider, "baseten");
+    assert_eq!(totals[1].model, "meta-models/muse-spark-open-1026");
+    assert_eq!(totals[1].calls, 1);
+}
+
+#[tokio::test]
+async fn routing_line_moves_a_role_to_another_provider() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(text_reply("OK"))
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    client(&meta, &baseten, "meta")
+        .chat(
+            Role::Worker,
+            ChatRequest {
+                messages: vec![Message::user("edit")],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("worker call routed to meta succeeds");
+
+    assert_eq!(
+        baseten.received_requests().await.unwrap_or_default().len(),
+        0
+    );
+    assert_eq!(body_of(&meta, 0).await["model"], "muse-spark-1.3");
+}
+
+#[tokio::test]
+async fn missing_key_fails_before_any_request() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    let meta_url = meta.uri();
+    let toml = format!(
+        r#"
+[[providers]]
+name = "meta"
+base_url = "{meta_url}/v1"
+api_key_env = "META_API_KEY"
+default_model = "muse-spark-1.3"
+
+[routing.foreman]
+provider = "meta"
+
+[routing.worker]
+provider = "meta"
+
+[routing.fast]
+provider = "meta"
+"#
+    );
+    let config = LlmConfig::from_toml_str(&toml).expect("test config is valid");
+    let client = OpenAiCompatible::new(config, ApiKeys::default()).expect("client builds");
+
+    let err = client
+        .chat(
+            Role::Foreman,
+            ChatRequest {
+                messages: vec![Message::user("ping")],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("no key must fail");
+
+    match &err {
+        LlmError::MissingKey { provider, env_var } => {
+            assert_eq!(provider, "meta");
+            assert_eq!(env_var, "META_API_KEY");
+        }
+        other => panic!("expected MissingKey, got {other:?}"),
+    }
+    assert!(err.to_string().contains("no key for provider meta"));
+    assert_eq!(meta.received_requests().await.unwrap_or_default().len(), 0);
+    assert_eq!(
+        baseten.received_requests().await.unwrap_or_default().len(),
+        0
+    );
+}
+
+/// Asserts that the `Debug` and `Display` text of `err` both omit `secret`.
+fn assert_secret_absent(err: &LlmError, secret: &str) {
+    assert!(
+        !format!("{err:?}").contains(secret),
+        "Debug output contains a configured API key"
+    );
+    assert!(
+        !err.to_string().contains(secret),
+        "Display output contains a configured API key"
+    );
+}
+
+/// Makes one meta call answered by `reply` and returns the error it fails with.
+async fn meta_failure(reply: ResponseTemplate) -> LlmError {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(reply)
+        .mount(&meta)
+        .await;
+
+    client(&meta, &baseten, "baseten")
+        .chat(
+            Role::Foreman,
+            ChatRequest {
+                messages: vec![Message::user("ping")],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("reply must fail")
+}
+
+#[tokio::test]
+async fn reflected_key_is_redacted_from_401_and_402_bodies() {
+    let unauthorized = meta_failure(
+        ResponseTemplate::new(401).set_body_string(format!("invalid api key {META_KEY}")),
+    )
+    .await;
+    match &unauthorized {
+        LlmError::Status {
+            status: 401, body, ..
+        } => assert!(body.contains("<redacted>"), "401 body was not captured"),
+        _ => panic!("expected Status with HTTP 401"),
+    }
+    assert_secret_absent(&unauthorized, META_KEY);
+
+    let unpaid = meta_failure(
+        ResponseTemplate::new(402).set_body_string(format!("no credits for {META_KEY}")),
+    )
+    .await;
+    match &unpaid {
+        LlmError::PaymentRequired { body, .. } => {
+            assert!(body.contains("<redacted>"), "402 body was not captured");
+        }
+        _ => panic!("expected PaymentRequired"),
+    }
+    assert_secret_absent(&unpaid, META_KEY);
+}
+
+#[tokio::test]
+async fn reflected_key_is_redacted_from_malformed_reply_errors() {
+    let err = meta_failure(
+        ResponseTemplate::new(200).set_body_string(format!(r#"{{"choices":"{META_KEY}"}}"#)),
+    )
+    .await;
+
+    match &err {
+        LlmError::MalformedResponse { detail, .. } => {
+            assert!(
+                detail.contains("<redacted>"),
+                "parser detail was not captured"
+            );
+        }
+        _ => panic!("expected MalformedResponse"),
+    }
+    assert_secret_absent(&err, META_KEY);
+}
+
+#[tokio::test]
+async fn reflected_key_is_redacted_from_schema_errors() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(text_reply(&format!(
+            r#"{{"clash":"{META_KEY}","files":[]}}"#
+        )))
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    let err = client(&meta, &baseten, "baseten")
+        .chat_json::<Verdict>(
+            Role::Foreman,
+            ChatRequest {
+                messages: vec![Message::user("Do agents clash?")],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect_err("reply must not parse");
+
+    match &err {
+        LlmError::SchemaValidation { raw, .. } => {
+            assert!(raw.contains("<redacted>"), "reply text was not captured");
+        }
+        _ => panic!("expected SchemaValidation"),
+    }
+    assert_secret_absent(&err, META_KEY);
+}
+
+#[tokio::test]
+async fn key_across_the_error_body_budget_leaves_no_fragment() {
+    // The key starts 5 bytes before the 512-byte budget ends, so the cut would split it.
+    let body = format!("{}{META_KEY}", "a".repeat(507));
+    let err = meta_failure(ResponseTemplate::new(401).set_body_string(body)).await;
+
+    match &err {
+        LlmError::Status { body, .. } => {
+            assert!(body.len() <= 512, "error body exceeds the byte budget");
+            assert!(
+                !body.contains(&META_KEY[..4]),
+                "a fragment of the key survived the budget cut"
+            );
+        }
+        _ => panic!("expected Status with HTTP 401"),
+    }
+    assert_secret_absent(&err, META_KEY);
+}
+
+#[tokio::test]
+async fn oversized_error_body_is_cut_to_the_byte_budget() {
+    // "é" is two bytes, so the 512-byte cut falls inside a character.
+    let body = format!("a{}", "é".repeat(1000));
+    let err = meta_failure(ResponseTemplate::new(400).set_body_string(body)).await;
+
+    match &err {
+        LlmError::Status {
+            status: 400, body, ..
+        } => {
+            assert!(body.len() <= 512, "error body exceeds the byte budget");
+            assert!(body.starts_with('a'), "body lost its leading bytes");
+        }
+        _ => panic!("expected Status with HTTP 400"),
+    }
+}

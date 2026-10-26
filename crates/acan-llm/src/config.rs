@@ -1,0 +1,177 @@
+use std::collections::BTreeSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use serde::Deserialize;
+
+use crate::role::Role;
+
+const DEFAULT_TIMEOUT_SECS: u64 = 120;
+
+/// How `chat_json` asks a provider for structured output.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StructuredOutput {
+    /// Sends `response_format` with the JSON Schema.
+    #[default]
+    JsonSchema,
+    /// Puts the schema in the prompt and validates the reply locally. For providers without `response_format`.
+    Prompt,
+}
+
+/// One OpenAI-compatible endpoint. The key is not stored here; `api_key_env` names the variable that holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProviderConfig {
+    pub name: String,
+    pub base_url: String,
+    pub api_key_env: String,
+    pub default_model: String,
+    #[serde(default)]
+    pub structured_output: StructuredOutput,
+    #[serde(default = "default_timeout_secs")]
+    pub timeout_secs: u64,
+}
+
+fn default_timeout_secs() -> u64 {
+    DEFAULT_TIMEOUT_SECS
+}
+
+/// Points one role at a provider, optionally with a model other than the provider default.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Route {
+    pub provider: String,
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// One route per role. Every role must be routed, so a missing role fails at load time.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Routing {
+    pub foreman: Route,
+    pub worker: Route,
+    pub fast: Route,
+}
+
+impl Routing {
+    fn route(&self, role: Role) -> &Route {
+        match role {
+            Role::Foreman => &self.foreman,
+            Role::Worker => &self.worker,
+            Role::Fast => &self.fast,
+        }
+    }
+}
+
+/// Providers plus routing, as loaded from a TOML file. Holds no secrets.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LlmConfig {
+    providers: Vec<ProviderConfig>,
+    routing: Routing,
+}
+
+pub(crate) struct ResolvedRoute<'a> {
+    pub(crate) provider: &'a ProviderConfig,
+    pub(crate) model: &'a str,
+}
+
+impl LlmConfig {
+    /// Parses and validates a config from TOML text.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Parse`] for invalid TOML or unknown fields. Returns the validation
+    /// variants for a duplicate provider, a base URL that is not HTTP or HTTPS, or a route to an
+    /// unknown provider.
+    pub fn from_toml_str(text: &str) -> Result<Self, ConfigError> {
+        let config: Self = toml::from_str(text)?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Reads and validates a config file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::Read`] when the file cannot be read. Otherwise returns the errors of
+    /// [`LlmConfig::from_toml_str`].
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+        let text = fs::read_to_string(path).map_err(|source| ConfigError::Read {
+            path: path.to_owned(),
+            source,
+        })?;
+        Self::from_toml_str(&text)
+    }
+
+    pub fn providers(&self) -> &[ProviderConfig] {
+        &self.providers
+    }
+
+    pub(crate) fn resolve(&self, role: Role) -> Result<ResolvedRoute<'_>, ConfigError> {
+        let route = self.routing.route(role);
+        let provider = self
+            .providers
+            .iter()
+            .find(|provider| provider.name == route.provider)
+            .ok_or_else(|| ConfigError::UnknownProvider {
+                role,
+                provider: route.provider.clone(),
+            })?;
+        let model = route
+            .model
+            .as_deref()
+            .unwrap_or(provider.default_model.as_str());
+        Ok(ResolvedRoute { provider, model })
+    }
+
+    fn validate(&self) -> Result<(), ConfigError> {
+        let mut names = BTreeSet::new();
+        for provider in &self.providers {
+            if !names.insert(provider.name.as_str()) {
+                return Err(ConfigError::DuplicateProvider(provider.name.clone()));
+            }
+            let base_url = provider.base_url.as_str();
+            if !(base_url.starts_with("http://") || base_url.starts_with("https://")) {
+                return Err(ConfigError::InvalidBaseUrl {
+                    provider: provider.name.clone(),
+                    base_url: provider.base_url.clone(),
+                });
+            }
+        }
+        for role in [Role::Foreman, Role::Worker, Role::Fast] {
+            self.resolve(role)?;
+        }
+        Ok(())
+    }
+}
+
+/// Failures while loading or checking the config.
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum ConfigError {
+    #[error("cannot read config {}", path.display())]
+    Read {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error(transparent)]
+    Parse(#[from] toml::de::Error),
+
+    #[error("provider {0} is defined more than once")]
+    DuplicateProvider(String),
+
+    #[error("provider {provider} has base_url {base_url}, expected http or https")]
+    InvalidBaseUrl { provider: String, base_url: String },
+
+    #[error("{role} routes to unknown provider {provider}")]
+    UnknownProvider { role: Role, provider: String },
+
+    #[error("cannot build the HTTP client")]
+    Client(#[from] reqwest::Error),
+}
