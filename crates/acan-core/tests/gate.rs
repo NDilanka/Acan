@@ -3,10 +3,12 @@ mod common;
 use std::collections::BTreeMap;
 
 use acan_core::{
-    AgentCmd, CommitId, Event, GateRun, GateRunId, GateVerdict, Generation, Job, LeaseEnd,
-    OrderRev, Rejection, Stage, SystemCmd, TaskId, TaskState, WitnessId, WitnessOutcome,
+    AgentCmd, CommitId, Event, Fence, GateRun, GateRunId, GateVerdict, Generation, Job,
+    LEASE_TTL_MS, LeaseEnd, OrderRev, Rejection, Stage, SystemCmd, TaskId, TaskState, WitnessId,
+    WitnessOutcome,
 };
-use common::{Fx, events};
+use acan_core::{HumanCmd, TaskSpec};
+use common::{Fx, events, machine, sym};
 
 fn commit(raw: &str) -> CommitId {
     raw.parse().expect("valid commit")
@@ -39,14 +41,12 @@ fn gate_run(witnesses: &[&str], results: &[(&str, WitnessOutcome)]) -> GateRun {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn verdict_waits_for_every_frozen_witness() {
     let run = gate_run(&["w-0", "w-1"], &[("w-0", WitnessOutcome::Pass)]);
     assert_eq!(run.verdict(), GateVerdict::Running);
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn an_error_never_counts_as_a_pass() {
     let error = WitnessOutcome::Error {
         detail: "server did not start".to_owned(),
@@ -64,13 +64,11 @@ fn an_error_never_counts_as_a_pass() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_run_with_no_gated_witnesses_passes() {
     assert_eq!(gate_run(&[], &[]).verdict(), GateVerdict::Passed);
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn reporting_before_the_build_is_cleared_is_rejected() {
     let mut fx = Fx::new();
     let (a, t1) = (fx.agent_a.clone(), fx.task1);
@@ -89,7 +87,6 @@ fn reporting_before_the_build_is_cleared_is_rejected() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn reporting_a_build_freezes_the_gated_witnesses_and_derives_one_job_each() {
     let mut fx = Fx::new();
     let (a, t1) = (fx.agent_a.clone(), fx.task1);
@@ -116,7 +113,6 @@ fn reporting_a_build_freezes_the_gated_witnesses_and_derives_one_job_each() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_failing_witness_sends_the_task_back_to_building() {
     let mut fx = Fx::new();
     let (a, t1) = (fx.agent_a.clone(), fx.task1);
@@ -157,7 +153,6 @@ fn a_failing_witness_sends_the_task_back_to_building() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_passing_gate_queues_the_task_and_delivers_the_lease() {
     let mut fx = Fx::new();
     let (a, t1) = (fx.agent_a.clone(), fx.task1);
@@ -196,7 +191,6 @@ fn a_passing_gate_queues_the_task_and_delivers_the_lease() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_result_for_a_superseded_run_is_rejected() {
     let mut fx = Fx::new();
     let (a, t1) = (fx.agent_a.clone(), fx.task1);
@@ -270,7 +264,6 @@ fn both_queued() -> Fx {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn only_the_front_of_the_land_queue_gets_a_land_job() {
     let fx = both_queued();
     let lands: Vec<Job> = fx
@@ -290,7 +283,6 @@ fn only_the_front_of_the_land_queue_gets_a_land_job() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_land_result_for_a_task_behind_the_front_is_rejected() {
     let mut fx = both_queued();
     let got = fx.system(SystemCmd::LandResult {
@@ -302,7 +294,6 @@ fn a_land_result_for_a_task_behind_the_front_is_rejected() {
 }
 
 #[test]
-#[ignore = "unimplemented"]
 fn a_merged_task_lands_and_a_failed_merge_reopens_the_next() {
     let mut fx = both_queued();
     let (t1, t2) = (fx.task1, fx.task2);
@@ -329,4 +320,172 @@ fn a_merged_task_lands_and_a_failed_merge_reopens_the_next() {
         fx.origin.world().task(t2).expect("task").state,
         TaskState::Open
     );
+}
+
+#[test]
+fn a_build_with_no_gated_witnesses_passes_at_once() {
+    let mut fx = Fx::new();
+    let (owner, a) = (fx.owner.clone(), fx.agent_a.clone());
+    fx.human(
+        &owner,
+        HumanCmd::PostOrder {
+            machine: machine("auth"),
+            sentence: "Tidy the login docs".to_owned(),
+            witnesses: vec![],
+        },
+    )
+    .expect("order posted");
+    fx.order = fx.origin.world().orders().last().expect("second order").id;
+    let spec = TaskSpec {
+        title: "docs".to_owned(),
+        brief: String::new(),
+        scope: vec![machine("auth")],
+    };
+    fx.system(SystemCmd::SplitReady {
+        order: fx.order,
+        rev: OrderRev::new(0),
+        tasks: vec![spec],
+    })
+    .expect("split accepted");
+    let task = fx
+        .origin
+        .world()
+        .tasks_of(fx.order)
+        .next()
+        .expect("task")
+        .id;
+    let fence = fx.build(&a, task);
+    let batch = fx
+        .agent(
+            &a,
+            AgentCmd::ReportBuilt {
+                fence,
+                head: commit("doc1"),
+            },
+        )
+        .expect("report accepted");
+    assert!(events(&batch).iter().any(|e| matches!(
+        e,
+        Event::GateClosed {
+            verdict: GateVerdict::Passed,
+            ..
+        }
+    )));
+    assert_eq!(fx.origin.world().land_queue(), vec![task]);
+}
+
+fn rate_limit() -> acan_core::DeclarationInput {
+    acan_core::DeclarationInput {
+        symbols: vec![sym("src/api/routes.rs", "rate_limit")],
+        ..acan_core::DeclarationInput::default()
+    }
+}
+
+/// task1 is gating when task2 declares the same symbol. Returns task1's fence and abandoned run.
+fn late_clash_while_gating(fx: &mut Fx) -> (Fence, GateRunId) {
+    let (a, b, t1, t2) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1, fx.task2);
+    let f1 = fx.claim(&a, t1);
+    fx.declare(&a, f1, rate_limit()).expect("declare accepted");
+    fx.agent(
+        &a,
+        AgentCmd::ReportBuilt {
+            fence: f1,
+            head: commit("first"),
+        },
+    )
+    .expect("report accepted");
+    let run = run_of(fx, t1);
+    let f2 = fx.claim(&b, t2);
+    fx.declare(&b, f2, rate_limit()).expect("declare accepted");
+    assert!(
+        fx.origin
+            .world()
+            .clashes_for(t1)
+            .any(acan_core::Clash::blocking)
+    );
+    (f1, run)
+}
+
+#[test]
+fn a_late_clash_abandons_the_gating_run_so_a_failure_cannot_restore_building() {
+    let mut fx = Fx::new();
+    let (f1, run) = late_clash_while_gating(&mut fx);
+    assert!(
+        !fx.origin
+            .world()
+            .jobs()
+            .iter()
+            .any(|j| matches!(j, Job::RunWitness { run: r, .. } if *r == run)),
+        "the abandoned run still derives witness jobs"
+    );
+    let witness = fx.witnesses()[0];
+    let late = fx.system(SystemCmd::WitnessResult {
+        run,
+        witness,
+        outcome: WitnessOutcome::Fail {
+            detail: "failed".to_owned(),
+        },
+    });
+    assert!(late.is_err(), "a result for the abandoned run: {late:?}");
+    let a = fx.agent_a.clone();
+    let rebuilt = fx.agent(
+        &a,
+        AgentCmd::ReportBuilt {
+            fence: f1,
+            head: commit("second"),
+        },
+    );
+    assert!(
+        rebuilt.is_err(),
+        "an unresolved blocking clash did not prevent a fresh build report: {rebuilt:?}"
+    );
+}
+
+#[test]
+fn a_late_clash_abandons_the_gating_run_so_a_pass_cannot_queue_the_task() {
+    let mut fx = Fx::new();
+    let (f1, run) = late_clash_while_gating(&mut fx);
+    let witness = fx.witnesses()[0];
+    let late = fx.system(SystemCmd::WitnessResult {
+        run,
+        witness,
+        outcome: WitnessOutcome::Pass,
+    });
+    assert!(late.is_err(), "a result for the abandoned run: {late:?}");
+    let state = &fx.origin.world().task(f1.task).expect("task").state;
+    assert!(
+        matches!(
+            state,
+            TaskState::Claimed {
+                stage: Stage::Declared { .. },
+                ..
+            }
+        ),
+        "the gate queued a party past its unresolved clash: {state:?}"
+    );
+}
+
+#[test]
+fn a_late_clash_renews_the_lease_that_paused_while_gating() {
+    let mut fx = Fx::new();
+    let (a, b, t1, t2) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1, fx.task2);
+    let f1 = fx.claim(&a, t1);
+    fx.declare(&a, f1, rate_limit()).expect("declare accepted");
+    fx.agent(
+        &a,
+        AgentCmd::ReportBuilt {
+            fence: f1,
+            head: commit("first"),
+        },
+    )
+    .expect("report accepted");
+    fx.advance(2 * LEASE_TTL_MS);
+    let f2 = fx.claim(&b, t2);
+    fx.declare(&b, f2, rate_limit()).expect("declare accepted");
+    let TaskState::Claimed { claim, stage } = &fx.origin.world().task(t1).expect("task").state
+    else {
+        panic!("task1 lost its claim when its gate was abandoned");
+    };
+    assert!(matches!(stage, Stage::Declared { .. }));
+    assert_eq!(claim.lease.expires_at, fx.now.plus_millis(LEASE_TTL_MS));
 }
