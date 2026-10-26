@@ -1,0 +1,184 @@
+mod common;
+
+use acan_core::{
+    AgentCmd, DeclarationInput, Event, Fence, Generation, Judgement, LEASE_TTL_MS, LeaseEnd,
+    Rejection, Stage, SystemCmd, TaskState,
+};
+use common::{Fx, events};
+
+#[test]
+#[ignore = "unimplemented"]
+fn claim_without_matched_readback_is_rejected() {
+    let mut fx = Fx::new();
+    let (a, t1) = (fx.agent_a.clone(), fx.task1);
+    let readback = fx.read_back(&a, t1);
+    fx.review(
+        readback,
+        Judgement::Disagrees {
+            reason: "touches login".to_owned(),
+        },
+    )
+    .expect("review accepted");
+    let got = fx.agent(&a, AgentCmd::Claim { task: t1 });
+    assert_eq!(
+        got,
+        Err(Rejection::NotMatched {
+            failing: fx.witnesses()
+        })
+    );
+    assert_eq!(
+        fx.origin.world().task(t1).expect("task").state,
+        TaskState::Open
+    );
+}
+
+#[test]
+#[ignore = "unimplemented"]
+fn first_claim_grants_generation_one_in_declaring() {
+    let mut fx = Fx::new();
+    let (a, t1) = (fx.agent_a.clone(), fx.task1);
+    let fence = fx.claim(&a, t1);
+    assert_eq!(
+        fence,
+        Fence {
+            task: t1,
+            generation: Generation::new(1)
+        }
+    );
+    let TaskState::Claimed { claim, stage } = &fx.origin.world().task(t1).expect("task").state
+    else {
+        panic!("task is not claimed");
+    };
+    assert_eq!(*stage, Stage::Declaring);
+    assert_eq!(claim.lease.holder, a);
+    assert_eq!(claim.lease.expires_at, fx.now.plus_millis(LEASE_TTL_MS));
+}
+
+#[test]
+#[ignore = "unimplemented"]
+fn second_agent_is_told_who_holds_the_task() {
+    let mut fx = Fx::new();
+    let (a, b, t1) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1);
+    fx.claim(&a, t1);
+    let readback = fx.read_back(&b, t1);
+    fx.review(readback, Judgement::Match)
+        .expect("review accepted");
+    let got = fx.agent(&b, AgentCmd::Claim { task: t1 });
+    assert_eq!(
+        got,
+        Err(Rejection::HeldBy {
+            holder: a,
+            until: fx.now.plus_millis(LEASE_TTL_MS)
+        })
+    );
+}
+
+#[test]
+#[ignore = "unimplemented"]
+fn repeated_claim_by_the_holder_appends_nothing() {
+    let mut fx = Fx::new();
+    let (a, t1) = (fx.agent_a.clone(), fx.task1);
+    fx.claim(&a, t1);
+    let batch = fx
+        .agent(&a, AgentCmd::Claim { task: t1 })
+        .expect("idempotent claim");
+    assert!(batch.is_empty(), "got {batch:?}");
+}
+
+#[test]
+#[ignore = "unimplemented"]
+fn renew_keeps_generation_and_extends_expiry() {
+    let mut fx = Fx::new();
+    let (a, t1) = (fx.agent_a.clone(), fx.task1);
+    let fence = fx.claim(&a, t1);
+    fx.advance(30_000);
+    fx.agent(&a, AgentCmd::Renew { fence })
+        .expect("renew accepted");
+    assert_eq!(fx.fence(t1), Some(fence));
+    let TaskState::Claimed { claim, .. } = &fx.origin.world().task(t1).expect("task").state else {
+        panic!("task is not claimed");
+    };
+    assert_eq!(claim.lease.expires_at, fx.now.plus_millis(LEASE_TTL_MS));
+}
+
+#[test]
+#[ignore = "unimplemented"]
+fn claim_after_expiry_ends_old_lease_and_bumps_generation_in_one_batch() {
+    let mut fx = Fx::new();
+    let (a, b, t1) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1);
+    fx.claim(&a, t1);
+    let readback = fx.read_back(&b, t1);
+    fx.review(readback, Judgement::Match)
+        .expect("review accepted");
+    fx.advance(LEASE_TTL_MS);
+    let batch = fx
+        .agent(&b, AgentCmd::Claim { task: t1 })
+        .expect("claim after expiry");
+    let got = events(&batch);
+    assert!(
+        matches!(got[0], Event::LeaseEnded { why: LeaseEnd::Expired, generation, .. } if generation.get() == 1)
+    );
+    assert!(
+        matches!(got[1], Event::LeaseGranted { lease, .. } if lease.generation.get() == 2 && lease.holder == b)
+    );
+}
+
+#[test]
+#[ignore = "unimplemented"]
+fn stale_generation_write_changes_nothing() {
+    let mut fx = Fx::new();
+    let (a, b, t1) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1);
+    let old = fx.claim(&a, t1);
+    fx.advance(LEASE_TTL_MS);
+    let new = fx.claim(&b, t1);
+    let before = fx.origin.world().clone();
+    let got = fx.declare(&a, old, DeclarationInput::default());
+    assert_eq!(
+        got,
+        Err(Rejection::StaleGeneration {
+            current: Some(new.generation)
+        })
+    );
+    assert_eq!(
+        fx.origin.world(),
+        &before,
+        "a rejected command must not change state"
+    );
+}
+
+#[test]
+#[ignore = "unimplemented"]
+fn tick_expires_due_leases_and_reopens_the_task() {
+    let mut fx = Fx::new();
+    let (a, t1) = (fx.agent_a.clone(), fx.task1);
+    fx.claim(&a, t1);
+    fx.advance(LEASE_TTL_MS);
+    let batch = fx.system(SystemCmd::Tick).expect("tick accepted");
+    assert!(matches!(
+        events(&batch)[..],
+        [Event::LeaseEnded {
+            why: LeaseEnd::Expired,
+            ..
+        }]
+    ));
+    assert_eq!(
+        fx.origin.world().task(t1).expect("task").state,
+        TaskState::Open
+    );
+}
+
+#[test]
+#[ignore = "unimplemented"]
+fn release_reopens_the_task_and_generation_never_resets() {
+    let mut fx = Fx::new();
+    let (a, t1) = (fx.agent_a.clone(), fx.task1);
+    let first = fx.claim(&a, t1);
+    fx.agent(&a, AgentCmd::Release { fence: first })
+        .expect("release accepted");
+    assert_eq!(
+        fx.origin.world().task(t1).expect("task").state,
+        TaskState::Open
+    );
+    let second = fx.claim(&a, t1);
+    assert_eq!(second.generation, Generation::new(2));
+}

@@ -1,0 +1,20 @@
+[package]
+name = "acan-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Acan's world model: orders, claims, clashes and gates as a pure event-sourced fold"
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints.rust]
+# Scaffold stage: bodies are todo!(), so parameters and crate-private helpers are unused.
+# Remove both lines once the implementation lands.
+unused_variables = "allow"
+dead_code = "allow"
