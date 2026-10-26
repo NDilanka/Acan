@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Belt, ImportTarget, Machine, MachineId, Plant, SourceFile};
+use crate::model::{Belt, FileId, ImportTarget, Machine, MachineId, Plant, SourceFile};
 
 /// Assigns files to machines by name. Files not listed here group by their directory.
 ///
@@ -34,12 +34,12 @@ fn build(files: &[SourceFile], grouping: &Grouping) -> (Vec<Machine>, Vec<Belt>)
         groups.entry(name).or_default().push(file);
     }
 
-    let mut machine_of = vec![MachineId(0); files.len()];
+    let mut machine_of: BTreeMap<FileId, MachineId> = BTreeMap::new();
     let mut machines = Vec::with_capacity(groups.len());
     for (index, (name, members)) in groups.into_iter().enumerate() {
         let id = MachineId(index as u32);
         for file in &members {
-            machine_of[file.id.0 as usize] = id;
+            machine_of.insert(file.id, id);
         }
         let mut lang_mix = BTreeMap::new();
         for file in &members {
@@ -56,10 +56,14 @@ fn build(files: &[SourceFile], grouping: &Grouping) -> (Vec<Machine>, Vec<Belt>)
 
     let mut counts: BTreeMap<(MachineId, MachineId), u32> = BTreeMap::new();
     for file in files {
-        let from = machine_of[file.id.0 as usize];
+        let Some(&from) = machine_of.get(&file.id) else {
+            continue;
+        };
         for import in &file.imports {
             if let ImportTarget::File { file: target } = import.target {
-                let to = machine_of[target.0 as usize];
+                let Some(&to) = machine_of.get(&target) else {
+                    continue;
+                };
                 if to != from {
                     *counts.entry((from, to)).or_insert(0) += 1;
                 }

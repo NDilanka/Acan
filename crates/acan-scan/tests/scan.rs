@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use acan_scan::{Grouping, ImportTarget, Plant, SourceFile, SymbolKind, scan};
+use acan_scan::{FileId, Grouping, ImportRef, ImportTarget, Plant, SourceFile, SymbolKind, scan};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -82,7 +82,7 @@ fn exported(plant: &Plant) -> Vec<(String, String, SymbolKind)> {
 }
 
 fn strings(items: &[&str]) -> Vec<String> {
-    items.iter().map(|item| item.to_string()).collect()
+    items.iter().map(ToString::to_string).collect()
 }
 
 #[test]
@@ -319,10 +319,109 @@ fn regroup_moves_files_between_machines_without_rescanning() {
 }
 
 #[test]
+fn default_export_of_a_local_binding_exports_that_binding() {
+    let repo = tempfile::tempdir().expect("create temp repo");
+    fs::write(
+        repo.path().join("bench.js"),
+        "class Bench {}\nfunction helper() {}\nexport default Bench;\n",
+    )
+    .expect("write bench.js");
+
+    let plant = scan(repo.path()).expect("scan the temp repo");
+
+    assert_eq!(
+        exported(&plant),
+        vec![
+            (
+                "bench.js".to_string(),
+                "Bench".to_string(),
+                SymbolKind::Class
+            ),
+            (
+                "bench.js".to_string(),
+                "default".to_string(),
+                SymbolKind::Export
+            ),
+        ]
+    );
+}
+
+#[test]
+fn regroup_ignores_imports_that_point_outside_the_plant() {
+    let mut plant = scan(fixture("ts-app")).expect("scan the TypeScript fixture");
+    let list = plant
+        .files
+        .iter_mut()
+        .find(|file| file.path == "ui/list.ts")
+        .expect("ui/list.ts is scanned");
+    list.imports.push(ImportRef {
+        specifier: "./ghost".to_string(),
+        line: 1,
+        target: ImportTarget::File { file: FileId(99) },
+    });
+
+    plant.regroup(&Grouping::default());
+
+    assert_eq!(
+        belts(&plant),
+        vec![
+            "model -> util x1",
+            "ui -> model x1",
+            "ui -> util x1",
+            "util -> model x1",
+        ]
+    );
+}
+
+#[test]
+fn revision_moves_with_content_and_holds_without_changes() {
+    let repo = tempfile::tempdir().expect("create temp repo");
+    let a = repo.path().join("a.ts");
+    let b = repo.path().join("b.ts");
+    fs::write(&a, "export const a = 1;\n").expect("write a.ts");
+    fs::write(&b, "export const b = 2;\n").expect("write b.ts");
+
+    let first = scan(repo.path()).expect("scan the temp repo");
+    let again = scan(repo.path()).expect("rescan the unchanged repo");
+    assert_eq!(
+        again.revision, first.revision,
+        "revision holds when nothing changed"
+    );
+
+    fs::write(&b, "export const b = 3;\n").expect("edit b.ts");
+    let edited = scan(repo.path()).expect("scan the edited repo");
+    assert_ne!(
+        edited.revision, first.revision,
+        "revision moves when b.ts changes"
+    );
+    assert_eq!(
+        file(&edited, "a.ts").content_hash,
+        file(&first, "a.ts").content_hash,
+        "a.ts content hash holds"
+    );
+    assert_ne!(
+        file(&edited, "b.ts").content_hash,
+        file(&first, "b.ts").content_hash,
+        "b.ts content hash moves"
+    );
+
+    fs::write(&b, "export const b = 2;\n").expect("restore b.ts");
+    let restored = scan(repo.path()).expect("scan the restored repo");
+    assert_eq!(
+        restored.revision, first.revision,
+        "revision depends on content, not on write time"
+    );
+}
+
+#[test]
 fn plant_round_trips_through_json() {
     let plant = scan(fixture("rust-crate")).expect("scan the Rust fixture");
 
     let json = serde_json::to_string(&plant).expect("serialize plant");
+    assert!(
+        json.contains(&format!("\"revision\":\"{}\"", plant.revision)),
+        "revision serializes as a hex string"
+    );
     let back: Plant = serde_json::from_str(&json).expect("deserialize plant");
 
     assert_eq!(back, plant);

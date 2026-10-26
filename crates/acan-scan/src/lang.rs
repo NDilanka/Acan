@@ -2,6 +2,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+/// A source language the scanner reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Lang {
@@ -15,6 +16,7 @@ impl Lang {
     pub(crate) const ALL: [Lang; 4] = [Lang::TypeScript, Lang::Tsx, Lang::JavaScript, Lang::Rust];
 
     /// Detects the language from a repo-relative path. Returns `None` for files the scanner does not read.
+    #[must_use]
     pub fn from_path(path: &str) -> Option<Lang> {
         match Path::new(path).extension()?.to_str()? {
             "ts" | "mts" | "cts" => Some(Lang::TypeScript),

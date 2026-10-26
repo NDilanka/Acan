@@ -65,7 +65,7 @@ fn is_relative(specifier: &str) -> bool {
     matches!(specifier, "." | "..") || specifier.starts_with("./") || specifier.starts_with("../")
 }
 
-/// Order follows TypeScript: the path as written, then extensions, then `index` files, then a `.js` specifier mapped to its `.ts` source.
+/// Order follows TypeScript. It tries the path as written, then extensions, then `index` files, then a `.js` specifier mapped to its `.ts` source.
 fn js_candidates(base: &str) -> Vec<String> {
     let mut candidates = vec![base.to_string()];
     candidates.extend(JS_EXTENSIONS.iter().map(|ext| format!("{base}{ext}")));
@@ -87,7 +87,7 @@ fn js_candidates(base: &str) -> Vec<String> {
     candidates
 }
 
-/// `mod name;` lives in the module's own directory: `a/b.rs` declares into `a/b/`, while `mod.rs`, `lib.rs`, and `main.rs` declare into their own directory.
+/// `mod name;` lives in the module's own directory. `a/b.rs` declares into `a/b/`, while `mod.rs`, `lib.rs`, and `main.rs` declare into their own directory.
 fn resolve_rust_mod(from: &str, name: &str, index: &PathIndex) -> ImportTarget {
     let base = join(&rust_module_dir(from), name);
     find_file(index, [format!("{base}.rs"), format!("{base}/mod.rs")])

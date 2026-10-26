@@ -68,7 +68,10 @@ impl Extractor {
             .ok_or_else(|| ScanError::ParseCancelled {
                 path: path.to_string(),
             })?;
-        let queries = &self.queries[&lang];
+        let queries = self
+            .queries
+            .get(&lang)
+            .expect("queries are compiled for every language in new");
         let root = tree.root_node();
         let bytes = source.as_bytes();
         let (symbols, imports) = match lang {
@@ -153,6 +156,7 @@ fn hits<'q, 't>(query: &'q Query, root: Node<'t>, source: &[u8]) -> Vec<Hit<'q, 
 fn js_symbols(query: &Query, root: Node, source: &[u8]) -> Vec<Symbol> {
     let mut symbols = Vec::new();
     let mut clauses = Vec::new();
+    let mut default_locals = Vec::new();
     // Each method records its class name. Its export status is set once every clause is applied.
     let mut methods: Vec<(usize, String)> = Vec::new();
     for hit in hits(query, root, source) {
@@ -161,6 +165,10 @@ fn js_symbols(query: &Query, root: Node, source: &[u8]) -> Vec<Symbol> {
         };
         match capture {
             "def.specifier" => clauses.extend(export_clause(node, source)),
+            "def.default" => {
+                default_locals.extend(default_local(node, source));
+                symbols.extend(js_symbol(capture, node, source));
+            }
             "def.method" => {
                 if let Some((owner, method)) = js_method(node, source) {
                     methods.push((symbols.len(), owner));
@@ -175,6 +183,9 @@ fn js_symbols(query: &Query, root: Node, source: &[u8]) -> Vec<Symbol> {
         if !declared || clause.local != clause.exported {
             symbols.push(clause.symbol);
         }
+    }
+    for name in default_locals {
+        mark_local_export(&mut symbols, &name);
     }
     for (index, owner) in methods {
         let class_exported = symbols
@@ -198,6 +209,12 @@ fn mark_local_export(symbols: &mut [Symbol], name: &str) -> bool {
         }
         None => false,
     }
+}
+
+/// The local binding in `export default name;`. Expression defaults have none.
+fn default_local(statement: Node, source: &[u8]) -> Option<String> {
+    let value = statement.child_by_field_name("value")?;
+    (value.kind() == "identifier").then(|| text(value, source).to_string())
 }
 
 /// A method of a module-level class, with the class name. The export status is set later.
@@ -345,7 +362,7 @@ fn rust_item(capture: &str, node: Node, source: &[u8]) -> Option<(SymbolKind, bo
     Some((kind, rust_scope(node, source)?))
 }
 
-/// `Some(is_pub)` when a Rust item sits at module level: directly in a file or in an inline module.
+/// `Some(is_pub)` when a Rust item sits at module level, either directly in a file or in an inline module.
 fn rust_scope(node: Node, source: &[u8]) -> Option<bool> {
     let parent = node.parent()?;
     let module_level = match parent.kind() {
@@ -396,7 +413,7 @@ fn rust_imports(query: &Query, root: Node, source: &[u8]) -> Vec<RawImport> {
     imports
 }
 
-/// Expands a Rust use tree into full paths: `crate::{a::B, c::{self, D as E}}` gives three paths.
+/// Expands a Rust use tree into full paths. `crate::{a::B, c::{self, D as E}}` gives three paths.
 pub(crate) fn expand_use(tree: &str) -> Vec<String> {
     let normalized = tree.split_whitespace().collect::<Vec<_>>().join(" ");
     expand_tree(&normalized, "")
@@ -419,13 +436,13 @@ fn expand_tree(tree: &str, prefix: &str) -> Vec<String> {
 
 fn matching_brace(tree: &str, open: usize) -> usize {
     let mut depth = 0usize;
-    for (index, c) in tree.char_indices().skip(open) {
+    for (offset, c) in tree[open..].char_indices() {
         match c {
             '{' => depth += 1,
             '}' => {
                 depth -= 1;
                 if depth == 0 {
-                    return index;
+                    return open + offset;
                 }
             }
             _ => {}
@@ -487,4 +504,26 @@ fn string_literal(node: Node, source: &[u8]) -> String {
 
 fn line_number(row: usize) -> u32 {
     (row + 1) as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::expand_use;
+
+    #[test]
+    fn expands_nested_groups_and_non_ascii_prefixes() {
+        assert_eq!(
+            expand_use("crate::{a::{b, c::{self, D as E}}, f::*}"),
+            vec![
+                "crate::a::b",
+                "crate::a::c",
+                "crate::a::c::D",
+                "crate::f::*"
+            ],
+        );
+        assert_eq!(
+            expand_use("crate::é::{a, b}"),
+            vec!["crate::é::a", "crate::é::b"],
+        );
+    }
 }

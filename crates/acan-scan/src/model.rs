@@ -4,23 +4,28 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::hash::ContentHash;
 use crate::lang::Lang;
 
+/// Identifies a file within one plant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct FileId(pub u32);
 
+/// Identifies a machine within one plant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct MachineId(pub u32);
 
+/// A scanned repo. `revision` changes whenever a scanned file's path or content changes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Plant {
     pub root: PathBuf,
+    pub revision: ContentHash,
     pub machines: Vec<Machine>,
     pub belts: Vec<Belt>,
     pub files: Vec<SourceFile>,
 }
 
-/// A replaceable module: a set of files that the foreman can regroup.
+/// A replaceable module, a set of files that the foreman can regroup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Machine {
     pub id: MachineId,
@@ -39,16 +44,19 @@ pub struct Belt {
     pub imports: u32,
 }
 
+/// A scanned file with its symbols and imports.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SourceFile {
     pub id: FileId,
     /// Repo-relative, forward slashes.
     pub path: String,
     pub lang: Lang,
+    pub content_hash: ContentHash,
     pub symbols: Vec<Symbol>,
     pub imports: Vec<ImportRef>,
 }
 
+/// A named definition in a file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Symbol {
     pub name: String,
@@ -65,6 +73,7 @@ pub struct LineRange {
     pub end: u32,
 }
 
+/// The kind of a [`Symbol`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SymbolKind {
@@ -79,10 +88,11 @@ pub enum SymbolKind {
     Const,
     /// A `let` or `var` binding that is not a function.
     Variable,
-    /// An exported name that has no local declaration: a re-export, a `default` export, or an export of an import.
+    /// An exported name with no local declaration, such as a re-export, a `default` export, or an export of an import.
     Export,
 }
 
+/// One import or module declaration in a file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImportRef {
     /// The module specifier as written, or the expanded `use` path for Rust.
@@ -91,6 +101,7 @@ pub struct ImportRef {
     pub target: ImportTarget,
 }
 
+/// Where an import points.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ImportTarget {
