@@ -1,17 +1,21 @@
-//! The host: one world's origin behind one lock, its stored log, its live broadcast, and the current scan.
+//! The host: the face of one world. Writes go to the writer task; reads come from the latest
+//! published snapshot, so a slow persist never blocks a read and a cancelled caller never
+//! cancels an accepted write.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use acan_core::{Command, Ctx, Origin, Rejection, Seq, Stamped, SystemCmd, Timestamp, World};
+use acan_core::{Command, Origin, Rejection, Stamped, Timestamp, World};
 use acan_llm::{ModelClient, UsageLedger};
-use anyhow::Context;
-use tokio::sync::{Mutex, Notify, broadcast};
+use anyhow::Context as _;
+use tokio::sync::{Notify, broadcast, watch};
+use tokio::task::JoinSet;
 
 use crate::auth::Tokens;
 use crate::index::Scan;
 use crate::store::EventStore;
+use crate::writer::{Snapshot, Writer};
 
 /// How many events a live subscriber may fall behind before the server disconnects it.
 ///
@@ -25,7 +29,7 @@ pub enum SubmitError {
     /// The origin refused the command. Nothing was stored.
     #[error(transparent)]
     Rejected(#[from] Rejection),
-    /// Persisting the accepted events, or reading the log back, failed.
+    /// Persisting the accepted events failed, or the writer is gone.
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -46,23 +50,27 @@ pub struct HostParts<C> {
     pub client: C,
     /// The repository being served.
     pub repo: PathBuf,
+    /// Signalled when the server shuts down; streams close and new work stops.
+    pub shutdown: watch::Receiver<bool>,
 }
 
-/// One world's host. Cloning shares the same origin, log and broadcast.
+/// One world's host. Cloning shares the same writer, log and broadcast.
 pub struct Host<C> {
     inner: Arc<Inner<C>>,
 }
 
 struct Inner<C> {
-    origin: Mutex<Origin>,
+    writer: Writer,
+    snapshots: watch::Receiver<Arc<Snapshot>>,
     store: EventStore,
     tokens: Tokens,
-    scan: RwLock<Arc<Scan>>,
     events: broadcast::Sender<Stamped>,
-    wake: Notify,
+    wake: Arc<Notify>,
     ledger: UsageLedger,
     client: C,
     repo: PathBuf,
+    shutdown: watch::Receiver<bool>,
+    streams: Arc<Mutex<JoinSet<()>>>,
 }
 
 impl<C> Clone for Host<C> {
@@ -74,21 +82,42 @@ impl<C> Clone for Host<C> {
 }
 
 impl<C: ModelClient> Host<C> {
-    /// Builds a host from its parts. The caller decides when to run jobs and install scans.
+    /// Builds a host from its parts and starts the writer task. The caller decides when to run
+    /// jobs.
+    ///
+    /// # Panics
+    ///
+    /// Panics when called outside a Tokio runtime.
     #[must_use]
     pub fn new(parts: HostParts<C>) -> Self {
         let (events, _) = broadcast::channel(LIVE_BUFFER);
+        let wake = Arc::new(Notify::new());
+        let scan = Arc::new(parts.scan);
+        let (publish, snapshots) = watch::channel(Arc::new(Snapshot {
+            world: parts.origin.world().clone(),
+            scan: Arc::clone(&scan),
+        }));
+        let writer = Writer::spawn(
+            parts.origin,
+            scan,
+            parts.store.clone(),
+            events.clone(),
+            Arc::clone(&wake),
+            publish,
+        );
         Self {
             inner: Arc::new(Inner {
-                origin: Mutex::new(parts.origin),
+                writer,
+                snapshots,
                 store: parts.store,
                 tokens: parts.tokens,
-                scan: RwLock::new(Arc::new(parts.scan)),
                 events,
-                wake: Notify::new(),
+                wake,
                 ledger: parts.ledger,
                 client: parts.client,
                 repo: parts.repo,
+                shutdown: parts.shutdown,
+                streams: Arc::new(Mutex::new(JoinSet::new())),
             }),
         }
     }
@@ -123,10 +152,11 @@ impl<C: ModelClient> Host<C> {
         &self.inner.repo
     }
 
-    /// The current scan. Readers keep the `Arc` for as long as they need a consistent view.
+    /// The scan of the last committed world. Readers keep the `Arc` for as long as they need a
+    /// consistent view.
     #[must_use]
     pub fn scan(&self) -> Arc<Scan> {
-        Arc::clone(&self.inner.scan.read().expect("scan lock poisoned"))
+        Arc::clone(&self.inner.snapshots.borrow().scan)
     }
 
     /// A receiver for events accepted from now on.
@@ -135,46 +165,25 @@ impl<C: ModelClient> Host<C> {
         self.inner.events.subscribe()
     }
 
-    /// Reads the origin's state under its lock. `read` must not wait on anything else.
-    pub async fn read<R>(&self, read: impl FnOnce(&World) -> R) -> R {
-        let origin = self.inner.origin.lock().await;
-        read(origin.world())
+    /// Reads the last committed world. Never waits on a write.
+    pub fn read<R>(&self, read: impl FnOnce(&World) -> R) -> R {
+        read(&self.inner.snapshots.borrow().world)
     }
 
-    /// Decides `command` against the current scan. On acceptance, persists the events, then
-    /// broadcasts them and wakes the job loop. A refused command changes nothing.
+    /// Sends `command` to the writer. The write is decided against the current scan, persisted,
+    /// published and broadcast before this resolves. Dropping the returned future never cancels
+    /// a write the writer has accepted. A refused command changes nothing.
     ///
     /// # Errors
     ///
     /// Returns [`SubmitError::Rejected`] when the origin refuses the command, and
-    /// [`SubmitError::Internal`] when the events cannot be stored.
+    /// [`SubmitError::Internal`] when the events cannot be stored or the writer is gone.
     pub async fn submit(&self, command: Command) -> Result<Vec<Stamped>, SubmitError> {
-        let scan = self.scan();
-        let ctx = Ctx {
-            now: now(),
-            index: &scan.index,
-        };
-        let mut origin = self.inner.origin.lock().await;
-        let events = origin.execute(&ctx, command)?;
-        if events.is_empty() {
-            return Ok(events);
-        }
-        if let Err(err) = self.inner.store.append(&events).await {
-            // The origin applied the batch in memory before the write failed. Rebuild it from
-            // the stored log so memory and disk agree again.
-            let log = self.inner.store.load_from(Seq::new(0)).await?;
-            *origin = Origin::replay(log).context("rebuilding the origin after a failed write")?;
-            return Err(SubmitError::Internal(err));
-        }
-        for event in &events {
-            // A send fails only when nobody is subscribed, which is fine.
-            let _ = self.inner.events.send(event.clone());
-        }
-        self.inner.wake.notify_one();
-        Ok(events)
+        self.inner.writer.submit(command).await
     }
 
-    /// Scans the repository again and records the new code index.
+    /// Scans the repository again and commits the new code index together with its
+    /// `IndexUpdated` batch. A failed persist keeps the previous scan.
     ///
     /// # Errors
     ///
@@ -184,8 +193,16 @@ impl<C: ModelClient> Host<C> {
         let scan = tokio::task::spawn_blocking(move || crate::index::scan(&repo))
             .await
             .context("the scan task did not finish")??;
-        *self.inner.scan.write().expect("scan lock poisoned") = Arc::new(scan);
-        self.submit(Command::System(SystemCmd::IndexUpdated)).await
+        self.inner.writer.rescan(scan).await
+    }
+
+    /// Drains the writer and joins its task. After this returns, no write can still happen.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the writer task panicked.
+    pub async fn shutdown(&self) -> anyhow::Result<()> {
+        self.inner.writer.shutdown().await
     }
 
     /// Asks the job loop to look for derived jobs again.
@@ -196,6 +213,21 @@ impl<C: ModelClient> Host<C> {
     /// Resolves when the job loop should look for derived jobs.
     pub async fn jobs_woken(&self) {
         self.inner.wake.notified().await;
+    }
+
+    /// Signalled when the server shuts down.
+    pub(crate) fn shutdown_signal(&self) -> watch::Receiver<bool> {
+        self.inner.shutdown.clone()
+    }
+
+    /// The set of live stream tasks, joined during shutdown.
+    pub(crate) fn streams(&self) -> &Arc<Mutex<JoinSet<()>>> {
+        &self.inner.streams
+    }
+
+    /// The writer handle, so the server can drain it during shutdown.
+    pub(crate) fn writer(&self) -> Writer {
+        self.inner.writer.clone()
     }
 }
 

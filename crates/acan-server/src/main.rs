@@ -74,7 +74,7 @@ async fn serve(args: ServeArgs) -> Result<()> {
         team: args.team,
         web: args.web,
     };
-    let running = start(config, models, ledger).await?;
+    let mut running = start(config, models, ledger).await?;
     if let Some(token) = &running.owner_token {
         println!(
             "owner token, shown once and saved in .acan/tokens.json: {}",
@@ -86,9 +86,14 @@ async fn serve(args: ServeArgs) -> Result<()> {
         args.repo.display(),
         running.local_addr
     );
-    tokio::select! {
-        result = running.wait() => result?,
-        _ = tokio::signal::ctrl_c() => tracing::info!("shutting down"),
-    }
-    Ok(())
+    // Either way the same barrier runs: no write may still be in flight when this returns.
+    let outcome = tokio::select! {
+        result = running.wait() => result,
+        _ = tokio::signal::ctrl_c() => {
+            tracing::info!("shutting down");
+            Ok(())
+        }
+    };
+    let stopped = running.stop().await;
+    outcome.and(stopped)
 }

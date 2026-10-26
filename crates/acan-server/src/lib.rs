@@ -1,8 +1,9 @@
 //! The acan server: one world's origin, its event log, and the HTTP and WebSocket surface around it.
 //!
 //! [`start`] opens the repository's world in `.acan/world.db`, scans the code, and serves the API.
-//! The origin lives behind one lock inside the host. Each accepted batch is persisted before it is
-//! broadcast, and derived model jobs run in the background and report back as system commands.
+//! One writer task owns the origin and the current scan; HTTP handlers and the job loop send it
+//! commands and await a reply, and readers use the snapshot it publishes after each persisted
+//! batch. [`Running::stop`] is a barrier: it returns only when no write can still happen.
 
 mod auth;
 mod host;
@@ -11,20 +12,25 @@ mod index;
 mod jobs;
 mod model;
 mod models;
+mod public;
 mod store;
 mod stream;
+mod writer;
 
 use std::fs;
 use std::io;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use acan_core::{Command, MemberId, Origin, Seq, SystemCmd, WorldId, WorldRef};
 use acan_llm::{ModelClient, UsageLedger};
 use anyhow::{Context, bail};
 use tokio::net::TcpListener;
-use tokio::task::JoinHandle;
+use tokio::sync::watch;
+use tokio::task::{JoinHandle, JoinSet};
 
 pub use auth::{Principal, Token, Tokens};
 pub use host::{Host, HostParts, LIVE_BUFFER, SubmitError};
@@ -32,9 +38,16 @@ pub use index::{IndexError, Scan, code_index, scan};
 pub use models::Models;
 pub use store::EventStore;
 
+use crate::public::PublicRoot;
+use crate::writer::Writer;
+
 const STATE_DIR: &str = ".acan";
 const DB_FILE: &str = "world.db";
 const OWNER: &str = "owner";
+
+/// How long shutdown waits for stream tasks to close before giving up on them. Streams only
+/// read the log and write to their socket, so a wedged one cannot hold a write hostage.
+const STREAM_DRAIN: Duration = Duration::from_secs(2);
 
 /// What to serve, and where.
 #[derive(Debug, Clone)]
@@ -45,7 +58,8 @@ pub struct ServerConfig {
     pub addr: SocketAddr,
     /// Allows a non-loopback address. Without it, binding elsewhere is refused.
     pub team: bool,
-    /// A directory served for every path the API does not claim, such as the renderer page.
+    /// A dedicated public directory served for every path the API does not claim, such as the
+    /// renderer page. It must not contain the repository or its `.acan` state directory.
     pub web: Option<PathBuf>,
 }
 
@@ -56,28 +70,54 @@ pub struct Running {
     pub local_addr: SocketAddr,
     /// The owner token. Present only on the first start, when it was minted.
     pub owner_token: Option<Token>,
-    server: JoinHandle<io::Result<()>>,
+    shutdown: watch::Sender<bool>,
+    server: Option<JoinHandle<io::Result<()>>>,
     jobs: JoinHandle<()>,
+    writer: Writer,
+    streams: Arc<Mutex<JoinSet<()>>>,
 }
 
 impl Running {
-    /// Waits until the server stops.
+    /// Waits until the listener stops on its own, which happens only when it fails. Does not
+    /// stop anything; call [`stop`](Self::stop) afterwards to tear the rest down.
     ///
     /// # Errors
     ///
     /// Returns an error when the listener fails or the server task panics.
-    pub async fn wait(self) -> anyhow::Result<()> {
-        self.server
-            .await
-            .context("the server task did not finish")??;
+    pub async fn wait(&mut self) -> anyhow::Result<()> {
+        // Polled by reference and cleared only once finished, so a cancelled wait (Ctrl+C in
+        // the CLI) leaves the handle for `stop` to join.
+        if let Some(server) = self.server.as_mut() {
+            let finished = server.await;
+            self.server = None;
+            finished.context("the server task did not finish")??;
+        }
         Ok(())
     }
 
-    /// Asks the listener and the job loop to stop. Both stop at their next await point, and
-    /// the jobs they started stop with them.
-    pub fn stop(&self) {
-        self.server.abort();
+    /// Stops the server and returns when no write can still happen: the listener stops taking
+    /// connections, in-flight handlers finish against the writer, streams close, the job loop
+    /// is aborted and joined, and the writer drains its queue and stops.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the listener or the writer task failed. Teardown runs either way.
+    pub async fn stop(mut self) -> anyhow::Result<()> {
+        self.shutdown.send_replace(true);
+        let served = self.wait().await;
         self.jobs.abort();
+        let _ = (&mut self.jobs).await;
+        let mut streams =
+            std::mem::take(&mut *self.streams.lock().expect("stream set lock poisoned"));
+        let drained = tokio::time::timeout(STREAM_DRAIN, async move {
+            while streams.join_next().await.is_some() {}
+        })
+        .await;
+        if drained.is_err() {
+            tracing::warn!("a stream did not close during shutdown");
+        }
+        let written = self.writer.shutdown().await;
+        served.and(written)
     }
 }
 
@@ -86,8 +126,8 @@ impl Running {
 /// # Errors
 ///
 /// Returns an error when the bind address is non-loopback without `team`, the state directory,
-/// tokens or database cannot be opened, the stored log does not replay, the scan fails, or the
-/// address cannot be bound.
+/// tokens or database cannot be opened, the stored log does not replay, the scan fails, the web
+/// directory is not a dedicated public directory, or the address cannot be bound.
 pub async fn start<C: ModelClient + 'static>(
     config: ServerConfig,
     client: C,
@@ -100,6 +140,11 @@ pub async fn start<C: ModelClient + 'static>(
         );
     }
 
+    let web = config
+        .web
+        .as_deref()
+        .map(|web| PublicRoot::new(web, &config.repo))
+        .transpose()?;
     let state_dir = config.repo.join(STATE_DIR);
     prepare_state_dir(&state_dir)?;
     let founder = MemberId::from_str(OWNER)?;
@@ -120,6 +165,13 @@ pub async fn start<C: ModelClient + 'static>(
         .await
         .context("the scan task did not finish")??;
 
+    // Bind before the writer and the job loop start, so a failed bind leaves nothing running.
+    let listener = TcpListener::bind(config.addr)
+        .await
+        .with_context(|| format!("binding {}", config.addr))?;
+    let local_addr = listener.local_addr()?;
+
+    let (shutdown, shutdown_rx) = watch::channel(false);
     let host = Host::new(HostParts {
         origin,
         store,
@@ -128,24 +180,34 @@ pub async fn start<C: ModelClient + 'static>(
         ledger,
         client,
         repo: config.repo.clone(),
+        shutdown: shutdown_rx,
     });
-    host.submit(Command::System(SystemCmd::IndexUpdated))
-        .await?;
+    if let Err(err) = host.submit(Command::System(SystemCmd::IndexUpdated)).await {
+        let _ = host.shutdown().await;
+        return Err(err).context("recording the initial code index");
+    }
 
-    // Bind before the job loop starts, so a failed bind leaves no writer running.
-    let listener = TcpListener::bind(config.addr)
-        .await
-        .with_context(|| format!("binding {}", config.addr))?;
-    let local_addr = listener.local_addr()?;
     let jobs = jobs::spawn(host.clone());
     host.wake_jobs();
-    let app = http::router(host, config.web);
-    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let writer = host.writer();
+    let streams = Arc::clone(host.streams());
+    let app = http::router(host, web);
+    let mut shutdown_seen = shutdown.subscribe();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(async move {
+                let _ = shutdown_seen.wait_for(|off| *off).await;
+            })
+            .await
+    });
     Ok(Running {
         local_addr,
         owner_token,
-        server,
+        shutdown,
+        server: Some(server),
         jobs,
+        writer,
+        streams,
     })
 }
 

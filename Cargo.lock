@@ -74,6 +74,7 @@ dependencies = [
  "clap",
  "dotenvy",
  "futures-util",
+ "percent-encoding",
  "reqwest",
  "schemars",
  "serde",

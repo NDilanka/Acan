@@ -1,4 +1,11 @@
 //! The live event stream: the backlog from a seq, then each accepted event as it is persisted.
+//!
+//! A client authenticates with an `Authorization: Bearer` header on the upgrade, or, because
+//! browsers cannot set headers on a WebSocket, with a first text frame `{"token": "..."}` sent
+//! within [`AUTH_FRAME_TIMEOUT`]. Nothing is sent before the token is accepted. Tokens never go
+//! in the URL, where proxies and access logs would keep them.
+
+use std::time::Duration;
 
 use acan_core::{Seq, Stamped};
 use acan_llm::ModelClient;
@@ -8,12 +15,20 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 use serde::Deserialize;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::watch;
 
 use crate::host::Host;
 use crate::http::{ApiError, authenticate, bearer};
 
+/// How long a connection without an `Authorization` header has to send its token frame.
+const AUTH_FRAME_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// WebSocket close code for a client that must resume from a seq. The reason gives the seq.
 const CLOSE_RESUME: u16 = 4001;
+/// WebSocket close code for a server that is shutting down.
+const CLOSE_SHUTDOWN: u16 = 1001;
+/// WebSocket close code for a missing, late, or unknown token (policy violation).
+const CLOSE_UNAUTHORIZED: u16 = 1008;
 /// WebSocket close code for a server-side failure while reading the backlog.
 const CLOSE_INTERNAL: u16 = 1011;
 
@@ -21,27 +36,102 @@ const CLOSE_INTERNAL: u16 = 1011;
 pub struct StreamQuery {
     #[serde(default)]
     from: u64,
-    /// Browsers cannot set headers on a WebSocket, so they send the token here.
-    token: Option<String>,
 }
 
-/// Upgrades `GET /api/stream?from=<seq>` after checking the token.
+/// The first frame of a stream whose upgrade carried no `Authorization` header.
+#[derive(Deserialize)]
+struct AuthFrame {
+    token: String,
+}
+
+/// How a stream proves its token.
+enum Access {
+    /// The upgrade's `Authorization` header carried a valid token.
+    Granted,
+    /// The token must arrive in the first frame.
+    FirstFrame,
+}
+
+/// Upgrades `GET /api/stream?from=<seq>`.
 ///
 /// # Errors
 ///
-/// Returns [`ApiError::Unauthorized`] before the upgrade when the token is missing or unknown.
+/// Returns [`ApiError::Unauthorized`] before the upgrade when an `Authorization` header carries
+/// an unknown token. Without the header, the upgrade proceeds and the first frame must
+/// authenticate.
 pub async fn upgrade<C: ModelClient + 'static>(
     State(host): State<Host<C>>,
     headers: HeaderMap,
     Query(query): Query<StreamQuery>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
-    authenticate(&host, bearer(&headers).or(query.token.as_deref()))?;
+    let access = match bearer(&headers) {
+        Some(token) => {
+            authenticate(&host, Some(token))?;
+            Access::Granted
+        }
+        None => Access::FirstFrame,
+    };
     let from = Seq::new(query.from);
-    Ok(ws.on_upgrade(move |socket| pump(host, socket, from)))
+    Ok(ws.on_upgrade(move |socket| track(host, socket, from, access)))
 }
 
-async fn pump<C: ModelClient>(host: Host<C>, mut socket: WebSocket, from: Seq) {
+/// Registers the stream so shutdown can wait for it to close, then runs it.
+async fn track<C: ModelClient + 'static>(
+    host: Host<C>,
+    socket: WebSocket,
+    from: Seq,
+    access: Access,
+) {
+    let pump = pump(host.clone(), socket, from, access);
+    host.streams()
+        .lock()
+        .expect("stream set lock poisoned")
+        .spawn(pump);
+}
+
+/// Resolves once the server is shutting down, even when the signal was sent before the call.
+async fn shutting_down(shutdown: &mut watch::Receiver<bool>) {
+    // An error means the sender is gone, which is a shutdown too.
+    let _ = shutdown.wait_for(|off| *off).await;
+}
+
+/// Waits for a valid token frame. `false` means the client sent anything else, sent nothing in
+/// time, or left.
+async fn first_frame_authenticates<C: ModelClient>(host: &Host<C>, socket: &mut WebSocket) -> bool {
+    let first_text = async {
+        loop {
+            match socket.recv().await {
+                Some(Ok(Message::Text(text))) => return Some(text),
+                Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+                _ => return None,
+            }
+        }
+    };
+    let Ok(Some(text)) = tokio::time::timeout(AUTH_FRAME_TIMEOUT, first_text).await else {
+        return false;
+    };
+    serde_json::from_str::<AuthFrame>(&text)
+        .ok()
+        .is_some_and(|frame| authenticate(host, Some(&frame.token)).is_ok())
+}
+
+async fn pump<C: ModelClient>(host: Host<C>, mut socket: WebSocket, from: Seq, access: Access) {
+    let mut shutdown = host.shutdown_signal();
+    if let Access::FirstFrame = access {
+        let authenticated = tokio::select! {
+            () = shutting_down(&mut shutdown) => {
+                close(&mut socket, CLOSE_SHUTDOWN, "server shutting down".to_owned()).await;
+                return;
+            }
+            authenticated = first_frame_authenticates(&host, &mut socket) => authenticated,
+        };
+        if !authenticated {
+            close(&mut socket, CLOSE_UNAUTHORIZED, "unauthorized".to_owned()).await;
+            return;
+        }
+    }
+
     // Subscribe before reading the backlog. An event committed in between is then both in the
     // backlog and in the subscription, and `Resume` drops the copy that arrives second.
     let mut live = host.subscribe();
@@ -77,11 +167,14 @@ async fn pump<C: ModelClient>(host: Host<C>, mut socket: WebSocket, from: Seq) {
 
     loop {
         tokio::select! {
+            () = shutting_down(&mut shutdown) => {
+                close(&mut socket, CLOSE_SHUTDOWN, "server shutting down".to_owned()).await;
+                return;
+            }
             incoming = socket.recv() => match incoming {
-                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return,
+                Some(Ok(Message::Close(_)) | Err(_)) | None => return,
                 Some(Ok(_)) => {}
-            },
-            event = live.recv() => match event {
+            },            event = live.recv() => match event {
                 Ok(event) => match resume.offer(&event) {
                     Offer::Send => {
                         if !send(&mut socket, &event).await {

@@ -12,7 +12,7 @@ use std::time::Duration;
 use acan_core::{HumanCmd, MachineKey, MemberId, Role as MemberRole, Stamped};
 use acan_llm::{ChatRequest, Message, ModelClient, Reply, Role, Stub, UsageLedger};
 use acan_server::{Running, ServerConfig, scan, start};
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 use tokio::net::TcpStream;
@@ -242,12 +242,80 @@ async fn health_is_open_and_every_api_route_refuses_a_bad_token() {
     }
 }
 
+/// Opens the stream with no `Authorization` header, as a browser does.
+async fn connect_bare(running: &Running, query: &str) -> Socket {
+    let (socket, _response) =
+        tokio_tungstenite::connect_async(format!("ws://{}/api/stream?{query}", running.local_addr))
+            .await
+            .expect("the upgrade needs no header");
+    socket
+}
+
+#[tokio::test]
+async fn a_browser_stream_authenticates_with_its_first_frame() {
+    let dir = temp_repo();
+    let running = boot(dir.path()).await;
+    let token = owner_token(&running);
+    let mut socket = connect_bare(&running, "from=0").await;
+
+    socket
+        .send(WsMessage::Text(
+            json!({ "token": token }).to_string().into(),
+        ))
+        .await
+        .expect("the token frame is sent");
+
+    let events = next_events(&mut socket, 2).await;
+    assert_eq!(seqs(&events), [0, 1], "the backlog follows the token frame");
+}
+
+#[tokio::test]
+async fn a_stream_with_a_bad_first_frame_is_closed_before_any_event() {
+    let dir = temp_repo();
+    let running = boot(dir.path()).await;
+    let mut socket = connect_bare(&running, "from=0").await;
+
+    socket
+        .send(WsMessage::Text(
+            json!({ "token": "acan_not_a_real_token" })
+                .to_string()
+                .into(),
+        ))
+        .await
+        .expect("the token frame is sent");
+
+    let (events, code, _) = drain(&mut socket).await;
+    assert!(
+        events.is_empty(),
+        "nothing is sent to an unauthenticated stream"
+    );
+    assert_eq!(code, 1008, "closed as a policy violation");
+}
+
+#[tokio::test]
+async fn a_token_in_the_url_does_not_authenticate_and_a_silent_stream_times_out() {
+    let dir = temp_repo();
+    let running = boot(dir.path()).await;
+    let token = owner_token(&running);
+    let mut socket = connect_bare(&running, &format!("from=0&token={token}")).await;
+
+    let started = tokio::time::Instant::now();
+    let (events, code, _) = drain(&mut socket).await;
+
+    assert!(events.is_empty(), "a query token sends no backlog");
+    assert_eq!(code, 1008, "closed as a policy violation");
+    assert!(
+        started.elapsed() >= Duration::from_secs(2),
+        "the server waited for a token frame before closing, {:?}",
+        started.elapsed()
+    );
+}
 #[tokio::test]
 async fn the_owner_token_is_minted_once_and_survives_a_restart() {
     let dir = temp_repo();
     let first = boot(dir.path()).await;
     let token = owner_token(&first);
-    first.stop();
+    first.stop().await.expect("the first server stops");
 
     let second = start(
         config(dir.path(), loopback(), false),
@@ -469,7 +537,8 @@ async fn usage_endpoint_reports_the_calls_the_stub_answered() {
 async fn a_posted_order_runs_its_split_job_through_the_client() {
     let dir = temp_repo();
     // The reply is not JSON on purpose. The Stub records a call when it answers, before the
-    // reply is parsed, so the ledger shows the job reached the client either way.
+    // reply is parsed, so the ledger shows the job reached the client either way. The failed
+    // job retries a bounded number of times.
     let stub = Stub::default().when(Role::Foreman, |_| true, Reply::text("not json"));
     let ledger = stub.ledger().clone();
     let running = start(config(dir.path(), loopback(), false), stub, ledger)
@@ -487,9 +556,9 @@ async fn a_posted_order_runs_its_split_job_through_the_client() {
 
     let calls = foreman_calls(&running, &token).await;
 
-    assert_eq!(
-        calls, 1,
-        "the split job made one foreman call through the client"
+    assert!(
+        (1..=5).contains(&calls),
+        "the split job reached the client, within its retry bound: {calls} calls"
     );
 }
 

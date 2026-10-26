@@ -1,12 +1,12 @@
-//! HTTP routes. Every `/api` route except the stream upgrade checks its bearer token here.
-//! The stream checks the same token, and also accepts it as a query parameter for browsers.
+//! HTTP routes. Every `/api` route checks its bearer token here. The stream checks the same
+//! token, from the header or from its first frame (see [`crate::stream`]).
 //!
 //! Status codes: a missing or unknown token is 401. A valid token whose principal may not use
 //! the route is 403. That is an auth boundary, so an agent token on `POST /api/commands` gets 403
 //! and never reaches the origin. A command the origin refuses is 409, with the `Rejection` as the
 //! body.
 
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use acan_core::{Command, HumanCmd, MemberId, Rejection, Seq, Stamped};
 use acan_llm::{ModelClient, UsageTotals};
@@ -19,14 +19,14 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
-use tower_http::services::ServeDir;
 
 use crate::auth::Principal;
 use crate::host::{Host, SubmitError};
+use crate::public::{self, PublicRoot};
 use crate::stream;
 
-/// Builds the router. A `web` directory is served for every path the API does not claim.
-pub fn router<C: ModelClient + 'static>(host: Host<C>, web: Option<PathBuf>) -> Router {
+/// Builds the router. The public files are served for every path the API does not claim.
+pub(crate) fn router<C: ModelClient + 'static>(host: Host<C>, web: Option<PublicRoot>) -> Router {
     let router = Router::new()
         .route("/health", get(health))
         .route("/api/commands", post(post_command::<C>))
@@ -36,7 +36,10 @@ pub fn router<C: ModelClient + 'static>(host: Host<C>, web: Option<PathBuf>) -> 
         .route("/api/usage", get(get_usage::<C>))
         .route("/api/stream", get(stream::upgrade::<C>));
     let router = match web {
-        Some(dir) => router.fallback_service(ServeDir::new(dir)),
+        Some(root) => {
+            let root = Arc::new(root);
+            router.fallback(move |request| public::serve(Arc::clone(&root), request))
+        }
         None => router,
     };
     router.with_state(host)
