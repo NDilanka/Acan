@@ -12,7 +12,10 @@ pub struct Rect {
 
 impl Rect {
     pub fn center(&self) -> [f32; 2] {
-        [self.min[0] + self.size[0] * 0.5, self.min[1] + self.size[1] * 0.5]
+        [
+            self.min[0] + self.size[0] * 0.5,
+            self.min[1] + self.size[1] * 0.5,
+        ]
     }
 }
 
@@ -78,7 +81,10 @@ pub fn tessellate_polyline(line: &Polyline, out: &mut Vec<BeltVertex>) {
             [b[0] - nx, b[1] - ny],
             [b[0] + nx, b[1] + ny],
         ];
-        out.extend([0, 1, 2, 0, 2, 3].map(|i| BeltVertex { pos: corners[i], color: line.color }));
+        out.extend([0, 1, 2, 0, 2, 3].map(|i| BeltVertex {
+            pos: corners[i],
+            color: line.color,
+        }));
     }
 }
 
@@ -88,7 +94,11 @@ mod tests {
 
     #[test]
     fn straight_segment_becomes_capped_quad() {
-        let line = Polyline { points: vec![[0.0, 0.0], [10.0, 0.0]], width: 2.0, color: [1.0; 4] };
+        let line = Polyline {
+            points: vec![[0.0, 0.0], [10.0, 0.0]],
+            width: 2.0,
+            color: [1.0; 4],
+        };
         let mut v = Vec::new();
         tessellate_polyline(&line, &mut v);
         assert_eq!(v.len(), 6);
@@ -115,8 +125,16 @@ mod tests {
     #[test]
     fn bounds_cover_rects_and_belts() {
         let scene = Scene {
-            rects: vec![Rect { min: [2.0, 3.0], size: [4.0, 5.0], color: [0.0; 4] }],
-            belts: vec![Polyline { points: vec![[-1.0, 0.0], [0.0, 20.0]], width: 1.0, color: [0.0; 4] }],
+            rects: vec![Rect {
+                min: [2.0, 3.0],
+                size: [4.0, 5.0],
+                color: [0.0; 4],
+            }],
+            belts: vec![Polyline {
+                points: vec![[-1.0, 0.0], [0.0, 20.0]],
+                width: 1.0,
+                color: [0.0; 4],
+            }],
         };
         assert_eq!(scene.bounds(), Some(([-1.0, 0.0], [6.0, 20.0])));
         assert_eq!(Scene::default().bounds(), None);

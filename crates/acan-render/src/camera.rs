@@ -15,7 +15,11 @@ impl Camera {
     pub const MAX_ZOOM: f32 = 50.0;
 
     pub fn new(viewport: [f32; 2]) -> Self {
-        Self { center: [0.0, 0.0], zoom: 1.0, viewport }
+        Self {
+            center: [0.0, 0.0],
+            zoom: 1.0,
+            viewport,
+        }
     }
 
     pub fn world_to_screen(&self, p: [f32; 2]) -> [f32; 2] {

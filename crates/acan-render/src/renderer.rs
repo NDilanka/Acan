@@ -15,6 +15,8 @@ pub enum RenderError {
     UnsupportedSurface,
     #[error("surface lost; recreate the renderer")]
     SurfaceLost,
+    #[error("validation error while acquiring the surface texture")]
+    SurfaceValidation,
 }
 
 const UNIT_QUAD: [[f32; 2]; 6] = [
@@ -80,7 +82,11 @@ impl Renderer {
             height: size[1].max(1),
             present_mode: wgpu::PresentMode::Fifo,
             desired_maximum_frame_latency: 2,
-            alpha_mode: caps.alpha_modes[0],
+            alpha_mode: caps
+                .alpha_modes
+                .first()
+                .copied()
+                .ok_or(RenderError::UnsupportedSurface)?,
             view_formats: vec![],
         };
         surface.configure(&device, &config);
@@ -108,7 +114,10 @@ impl Renderer {
         let camera_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("camera"),
             layout: &bind_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: camera_buf.as_entire_binding() }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buf.as_entire_binding(),
+            }],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("plant"),
@@ -209,7 +218,10 @@ impl Renderer {
         let rects: Vec<Rect> = scene
             .rects
             .iter()
-            .map(|r| Rect { color: self.target_color(r.color, srgb), ..*r })
+            .map(|r| Rect {
+                color: self.target_color(r.color, srgb),
+                ..*r
+            })
             .collect();
         let mut belts = Vec::new();
         for line in &scene.belts {
@@ -230,11 +242,13 @@ impl Renderer {
         if data.is_empty() {
             return None;
         }
-        let buf = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(label),
-            contents: bytemuck::cast_slice(data),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        let buf = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: bytemuck::cast_slice(data),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
         Some((buf, data.len() as u32))
     }
 
@@ -251,14 +265,24 @@ impl Renderer {
                 return Ok(false);
             }
             wgpu::CurrentSurfaceTexture::Lost => return Err(RenderError::SurfaceLost),
-            _ => return Ok(false),
+            wgpu::CurrentSurfaceTexture::Validation => {
+                return Err(RenderError::SurfaceValidation);
+            }
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                return Ok(false);
+            }
         };
-        self.queue.write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&camera.uniform()));
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.queue
+            .write_buffer(&self.camera_buf, 0, bytemuck::bytes_of(&camera.uniform()));
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let clear = self.target_color(self.clear, self.config.format.is_srgb());
         let mut encoder = self
             .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("frame") });
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("frame"),
+            });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("plant"),
@@ -301,6 +325,12 @@ impl Renderer {
 }
 
 fn srgb_to_linear(c: [f32; 4]) -> [f32; 4] {
-    let f = |x: f32| if x <= 0.04045 { x / 12.92 } else { ((x + 0.055) / 1.055).powf(2.4) };
+    let f = |x: f32| {
+        if x <= 0.04045 {
+            x / 12.92
+        } else {
+            ((x + 0.055) / 1.055).powf(2.4)
+        }
+    };
     [f(c[0]), f(c[1]), f(c[2]), c[3]]
 }

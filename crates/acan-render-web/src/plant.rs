@@ -27,21 +27,40 @@ pub fn generate(machines: usize, belts: usize) -> Scene {
     let belts = (0..belts)
         .filter_map(|k| {
             let from = k % machines.max(1);
-            let to = if k < machines { from + 1 } else { from + cols + rng.below(3) };
-            let (a, b) = (rects.get(from)?, rects.get(to.min(machines.saturating_sub(1)))?);
-            if a == b {
+            let to = if k < machines {
+                from + 1
+            } else {
+                from + cols + rng.below(3)
+            };
+            let to = to.min(machines.saturating_sub(1));
+            if to == from {
                 return None;
             }
-            let start = [a.min[0] + a.size[0], a.center()[1] + 6.0 * (rng.unit() - 0.5)];
+            let (a, b) = (rects.get(from)?, rects.get(to)?);
+            let start = [
+                a.min[0] + a.size[0],
+                a.center()[1] + 6.0 * (rng.unit() - 0.5),
+            ];
             let end = [b.min[0], b.center()[1]];
             let mid_x = start[0] + (PITCH[0] - a.size[0]) * (0.3 + 0.4 * rng.unit());
             let points = if end[0] > start[0] {
                 vec![start, [mid_x, start[1]], [mid_x, end[1]], end]
             } else {
                 let lane = b.min[1] - 10.0;
-                vec![start, [mid_x, start[1]], [mid_x, lane], [end[0] - 12.0, lane], [end[0] - 12.0, end[1]], end]
+                vec![
+                    start,
+                    [mid_x, start[1]],
+                    [mid_x, lane],
+                    [end[0] - 12.0, lane],
+                    [end[0] - 12.0, end[1]],
+                    end,
+                ]
             };
-            Some(Polyline { points, width: BELT_WIDTH, color: BELT })
+            Some(Polyline {
+                points,
+                width: BELT_WIDTH,
+                color: BELT,
+            })
         })
         .collect();
 
@@ -52,7 +71,10 @@ struct Lcg(u64);
 
 impl Lcg {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 33
     }
 

@@ -55,13 +55,22 @@ impl App {
         if let Some((min, max)) = scene.bounds() {
             camera.fit(min, max, 24.0);
         }
-        Ok(App { renderer, camera, scene })
+        Ok(App {
+            renderer,
+            camera,
+            scene,
+        })
     }
 
     /// Backend and adapter actually in use, for example `"BrowserWebGpu"` or `"Gl"`.
     pub fn backend(&self) -> String {
         let info = self.renderer.adapter_info();
-        format!("{:?} / {} / {:?}", info.backend, info.name, self.renderer.surface_format())
+        format!(
+            "{:?} / {} / {:?}",
+            info.backend,
+            info.name,
+            self.renderer.surface_format()
+        )
     }
 
     pub fn resize(&mut self, css_width: f32, css_height: f32, device_pixel_ratio: f32) {
@@ -92,7 +101,9 @@ impl App {
 
     /// Returns false when the browser skipped the frame.
     pub fn render(&mut self) -> Result<bool, JsError> {
-        self.renderer.render(&self.camera).map_err(|e| JsError::new(&e.to_string()))
+        self.renderer
+            .render(&self.camera)
+            .map_err(|e| JsError::new(&e.to_string()))
     }
 
     /// CSS-pixel position of a world point, relative to the canvas.
@@ -102,7 +113,10 @@ impl App {
 
     /// World-space `[min_x, min_y, width, height]` of machine `index`.
     pub fn machine_rect(&self, index: usize) -> Option<Vec<f32>> {
-        self.scene.rects.get(index).map(|r| vec![r.min[0], r.min[1], r.size[0], r.size[1]])
+        self.scene
+            .rects
+            .get(index)
+            .map(|r| vec![r.min[0], r.min[1], r.size[0], r.size[1]])
     }
 
     pub fn machine_count(&self) -> usize {

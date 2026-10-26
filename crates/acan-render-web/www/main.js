@@ -126,6 +126,30 @@ window.runPanBench = (seconds = 10, pxPerFrame = 6) => new Promise((resolve) => 
   invalidate();
 });
 
+// Same rAF loop with no rendering, so pan-bench intervals can be compared
+// against what the display and browser deliver on their own.
+window.runRafBaseline = (seconds = 10) => new Promise((resolve) => {
+  const intervals = [];
+  let last = null;
+  let start = null;
+  const tick = (ts) => {
+    if (start === null) start = ts;
+    if (last !== null) intervals.push(ts - last);
+    last = ts;
+    if (ts - start < seconds * 1000) {
+      requestAnimationFrame(tick);
+      return;
+    }
+    resolve({
+      frames: intervals.length,
+      intervalP50: quantile(intervals, 0.5),
+      intervalP95: quantile(intervals, 0.95),
+      intervalMax: Math.max(...intervals),
+    });
+  };
+  requestAnimationFrame(tick);
+});
+
 window.measureIdle = (seconds = 5) => new Promise((resolve) => {
   const before = { raf: spike.rafCallbacks, frames: spike.frames };
   setTimeout(() => resolve({
