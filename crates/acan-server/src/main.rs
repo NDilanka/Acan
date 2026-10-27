@@ -93,6 +93,7 @@ async fn serve(args: ServeArgs) -> Result<()> {
             "owner token, shown once and saved in .acan/tokens.json: {}",
             token.as_str()
         );
+        println!("http://{}/#token={}", running.local_addr, token.as_str());
     }
     println!(
         "acan serving {} at http://{}",

@@ -7,6 +7,7 @@ repository.workspace = true
 
 [dependencies]
 bytemuck = { version = "1.25.2", features = ["derive"] }
+lyon_tessellation = "1.0.23"
 thiserror.workspace = true
 wgpu = "30.0.1"
 

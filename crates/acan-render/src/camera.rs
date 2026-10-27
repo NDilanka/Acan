@@ -1,11 +1,12 @@
 use bytemuck::{Pod, Zeroable};
 
-/// Orthographic plan-view camera. World and screen both have y pointing down,
-/// and screen units are CSS pixels so overlay labels can use them directly.
+/// Orthographic view of the projected plane. Both world and screen have y pointing down.
+/// `viewport` and `zoom` are in the same pixels the caller draws in: device pixels for the
+/// renderer, CSS pixels for overlays.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
     pub center: [f32; 2],
-    /// Screen pixels per world unit.
+    /// Pixels per world unit.
     pub zoom: f32,
     pub viewport: [f32; 2],
 }
@@ -36,7 +37,7 @@ impl Camera {
         ]
     }
 
-    /// Moves the view so content follows a pointer drag of `delta` screen pixels.
+    /// Moves the view so content follows a pointer drag of `delta` pixels.
     pub fn pan_by_screen(&mut self, delta: [f32; 2]) {
         self.center[0] -= delta[0] / self.zoom;
         self.center[1] -= delta[1] / self.zoom;
@@ -51,32 +52,43 @@ impl Camera {
         self.center[1] += before[1] - after[1];
     }
 
-    /// Centers on the box `min..max` and zooms so it fills the viewport with a margin.
-    pub fn fit(&mut self, min: [f32; 2], max: [f32; 2], margin_px: f32) {
-        self.center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
+    /// The zoom at which the box `min..max` fills the viewport with a margin.
+    pub fn fit_zoom(&self, min: [f32; 2], max: [f32; 2], margin_px: f32) -> f32 {
         let w = (max[0] - min[0]).max(1e-3);
         let h = (max[1] - min[1]).max(1e-3);
         let zx = (self.viewport[0] - 2.0 * margin_px).max(1.0) / w;
         let zy = (self.viewport[1] - 2.0 * margin_px).max(1.0) / h;
-        self.zoom = zx.min(zy).clamp(Self::MIN_ZOOM, Self::MAX_ZOOM);
+        zx.min(zy).clamp(Self::MIN_ZOOM, Self::MAX_ZOOM)
     }
 
-    pub(crate) fn uniform(&self) -> CameraUniform {
+    /// Centers on the box `min..max` and zooms so it fills the viewport with a margin.
+    pub fn fit(&mut self, min: [f32; 2], max: [f32; 2], margin_px: f32) {
+        self.center = [(min[0] + max[0]) * 0.5, (min[1] + max[1]) * 0.5];
+        self.zoom = self.fit_zoom(min, max, margin_px);
+    }
+
+    pub(crate) fn uniform(&self, depth_step: f32, min_px: f32) -> CameraUniform {
         CameraUniform {
             center: self.center,
-            scale: [
-                2.0 * self.zoom / self.viewport[0],
-                -2.0 * self.zoom / self.viewport[1],
-            ],
+            viewport: self.viewport,
+            zoom: self.zoom,
+            min_px,
+            depth_step,
+            pad: 0.0,
         }
     }
 }
 
+/// Matches `struct Camera` in `plant.wgsl`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
 pub(crate) struct CameraUniform {
     pub center: [f32; 2],
-    pub scale: [f32; 2],
+    pub viewport: [f32; 2],
+    pub zoom: f32,
+    pub min_px: f32,
+    pub depth_step: f32,
+    pub pad: f32,
 }
 
 #[cfg(test)]
@@ -119,16 +131,10 @@ mod tests {
     }
 
     #[test]
-    fn uniform_maps_viewport_corners_to_clip_corners() {
+    fn fit_shows_the_whole_box_inside_the_margin() {
         let mut cam = Camera::new([800.0, 600.0]);
-        cam.center = [5.0, 7.0];
-        cam.zoom = 2.0;
-        let u = cam.uniform();
-        let top_left = cam.screen_to_world([0.0, 0.0]);
-        let clip = [
-            (top_left[0] - u.center[0]) * u.scale[0],
-            (top_left[1] - u.center[1]) * u.scale[1],
-        ];
-        assert!(close(clip, [-1.0, 1.0]));
+        cam.fit([0.0, 0.0], [400.0, 100.0], 20.0);
+        assert!(close(cam.world_to_screen([0.0, 0.0]), [20.0, 205.0]));
+        assert!(close(cam.world_to_screen([400.0, 100.0]), [780.0, 395.0]));
     }
 }
