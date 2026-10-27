@@ -90,7 +90,10 @@ fn a_small_repo_gives_each_module_its_own_machine_and_keeps_tests_whole() {
         "test -> links x1",
         "test -> server x1",
     ] {
-        assert!(belts.iter().any(|b| b == belt), "missing belt {belt:?} in {belts:?}");
+        assert!(
+            belts.iter().any(|b| b == belt),
+            "missing belt {belt:?} in {belts:?}"
+        );
     }
 }
 
@@ -98,7 +101,11 @@ fn a_small_repo_gives_each_module_its_own_machine_and_keeps_tests_whole() {
 fn a_repo_over_forty_files_groups_by_directory() {
     let dir = tempfile::tempdir().expect("temp dir");
     for i in 0..41 {
-        write(dir.path(), &format!("src/feature/f{i}.ts"), "export const x = 1;\n");
+        write(
+            dir.path(),
+            &format!("src/feature/f{i}.ts"),
+            "export const x = 1;\n",
+        );
     }
 
     let plant = scan(dir.path()).expect("scan the large app");
@@ -110,7 +117,11 @@ fn a_repo_over_forty_files_groups_by_directory() {
 fn module_names_that_clash_fall_back_to_their_paths() {
     let dir = tempfile::tempdir().expect("temp dir");
     for name in ["a", "b", "c", "d", "test"] {
-        write(dir.path(), &format!("src/{name}.ts"), "export const x = 1;\n");
+        write(
+            dir.path(),
+            &format!("src/{name}.ts"),
+            "export const x = 1;\n",
+        );
     }
     write(dir.path(), "test/only.ts", "export const y = 1;\n");
 
@@ -127,16 +138,35 @@ fn module_names_that_clash_fall_back_to_their_paths() {
 fn two_modules_with_one_stem_keep_their_paths_apart() {
     let dir = tempfile::tempdir().expect("temp dir");
     for name in ["a", "b", "c", "d", "index"] {
-        write(dir.path(), &format!("src/{name}.ts"), "export const x = 1;\n");
+        write(
+            dir.path(),
+            &format!("src/{name}.ts"),
+            "export const x = 1;\n",
+        );
     }
     for name in ["e", "f", "g", "h", "index"] {
-        write(dir.path(), &format!("src/ui/{name}.ts"), "export const x = 1;\n");
+        write(
+            dir.path(),
+            &format!("src/ui/{name}.ts"),
+            "export const x = 1;\n",
+        );
     }
 
     let plant = scan(dir.path()).expect("scan the app with two index files");
 
     assert_eq!(
         machine_names(&plant),
-        ["a", "b", "c", "d", "e", "f", "g", "h", "src/index", "src/ui/index"],
+        [
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "f",
+            "g",
+            "h",
+            "src/index",
+            "src/ui/index"
+        ],
     );
 }
