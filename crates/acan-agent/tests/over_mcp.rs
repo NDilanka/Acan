@@ -37,6 +37,10 @@ const MACHINE: &str = "model";
 const FILE: &str = "model/store.ts";
 const ORIGINAL: &str = "export function load() { return 1; }\n";
 const CHANGED: &str = "export function load() { return 2; }\n";
+/// A second file on the same machine. A narrowed task moves its change here.
+const OTHER: &str = "model/other.ts";
+const OTHER_ORIGINAL: &str = "export const other = 1;\n";
+const OTHER_CHANGED: &str = "export const other = 2;\n";
 /// Passes when the built commit carries the file, so the gate checks the commit, not the disk.
 const WITNESS: &str = "git cat-file -e HEAD:model/store.ts";
 /// The longest one step may take. A worker's write waits on clearance, and clearance waits on the
@@ -136,11 +140,8 @@ struct Worker {
 }
 
 impl Worker {
-    fn new(gate: watch::Receiver<bool>) -> Self {
-        Self {
-            script: worker_script(),
-            gate,
-        }
+    fn new(gate: watch::Receiver<bool>, script: Stub) -> Self {
+        Self { script, gate }
     }
 }
 
@@ -230,11 +231,69 @@ fn spawn_worker(
     repo: &Path,
     gate: watch::Receiver<bool>,
 ) -> JoinHandle<Outcome> {
+    spawn_scripted(base, token, repo, worker_script(), gate)
+}
+
+fn spawn_scripted(
+    base: &str,
+    token: &'static str,
+    repo: &Path,
+    script: Stub,
+    gate: watch::Receiver<bool>,
+) -> JoinHandle<Outcome> {
     let config = worker_config(base, token, repo);
     tokio::spawn(async move {
-        let model = Worker::new(gate);
+        let model = Worker::new(gate, script);
         run(&config, &model).await
     })
+}
+
+/// A worker whose first plan names `FILE`. Once a narrowing has taken the file, the planning
+/// call carries that and the worker plans `after` instead. Its edit writes `OTHER` and commits.
+fn narrowed_script(after: Value) -> Stub {
+    Stub::default()
+        .when(
+            Role::Worker,
+            |request| {
+                request.tools.is_empty()
+                    && request
+                        .last_user_text()
+                        .is_some_and(|text| text.contains("gave up these places"))
+            },
+            StubReply::json(&after),
+        )
+        .when(
+            Role::Worker,
+            |request| request.tools.is_empty(),
+            StubReply::json(&json!({ "summary": "change the loader", "files": [FILE] })),
+        )
+        .when(
+            Role::Worker,
+            |request| tool_replies(request) == 0,
+            StubReply {
+                tool_calls: vec![tool_call(
+                    "write_file",
+                    json!({ "path": OTHER, "content": OTHER_CHANGED }),
+                )],
+                ..StubReply::default()
+            },
+        )
+        .when(
+            Role::Worker,
+            |request| tool_replies(request) == 1,
+            StubReply {
+                tool_calls: vec![tool_call(
+                    "commit",
+                    json!({ "message": "change the other file" }),
+                )],
+                ..StubReply::default()
+            },
+        )
+        .when(
+            Role::Worker,
+            |_| true,
+            StubReply::text("the change is committed"),
+        )
 }
 
 /// A repository with `main` as the protected branch and the user's checkout on `user-work`.
@@ -248,6 +307,7 @@ fn user_repo() -> tempfile::TempDir {
     git(root, &["config", "core.autocrlf", "false"]);
     fs::create_dir_all(root.join(MACHINE)).expect("machine directory");
     fs::write(root.join(FILE), ORIGINAL).expect("fixture");
+    fs::write(root.join(OTHER), OTHER_ORIGINAL).expect("fixture");
     git(root, &["add", "-A"]);
     git(root, &["commit", "-q", "-m", "initial"]);
     git(root, &["switch", "-q", "-c", "user-work"]);
@@ -601,6 +661,167 @@ async fn two_workers_on_one_file_clash_before_either_writes() {
         "the first worker wrote its change"
     );
     second_worker.abort();
+    running.stop().await.expect("the origin stops");
+}
+
+/// Posts the order and starts two workers on it. The first runs the ordinary script and the
+/// second runs `two_script`. Waits until each worker holds a task and both tasks are declared on
+/// `FILE` with the clash open. Returns the clash, the task each worker holds, and both workers.
+async fn two_declared_on_one_file(
+    running: &Running,
+    root: &Path,
+    two_script: Stub,
+    open: watch::Receiver<bool>,
+) -> (
+    ClashId,
+    TaskId,
+    TaskId,
+    JoinHandle<Outcome>,
+    JoinHandle<Outcome>,
+) {
+    let base = base_url(running);
+    post_order(running).await;
+    register(running, ONE).await;
+    register(running, TWO).await;
+    let tasks = settle(running, "the split into two tasks", |_, world| {
+        let tasks = tasks_of_world(world);
+        (tasks.len() == 2).then_some(tasks)
+    })
+    .await;
+    assert_eq!(tasks.len(), 2, "the order splits into two tasks");
+
+    let one = spawn_worker(&base, ONE_TOKEN, root, open.clone());
+    let two = spawn_scripted(&base, TWO_TOKEN, root, two_script, open);
+    let first = settle(running, "agent-1 to claim a task", |_, world| {
+        held_by(world, &AgentId::from_str(ONE).expect("valid agent id"))
+    })
+    .await;
+    let second = settle(running, "agent-2 to claim a task", |_, world| {
+        held_by(world, &AgentId::from_str(TWO).expect("valid agent id"))
+    })
+    .await;
+    assert_ne!(first, second, "each worker claims its own task");
+    let clash = settle(running, "both declarations to clash", |log, world| {
+        let (clash, _, _) = clash_parties(log)?;
+        let both_declared = [first, second]
+            .iter()
+            .all(|task| is_stage(world, *task, is_declared));
+        both_declared.then_some(clash)
+    })
+    .await;
+    (clash, first, second, one, two)
+}
+
+/// Settles the clash by narrowing `task`, as the owner would from the UI.
+async fn narrow(running: &Running, clash: ClashId, task: TaskId) {
+    let response = owner_command(
+        running,
+        &HumanCmd::SettleClash {
+            clash,
+            choice: Settlement::Narrow { task },
+        },
+    )
+    .await;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    assert!(
+        status.is_success(),
+        "the clash is narrowed: {status} {body}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_narrowed_task_redeclares_without_the_file_it_gave_up_and_lands() {
+    let repo = user_repo();
+    let root = repo.path();
+    let running = start_origin(root, 2).await;
+    let (_gate, open) = watch::channel(true);
+    let script = narrowed_script(json!({ "summary": "change the other file", "files": [OTHER] }));
+    let (clash, _, second, one, two) = two_declared_on_one_file(&running, root, script, open).await;
+
+    narrow(&running, clash, second).await;
+
+    let narrowed = timeout(WAIT, two)
+        .await
+        .expect("the narrowed worker finishes in time")
+        .expect("the narrowed worker does not panic");
+    assert!(
+        matches!(&narrowed.exit, Exit::Built { task, .. } if task == &second.to_string()),
+        "the narrowed worker builds its task: {}",
+        narrowed.exit
+    );
+    let prefix = format!("narrowed {second}: gave up {FILE}; declared 1 file(s) without them;");
+    assert!(
+        narrowed.steps.iter().any(|step| step.starts_with(&prefix)),
+        "the redeclaration is logged: {:#?}",
+        narrowed.steps
+    );
+    let worktree = worktree_dir(root, second);
+    assert_eq!(
+        git(
+            &worktree,
+            &["show", "--name-only", "--pretty=format:", "HEAD"]
+        )
+        .trim(),
+        OTHER,
+        "the narrowed task's commit carries only the file it kept"
+    );
+    assert_eq!(
+        fs::read_to_string(worktree.join(OTHER)).expect("the file is readable"),
+        OTHER_CHANGED,
+        "the narrowed worker wrote its change to the file it kept"
+    );
+
+    let built = timeout(WAIT, one)
+        .await
+        .expect("the other worker finishes in time")
+        .expect("the other worker does not panic");
+    assert!(
+        matches!(&built.exit, Exit::Built { .. }),
+        "the other worker builds: {}",
+        built.exit
+    );
+    running.stop().await.expect("the origin stops");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_narrowed_task_that_cannot_go_on_without_the_file_releases_with_the_reason() {
+    let repo = user_repo();
+    let root = repo.path();
+    let running = start_origin(root, 2).await;
+    let (_gate, open) = watch::channel(true);
+    let script = narrowed_script(json!({
+        "summary": "the change needs the loader file",
+        "files": [],
+    }));
+    let (clash, _, second, one, two) = two_declared_on_one_file(&running, root, script, open).await;
+
+    narrow(&running, clash, second).await;
+
+    let narrowed = timeout(WAIT, two)
+        .await
+        .expect("the narrowed worker finishes in time")
+        .expect("the narrowed worker does not panic");
+    assert!(
+        matches!(
+            &narrowed.exit,
+            Exit::Narrowed { task, reason }
+                if task == &second.to_string() && reason.contains(&format!("cannot be done without {FILE}"))
+        ),
+        "the narrowed worker stops with the reason: {}",
+        narrowed.exit
+    );
+    assert!(
+        narrowed
+            .steps
+            .iter()
+            .any(|step| step.starts_with(&format!("released {second}: "))),
+        "the claim is released with the reason: {:#?}",
+        narrowed.steps
+    );
+    // The other worker waits on the declare barrier while its sibling is open again, so this test
+    // does not wait for its build.
+    one.abort();
     running.stop().await.expect("the origin stops");
 }
 

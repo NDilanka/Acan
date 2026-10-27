@@ -213,8 +213,8 @@ pub fn explain_request(world: &World, clash: ClashId) -> Option<ChatRequest> {
 /// A split reply: the tasks the foreman cut the order into.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SplitReply {
-    /// Two to four tasks, in the order they should be worked. Each can run in parallel with the
-    /// others.
+    /// Two to four tasks, each one feature or concern that one worker can finish alone. Tasks may
+    /// touch shared code when their feature needs it: an overlap becomes a clash, not a refusal.
     pub tasks: Vec<SplitTask>,
 }
 

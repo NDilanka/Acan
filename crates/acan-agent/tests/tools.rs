@@ -15,6 +15,8 @@ fn repo() -> tempfile::TempDir {
     git(root, &["init", "-q", "-b", "main"]);
     git(root, &["config", "user.name", "Test User"]);
     git(root, &["config", "user.email", "test@example.test"]);
+    // Windows checkouts convert to CRLF by default, and the files are compared byte for byte.
+    git(root, &["config", "core.autocrlf", "false"]);
     fs::create_dir_all(root.join("model")).expect("machine directory");
     fs::write(root.join(DECLARED), "original\n").expect("fixture");
     fs::write(root.join("model/other.ts"), "other\n").expect("fixture");
@@ -328,4 +330,47 @@ async fn run_tests_reports_pass_and_fail_as_the_gate_does() {
         .await
         .expect("a failing command is reported, not refused");
     assert!(text.starts_with("fail:") && text.contains('3'), "{text}");
+}
+
+#[tokio::test]
+async fn restore_brings_back_a_tracked_file_and_removes_an_untracked_one() {
+    let dir = repo();
+    let root = dir.path();
+    let new = "model/new.ts";
+    let tools = Worktree::new(
+        root.to_path_buf(),
+        &[DECLARED.to_owned(), new.to_owned()],
+        None,
+    );
+    tools
+        .write_file(DECLARED, "changed\n")
+        .expect("the tracked file is written");
+    tools
+        .write_file(new, "new\n")
+        .expect("the new file is written");
+
+    tools
+        .restore(&[DECLARED.to_owned(), new.to_owned()])
+        .await
+        .expect("both files are restored");
+
+    assert_eq!(
+        fs::read_to_string(root.join(DECLARED)).expect("the file is readable"),
+        "original\n",
+        "the tracked file is back at its committed text"
+    );
+    assert!(!root.join(new).exists(), "the untracked file is removed");
+}
+
+#[test]
+fn declare_replaces_the_files_a_write_may_touch() {
+    let dir = repo();
+    let mut tools = worktree(dir.path());
+    tools.declare(&["model/other.ts".to_owned()]);
+    tools
+        .write_file(DECLARED, "changed\n")
+        .expect_err("the old declaration no longer allows the write");
+    tools
+        .write_file("model/other.ts", "changed\n")
+        .expect("the new declaration allows the write");
 }
