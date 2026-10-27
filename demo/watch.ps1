@@ -1,6 +1,11 @@
 # Follows one take through the owner's event log and writes a timeline and a summary under the
-# run's logs folder. With -Settle 1, 2 or 3 it settles each clash the way a click on that menu
+# take's logs folder. With -Settle 1, 2 or 3 it settles each clash the way a click on that menu
 # row would, so a take runs without the UI. With -Settle 0 a human settles in the UI.
+#
+# One watch per take. It refuses to start when the take already has an events log, and while another
+# watch holds logs\watch.lock. It never truncates or overwrites a take's logs. It stops when everything
+# has landed, when the timeout passes, when the server refuses the owner token, or after
+# -MaxRefusedPolls polls in a row fail. The summary records which of these ended the watch (watch_end).
 #
 # "Clash before write" means the clash was recorded before the origin cleared any task to build.
 # The origin clears a task only after its declarations are free of blocking clashes, and a worker
@@ -8,21 +13,39 @@
 
 [CmdletBinding()]
 param(
-    [string]$RunDir = 'D:\dev\acan-run',
+    [string]$RunDir = '',
     [int]$Port = 7311,
     [ValidateRange(0, 3)][int]$Settle = 0,
     [int]$TimeoutSecs = 1500,
-    [int]$PollMs = 500
+    [int]$PollMs = 500,
+    [int]$MaxRefusedPolls = 10
 )
 
 . (Join-Path $PSScriptRoot 'lib.ps1')
 
+if (-not $RunDir) { $RunDir = Get-CurrentRunDir }
+if (-not $RunDir) { throw 'no run folder given and no current run; run run.ps1 first' }
 $state = Get-RunState -RunDir $RunDir
 if ($null -eq $state) { throw "no run state in $RunDir; run run.ps1 first" }
 $owner = Get-OwnerToken -RunDir $RunDir
 $logs = Join-Path $RunDir 'logs'
 $timelinePath = Join-Path $logs 'timeline.txt'
 $rawPath = Join-Path $logs 'events.jsonl'
+$summaryPath = Join-Path $logs 'summary.json'
+$lockPath = Join-Path $logs 'watch.lock'
+
+# A take is watched once. A second watch must not truncate or overwrite the first one's logs.
+if (Test-Path -LiteralPath $rawPath) {
+    throw "$RunDir already has a watch ($rawPath). Start a new take with run.ps1 instead."
+}
+if (Test-Path -LiteralPath $lockPath) {
+    $held = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+    if (Test-RecordedProcess -ProcessId $held.pid -StartTicks $held.startTicks) {
+        throw "a watcher (pid $($held.pid)) already follows $RunDir"
+    }
+}
+@{ pid = $PID; startTicks = (Get-Process -Id $PID).StartTime.Ticks } | ConvertTo-Json -Compress |
+    Set-Content -LiteralPath $lockPath -Encoding utf8
 Set-Content -LiteralPath $timelinePath -Value '' -Encoding utf8
 Set-Content -LiteralPath $rawPath -Value '' -Encoding utf8
 
@@ -152,7 +175,8 @@ function Handle-Event($stamped) {
 }
 
 # The worker logs one line per write, stamped when the write returned. Those stamps are the only
-# record of a write in the run, since the origin logs a clearance, not a write.
+# record of a write in the run, since the origin logs a clearance, not a write. Numbered worker
+# logs (worker-1.2.err.log) match the same glob.
 function Get-Writes {
     param([string]$LogsDir)
     foreach ($file in Get-ChildItem -LiteralPath $LogsDir -Filter 'worker-*.err.log') {
@@ -170,23 +194,45 @@ function Get-Writes {
 
 $deadline = (Get-Date).AddSeconds($TimeoutSecs)
 $next = 0
+$refused = 0
+$watchEnd = 'timeout'
 Write-Line "watching $RunDir (settle option: $(if ($Settle -eq 0) { 'by hand in the UI' } else { $Settle }), timeout ${TimeoutSecs}s)"
-while ((Get-Date) -lt $deadline) {
-    try {
-        $batch = Invoke-Api -Port $Port -Token $owner -Method GET -Path "/api/events?from=$next"
-    } catch {
-        Write-Line "event poll failed: $($_.Exception.Message)"
+try {
+    while ((Get-Date) -lt $deadline) {
+        try {
+            $batch = Invoke-Api -Port $Port -Token $owner -Method GET -Path "/api/events?from=$next"
+            $refused = 0
+        } catch {
+            $refused++
+            $status = Get-HttpStatus $_
+            if ($status -in 401, 403) {
+                Write-Line "event poll refused the owner token (HTTP $status); this watch stops"
+                $watchEnd = 'token_refused'
+                break
+            }
+            Write-Line "event poll failed ($refused in a row): $($_.Exception.Message)"
+            if ($refused -ge $MaxRefusedPolls) {
+                Write-Line "$refused polls in a row failed; the server is gone, so this watch stops"
+                $watchEnd = 'server_gone'
+                break
+            }
+            Start-Sleep -Milliseconds $PollMs
+            continue
+        }
+        foreach ($stamped in @($batch | Where-Object { $null -ne $_ })) {
+            Add-Content -LiteralPath $rawPath -Value ($stamped | ConvertTo-Json -Depth 20 -Compress) -Encoding utf8
+            Handle-Event $stamped
+            $next = [uint64]$stamped.seq + 1
+        }
+        $taskCount = @($script:tasks).Count
+        if ($taskCount -gt 0 -and $script:landed.Count -eq $taskCount) {
+            $watchEnd = 'all_landed'
+            break
+        }
         Start-Sleep -Milliseconds $PollMs
-        continue
     }
-    foreach ($stamped in @($batch | Where-Object { $null -ne $_ })) {
-        Add-Content -LiteralPath $rawPath -Value ($stamped | ConvertTo-Json -Depth 20 -Compress) -Encoding utf8
-        Handle-Event $stamped
-        $next = [uint64]$stamped.seq + 1
-    }
-    $taskCount = @($script:tasks).Count
-    if ($taskCount -gt 0 -and $script:landed.Count -eq $taskCount) { break }
-    Start-Sleep -Milliseconds $PollMs
+} finally {
+    Remove-Item -LiteralPath $lockPath -Force -ErrorAction SilentlyContinue
 }
 
 # The summary is computed from the stored events, so it matches the raw log.
@@ -233,8 +279,12 @@ if (Test-Path -LiteralPath $serveErr) {
     $liveFailures = @(Select-String -LiteralPath $serveErr -Pattern 'live model call failed').Count
 }
 
+$firstWriteMs = if ($null -ne $firstWriteUtc) { ([DateTimeOffset]$firstWriteUtc).ToUnixTimeMilliseconds() } else { $null }
+$firstContestedMs = if ($null -ne $firstContestedUtc) { ([DateTimeOffset]$firstContestedUtc).ToUnixTimeMilliseconds() } else { $null }
+
 $summary = [ordered]@{
     outcome                = $outcome
+    watch_end              = $watchEnd
     tasks                  = $taskCount
     landed                 = $script:landed.Count
     clashes                = @($script:clashes)
@@ -242,15 +292,26 @@ $summary = [ordered]@{
     clash_utc              = if ($null -ne $clashUtc) { $clashUtc.ToString('o') } else { $null }
     first_write_utc        = if ($null -ne $firstWriteUtc) { $firstWriteUtc.ToString('o') } else { $null }
     writes                 = $writes.Count
+    counts                 = [ordered]@{
+        readbacks = $script:readbackAts.Count
+        declares  = $script:declaredAts.Count
+        claims    = $script:claimAts.Count
+        clashes   = $script:clashes.Count
+        landed    = $script:landed.Count
+        writes    = $writes.Count
+    }
     seconds                = [ordered]@{
-        split              = Rel $script:firstAt['order_split']
-        last_readback      = Rel (($script:readbackAts | Measure-Object -Maximum).Maximum)
-        reviewed           = Rel $script:firstAt['readbacks_reviewed']
-        first_claim        = Rel (($script:claimAts | Measure-Object -Minimum).Minimum)
-        first_declare      = Rel (($script:declaredAts | Measure-Object -Minimum).Minimum)
-        clash_found        = Rel $script:firstAt['clash_found']
-        settled            = Rel $script:firstAt['clash_settled']
-        last_land          = Rel (($script:landed.Values | Measure-Object -Maximum).Maximum)
+        split                  = Rel $script:firstAt['order_split']
+        last_readback          = Rel (($script:readbackAts | Measure-Object -Maximum).Maximum)
+        reviewed               = Rel $script:firstAt['readbacks_reviewed']
+        first_claim            = Rel (($script:claimAts | Measure-Object -Minimum).Minimum)
+        first_declare          = Rel (($script:declaredAts | Measure-Object -Minimum).Minimum)
+        last_declare           = Rel (($script:declaredAts | Measure-Object -Maximum).Maximum)
+        clash_found            = Rel $script:firstAt['clash_found']
+        first_contested_write  = Rel $firstContestedMs
+        first_write            = Rel $firstWriteMs
+        settled                = Rel $script:firstAt['clash_settled']
+        last_land              = Rel (($script:landed.Values | Measure-Object -Maximum).Maximum)
     }
     model_steps            = $script:modelSteps
     live_call_failures     = $liveFailures
@@ -263,6 +324,6 @@ $summary = [ordered]@{
     declared_ms            = $script:declaredBy
     origin_known           = ($null -ne $origin)
 }
-$summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $logs 'summary.json') -Encoding utf8
-Write-Line "OUTCOME: $outcome (tasks $taskCount, landed $($script:landed.Count), clashes $($script:clashes.Count), live call failures $liveFailures)"
-Write-Output (Get-Content -LiteralPath (Join-Path $logs 'summary.json') -Raw)
+$summary | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $summaryPath -Encoding utf8
+Write-Line "OUTCOME: $outcome (watch ended: $watchEnd; tasks $taskCount, landed $($script:landed.Count), clashes $($script:clashes.Count), live call failures $liveFailures)"
+Write-Output (Get-Content -LiteralPath $summaryPath -Raw)

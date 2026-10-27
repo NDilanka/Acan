@@ -1,23 +1,35 @@
 # Stages one take of the hackathon demo on a fresh copy of the demo repository.
 #
-# It clones the demo repo into a run folder, copies the live routing and provider key file in,
-# starts `acan serve` with the UI and the demo app, mints tokens for the owner and two agents,
-# registers the agents, posts the order with its witnesses, and starts two worker slots (worker-slot.ps1),
-# each running acan-worker one task at a time. It returns once everything is running. Run watch.ps1
-# next to follow the take and settle clashes.
+# Each take gets its own run folder, D:\dev\acan-run\take-<stamp>, and current.txt names it. A take
+# never reuses a folder, so an earlier take's logs are never overwritten, and a stale process from an
+# earlier take writes only into that take's folder.
+#
+# It clones the demo repo into the run folder, copies the live routing and provider key file in, starts
+# `acan serve` with the UI and the demo app, mints tokens for the owner and one agent per worker,
+# registers the agents, posts the order with its witnesses, and starts one worker slot per agent
+# (worker-slot.ps1). It returns once everything is running. Run watch.ps1 next to follow the take.
 #
 # The owner token is never printed. It is in the run folder, in .acan\tokens.json and in
 # logs\ui-url.txt, which holds the UI URL with the token in its fragment.
 
 [CmdletBinding()]
 param(
-    [string]$RunDir = 'D:\dev\acan-run',
+    # Empty means a new take folder under D:\dev\acan-run.
+    [string]$RunDir = '',
     [string]$DemoRepo = 'D:\dev\acan-demo',
     [int]$Port = 7311,
     [int]$DemoPort = 3000,
-    [string]$Machine = 'src',
+    # The scanner gives each file of the demo's src folder its own machine, named by file stem, so the
+    # machine of src/middleware.ts is "middleware". run.ps1 stops if the plant does not list it.
+    [string]$Machine = 'middleware',
+    # A task nobody has claimed yet holds the order's declare barrier, so every task of the split needs
+    # its own worker at once. A split of three needs three slots.
+    [int]$Workers = 3,
     [string]$Sentence = 'Add rate limiting to the API in src/middleware.ts. Add a limit per client address to runRoute, backed by a fixed-window store with expiry cleanup, and send 429 responses with Retry-After and X-RateLimit-Remaining headers. Add a limit per signed-in account to runRoute too, using the same store shape. Each limit is a check that runs before the route handler, so every route passes both. Keep the login flow untouched.',
-    [int]$WaitSecs = 900
+    [int]$WaitSecs = 900,
+    # Follow the take in this process until it ends, so one background job holds the whole take.
+    [switch]$Watch,
+    [ValidateRange(0, 3)][int]$Settle = 3
 )
 
 . (Join-Path $PSScriptRoot 'lib.ps1')
@@ -29,26 +41,32 @@ $www = Join-Path $repo 'crates\acan-render-web\www'
 $llmSource = Join-Path $repo 'crates\acan-llm\llm.toml'
 $envSource = Join-Path $repo 'crates\acan-llm\.env'
 
-# One take at a time. The previous take's folder is renamed aside, not deleted, so its logs stay.
-& (Join-Path $PSScriptRoot 'stop.ps1') -RunDir $RunDir
-if (Test-Path -LiteralPath $RunDir) {
-    $aside = "$RunDir-prev-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-    Move-Item -LiteralPath $RunDir -Destination $aside
-    Write-Output "moved the previous run folder to $aside"
+# The previous take's processes stop. Its folder stays as it was.
+$previous = Get-CurrentRunDir
+if ($null -ne $previous) { & (Join-Path $PSScriptRoot 'stop.ps1') -RunDir $previous }
+
+if (-not $RunDir) { $RunDir = Join-Path $script:RunRoot ('take-' + (Get-Date -Format 'yyyyMMdd-HHmmss')) }
+if (Test-Path -LiteralPath $RunDir) { throw "$RunDir already exists; a take never reuses a folder" }
+foreach ($busy in @($Port, $DemoPort)) {
+    if (Test-PortBusy -Port $busy) { throw "port $busy is already listening; stop the process that holds it before a new take" }
 }
 
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $RunDir) | Out-Null
 git clone --quiet $DemoRepo $RunDir
 if ($LASTEXITCODE -ne 0) { throw "git clone of $DemoRepo failed with exit code $LASTEXITCODE" }
+Set-CurrentRunDir -RunDir $RunDir
 
 $logs = Join-Path $RunDir 'logs'
 New-Item -ItemType Directory -Force -Path $logs | Out-Null
 $state = @{
-    runDir    = $RunDir
-    port      = $Port
-    demoPort  = $DemoPort
-    machine   = $Machine
-    sentence  = $Sentence
-    processes = New-Object System.Collections.ArrayList
+    runDir     = $RunDir
+    startedUtc = (Get-Date).ToUniversalTime().ToString('o')
+    port       = $Port
+    demoPort   = $DemoPort
+    machine    = $Machine
+    workers    = $Workers
+    sentence   = $Sentence
+    processes  = New-Object System.Collections.ArrayList
 }
 Save-RunState -State $state -RunDir $RunDir
 
@@ -62,13 +80,11 @@ Copy-Item -LiteralPath $envSource -Destination (Join-Path $RunDir '.env')
 
 # Tokens go in before the first start, so the server loads them and mints no owner token of its own.
 $owner = 'acan_' + [guid]::NewGuid().ToString('N')
-$agentOne = 'acan_' + [guid]::NewGuid().ToString('N')
-$agentTwo = 'acan_' + [guid]::NewGuid().ToString('N')
-$tokens = @(
-    @{ token = $owner; principal = @{ kind = 'member'; id = 'owner' } },
-    @{ token = $agentOne; principal = @{ kind = 'agent'; id = 'agent-1' } },
-    @{ token = $agentTwo; principal = @{ kind = 'agent'; id = 'agent-2' } }
-)
+$tokens = @(@{ token = $owner; principal = @{ kind = 'member'; id = 'owner' } })
+$agents = @(1..$Workers | ForEach-Object { "agent-$_" })
+foreach ($name in $agents) {
+    $tokens += @{ token = 'acan_' + [guid]::NewGuid().ToString('N'); principal = @{ kind = 'agent'; id = $name } }
+}
 $tokens | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $acanDir 'tokens.json') -Encoding utf8
 
 Push-Location $repo
@@ -104,9 +120,9 @@ if (-not (Wait-Http200 -Url "http://127.0.0.1:$DemoPort/health" -Seconds 60)) {
 $plant = Invoke-Api -Port $Port -Token $owner -Method GET -Path '/api/plant'
 $machines = @($plant.machines | ForEach-Object { $_.name })
 Write-Output "plant machines: $($machines -join ', ')"
-if ($machines -notcontains $Machine) { throw "machine '$Machine' is not on the plant" }
+if ($machines -notcontains $Machine) { throw "machine '$Machine' is not on the plant; pick one of the names above and pass -Machine" }
 
-foreach ($name in @('agent-1', 'agent-2')) {
+foreach ($name in $agents) {
     Invoke-Api -Port $Port -Token $owner -Method POST -Path '/api/commands' -Body @{ cmd = 'register_agent'; agent = $name } | Out-Null
 }
 
@@ -126,13 +142,13 @@ $state.orderPostedUtc = (Get-Date).ToUniversalTime().ToString('o')
 Save-RunState -State $state -RunDir $RunDir
 Write-Output "order posted: $($posted.Count) event(s) returned"
 
-# Each slot runs acan-worker again after every task, so the two slots can build a split of three.
+# Each slot runs acan-worker again after every task, so the slots can build a split of any size.
 $slot = Join-Path $PSScriptRoot 'worker-slot.ps1'
 $pwsh = [Environment]::ProcessPath
-foreach ($pair in @(@('worker-1', 'agent-1'), @('worker-2', 'agent-2'))) {
-    Start-Logged -State $state -RunDir $RunDir -Name $pair[0] -File $pwsh -WorkingDirectory $RunDir -Arguments @(
+for ($i = 1; $i -le $Workers; $i++) {
+    Start-Logged -State $state -RunDir $RunDir -Name "worker-$i" -File $pwsh -WorkingDirectory $RunDir -Arguments @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $slot,
-        '-Name', $pair[0], '-Agent', $pair[1], '-RunDir', $RunDir,
+        '-Name', "worker-$i", '-Agent', "agent-$i", '-RunDir', $RunDir,
         '-Worker', $worker, '-Port', "$Port", '-WaitSecs', "$WaitSecs"
     ) | Out-Null
 }
@@ -141,6 +157,11 @@ foreach ($pair in @(@('worker-1', 'agent-1'), @('worker-2', 'agent-2'))) {
 $uiUrl = "http://127.0.0.1:$Port/#token=$owner"
 Set-Content -LiteralPath (Join-Path $logs 'ui-url.txt') -Value $uiUrl -Encoding utf8
 Write-Output "run folder: $RunDir"
+Write-Output "workers: $Workers slot(s), agents $($agents -join ', ')"
 Write-Output "UI: http://127.0.0.1:$Port/  (open $logs\ui-url.txt for the URL with the owner token)"
 Write-Output "watch: pwsh $PSScriptRoot\watch.ps1 -RunDir `"$RunDir`" -Settle 3"
 Write-Output "stop: pwsh $PSScriptRoot\stop.ps1 -RunDir `"$RunDir`""
+
+if ($Watch) {
+    & (Join-Path $PSScriptRoot 'watch.ps1') -RunDir $RunDir -Port $Port -Settle $Settle
+}

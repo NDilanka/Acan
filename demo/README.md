@@ -1,20 +1,32 @@
 # Demo take
 
-This folder stages one live take of the Acan demo. Each take clones the demo repository into a fresh run folder, starts the Acan server with the UI, and posts one order. Two worker slots take the tasks from the split. The split can produce three tasks that all change `src/middleware.ts`. When a second task declares that file while the first task is still open, the origin raises a clash and holds the second task until a person settles it. The run then continues through build, gate, and land.
+This folder stages one live take of the Acan demo. Each take clones the demo repository into its own run folder, starts the Acan server with the UI, and posts one order. Three worker slots take the three tasks of the split. The split can produce tasks that all change `src/middleware.ts`. When a task declares a file that a sibling has also declared, the origin raises a clash and holds both before any build. A person settles the clash in the UI, or `watch.ps1` settles it. The run then continues through build, gate, and land.
 
 ## Run a take
 
 Requires PowerShell 7, Bun, and a built worktree. The keys in `crates/acan-llm/.env` and the routing in `crates/acan-llm/llm.toml` must exist. Both files are git-ignored.
 
 1. Build the UI bundle once per worktree. Run `crates/acan-render-web/build.ps1`.
-2. Start the take. Run `pwsh demo/run.ps1`. The script returns after the server, the demo app, and both worker slots are running.
-3. Open the UI. Open the URL in `<run folder>\logs\ui-url.txt`. The URL holds the owner token in its fragment, so do not share it.
-4. Settle the clash in the UI with 1, 2, or 3. Or run `pwsh demo/watch.ps1 -Settle 3` in another shell to settle each clash with option 3 (serialize) without the UI.
-5. Stop the take. Run `pwsh demo/stop.ps1`. It stops only the processes the take started.
+2. Start the take. Run `pwsh demo/run.ps1 -Watch -Settle 3` as one background job. It starts the server, the demo app, and the three worker slots, then follows the take in the same process until it ends. It stops if a port is already listening. Settle 3 serializes each clash the way the menu's third row does. Use `-Settle 0` to settle in the UI instead.
+3. Follow the take without `-Watch`. Run `pwsh demo/watch.ps1 -RunDir "<run folder>" -Settle 3` as its own background job. A watch started from a short shell dies when that shell returns, so keep it in a background job.
+4. Open the UI. Open the URL in `<run folder>\logs\ui-url.txt`. The URL holds the owner token in its fragment, so do not share it.
+5. Stop the take. Run `pwsh demo/stop.ps1`. It stops only the processes the take started. With no `-RunDir`, both scripts use the latest take.
 
-The default run folder is `D:\dev\acan-run`. Starting a new take renames the previous folder to `D:\dev\acan-run-prev-<timestamp>`. Nothing is deleted, so the earlier logs stay.
+Each take gets its own run folder, `D:\dev\acan-run\take-<yyyyMMdd-HHmmss>`. `D:\dev\acan-run\current.txt` names the latest one. `run.ps1` never reuses a folder, and it stops the previous take's processes without touching that folder. So an earlier take keeps its logs, and a stale process writes only into its own take.
 
-Each worker slot runs `acan-worker` again after every task, because one worker process builds one task and exits. A slot therefore builds every task its agent can claim. `worker-slot.ps1` runs the loop, and each run writes its own log pair, such as `worker-1.2.err.log`.
+The machine of `src/middleware.ts` is `middleware`. The scanner gives each file in a small repo's `src` folder its own machine, named by its stem. `run.ps1` reads the plant from `/api/plant` and stops if the `-Machine` name is missing. The plant list is printed at the start of the run.
+
+Each worker slot runs `acan-worker` again after every task, because one worker process builds one task and exits. `worker-slot.ps1` runs the loop, and each run writes its own log pair, such as `worker-1.2.err.log`. There is one slot per task, because a task nobody has claimed holds the order's declare barrier.
+
+## Watch rules
+
+`watch.ps1` is one watch per take.
+
+- It refuses to start when the take's `logs\events.jsonl` already exists. Logs are never truncated or overwritten.
+- It writes `logs\watch.lock` with its pid and start time while it runs. A second watch on the same take refuses to start while the lock holds a live process.
+- It stops on its own when the take has landed every task, when the 1500 second timeout passes, when the server refuses the owner token (HTTP 401 or 403), or after 10 polls in a row fail.
+
+`summary.json` records which of these ended the watch in `watch_end`: `all_landed`, `timeout`, `token_refused`, or `server_gone`.
 
 ## Read the result
 
@@ -22,7 +34,9 @@ Each worker slot runs `acan-worker` again after every task, because one worker p
 
 - `timeline.txt` lists each origin event with its time from the order post.
 - `events.jsonl` holds the raw events from `GET /api/events`.
-- `summary.json` holds the outcome, the step times, and the usage totals.
+- `summary.json` holds the outcome, the watch end, the counts, the step times, and the usage totals.
+
+The step times in `seconds` are measured from the order post. They are `split`, `last_readback`, `reviewed`, `first_claim`, `first_declare`, `last_declare`, `clash_found`, `first_contested_write`, `first_write`, `settled`, and `last_land`. The `counts` object holds readbacks, declares, claims, clashes, landed tasks, and writes.
 
 The clash rules in `summary.json` are these.
 
@@ -35,22 +49,22 @@ The outcome is one of these values.
 - `clash_before_write_landed`: the first clash was raised before any write to its file, and every task landed.
 - `clash_before_write_not_landed`: the first clash was raised before any write to its file, and some task did not land.
 - `clash_after_write`: a task wrote the contested file before the first clash was raised.
-- `no_clash_landed` and `no_clash_incomplete`: the split produced no blocking overlap.
+- `no_clash_landed` and `no_clash_incomplete`: the split produced no blocking overlap, or the take did not finish.
 
 The write times come from the worker logs. Each write logs one line when the write returns. The clash times come from the origin.
 
 ## Why a clash can be missed
 
-A clash needs the second declaration to arrive while the first task is still open, which means before the first task lands. The first task is open from its declaration until its gate passes and it lands. Its own edit and gate decide that window. The second task's readback and review come after its worker starts, so it can arrive after the first task has already landed. Then the origin sees no overlap and the take has no clash.
+The origin holds every task of the order from building while a sibling is still open, meaning not yet declared. The hold lifts when every sibling has declared, or 90 seconds after the first declaration, whichever comes first. A clash therefore comes before any build when all three tasks declare within 90 seconds of the first one. If a task declares later than that, the hold lifts, the first task can write, and the late declaration is a clash after a write. The summary shows this as `clash_after_write`.
 
 ## Layout
 
-- `lib.ps1`: shared helpers for the scripts.
-- `run.ps1`: clones the demo, writes the tokens, starts the processes, registers the agents, and posts the order.
+- `lib.ps1`: shared helpers for the scripts, including the current-take pointer and the process check.
+- `run.ps1`: clones the demo into a new take folder, writes the tokens, starts the processes, registers the agents, and posts the order.
 - `worker-slot.ps1`: runs `acan-worker` for one agent again after each task.
 - `watch.ps1`: follows the event log, settles clashes when asked, and writes the result.
 - `stop.ps1`: stops the processes recorded in `<run folder>\logs\run.json`.
 
 ## Tokens
 
-`run.ps1` creates one owner token and two agent tokens and writes them to `<run folder>\.acan\tokens.json`. The server reads that file at start, so it mints no token of its own. The owner token is never printed to the console.
+`run.ps1` creates one owner token and one agent token per worker, three in all, and writes them to `<run folder>\.acan\tokens.json`. The server reads that file at start, so it mints no token of its own. The owner token is never printed to the console.

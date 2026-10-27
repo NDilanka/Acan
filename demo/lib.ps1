@@ -4,6 +4,22 @@
 $ErrorActionPreference = 'Stop'
 
 $script:WorktreeRoot = Split-Path -Parent $PSScriptRoot
+# Every take gets its own folder under this root, so a stale process can only write into its own take.
+$script:RunRoot = 'D:\dev\acan-run'
+
+# The folder of the latest take, or $null before the first take.
+function Get-CurrentRunDir {
+    $pointer = Join-Path $script:RunRoot 'current.txt'
+    if (-not (Test-Path -LiteralPath $pointer)) { return $null }
+    $path = (Get-Content -LiteralPath $pointer -Raw).Trim()
+    if ($path) { $path } else { $null }
+}
+
+function Set-CurrentRunDir {
+    param([string]$RunDir)
+    New-Item -ItemType Directory -Force -Path $script:RunRoot | Out-Null
+    Set-Content -LiteralPath (Join-Path $script:RunRoot 'current.txt') -Value $RunDir -Encoding utf8
+}
 
 function Get-RunState {
     param([string]$RunDir)
@@ -23,6 +39,13 @@ function Get-OwnerToken {
     param([string]$RunDir)
     $entries = Get-Content -LiteralPath (Join-Path $RunDir '.acan\tokens.json') -Raw | ConvertFrom-Json
     ($entries | Where-Object { $_.principal.kind -eq 'member' } | Select-Object -First 1).token
+}
+
+# True when the recorded process is still the one that was started: the pid is live and its start time matches.
+function Test-RecordedProcess {
+    param([int]$ProcessId, [long]$StartTicks)
+    $proc = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+    $null -ne $proc -and $proc.StartTime.Ticks -eq $StartTicks
 }
 
 # Starts a process with stdout and stderr in the run's logs folder and records it in the run state.
@@ -61,6 +84,18 @@ function Invoke-Api {
         $params.ContentType = 'application/json'
     }
     Invoke-RestMethod @params
+}
+
+# The HTTP status of a failed web request, or $null when no response came back.
+function Get-HttpStatus($ErrorRecord) {
+    $response = $ErrorRecord.Exception.Response
+    if ($null -eq $response) { return $null }
+    [int]$response.StatusCode
+}
+
+# True when something already listens on the port. A start on a busy port would reach the wrong server.
+function Test-PortBusy([int]$Port) {
+    $null -ne (Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
 }
 
 function Wait-Http200 {
