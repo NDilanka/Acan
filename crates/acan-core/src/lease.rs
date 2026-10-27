@@ -32,6 +32,12 @@ use crate::world::{Ctx, World};
 /// last renewal.
 pub const LEASE_TTL_MS: u64 = 60_000;
 
+/// How long an order's declare barrier holds after the order's first declaration.
+///
+/// Siblings that declare inside this window meet each other's declarations, so an overlap is a
+/// clash before either task writes. A sibling that never declares holds the others this long.
+pub const DECLARE_BARRIER_MS: u64 = 90_000;
+
 /// A live lease on a task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Lease {

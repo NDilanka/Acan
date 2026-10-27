@@ -67,6 +67,24 @@ impl Workspace {
         self.repo.worktrees().create(task, generation).await
     }
 
+    /// Fast-forwards the task's worktree at `generation` onto `to`, and reports whether it now
+    /// sits there. A worktree with uncommitted changes or commits of its own stays where it is.
+    /// The caller holds the task lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns the git error when the worktree cannot be created, read, or moved.
+    pub(crate) async fn fast_forward(
+        &self,
+        task: TaskId,
+        generation: Generation,
+        to: &CommitId,
+    ) -> Result<bool, acan_git::Error> {
+        let _writes = self.writes.lock().await;
+        let worktree = self.repo.worktrees().create(task, generation).await?;
+        worktree.fast_forward(to).await
+    }
+
     /// The tasks that have a worktree on disk, with the generation recorded on each branch.
     ///
     /// A worktree whose branch records no generation is reported without one. The loop treats

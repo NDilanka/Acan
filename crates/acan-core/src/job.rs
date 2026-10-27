@@ -4,7 +4,9 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ids::{ClashId, CommitId, GateRunId, OrderId, OrderRev, ReadbackId, TaskId, WitnessId};
+use crate::ids::{
+    ClashId, CommitId, GateRunId, OrderId, OrderRev, ReadbackId, TaskId, Timestamp, WitnessId,
+};
 
 /// A job the host runs and reports back as a `SystemCmd`.
 ///
@@ -45,6 +47,14 @@ pub enum Job {
         run: GateRunId,
         /// The witness.
         witness: WitnessId,
+    },
+    /// Wait until an armed declare barrier's deadline, then report `Tick`. The origin lifts the
+    /// barrier on the first command at or after the deadline.
+    Barrier {
+        /// The order.
+        order: OrderId,
+        /// When the barrier lifts.
+        deadline: Timestamp,
     },
     /// Merge the front of the land queue. Reported as `LandResult`.
     Land {

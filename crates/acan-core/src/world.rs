@@ -5,7 +5,9 @@ use std::{fmt, mem};
 
 use serde::{Deserialize, Serialize};
 
-use crate::clash::{self, Clash, ClashKey, ClashState, Declaration, Settlement};
+use crate::clash::{
+    self, Barrier, BarrierHold, Clash, ClashKey, ClashState, Declaration, Settlement,
+};
 use crate::event::{
     Actor, AgentCmd, Command, Event, HumanCmd, Rejection, ReplayError, Stamped, SystemCmd,
 };
@@ -16,7 +18,7 @@ use crate::ids::{
 };
 use crate::index::CodeIndex;
 use crate::job::Job;
-use crate::lease::{self, Claim};
+use crate::lease::{self, Claim, DECLARE_BARRIER_MS};
 use crate::member::{self, AgentPrincipal, Member, Role, SettleRight};
 use crate::order::{
     self, Order, OrderPhase, OrderState, Question, Readback, Stage, Task, TaskState, Witness,
@@ -274,6 +276,35 @@ impl World {
         }
     }
 
+    /// What the order's declare barrier waits for, while it holds. A declared task of the
+    /// order is waiting for its siblings to declare exactly while this is `Some`. `None` for an
+    /// unknown order, and for a barrier that is unarmed, lifted, or has no sibling left to wait
+    /// for. A barrier past its deadline holds until the origin records `BarrierExpired`.
+    #[must_use]
+    pub fn barrier(&self, order: OrderId) -> Option<BarrierHold> {
+        let Barrier::Armed { deadline } = self.orders.get(&order)?.barrier else {
+            return None;
+        };
+        let waiting_for: Vec<TaskId> = self
+            .tasks_of(order)
+            .filter(|t| {
+                matches!(
+                    t.state,
+                    TaskState::Open
+                        | TaskState::Claimed {
+                            stage: Stage::Declaring,
+                            ..
+                        }
+                )
+            })
+            .map(|t| t.id)
+            .collect();
+        (!waiting_for.is_empty()).then_some(BarrierHold {
+            deadline,
+            waiting_for,
+        })
+    }
+
     /// Queued tasks in merge order: by the seq at which each was queued.
     #[must_use]
     pub fn land_queue(&self) -> Vec<TaskId> {
@@ -295,6 +326,7 @@ impl World {
     /// question whose open or claimed tasks have readbacks lacking a verdict at the current
     /// revision (a readback on a claimed task is a standby, matched so it can claim when the
     /// lease ends);
+    /// `Barrier` for each split order whose declare barrier is armed;
     /// `Explain` for each blocking clash without an explanation; `RunWitness` for each
     /// frozen witness of a current gate run without a result; `Land` for the front of the
     /// land queue only.
@@ -307,7 +339,16 @@ impl World {
                     order: order.id,
                     rev: order.rev,
                 }),
-                OrderState::Split if self.open_question(order.id).is_none() => {
+                OrderState::Split => {
+                    if let Barrier::Armed { deadline } = order.barrier {
+                        jobs.push(Job::Barrier {
+                            order: order.id,
+                            deadline,
+                        });
+                    }
+                    if self.open_question(order.id).is_some() {
+                        continue;
+                    }
                     let readbacks = self.unreviewed(order);
                     if !readbacks.is_empty() {
                         jobs.push(Job::Review {
@@ -317,7 +358,7 @@ impl World {
                         });
                     }
                 }
-                OrderState::Split | OrderState::Cancelled => {}
+                OrderState::Cancelled => {}
             }
         }
         jobs.extend(
@@ -605,7 +646,9 @@ impl World {
             Event::WitnessReported { run, .. } | Event::GateClosed { run, .. } => {
                 known(&self.gates, run, "gate run")
             }
-            Event::OrderCancelled { order } => known(&self.orders, order, "order"),
+            Event::OrderCancelled { order } | Event::BarrierExpired { order } => {
+                known(&self.orders, order, "order")
+            }
         }
     }
 
@@ -667,6 +710,7 @@ impl World {
                     witnesses: witnesses.iter().map(|w| w.id).collect(),
                     posted_by: posted_by.clone(),
                     state: OrderState::Splitting,
+                    barrier: Barrier::Unarmed,
                 };
                 self.orders.insert(*order, posted);
             }
@@ -761,6 +805,16 @@ impl World {
             }
             Event::Declared { decl } => {
                 self.restage(decl.task, |_| Stage::Declared { decl: decl.clone() });
+                let deadline = stamped.at.plus_millis(DECLARE_BARRIER_MS);
+                self.rebar(decl.task, |barrier| match barrier {
+                    Barrier::Unarmed => Barrier::Armed { deadline },
+                    other => other,
+                });
+            }
+            Event::BarrierExpired { order } => {
+                if let Some(o) = self.orders.get_mut(order) {
+                    o.barrier = Barrier::Lifted;
+                }
             }
             Event::ClashFound {
                 clash,
@@ -829,6 +883,7 @@ impl World {
                     Stage::Declared { decl } => Stage::Building { decl },
                     other => other,
                 });
+                self.rebar(*task, |_| Barrier::Lifted);
             }
             Event::BuildReported {
                 task,
@@ -918,6 +973,14 @@ impl World {
         {
             let old = mem::replace(stage, Stage::Declaring);
             *stage = f(old);
+        }
+    }
+
+    /// Replaces the barrier of `task`'s order with `f(barrier)`.
+    fn rebar(&mut self, task: TaskId, f: impl FnOnce(Barrier) -> Barrier) {
+        let order = self.tasks.get(&task).map(|t| t.order);
+        if let Some(o) = order.and_then(|id| self.orders.get_mut(&id)) {
+            o.barrier = f(o.barrier);
         }
     }
 
@@ -1036,8 +1099,8 @@ impl Origin {
 
     /// Decides `cmd`, applies the resulting events, and returns them stamped.
     ///
-    /// Order of work: expire due leases, decide the command, then clear any declared task
-    /// whose blockers are gone. All of it is one batch: either the command is accepted and
+    /// Order of work: expire due leases, lift declare barriers past their deadline, decide the
+    /// command, then clear any declared task whose blockers are gone. All of it is one batch: either the command is accepted and
     /// every event is returned, or it is rejected and nothing changes (not even expiry).
     /// An already-satisfied command returns an empty batch.
     ///
@@ -1048,6 +1111,8 @@ impl Origin {
         let mut batch = Vec::new();
         let expired = lease::expire_due(&next, ctx);
         next.record(ctx.now, &Actor::System, expired, &mut batch);
+        let lifted = clash::expire_barriers(&next, ctx);
+        next.record(ctx.now, &Actor::System, lifted, &mut batch);
         let (actor, decided) = decide(&next, ctx, cmd)?;
         next.record(ctx.now, &actor, decided, &mut batch);
         let orphaned = clash::dissolve_orphans(&next);
