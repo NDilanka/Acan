@@ -25,7 +25,7 @@ param(
     # A task nobody has claimed yet holds the order's declare barrier, so every task of the split needs
     # its own worker at once. A split of three needs three slots.
     [int]$Workers = 3,
-    [string]$Sentence = 'Add rate limiting to the API in src/middleware.ts. Add a limit per client address to runRoute, backed by a fixed-window store with expiry cleanup, and send 429 responses with Retry-After and X-RateLimit-Remaining headers. Add a limit per signed-in account to runRoute too, using the same store shape. Each limit is a check that runs before the route handler, so every route passes both. Keep the login flow untouched.',
+    [string]$Sentence = 'Add per-user rate limiting and an audit log of every API request, and keep the login flow untouched.',
     [int]$WaitSecs = 900,
     # Follow the take in this process until it ends, so one background job holds the whole take.
     [switch]$Watch,
