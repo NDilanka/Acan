@@ -95,7 +95,7 @@ fn crown(part: &mut Part) {
     part.line(
         &[[0.0, 0.0, CROWN_TOP + LIFT], [7.0, -3.0, CROWN_TOP + LIFT]],
         false,
-        Stroke::new(Ink::Lit).width(1.1),
+        Stroke::new(Ink::Hi).width(1.1),
     );
     part.dot(
         [0.0, 0.0, CROWN_TOP + LIFT],

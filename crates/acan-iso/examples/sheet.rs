@@ -398,7 +398,7 @@ fn page(cards: &str) -> String {
          body {{ font-family: system-ui, sans-serif; padding: 24px; }}\n\
          h1 {{ font-size: 18px; font-weight: 600; margin: 0 0 16px; }}\n\
          .grid {{ display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }}\n\
-         figure {{ margin: 0; border: 1px solid #ededea; border-radius: 6px; padding: 12px; background: #f3f3f0; }}\n\
+         figure {{ margin: 0; border: 1px solid #ededea; border-radius: 6px; padding: 12px; background: #ffffff; }}\n\
          svg {{ width: 100%; height: auto; display: block; }}\n\
          figcaption {{ font-size: 13px; color: #8a8a8f; margin-top: 8px; }}\n\
          </style>\n</head>\n<body>\n<h1>acan-iso models, 3D, elevation 30</h1>\n\

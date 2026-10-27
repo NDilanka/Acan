@@ -133,7 +133,7 @@ fn badge_reader(part: &mut Part) {
         [13.0, 16.0, 18.0 + LIFT],
         [0.0, 0.0, 1.0],
         0.8,
-        Stroke::new(Ink::Green),
+        Stroke::new(Ink::Mid),
     );
 }
 

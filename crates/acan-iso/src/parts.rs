@@ -78,7 +78,7 @@ pub(crate) fn screws(part: &mut Part, plan: Plan, inset: f32, z: f32) {
     }
 }
 
-/// A lamp: a short cylinder with a lit lens on its top.
+/// A lamp: a short cylinder with a lens on its top.
 pub(crate) fn lamp(part: &mut Part, center: Point, z: f32) {
     let height = 1.8;
     part.slab(
@@ -96,7 +96,7 @@ pub(crate) fn lamp(part: &mut Part, center: Point, z: f32) {
         [center[0], center[1], z + height + LIFT],
         [0.0, 0.0, 1.0],
         1.4,
-        Stroke::new(Ink::Lit),
+        Stroke::new(Ink::Mid),
     );
 }
 

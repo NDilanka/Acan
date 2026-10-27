@@ -109,7 +109,7 @@ fn gauge(part: &mut Part) {
             [tip[0], tip[1], top + LIFT],
         ],
         false,
-        Stroke::new(Ink::Lit).width(1.1),
+        Stroke::new(Ink::Hi).width(1.1),
     );
     part.dot(
         [GAUGE[0], GAUGE[1], top + LIFT],

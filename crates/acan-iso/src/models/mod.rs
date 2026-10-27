@@ -103,6 +103,7 @@ pub fn footprint(kind: Kind) -> Footprint {
 mod tests {
     use super::*;
     use crate::mesh::tests::{check_closed, check_outward};
+    use crate::model::{Detail, Ink, Surface};
 
     const ALL: [Kind; 7] = [
         Kind::Intake,
@@ -193,6 +194,45 @@ mod tests {
                 built.dots.len(),
             );
             assert!(total <= 4000, "{kind:?} draws {total} triangles");
+        }
+    }
+
+    /// Only agents are saturated, and amber is reserved for waiting on the user.
+    fn saturated(ink: Ink) -> bool {
+        matches!(
+            ink,
+            Ink::Red | Ink::Green | Ink::Blue | Ink::Lit | Ink::Agent(_)
+        )
+    }
+
+    #[test]
+    fn no_model_draws_a_saturated_colour_at_any_detail() {
+        for kind in ALL {
+            let built = model(kind);
+            for level in [Detail::Always, Detail::Near, Detail::Close] {
+                for surface in &built.meshes[level as usize].surfaces {
+                    let is_saturated = match *surface {
+                        Surface::Paper | Surface::Glass => false,
+                        Surface::Lit => true,
+                        Surface::Ink(ink) => saturated(ink),
+                    };
+                    assert!(!is_saturated, "{kind:?} {level:?} surface {surface:?}");
+                }
+                for line in built.lines.iter().filter(|line| line.detail == level) {
+                    assert!(
+                        !saturated(line.tone),
+                        "{kind:?} {level:?} line {:?}",
+                        line.tone
+                    );
+                }
+                for dot in built.dots.iter().filter(|dot| dot.detail == level) {
+                    assert!(
+                        !saturated(dot.tone),
+                        "{kind:?} {level:?} dot {:?}",
+                        dot.tone
+                    );
+                }
+            }
         }
     }
 }

@@ -65,7 +65,7 @@ pub struct Dot3 {
 pub enum Surface {
     /// A painted solid, shaded from its normal.
     Paper,
-    /// The one lit accent per model, drawn flat.
+    /// Amber, drawn flat. Reserved for waiting on the user, so no model draws it.
     Lit,
     /// A window or lens, drawn flat.
     Glass,
@@ -84,7 +84,7 @@ pub enum Ink {
     Lo,
     /// Grooves and creases.
     Faint,
-    /// The one accent per figure: the part the reader should watch.
+    /// Amber. Reserved for waiting on the user, so no model draws it.
     Lit,
     /// A status colour.
     Red,
