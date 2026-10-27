@@ -1,20 +1,27 @@
-//! Runs the origin's derived model jobs and records each result as a `SystemCmd`.
+//! Runs the origin's derived jobs and records each result as a `SystemCmd`.
 //!
-//! The loop starts each derived job once per key. A job fails when the model call fails, the
-//! reply cannot become a command, or the origin refuses the result. A failed job is retried
-//! with backoff up to [`MAX_JOB_ATTEMPTS`], then left alone until its key leaves the derived
-//! set and returns, so a broken model can neither spin the loop nor burn provider credits
-//! without user activity. A refused result whose job is no longer derived is simply dropped,
-//! because its key is gone. Accounting-only batches never wake the loop; the writer guarantees
-//! that.
+//! The loop starts each derived job once per key. A job fails when its work errors (a model
+//! call, a reply that cannot become a command, or a git step) or when the origin refuses its
+//! result. A failed job is retried with backoff up to [`MAX_JOB_ATTEMPTS`], then left alone until
+//! its key leaves the derived set and returns, so a broken model or repository can neither spin
+//! the loop nor burn provider credits without user activity. A refused result is never retried:
+//! the origin decided it against the world the job read, and a changed world derives a new key.
+//! A refused result whose job is no longer derived is simply dropped, because its key is gone.
+//! Accounting-only batches never wake the loop; the writer guarantees that.
+//!
+//! The loop also creates the worktree of each claimed task as soon as its lease is granted. That
+//! step is not a job, because the core derives no key for it. A failed creation is retried on the
+//! next change, and the agent route creates the worktree on demand as well.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::Instant;
 
 use acan_core::{
-    ClashId, Command, Job, OrderId, OrderRev, ReadbackId, Rejection, Step, SystemCmd, World,
+    Check, ClashId, Command, CommitId, GateRunId, Job, OrderId, OrderRev, ReadbackId, Rejection,
+    Step, SystemCmd, TaskId, TaskState, WitnessId, WitnessKind, WitnessOutcome, World,
 };
 use acan_llm::{CallRecord, LlmError, ModelClient, Role};
 use tokio::task::{self, JoinHandle, JoinSet};
@@ -41,6 +48,8 @@ enum JobError {
     Model(#[from] LlmError),
     #[error(transparent)]
     Reply(#[from] ReplyError),
+    #[error(transparent)]
+    Git(#[from] acan_git::Error),
     #[error("the origin refused the result: {0}")]
     Rejected(#[source] Rejection),
     #[error("recording the result failed: {0}")]
@@ -63,12 +72,13 @@ struct Retry {
 }
 
 async fn run<C: ModelClient + 'static>(host: Host<C>) {
-    // The set is owned by this loop, so aborting the loop aborts every job it started. A job
+    // The sets are owned by this loop, so aborting the loop aborts every task it started. A job
     // must never write to the log after its server has stopped.
     let mut tasks: JoinSet<(Job, Result<(), JobError>)> = JoinSet::new();
     let mut in_flight: HashMap<task::Id, Job> = HashMap::new();
     let mut retries: HashMap<Job, Retry> = HashMap::new();
-    let mut unhandled: BTreeSet<&'static str> = BTreeSet::new();
+    let mut worktrees: JoinSet<(TaskId, Result<(), acan_git::Error>)> = JoinSet::new();
+    let mut ensured: HashSet<TaskId> = HashSet::new();
     loop {
         let next_retry = retries
             .iter()
@@ -80,7 +90,8 @@ async fn run<C: ModelClient + 'static>(host: Host<C>) {
             .min();
         tokio::select! {
             () = host.jobs_woken() => {
-                start_derived(&host, &mut tasks, &mut in_flight, &mut retries, &mut unhandled);
+                start_derived(&host, &mut tasks, &mut in_flight, &mut retries);
+                ensure_worktrees(&host, &mut worktrees, &mut ensured);
             }
             Some(finished) = tasks.join_next() => match finished {
                 Ok((job, Ok(()))) => {
@@ -96,8 +107,22 @@ async fn run<C: ModelClient + 'static>(host: Host<C>) {
                     in_flight.remove(&err.id());
                 }
             },
+            Some(finished) = worktrees.join_next() => match finished {
+                Ok((task, Ok(()))) => tracing::debug!(%task, "the task worktree is ready"),
+                Ok((task, Err(err))) => {
+                    ensured.remove(&task);
+                    tracing::warn!(
+                        %task,
+                        error = %err,
+                        "the task worktree failed; the next change retries it"
+                    );
+                }
+                // The task id is lost with the panic, so the task stays marked as ensured. The
+                // agent route still creates its worktree on demand.
+                Err(err) => tracing::error!(error = %err, "a task worktree job failed"),
+            },
             () = wait_until(next_retry) => {
-                start_derived(&host, &mut tasks, &mut in_flight, &mut retries, &mut unhandled);
+                start_derived(&host, &mut tasks, &mut in_flight, &mut retries);
             }
         }
     }
@@ -112,6 +137,19 @@ async fn wait_until(next_retry: Option<Instant>) {
 }
 
 fn record_failure(retries: &mut HashMap<Job, Retry>, job: Job, err: &JobError) {
+    if matches!(err, JobError::Rejected(_)) {
+        // Running the job again would repeat the same decision. A witness run is too costly to
+        // repeat for nothing, so the key waits until the world moves it out of the derived set.
+        tracing::warn!(?job, error = %err, "the origin refused a job result; not retrying it");
+        retries.insert(
+            job,
+            Retry {
+                attempts: MAX_JOB_ATTEMPTS,
+                not_before: Instant::now(),
+            },
+        );
+        return;
+    }
     let attempts = retries.get(&job).map_or(0, |retry| retry.attempts) + 1;
     if attempts >= MAX_JOB_ATTEMPTS {
         tracing::error!(?job, attempts, error = %err, "model job kept failing; leaving it until it changes");
@@ -132,39 +170,54 @@ fn start_derived<C: ModelClient + 'static>(
     tasks: &mut JoinSet<(Job, Result<(), JobError>)>,
     in_flight: &mut HashMap<task::Id, Job>,
     retries: &mut HashMap<Job, Retry>,
-    unhandled: &mut BTreeSet<&'static str>,
 ) {
     let jobs = host.read(World::jobs);
     // A key that left the derived set and came back is a fresh job and earns fresh attempts.
     retries.retain(|job, _| jobs.contains(job));
     let now = Instant::now();
     for job in jobs {
-        match job {
-            Job::Split { .. } | Job::Review { .. } | Job::Explain { .. } => {
-                if in_flight.values().any(|running| *running == job) {
-                    continue;
-                }
-                match retries.get(&job) {
-                    Some(retry) if retry.attempts >= MAX_JOB_ATTEMPTS => continue,
-                    Some(retry) if retry.not_before > now => continue,
-                    _ => {}
-                }
-                let id = tasks.spawn(run_one(host.clone(), job.clone())).id();
-                in_flight.insert(id, job);
-            }
-            Job::RunWitness { .. } => log_unhandled(unhandled, "run_witness"),
-            Job::Land { .. } => log_unhandled(unhandled, "land"),
+        if in_flight.values().any(|running| *running == job) {
+            continue;
         }
+        match retries.get(&job) {
+            Some(retry) if retry.attempts >= MAX_JOB_ATTEMPTS => continue,
+            Some(retry) if retry.not_before > now => continue,
+            _ => {}
+        }
+        let id = tasks.spawn(run_one(host.clone(), job.clone())).id();
+        in_flight.insert(id, job);
     }
 }
 
-fn log_unhandled(seen: &mut BTreeSet<&'static str>, kind: &'static str) {
-    if seen.insert(kind) {
-        tracing::warn!(
-            job = kind,
-            "this server build does not run this job kind yet"
-        );
+/// Creates the worktree of every claimed task that has none yet. Each creation runs as its own
+/// task, so a slow git call delays no job.
+fn ensure_worktrees<C: ModelClient>(
+    host: &Host<C>,
+    worktrees: &mut JoinSet<(TaskId, Result<(), acan_git::Error>)>,
+    ensured: &mut HashSet<TaskId>,
+) {
+    let Some(workspace) = host.workspace() else {
+        return;
+    };
+    for task in host.read(claimed_tasks) {
+        if !ensured.insert(task) {
+            continue;
+        }
+        let workspace = Arc::clone(&workspace);
+        worktrees.spawn(async move {
+            let created = workspace.worktree(task).await.map(drop);
+            (task, created)
+        });
     }
+}
+
+fn claimed_tasks(world: &World) -> Vec<TaskId> {
+    world
+        .orders()
+        .flat_map(move |order| world.tasks_of(order.id))
+        .filter(|task| matches!(task.state, TaskState::Claimed { .. }))
+        .map(|task| task.id)
+        .collect()
 }
 
 async fn run_one<C: ModelClient>(host: Host<C>, job: Job) -> (Job, Result<(), JobError>) {
@@ -178,7 +231,7 @@ async fn run_one<C: ModelClient>(host: Host<C>, job: Job) -> (Job, Result<(), Jo
         Err(err) => Err(err),
     };
     if let Err(err) = &result {
-        tracing::debug!(?job, error = %err, "model job attempt failed");
+        tracing::debug!(?job, error = %err, "job attempt failed");
     }
     (job, result)
 }
@@ -192,9 +245,8 @@ async fn execute<C: ModelClient>(host: &Host<C>, job: &Job) -> Result<Option<Sys
             readbacks,
         } => review(host, job, *order, *rev, readbacks).await,
         Job::Explain { clash } => explain(host, job, *clash).await,
-        Job::RunWitness { .. } | Job::Land { .. } => {
-            unreachable!("the job loop starts only model jobs")
-        }
+        Job::RunWitness { run, witness } => run_witness(host, *run, *witness).await,
+        Job::Land { task, head } => land(host, *task, head).await,
     }
 }
 
@@ -284,6 +336,76 @@ async fn explain<C: ModelClient>(
     Ok(Some(SystemCmd::ClashExplained {
         clash,
         explanation: model::explanation(reply.value)?,
+    }))
+}
+
+/// Runs one frozen witness against the commit its gate tests, and reports what it found.
+async fn run_witness<C: ModelClient>(
+    host: &Host<C>,
+    run: GateRunId,
+    witness: WitnessId,
+) -> Result<Option<SystemCmd>, JobError> {
+    let Some((task, head, check)) = host.read(|world| {
+        let gate = world.gate(run)?;
+        let WitnessKind::Check { check } = &world.witness(witness)?.kind else {
+            return None;
+        };
+        Some((gate.task, gate.head.clone(), check.clone()))
+    }) else {
+        return Ok(None);
+    };
+    let outcome = check_at(host, task, &head, &check).await?;
+    Ok(Some(SystemCmd::WitnessResult {
+        run,
+        witness,
+        outcome,
+    }))
+}
+
+/// Runs `check` in the task's worktree, once that worktree sits at the gated commit. A worktree
+/// at another commit is an error outcome, which the gate counts as a failure. A git failure is an
+/// error of the job and follows the retry path.
+async fn check_at<C: ModelClient>(
+    host: &Host<C>,
+    task: TaskId,
+    head: &CommitId,
+    check: &Check,
+) -> Result<WitnessOutcome, JobError> {
+    let Some(workspace) = host.workspace() else {
+        return Ok(WitnessOutcome::Error {
+            detail: "this server has no git repository to run witnesses in".to_owned(),
+        });
+    };
+    let _slot = host
+        .witness_slots()
+        .acquire_owned()
+        .await
+        .expect("the witness semaphore is never closed");
+    let worktree = workspace.worktree(task).await?;
+    let built = worktree.head().await?;
+    if built != *head {
+        return Ok(WitnessOutcome::Error {
+            detail: format!("the task branch is at {built}, not the gated commit {head}"),
+        });
+    }
+    Ok(acan_witness::run(check, worktree.path(), &host.witness_limits()).await)
+}
+
+/// Merges the front of the land queue into the protected branch. The core derives a `Land` only
+/// for that front, so merges happen one at a time, in queue order.
+async fn land<C: ModelClient>(
+    host: &Host<C>,
+    task: TaskId,
+    head: &CommitId,
+) -> Result<Option<SystemCmd>, JobError> {
+    let result = match host.workspace() {
+        Some(workspace) => workspace.land(task, head).await?,
+        None => Err("this server has no git repository to land in".to_owned()),
+    };
+    Ok(Some(SystemCmd::LandResult {
+        task,
+        head: head.clone(),
+        result,
     }))
 }
 

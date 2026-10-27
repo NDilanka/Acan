@@ -77,8 +77,10 @@ name = "acan-server"
 version = "0.1.0"
 dependencies = [
  "acan-core",
+ "acan-git",
  "acan-llm",
  "acan-scan",
+ "acan-witness",
  "anyhow",
  "axum",
  "clap",

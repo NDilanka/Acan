@@ -8,16 +8,16 @@
 
 use std::sync::Arc;
 
-use acan_core::{Command, HumanCmd, MemberId, Rejection, Seq, Stamped};
+use acan_core::{Command, HumanCmd, MemberId, Rejection, Seq, Stamped, TaskId, TaskState};
 use acan_llm::{ModelClient, UsageTotals};
 use acan_scan::Plant;
-use axum::extract::{Query, State};
+use axum::extract::{Path, Query, State};
 use axum::http::header::AUTHORIZATION;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::auth::Principal;
@@ -34,7 +34,8 @@ pub(crate) fn router<C: ModelClient + 'static>(host: Host<C>, web: Option<Public
         .route("/api/plant", get(get_plant::<C>))
         .route("/api/scan", post(post_scan::<C>))
         .route("/api/usage", get(get_usage::<C>))
-        .route("/api/stream", get(stream::upgrade::<C>));
+        .route("/api/stream", get(stream::upgrade::<C>))
+        .route("/api/tasks/{task}/worktree", get(get_worktree::<C>));
     let router = match web {
         Some(root) => {
             let root = Arc::new(root);
@@ -52,6 +53,8 @@ pub enum ApiError {
     Unauthorized,
     /// The token is valid, but its principal may not use this route.
     Forbidden(&'static str),
+    /// The route names something the world does not have.
+    NotFound(&'static str),
     /// The origin refused the command. The body is the [`Rejection`].
     Rejected(Rejection),
     /// Something on the server failed. The detail goes to the log, not the response.
@@ -69,6 +72,11 @@ impl IntoResponse for ApiError {
             Self::Forbidden(why) => (
                 StatusCode::FORBIDDEN,
                 Json(json!({ "error": "forbidden", "why": why })),
+            )
+                .into_response(),
+            Self::NotFound(what) => (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "not_found", "what": what })),
             )
                 .into_response(),
             Self::Rejected(rejection) => (StatusCode::CONFLICT, Json(rejection)).into_response(),
@@ -180,4 +188,57 @@ async fn get_usage<C: ModelClient + 'static>(
 ) -> Result<Json<Vec<UsageTotals>>, ApiError> {
     authenticate(&host, bearer(&headers))?;
     Ok(Json(host.ledger().snapshot()))
+}
+
+/// Where a claimed task's worktree is, and the branch it is on.
+#[derive(Serialize)]
+struct WorktreeView {
+    task: String,
+    path: String,
+    branch: String,
+}
+
+/// Where the worktree of a claimed task is. Only the agent holding that task's lease may read
+/// it, so the path reaches the one agent that works in it. The worktree is created here if the
+/// lease grant has not created it yet.
+async fn get_worktree<C: ModelClient + 'static>(
+    State(host): State<Host<C>>,
+    headers: HeaderMap,
+    Path(task): Path<String>,
+) -> Result<Json<WorktreeView>, ApiError> {
+    let agent = match authenticate(&host, bearer(&headers))? {
+        Principal::Agent(agent) => agent,
+        Principal::Member(_) => {
+            return Err(ApiError::Forbidden(
+                "only the agent holding the task's lease may read its worktree",
+            ));
+        }
+    };
+    let task: TaskId = task.parse().map_err(|_| ApiError::NotFound("task"))?;
+    let holds = host.read(|world| {
+        world.task(task).map(
+            |t| matches!(&t.state, TaskState::Claimed { claim, .. } if claim.lease.holder == agent),
+        )
+    });
+    match holds {
+        None => return Err(ApiError::NotFound("task")),
+        Some(false) => {
+            return Err(ApiError::Forbidden(
+                "only the agent holding the task's lease may read its worktree",
+            ));
+        }
+        Some(true) => {}
+    }
+    let workspace = host
+        .workspace()
+        .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("the server has no git repository")))?;
+    let worktree = workspace
+        .worktree(task)
+        .await
+        .map_err(|err| ApiError::Internal(err.into()))?;
+    Ok(Json(WorktreeView {
+        task: task.to_string(),
+        path: worktree.path().display().to_string(),
+        branch: worktree.branch().to_owned(),
+    }))
 }

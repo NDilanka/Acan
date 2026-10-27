@@ -4,7 +4,7 @@ use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 
-use acan_server::{Models, ServerConfig, start};
+use acan_server::{DEFAULT_WITNESS_CONCURRENCY, Models, ServerConfig, start};
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 
@@ -42,6 +42,16 @@ struct ServeArgs {
     /// The model routing file. Defaults to `<repo>/.acan/llm.toml`.
     #[arg(long)]
     llm: Option<PathBuf>,
+    /// The branch finished work lands on. Defaults to the branch checked out in the repository.
+    #[arg(long)]
+    protected_branch: Option<String>,
+    /// The base URL HTTP witness checks target, such as `http://127.0.0.1:3000`. Without it,
+    /// every HTTP check reports an error.
+    #[arg(long)]
+    witness_http_base_url: Option<String>,
+    /// How many witness runs may run at once.
+    #[arg(long, default_value_t = DEFAULT_WITNESS_CONCURRENCY)]
+    witness_concurrency: usize,
 }
 
 #[tokio::main]
@@ -73,6 +83,9 @@ async fn serve(args: ServeArgs) -> Result<()> {
         addr: SocketAddr::new(args.bind, args.port),
         team: args.team,
         web: args.web,
+        protected_branch: args.protected_branch,
+        witness_http_base_url: args.witness_http_base_url,
+        witness_concurrency: args.witness_concurrency,
     };
     let mut running = start(config, models, ledger).await?;
     if let Some(token) = &running.owner_token {
