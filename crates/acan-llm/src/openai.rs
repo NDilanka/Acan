@@ -66,6 +66,13 @@ impl OpenAiCompatible {
         self
     }
 
+    /// Records this client's calls in `ledger`, so several clients can share one ledger.
+    #[must_use]
+    pub fn with_ledger(mut self, ledger: UsageLedger) -> Self {
+        self.ledger = ledger;
+        self
+    }
+
     pub fn ledger(&self) -> &UsageLedger {
         &self.ledger
     }

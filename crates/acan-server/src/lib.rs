@@ -13,7 +13,7 @@ mod host;
 mod http;
 mod index;
 mod jobs;
-mod model;
+pub mod model;
 mod models;
 mod offline;
 mod public;
