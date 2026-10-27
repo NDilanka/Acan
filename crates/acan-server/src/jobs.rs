@@ -84,6 +84,8 @@ enum Change {
     Create(Generation),
     /// The worktree of this generation was removed.
     Remove(Generation),
+    /// The create found the task's live generation had moved and changed nothing.
+    Stale,
 }
 
 /// The worktrees of the tasks, as the loop last left them, and the steps still running.
@@ -163,6 +165,9 @@ async fn run<C: ModelClient + 'static>(host: Host<C>) {
                                 worktrees.present.remove(&task);
                             }
                         }
+                        // Nothing was created; the reconcile below retries at the generation
+                        // the task actually holds now.
+                        Change::Stale => {}
                     }
                     reconcile(&host, &mut worktrees);
                 }
@@ -278,9 +283,20 @@ fn reconcile<C: ModelClient + 'static>(host: &Host<C>, worktrees: &mut WorktreeS
             continue;
         }
         let workspace = Arc::clone(&workspace);
+        let host = host.clone();
         let id = worktrees
             .ops
             .spawn(async move {
+                // The world may have moved between the check above and this step. Under the
+                // task lock the generation is still what reconcile captured, so a witness of
+                // the old generation cannot be running in the worktree this step replaces,
+                // and a newer claim's create has already won the lock.
+                let _task = workspace.lock_task(task).await;
+                let still_live =
+                    host.read(|world| live_generations(world).get(&task) == Some(&generation));
+                if !still_live {
+                    return (task, Change::Stale, Ok(()));
+                }
                 let result = workspace.worktree(task, generation).await.map(drop);
                 (task, Change::Create(generation), result)
             })

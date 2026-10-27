@@ -578,8 +578,13 @@ impl Worktrees<'_> {
     }
 
     /// Delete `branch` only if it still points at `tip`. A branch that moved is a newer claim's.
+    ///
+    /// A failed delete is ignored only when the observed state changed: the branch is gone, its
+    /// tip moved, or its recorded generation changed. Any other failure surfaces, because the
+    /// caller must not stamp a new generation over a branch it failed to delete.
     async fn delete_branch_at(&self, branch: &str, tip: &CommitId) -> Result<(), Error> {
         let reference = format!("refs/heads/{branch}");
+        let observed = self.recorded_generation(branch).await?;
         let args = ["update-ref", "-d", reference.as_str(), tip.as_str()];
         let out = git::run(&self.repo.root, &args, &[]).await?;
         if out.status.success() {
@@ -587,8 +592,9 @@ impl Worktrees<'_> {
         }
         // A failed delete of a branch that moved, or that a newer generation recreated at the
         // same commit, leaves that generation's branch in place.
-        if self.branch_tip(branch).await? != Some(tip.clone())
-            || self.recorded_generation(branch).await?.is_some()
+        if !self.branch_exists(branch).await?
+            || self.branch_tip(branch).await? != Some(tip.clone())
+            || self.recorded_generation(branch).await? != observed
         {
             return Ok(());
         }
