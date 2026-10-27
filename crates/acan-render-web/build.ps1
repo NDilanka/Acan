@@ -9,7 +9,8 @@ $env:CARGO_PROFILE_RELEASE_CODEGEN_UNITS = '1'
 $env:CARGO_PROFILE_RELEASE_PANIC = 'abort'
 cargo build --manifest-path (Join-Path $root 'Cargo.toml') -p acan-render-web --release --target wasm32-unknown-unknown
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-$wasm = Join-Path $root 'target\wasm32-unknown-unknown\release\acan_render_web.wasm'
+$targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'target' }
+$wasm = Join-Path $targetDir 'wasm32-unknown-unknown\release\acan_render_web.wasm'
 wasm-bindgen --target web --no-typescript --out-dir (Join-Path $crate 'www\pkg') $wasm
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $out = Join-Path $crate 'www\pkg\acan_render_web_bg.wasm'
