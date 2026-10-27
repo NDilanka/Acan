@@ -43,6 +43,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "acan-iso"
+version = "0.1.0"
+
+[[package]]
 name = "acan-llm"
 version = "0.1.0"
 dependencies = [
@@ -71,7 +75,13 @@ dependencies = [
 name = "acan-render-web"
 version = "0.1.0"
 dependencies = [
+ "acan-core",
  "acan-render",
+ "acan-server",
+ "anyhow",
+ "serde",
+ "serde_json",
+ "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",

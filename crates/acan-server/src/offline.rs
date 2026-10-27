@@ -24,6 +24,12 @@ pub struct Offline {
 }
 
 impl Offline {
+    /// Records every answered call in `ledger`, so the live client and the fallback share one.
+    #[must_use]
+    pub fn with_ledger(ledger: UsageLedger) -> Self {
+        Self { ledger }
+    }
+
     /// The ledger every answered call is recorded in.
     #[must_use]
     pub fn ledger(&self) -> &UsageLedger {
@@ -81,7 +87,7 @@ fn split(context: &Value) -> Value {
 
 fn review(context: &Value) -> Value {
     let witnesses: Vec<Value> = ids(&context["witnesses"], "id")
-        .map(|witness| json!({ "witness": witness, "judgement": "match" }))
+        .map(|witness| json!({ "witness": witness, "judgement": { "judgement": "match" } }))
         .collect();
     let readbacks: Vec<Value> = ids(&context["readbacks"], "readback")
         .map(|readback| json!({ "readback": readback, "witnesses": witnesses }))

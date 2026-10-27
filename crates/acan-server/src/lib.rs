@@ -14,7 +14,7 @@ mod http;
 mod index;
 mod jobs;
 mod mcp;
-mod model;
+pub mod model;
 mod models;
 mod offline;
 mod public;

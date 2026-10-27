@@ -12,8 +12,7 @@ timeout_secs = 120
 
 [[providers]]
 name = "baseten"
-# PLACEHOLDER: confirm the Baseten base URL for meta-models/muse-spark-open-1026.
-base_url = "https://REPLACE-WITH-BASETEN-BASE-URL/v1"
+base_url = "https://inference.baseten.co/v1"
 api_key_env = "BASETEN_API_KEY"
 default_model = "meta-models/muse-spark-open-1026"
 # Switch to "prompt" if Baseten rejects response_format.
