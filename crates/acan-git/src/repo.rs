@@ -2,7 +2,7 @@
 
 use std::path::{Path, PathBuf};
 
-use acan_core::{CommitId, FilePath, TaskId};
+use acan_core::{CommitId, FilePath, Generation, TaskId};
 
 use crate::git;
 use crate::{Error, TaskWorktree};
@@ -105,15 +105,19 @@ impl Repo {
     ///
     /// A checkout that has the protected branch checked out, the user's main one
     /// included, moves with the branch. A clean checkout gets the new files through
-    /// its own `git merge --ff-only`. A checkout with uncommitted changes to tracked
-    /// files stops the land with [`LandOutcome::CheckoutDirty`] and nothing moves.
+    /// its own `git merge --ff-only`. A checkout with uncommitted changes stops the
+    /// land with [`LandOutcome::CheckoutDirty`]. An untracked or ignored file the land
+    /// would overwrite stops it with [`LandOutcome::CheckoutBlocked`]. A checkout that
+    /// switched branches between the decision and the merge is
+    /// [`LandOutcome::CheckoutMoved`]. Nothing moves in any of those cases.
     ///
     /// Idempotent: when the protected branch already contains `gated`, the commit
     /// that landed it is reported again without merging twice.
     ///
     /// # Errors
     /// Fails when git itself fails, including when `gated` is not a commit of this
-    /// repository. Conflicts, stale heads, and dirty checkouts are outcomes.
+    /// repository. Conflicts, stale heads, a dirty or blocked checkout, and a
+    /// checkout that switched branches are outcomes.
     pub async fn land(
         &self,
         task: TaskId,
@@ -231,8 +235,11 @@ impl Repo {
     /// Move the protected branch through the checkout that has it checked out.
     ///
     /// The checkout's own `merge --ff-only` moves the branch and its files in one
-    /// step, and git refuses it rather than overwrite local changes. A dirty checkout
-    /// is checked first so the refusal names the path.
+    /// step. The flags name the merge this crate means, so a configured `mergeOptions`
+    /// cannot turn it into a squash that exits 0 with the branch unmoved, and hooks
+    /// cannot run. A checkout that is no longer on the protected branch, or whose head
+    /// moved, is reported before the merge. A refusal to overwrite local files is a
+    /// land failure, not a git error.
     async fn advance_checkout(
         &self,
         checkout: &Path,
@@ -250,11 +257,50 @@ impl Repo {
                 path: checkout.to_path_buf(),
             });
         }
-        let args = ["merge", "--ff-only", "--quiet", commit.as_str()];
+        // Re-checked immediately before the merge: the branch can switch, or its head
+        // move, between the decision above and here.
+        match self.checkout_branch(checkout).await? {
+            Some(branch) if branch == self.protected => {}
+            _ => {
+                return Ok(LandOutcome::CheckoutMoved {
+                    path: checkout.to_path_buf(),
+                });
+            }
+        }
+        let current = self.protected_head().await?;
+        if current != *expected_head {
+            return Ok(LandOutcome::HeadMoved { current });
+        }
+        let hooks = self.empty_hooks_dir().await?;
+        let hooks_arg = format!("core.hooksPath={hooks}");
+        let args = [
+            "-c",
+            hooks_arg.as_str(),
+            "merge",
+            "--ff-only",
+            "--no-squash",
+            "--no-autostash",
+            "--no-overwrite-ignore",
+            "--quiet",
+            commit.as_str(),
+        ];
         let out = git::run(checkout, &args, &[]).await?;
         if out.status.success() {
-            return Ok(LandOutcome::Landed {
-                commit: commit.clone(),
+            // A configured merge option can make git exit 0 without moving the branch.
+            // Only the postcondition says the land happened.
+            if self.protected_head().await? == *commit {
+                return Ok(LandOutcome::Landed {
+                    commit: commit.clone(),
+                });
+            }
+            return Err(Error::BadOutput {
+                args: "merge --ff-only".to_owned(),
+                detail: format!("merge exited 0 but the protected branch is not at {commit}"),
+            });
+        }
+        if out.stderr.contains("would be overwritten by merge") {
+            return Ok(LandOutcome::CheckoutBlocked {
+                path: checkout.to_path_buf(),
             });
         }
         let current = self.protected_head().await?;
@@ -262,6 +308,29 @@ impl Repo {
             return Ok(LandOutcome::HeadMoved { current });
         }
         Err(git::ensure_ok(out, &args).expect_err("status was not success"))
+    }
+
+    /// The branch `checkout` has checked out, or `None` when its head is detached.
+    async fn checkout_branch(&self, checkout: &Path) -> Result<Option<String>, Error> {
+        let out = git::run(checkout, &["symbolic-ref", "--short", "-q", "HEAD"], &[]).await?;
+        if !out.status.success() {
+            return Ok(None);
+        }
+        Ok(Some(out.stdout.trim().to_owned()))
+    }
+
+    /// An empty hooks directory, so the automated merge runs no hooks.
+    async fn empty_hooks_dir(&self) -> Result<String, Error> {
+        let out = git::ok(&self.root, &["rev-parse", "--git-common-dir"], &[]).await?;
+        let common = PathBuf::from(out.trim());
+        let common = if common.is_absolute() {
+            common
+        } else {
+            self.root.join(common)
+        };
+        let hooks = common.join("acan-hooks");
+        tokio::fs::create_dir_all(&hooks).await?;
+        path_str(&hooks).map(str::to_owned)
     }
 
     /// The checkout that has the protected branch checked out, the user's main
@@ -285,7 +354,12 @@ impl Repo {
     /// `head` when neither sits on the first-parent history, as when the user merged
     /// the task by hand.
     async fn landing_commit(&self, gated: &CommitId, head: &CommitId) -> Result<CommitId, Error> {
-        let args = ["log", "--first-parent", "--format=%H %P", head.as_str()];
+        if gated == head {
+            return Ok(head.clone());
+        }
+        // Only the commits after the gated one can be the merge that landed it.
+        let range = format!("{gated}..{head}");
+        let args = ["log", "--first-parent", "--format=%H %P", &range];
         let out = git::ok(&self.root, &args, &[]).await?;
         for line in out.lines() {
             let mut ids = line.split_whitespace();
@@ -356,6 +430,18 @@ pub enum LandOutcome {
         /// The checkout that has the protected branch.
         path: PathBuf,
     },
+    /// The checkout holds an untracked or ignored file the land would overwrite.
+    /// Nothing moved, and the file is kept; move it and land again.
+    CheckoutBlocked {
+        /// The checkout that has the protected branch.
+        path: PathBuf,
+    },
+    /// The checkout that had the protected branch switched away from it between the
+    /// decision and the merge. Nothing moved.
+    CheckoutMoved {
+        /// The checkout that switched.
+        path: PathBuf,
+    },
 }
 
 impl From<LandOutcome> for Result<CommitId, String> {
@@ -374,6 +460,14 @@ impl From<LandOutcome> for Result<CommitId, String> {
                 "{} has uncommitted changes; commit or stash to land",
                 path.display()
             )),
+            LandOutcome::CheckoutBlocked { path } => Err(format!(
+                "{} has untracked files the land would overwrite; move them to land",
+                path.display()
+            )),
+            LandOutcome::CheckoutMoved { path } => Err(format!(
+                "{} left the protected branch; land again",
+                path.display()
+            )),
         }
     }
 }
@@ -385,28 +479,52 @@ pub struct Worktrees<'r> {
 }
 
 impl Worktrees<'_> {
-    /// Create the worktree for `task` on branch `acan/<task>`, starting at the
-    /// protected head.
+    /// Create the worktree for `task` at `generation`, on branch `acan/<task>`,
+    /// starting at the protected head.
     ///
-    /// Idempotent: calling it again for a live worktree returns it unchanged.
+    /// A worktree already recorded at `generation` is returned unchanged. A worktree
+    /// recorded at another generation is removed first, branch included, so a reclaim
+    /// starts at the current protected head and keeps none of the earlier claim's
+    /// commits. The generation is stored on the branch, so a restart can tell a live
+    /// claim's worktree from a stale one.
     ///
     /// # Errors
     /// Fails when the slot holds a foreign directory, or git cannot create the
     /// worktree.
-    pub async fn create(&self, task: TaskId) -> Result<TaskWorktree, Error> {
+    pub async fn create(
+        &self,
+        task: TaskId,
+        generation: Generation,
+    ) -> Result<TaskWorktree, Error> {
         let dir = self.dir_for(task);
         let branch = format!("acan/{task}");
         if dir.exists() {
             let current = git::ok(&dir, &["rev-parse", "--abbrev-ref", "HEAD"], &[]).await?;
-            if current.trim() == branch {
+            if current.trim() != branch {
+                return Err(Error::SlotTaken(dir));
+            }
+            if self.recorded_generation(&branch).await? == Some(generation) {
                 return Ok(TaskWorktree::new(dir, task));
             }
-            return Err(Error::SlotTaken(dir));
+            // The directory goes now so the new worktree can take its path. The branch stays
+            // until the new one exists, so a failed create leaves the old claim recoverable.
+            self.remove_worktree(task).await?;
         }
+        let stale = self.branch_exists(&branch).await?
+            && self.recorded_generation(&branch).await? != Some(generation);
+        let stale_tip = if stale {
+            self.branch_tip(&branch).await?
+        } else {
+            None
+        };
         self.ensure_excluded().await?;
         let dir_arg = path_str(&dir)?;
+        if let Some(tip) = &stale_tip {
+            // The old branch goes only once the new worktree can take its name. A failure
+            // here leaves the branch, so the old claim stays recoverable.
+            self.delete_branch_at(&branch, tip).await?;
+        }
         if self.branch_exists(&branch).await? {
-            // The branch survived an earlier removal; reattach it.
             git::ok(&self.repo.root, &["worktree", "add", dir_arg, &branch], &[]).await?;
         } else {
             let base = format!("refs/heads/{}", self.repo.protected);
@@ -417,7 +535,73 @@ impl Worktrees<'_> {
             )
             .await?;
         }
+        self.record_generation(&branch, generation).await?;
         Ok(TaskWorktree::new(dir, task))
+    }
+
+    /// Remove the worktree and branch of `task`, but only when the recorded generation
+    /// is still `expected`.
+    ///
+    /// A newer generation recorded since the caller decided to remove is left in place,
+    /// so a late removal never deletes a newer claim's worktree. A task with no recorded
+    /// generation is removed, which clears leftovers from before generations were stored.
+    ///
+    /// # Errors
+    /// Fails if git or the filesystem cannot remove the leftovers.
+    pub async fn reset(&self, task: TaskId, expected: Generation) -> Result<(), Error> {
+        let branch = format!("acan/{task}");
+        if self
+            .recorded_generation(&branch)
+            .await?
+            .is_some_and(|recorded| recorded != expected)
+        {
+            return Ok(());
+        }
+        // The generation can change between the check above and the removal, so the branch
+        // delete itself is guarded by the tip read here. A newer claim moves that tip.
+        let tip = self.branch_tip(&branch).await?;
+        self.remove_worktree(task).await?;
+        if let Some(tip) = tip {
+            self.delete_branch_at(&branch, &tip).await?;
+        }
+        Ok(())
+    }
+
+    /// The tip of `branch`, when the branch exists.
+    async fn branch_tip(&self, branch: &str) -> Result<Option<CommitId>, Error> {
+        if !self.branch_exists(branch).await? {
+            return Ok(None);
+        }
+        let reference = format!("refs/heads/{branch}");
+        let out = git::ok(&self.repo.root, &["rev-parse", &reference], &[]).await?;
+        Ok(Some(out.trim().parse()?))
+    }
+
+    /// Delete `branch` only if it still points at `tip`. A branch that moved is a newer claim's.
+    async fn delete_branch_at(&self, branch: &str, tip: &CommitId) -> Result<(), Error> {
+        let reference = format!("refs/heads/{branch}");
+        let args = ["update-ref", "-d", reference.as_str(), tip.as_str()];
+        let out = git::run(&self.repo.root, &args, &[]).await?;
+        if out.status.success() {
+            return Ok(());
+        }
+        // A failed delete of a branch that moved, or that a newer generation recreated at the
+        // same commit, leaves that generation's branch in place.
+        if self.branch_tip(branch).await? != Some(tip.clone())
+            || self.recorded_generation(branch).await?.is_some()
+        {
+            return Ok(());
+        }
+        git::ensure_ok(out, &args).map(drop)
+    }
+
+    /// The generation recorded on `task`'s branch, when the branch exists and records one.
+    ///
+    /// # Errors
+    /// Fails if git cannot read the branch config.
+    pub async fn generation(&self, task: TaskId) -> Result<Option<Generation>, Error> {
+        let branch = format!("acan/{task}");
+        self.recorded_generation(&branch).await
     }
 
     /// Remove the worktree and branch of `task`, including uncommitted work.
@@ -427,8 +611,17 @@ impl Worktrees<'_> {
     /// # Errors
     /// Fails if git or the filesystem cannot remove the leftovers.
     pub async fn remove(&self, task: TaskId) -> Result<(), Error> {
-        let dir = self.dir_for(task);
         let branch = format!("acan/{task}");
+        self.remove_worktree(task).await?;
+        if self.branch_exists(&branch).await? {
+            git::ok(&self.repo.root, &["branch", "-D", &branch], &[]).await?;
+        }
+        Ok(())
+    }
+
+    /// Remove the worktree directory of `task`, leaving its branch for the caller to delete.
+    async fn remove_worktree(&self, task: TaskId) -> Result<(), Error> {
+        let dir = self.dir_for(task);
         if dir.exists() {
             let dir_arg = path_str(&dir)?;
             let out = git::run(
@@ -444,9 +637,6 @@ impl Worktrees<'_> {
                     tokio::fs::remove_dir_all(&dir).await?;
                 }
             }
-        }
-        if self.branch_exists(&branch).await? {
-            git::ok(&self.repo.root, &["branch", "-D", &branch], &[]).await?;
         }
         Ok(())
     }
@@ -485,6 +675,22 @@ impl Worktrees<'_> {
             .join(".acan")
             .join("worktrees")
             .join(task.to_string())
+    }
+
+    /// `branch.acan/<task>.acanGeneration`, set when the worktree is created.
+    async fn recorded_generation(&self, branch: &str) -> Result<Option<Generation>, Error> {
+        let key = format!("branch.{branch}.acanGeneration");
+        let Some(raw) = config(&self.repo.root, &key).await? else {
+            return Ok(None);
+        };
+        Ok(raw.parse::<u32>().ok().map(Generation::new))
+    }
+
+    async fn record_generation(&self, branch: &str, generation: Generation) -> Result<(), Error> {
+        let key = format!("branch.{branch}.acanGeneration");
+        let value = generation.get().to_string();
+        git::ok(&self.repo.root, &["config", &key, &value], &[]).await?;
+        Ok(())
     }
 
     async fn branch_exists(&self, branch: &str) -> Result<bool, Error> {

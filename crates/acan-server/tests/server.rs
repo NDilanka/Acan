@@ -7,6 +7,7 @@ use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use acan_core::{Actor, Event, HumanCmd, MachineKey, MemberId, Role as MemberRole, Stamped};
@@ -90,8 +91,15 @@ fn add_member(name: &str) -> HumanCmd {
     }
 }
 
+/// One client for every request. Building one per call dominates the flood test, which posts
+/// thousands of commands.
+fn client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 async fn post_command(running: &Running, token: &str, cmd: &HumanCmd) -> reqwest::Response {
-    reqwest::Client::new()
+    client()
         .post(url(running, "/api/commands"))
         .bearer_auth(token)
         .json(cmd)
@@ -101,7 +109,7 @@ async fn post_command(running: &Running, token: &str, cmd: &HumanCmd) -> reqwest
 }
 
 async fn get_json(running: &Running, path: &str, token: &str) -> (StatusCode, Value) {
-    let response = reqwest::Client::new()
+    let response = client()
         .get(url(running, path))
         .bearer_auth(token)
         .send()

@@ -70,8 +70,9 @@ pub struct ServerConfig {
     /// renderer page. It must not contain the repository or its `.acan` state directory.
     pub web: Option<PathBuf>,
     /// The branch finished work lands on. `None` lands on the branch checked out in the
-    /// repository, whose working tree then shows the landed change as a staged difference until
-    /// its owner updates it.
+    /// repository. A clean checkout of that branch is fast-forwarded to the landed commit. A
+    /// checkout with uncommitted changes, or with an untracked or ignored file the land would
+    /// overwrite, refuses the land and nothing moves.
     pub protected_branch: Option<String>,
     /// The base URL HTTP witness checks target, such as `http://127.0.0.1:3000`. `None` makes
     /// every HTTP check report an error, since the server does not start the app yet.

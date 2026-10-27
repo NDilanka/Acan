@@ -32,11 +32,10 @@ const LANDED: &str = "landed.txt";
 const AGENT_CONTENT: &str = "written by the agent\n";
 /// Passes when the built commit carries the file, so it checks the commit rather than the disk.
 const WITNESS_COMMAND: &str = "git cat-file -e HEAD:landed.txt";
-/// The longest one step of a chain may take. A step runs git processes and, for a witness, one
-/// pwsh start. Measured on this Windows checkout: 1.5 to 3 seconds idle, 6.3 seconds with two
-/// flood tests running, and one unexplained slow run took 11.3 seconds. Sixty seconds leaves
-/// about five times the worst of those, so a real stall still fails within a minute.
-const WAIT: Duration = Duration::from_secs(60);
+/// The longest one step of a chain may take. Measured on this Windows checkout, claim to land
+/// takes 4.4 to 6.8 seconds idle, and the slowest single step (witness result) took 2.3 seconds.
+/// Fifteen seconds leaves more than twice that, so a real stall still fails quickly.
+const WAIT: Duration = Duration::from_secs(15);
 const POLL: Duration = Duration::from_millis(20);
 
 #[tokio::test]
@@ -331,6 +330,129 @@ async fn a_reclaim_after_a_refused_land_starts_from_the_protected_head_the_user_
     running.stop().await.expect("the server stops");
 }
 
+#[tokio::test]
+async fn a_reclaim_without_waiting_for_cleanup_starts_at_the_protected_head() {
+    let repo = user_repo();
+    let root = repo.path();
+    let running = start_plant(root).await;
+    let task = TaskId::from_str("t-0").expect("valid task id");
+    post_order(&running).await;
+    read_back(&running, task).await;
+    let fence = claim(&running, task).await;
+    let worktree = worktree_dir(root, task);
+    wait_for_dir(&worktree).await;
+    let old = commit_file(&worktree, "old.txt", "from the old claim\n");
+    let protected = git(root, &["rev-parse", "main"]);
+
+    agent_command(&running, AgentCmd::Release { fence }).await;
+    settle(&running, "the release to reopen the task", |_, world| {
+        in_state(world, task, |state| matches!(state, TaskState::Open)).then_some(())
+    })
+    .await;
+    // The old worktree must be gone before the route creates the new one, or the test's own git
+    // and the loop's removal share the directory. The route then creates the new generation
+    // without waiting for the loop, which is the cleanup the reclaim does not wait for.
+    settle(&running, "the released worktree to be removed", |_, _| {
+        (!worktree.exists() && !branch_exists(root, "acan/t-0")).then_some(())
+    })
+    .await;
+    let fence = claim(&running, task).await;
+    let response = worktree_route(&running, AGENT_TOKEN, task).await;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let head = git(&worktree, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        head.trim(),
+        protected.trim(),
+        "the reclaimed worktree starts at the protected head"
+    );
+    assert_ne!(
+        head.trim(),
+        old.to_string(),
+        "the old claim's commit is gone"
+    );
+    assert!(
+        !worktree.join("old.txt").exists(),
+        "the old claim's file is gone"
+    );
+    let history = git(&worktree, &["log", "--format=%H"]);
+    assert!(
+        !history.contains(&old.to_string()),
+        "none of the old claim's commits remain"
+    );
+
+    let built = build(&running, root, task, fence, LANDED, AGENT_CONTENT).await;
+    settle(&running, "the reclaimed task to land", |_, world| {
+        in_state(world, task, |state| {
+            matches!(state, TaskState::Landed { .. })
+        })
+        .then_some(())
+    })
+    .await;
+    assert_eq!(
+        git(root, &["rev-parse", "main"]).trim(),
+        built.to_string(),
+        "the reclaimed task fast-forwards the protected branch"
+    );
+    running.stop().await.expect("the server stops");
+}
+
+#[tokio::test]
+async fn a_queued_task_keeps_its_branch_until_it_lands() {
+    let repo = user_repo();
+    let root = repo.path();
+    let running = start_plant(root).await;
+    let task = TaskId::from_str("t-0").expect("valid task id");
+    post_order(&running).await;
+    read_back(&running, task).await;
+    let fence = claim(&running, task).await;
+    wait_for_dir(&worktree_dir(root, task)).await;
+    // The loop records the generation as it creates the worktree. Committing before that races
+    // the creation's own git.
+    settle(&running, "the claimed worktree to be recorded", |_, _| {
+        let recorded = git_config(root, "branch.acan/t-0.acanGeneration");
+        (!recorded.trim().is_empty()).then_some(())
+    })
+    .await;
+    let built = build(&running, root, task, fence, LANDED, AGENT_CONTENT).await;
+
+    let generation = settle(&running, "the task to queue", |_, world| {
+        match &world.task(task)?.state {
+            TaskState::Queued { run, .. } => world.gate(*run).map(|gate| gate.generation.get()),
+            _ => None,
+        }
+    })
+    .await;
+    // The branch is still the one the gate passed, not a leftover the loop should remove.
+    settle(
+        &running,
+        "the queued branch to stay at its generation",
+        |_, _| {
+            let stays = worktree_dir(root, task).is_dir() && branch_exists(root, "acan/t-0");
+            let recorded = git_config(root, "branch.acan/t-0.acanGeneration");
+            (stays && recorded.trim() == generation.to_string()).then_some(())
+        },
+    )
+    .await;
+    assert_eq!(
+        git(&worktree_dir(root, task), &["rev-parse", "HEAD"]).trim(),
+        built.to_string(),
+        "the queued branch still holds the gated commit"
+    );
+
+    settle(&running, "the queued task to land", |_, world| {
+        in_state(world, task, |state| {
+            matches!(state, TaskState::Landed { .. })
+        })
+        .then_some(())
+    })
+    .await;
+    settle(&running, "the landed branch to be removed", |_, _| {
+        (!worktree_dir(root, task).exists() && !branch_exists(root, "acan/t-0")).then_some(())
+    })
+    .await;
+    running.stop().await.expect("the server stops");
+}
+
 /// A repository with `main` as the protected branch and the user's checkout on `user-work`. The
 /// server must never touch that checkout.
 fn user_repo() -> tempfile::TempDir {
@@ -352,19 +474,43 @@ fn user_repo() -> tempfile::TempDir {
 }
 
 /// Runs git in `dir` and returns its stdout. Panics with git's stderr when the command fails.
+///
+/// A lock held by the server's own git is contention, not a failure of the command, so it is
+/// retried. The server and these tests share the repository's index.
 fn git(dir: &Path, args: &[&str]) -> String {
+    for attempt in 1..=5 {
+        let output = Process::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git runs");
+        if output.status.success() {
+            return String::from_utf8(output.stdout).expect("git prints UTF-8");
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let locked = stderr.contains("index.lock");
+        if !locked || attempt == 5 {
+            panic!("git {args:?} failed: {stderr}");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    unreachable!("the loop returns or panics")
+}
+
+/// A repository-local config value, empty when unset. `git config --get` exits 1 for an unset key.
+fn git_config(dir: &Path, key: &str) -> String {
     let output = Process::new("git")
         .arg("-C")
         .arg(dir)
-        .args(args)
+        .args(["config", "--get", key])
         .output()
         .expect("git runs");
-    assert!(
-        output.status.success(),
-        "git {args:?} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).expect("git prints UTF-8")
+    if output.status.success() {
+        String::from_utf8(output.stdout).expect("git prints UTF-8")
+    } else {
+        String::new()
+    }
 }
 
 /// Whether `branch` exists in the repository that `dir` belongs to.

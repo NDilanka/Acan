@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 
-use acan_core::{CommitId, TaskId};
+use acan_core::{CommitId, Generation, TaskId};
 use acan_git::{LandOutcome, Repo, TaskWorktree};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
@@ -49,39 +49,61 @@ impl Workspace {
         cell.lock_owned().await
     }
 
-    /// The task's worktree, created at the protected head when it does not exist yet.
+    /// The task's worktree at `generation`.
+    ///
+    /// A worktree recorded at another generation is reset first, so a reclaim starts at the
+    /// current protected head. The caller holds the task lock, which keeps this out of a witness
+    /// run and a removal of the same task.
     ///
     /// # Errors
     ///
-    /// Returns the git error when the worktree cannot be created or reattached.
-    pub(crate) async fn worktree(&self, task: TaskId) -> Result<TaskWorktree, acan_git::Error> {
+    /// Returns the git error when the worktree cannot be created or reset.
+    pub(crate) async fn worktree(
+        &self,
+        task: TaskId,
+        generation: Generation,
+    ) -> Result<TaskWorktree, acan_git::Error> {
         let _writes = self.writes.lock().await;
-        self.repo.worktrees().create(task).await
+        self.repo.worktrees().create(task, generation).await
     }
 
-    /// The tasks that have a worktree on disk.
+    /// The tasks that have a worktree on disk, with the generation recorded on each branch.
+    ///
+    /// A worktree whose branch records no generation is reported without one. The loop treats
+    /// that as stale and removes it.
     ///
     /// # Errors
     ///
-    /// Returns the git error when the worktree directory cannot be read.
-    pub(crate) async fn worktree_tasks(&self) -> Result<Vec<TaskId>, acan_git::Error> {
+    /// Returns the git error when a worktree or its recorded generation cannot be read.
+    pub(crate) async fn worktree_tasks(
+        &self,
+    ) -> Result<Vec<(TaskId, Option<Generation>)>, acan_git::Error> {
         let worktrees = self.repo.worktrees().list().await?;
-        Ok(worktrees.iter().map(|worktree| *worktree.task()).collect())
+        let mut found = Vec::with_capacity(worktrees.len());
+        for worktree in worktrees {
+            let generation = self.repo.worktrees().generation(*worktree.task()).await?;
+            found.push((*worktree.task(), generation));
+        }
+        Ok(found)
     }
 
-    /// Removes `task`'s worktree and branch, so the next claim starts from the protected head.
+    /// Removes `task`'s worktree and branch when `expected` is still the recorded generation.
     ///
-    /// The task lock keeps the removal out of a witness run that shares the worktree. The loop
-    /// creates a claimed task's worktree only after this step finishes, so a reclaim that
-    /// arrives while this waits never reuses the old worktree.
+    /// A newer generation recorded since the caller decided to remove is left in place, so a
+    /// late removal never deletes a newer claim's worktree. The task lock keeps the removal out
+    /// of a witness run that shares the worktree.
     ///
     /// # Errors
     ///
     /// Returns the git error when the leftovers cannot be removed.
-    pub(crate) async fn reset(&self, task: TaskId) -> Result<(), acan_git::Error> {
+    pub(crate) async fn reset(
+        &self,
+        task: TaskId,
+        expected: Generation,
+    ) -> Result<(), acan_git::Error> {
         let _task = self.lock_task(task).await;
         let _writes = self.writes.lock().await;
-        self.repo.worktrees().remove(task).await
+        self.repo.worktrees().reset(task, expected).await
     }
 
     /// Lands the `gated` commit of `task` onto the protected branch.

@@ -2,7 +2,7 @@
 
 mod common;
 
-use acan_core::FilePath;
+use acan_core::{FilePath, Generation};
 use acan_git::Author;
 
 use common::{git, init, task_id, task_with_files};
@@ -12,7 +12,12 @@ async fn create_twice_returns_the_same_worktree() {
     let t = init().await;
     let task = task_id("t-1");
 
-    let first = t.repo.worktrees().create(task).await.expect("first create");
+    let first = t
+        .repo
+        .worktrees()
+        .create(task, Generation::new(1))
+        .await
+        .expect("first create");
     assert_eq!(first.branch(), "acan/t-1");
     assert!(first.path().ends_with(".acan/worktrees/t-1"));
     let head = first.head().await.expect("head");
@@ -21,7 +26,7 @@ async fn create_twice_returns_the_same_worktree() {
     let second = t
         .repo
         .worktrees()
-        .create(task)
+        .create(task, Generation::new(1))
         .await
         .expect("second create");
     assert_eq!(first, second);
@@ -39,7 +44,7 @@ async fn the_worktree_directory_stays_out_of_git_status() {
     let t = init().await;
     t.repo
         .worktrees()
-        .create(task_id("t-1"))
+        .create(task_id("t-1"), Generation::new(1))
         .await
         .expect("create");
     let status = git(&t.root, &["status", "--porcelain"]);
@@ -53,7 +58,7 @@ async fn commit_all_and_changed_files() {
     let worktree = t
         .repo
         .worktrees()
-        .create(task_id("t-1"))
+        .create(task_id("t-1"), Generation::new(1))
         .await
         .expect("create");
 
@@ -93,12 +98,12 @@ async fn list_returns_every_live_task_worktree_sorted() {
     let t = init().await;
     t.repo
         .worktrees()
-        .create(task_id("t-2"))
+        .create(task_id("t-2"), Generation::new(1))
         .await
         .expect("create t-2");
     t.repo
         .worktrees()
-        .create(task_id("t-1"))
+        .create(task_id("t-1"), Generation::new(1))
         .await
         .expect("create t-1");
 
@@ -145,13 +150,100 @@ async fn a_removed_task_can_be_created_again() {
     let worktree = t
         .repo
         .worktrees()
-        .create(task_id("t-1"))
+        .create(task_id("t-1"), Generation::new(1))
         .await
         .expect("recreate");
     assert_eq!(
         worktree.head().await.expect("head"),
         t.repo.protected_head().await.expect("protected head"),
         "a fresh worktree starts at the protected head"
+    );
+}
+
+#[tokio::test]
+async fn a_new_generation_resets_the_worktree_to_the_protected_head() {
+    let t = init().await;
+    let task = task_id("t-1");
+    let old = task_with_files(&t.repo, "t-1", &[("old.txt", "old claim\n")]).await;
+    let old_head = old.head().await.expect("old head");
+    let protected = t.repo.protected_head().await.expect("protected head");
+    assert_ne!(old_head, protected, "the old claim has its own commit");
+
+    let fresh = t
+        .repo
+        .worktrees()
+        .create(task, Generation::new(2))
+        .await
+        .expect("create at the new generation");
+    assert_eq!(
+        fresh.head().await.expect("fresh head"),
+        protected,
+        "a new generation starts at the protected head"
+    );
+    assert!(
+        !fresh.path().join("old.txt").exists(),
+        "the old claim's file is gone"
+    );
+    let history = git(fresh.path(), &["rev-list", "--count", "HEAD"]);
+    assert_eq!(history, "1", "none of the old claim's commits remain");
+    assert_eq!(
+        t.repo.worktrees().generation(task).await.expect("recorded"),
+        Some(Generation::new(2))
+    );
+}
+
+#[tokio::test]
+async fn a_stale_reset_does_not_delete_a_newer_generation() {
+    let t = init().await;
+    let task = task_id("t-1");
+    task_with_files(&t.repo, "t-1", &[("old.txt", "old claim\n")]).await;
+    let fresh = t
+        .repo
+        .worktrees()
+        .create(task, Generation::new(2))
+        .await
+        .expect("newer generation");
+    let head = fresh.head().await.expect("newer head");
+
+    t.repo
+        .worktrees()
+        .reset(task, Generation::new(1))
+        .await
+        .expect("stale reset is a no-op");
+    assert!(fresh.path().is_dir(), "the newer worktree stays");
+    assert_eq!(
+        git(&t.root, &["rev-parse", "acan/t-1"]),
+        head.to_string(),
+        "the newer branch stays"
+    );
+
+    t.repo
+        .worktrees()
+        .reset(task, Generation::new(2))
+        .await
+        .expect("the matching reset removes it");
+    assert!(!fresh.path().exists());
+    assert_eq!(git(&t.root, &["branch", "--list", "acan/t-1"]), "");
+}
+
+#[tokio::test]
+async fn a_recorded_generation_survives_reopening_the_repository() {
+    let t = init().await;
+    let task = task_id("t-1");
+    t.repo
+        .worktrees()
+        .create(task, Generation::new(4))
+        .await
+        .expect("create");
+    let reopened = acan_git::Repo::open(&t.root).await.expect("reopen");
+    assert_eq!(
+        reopened
+            .worktrees()
+            .generation(task)
+            .await
+            .expect("recorded"),
+        Some(Generation::new(4)),
+        "the generation is stored on the branch, not in memory"
     );
 }
 

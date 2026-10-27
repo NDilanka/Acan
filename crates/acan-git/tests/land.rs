@@ -365,6 +365,115 @@ async fn land_updates_a_clean_linked_checkout_of_the_protected_branch() {
 }
 
 #[tokio::test]
+async fn a_configured_squash_still_lands_for_real() {
+    let t = init().await;
+    git(&t.root, &["config", "branch.main.mergeOptions", "--squash"]);
+    let expected = t.repo.protected_head().await.expect("protected head");
+    let worktree = task_with_files(&t.repo, "t-1", &[("feat.txt", "feature\n")]).await;
+    let gated = worktree.head().await.expect("gated head");
+
+    let outcome = t
+        .repo
+        .land(task_id("t-1"), &gated, &expected)
+        .await
+        .expect("land");
+    assert_eq!(
+        outcome,
+        LandOutcome::Landed {
+            commit: gated.clone()
+        },
+        "a configured squash must not be reported as a land"
+    );
+    assert_eq!(
+        t.repo.protected_head().await.expect("protected head"),
+        gated,
+        "the protected branch actually moved"
+    );
+    assert_eq!(git(&t.root, &["status", "--porcelain"]), "");
+}
+
+#[tokio::test]
+async fn an_ignored_file_the_land_would_overwrite_refuses_and_keeps_the_file() {
+    let t = init().await;
+    std::fs::write(t.root.join(".gitignore"), "feat.txt\n").expect("ignore");
+    git(&t.root, &["add", ".gitignore"]);
+    git(&t.root, &["commit", "-q", "-m", "ignore feat.txt"]);
+    let expected = t.repo.protected_head().await.expect("protected head");
+    // `commit_all` uses `git add -A`, which skips an ignored file, so the file is
+    // forced onto the task branch. That is what makes the land want to overwrite it.
+    let worktree = t
+        .repo
+        .worktrees()
+        .create(task_id("t-1"), acan_core::Generation::new(1))
+        .await
+        .expect("create worktree");
+    std::fs::write(worktree.path().join("feat.txt"), "feature\n").expect("task file");
+    git(worktree.path(), &["add", "-f", "feat.txt"]);
+    git(
+        worktree.path(),
+        &["commit", "-q", "-m", "track the ignored name"],
+    );
+    let gated = worktree.head().await.expect("gated head");
+    std::fs::write(t.root.join("feat.txt"), "kept local\n").expect("ignored file");
+
+    let outcome = t
+        .repo
+        .land(task_id("t-1"), &gated, &expected)
+        .await
+        .expect("land");
+    let LandOutcome::CheckoutBlocked { path } = outcome.clone() else {
+        panic!("expected CheckoutBlocked, got {outcome:?}");
+    };
+    assert_eq!(canonical(&path), canonical(&t.root));
+    assert_eq!(
+        t.repo.protected_head().await.expect("protected head"),
+        expected,
+        "the protected branch did not move"
+    );
+    assert_eq!(
+        std::fs::read_to_string(t.root.join("feat.txt")).expect("kept"),
+        "kept local\n",
+        "the ignored file is kept"
+    );
+
+    let reason: Result<CommitId, String> = outcome.into();
+    assert_eq!(
+        reason.expect_err("a blocked land carries a reason"),
+        format!(
+            "{} has untracked files the land would overwrite; move them to land",
+            path.display()
+        )
+    );
+}
+
+#[tokio::test]
+async fn an_untracked_file_the_land_would_overwrite_refuses_on_the_first_attempt() {
+    let t = init().await;
+    let expected = t.repo.protected_head().await.expect("protected head");
+    let worktree = task_with_files(&t.repo, "t-1", &[("feat.txt", "feature\n")]).await;
+    let gated = worktree.head().await.expect("gated head");
+    std::fs::write(t.root.join("feat.txt"), "untracked local\n").expect("untracked");
+
+    let outcome = t
+        .repo
+        .land(task_id("t-1"), &gated, &expected)
+        .await
+        .expect("land");
+    let LandOutcome::CheckoutBlocked { path } = outcome else {
+        panic!("expected CheckoutBlocked, got {outcome:?}");
+    };
+    assert_eq!(canonical(&path), canonical(&t.root));
+    assert_eq!(
+        t.repo.protected_head().await.expect("protected head"),
+        expected
+    );
+    assert_eq!(
+        std::fs::read_to_string(t.root.join("feat.txt")).expect("kept"),
+        "untracked local\n"
+    );
+}
+
+#[tokio::test]
 async fn land_outcome_converts_to_the_core_land_result() {
     let commit: CommitId = "aaa111".parse().expect("commit");
     let landed: Result<CommitId, String> = LandOutcome::Landed {

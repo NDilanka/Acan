@@ -8,7 +8,9 @@
 
 use std::sync::Arc;
 
-use acan_core::{Command, HumanCmd, MemberId, Rejection, Seq, Stamped, TaskId, TaskState};
+use acan_core::{
+    Command, Generation, HumanCmd, MemberId, Rejection, Seq, Stamped, TaskId, TaskState,
+};
 use acan_llm::{ModelClient, UsageTotals};
 use acan_scan::Plant;
 use axum::extract::{Path, Query, State};
@@ -215,25 +217,16 @@ async fn get_worktree<C: ModelClient + 'static>(
         }
     };
     let task: TaskId = task.parse().map_err(|_| ApiError::NotFound("task"))?;
-    let holds = host.read(|world| {
-        world.task(task).map(
-            |t| matches!(&t.state, TaskState::Claimed { claim, .. } if claim.lease.holder == agent),
-        )
-    });
-    match holds {
-        None => return Err(ApiError::NotFound("task")),
-        Some(false) => {
-            return Err(ApiError::Forbidden(
-                "only the agent holding the task's lease may read its worktree",
-            ));
-        }
-        Some(true) => {}
-    }
+    host.read(|world| held_generation(world, task, &agent))?;
     let workspace = host
         .workspace()
         .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("the server has no git repository")))?;
+    // The task lock is held across the re-read, so a release between the check above and the
+    // create cannot hand this request the next claim's worktree.
+    let _task = workspace.lock_task(task).await;
+    let generation = host.read(|world| held_generation(world, task, &agent))?;
     let worktree = workspace
-        .worktree(task)
+        .worktree(task, generation)
         .await
         .map_err(|err| ApiError::Internal(err.into()))?;
     Ok(Json(WorktreeView {
@@ -241,4 +234,23 @@ async fn get_worktree<C: ModelClient + 'static>(
         path: worktree.path().display().to_string(),
         branch: worktree.branch().to_owned(),
     }))
+}
+
+/// The generation of the lease `agent` holds on `task`.
+fn held_generation(
+    world: &acan_core::World,
+    task: TaskId,
+    agent: &acan_core::AgentId,
+) -> Result<Generation, ApiError> {
+    match world.task(task) {
+        Some(found) => match &found.state {
+            TaskState::Claimed { claim, .. } if &claim.lease.holder == agent => {
+                Ok(claim.lease.generation)
+            }
+            _ => Err(ApiError::Forbidden(
+                "only the agent holding the task's lease may read its worktree",
+            )),
+        },
+        None => Err(ApiError::NotFound("task")),
+    }
 }

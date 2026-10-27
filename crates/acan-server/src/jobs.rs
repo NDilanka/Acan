@@ -10,20 +10,23 @@
 //! world the job read, and a changed world derives a new key. Accounting-only batches never wake
 //! the loop; the writer guarantees that.
 //!
-//! The loop also keeps each task's worktree in step with its claim. A claimed task gets a
-//! worktree as soon as the loop sees the claim. A task that leaves its claim loses its worktree
-//! and branch, so a reclaim starts from the current protected head. That step is not a job,
-//! because the core derives no key for it.
+//! The loop also keeps each task's worktree in step with its live generation. A claimed task's
+//! generation is its lease generation; a queued task keeps the generation of the gate run that
+//! passed. The worktree stays while either holds, and a different generation resets it before
+//! creating it again, so a reclaim starts at the current protected head. The worktree goes only
+//! when the task has no live generation. That step is not a job, because the core derives no key
+//! for it.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::time::Instant;
 
 use acan_core::{
-    Check, ClashId, Command, CommitId, GateRunId, Job, OrderId, OrderRev, ReadbackId, Rejection,
-    Step, SystemCmd, TaskId, TaskState, WitnessId, WitnessKind, WitnessOutcome, World,
+    Check, ClashId, Command, CommitId, GateRunId, Generation, Job, OrderId, OrderRev, ReadbackId,
+    Rejection, Stage, Step, SystemCmd, TaskId, TaskState, WitnessId, WitnessKind, WitnessOutcome,
+    World,
 };
 use acan_llm::{CallRecord, LlmError, ModelClient, Role};
 use tokio::task::{self, JoinHandle, JoinSet};
@@ -77,15 +80,17 @@ struct Retry {
 /// What a task worktree step does.
 #[derive(Debug, Clone, Copy)]
 enum Change {
-    Create,
-    Remove,
+    /// The worktree now recorded at this generation.
+    Create(Generation),
+    /// The worktree of this generation was removed.
+    Remove(Generation),
 }
 
 /// The worktrees of the tasks, as the loop last left them, and the steps still running.
 #[derive(Default)]
 struct WorktreeSync {
-    /// Tasks whose worktree exists on disk.
-    present: HashSet<TaskId>,
+    /// The generation recorded for each task whose worktree exists on disk.
+    present: HashMap<TaskId, Generation>,
     /// Creations and removals in flight. A task waits for its own step before its next one.
     ops: JoinSet<(TaskId, Change, Result<(), acan_git::Error>)>,
     running: HashMap<task::Id, TaskId>,
@@ -101,7 +106,16 @@ async fn run<C: ModelClient + 'static>(host: Host<C>) {
     if let Some(workspace) = host.workspace() {
         // Worktrees left by an earlier run belong to tasks that may no longer hold a claim.
         match workspace.worktree_tasks().await {
-            Ok(present) => worktrees.present.extend(present),
+            Ok(present) => {
+                for (task, generation) in present {
+                    // A worktree with no recorded generation predates this and cannot be matched
+                    // to a live claim. Recording zero makes the first reconcile remove it; a live
+                    // claim's generation is never zero, so the removal cannot match it.
+                    worktrees
+                        .present
+                        .insert(task, generation.unwrap_or(Generation::new(0)));
+                }
+            }
             Err(err) => tracing::warn!(
                 error = %err,
                 "listing the task worktrees failed; leftovers from an earlier run stay"
@@ -140,11 +154,14 @@ async fn run<C: ModelClient + 'static>(host: Host<C>) {
                 Ok((task, change, Ok(()))) => {
                     worktrees.running.retain(|_, running| *running != task);
                     match change {
-                        Change::Create => {
-                            worktrees.present.insert(task);
+                        Change::Create(generation) => {
+                            worktrees.present.insert(task, generation);
                         }
-                        Change::Remove => {
-                            worktrees.present.remove(&task);
+                        Change::Remove(generation) => {
+                            // A newer generation may have been recorded while this removal ran.
+                            if worktrees.present.get(&task) == Some(&generation) {
+                                worktrees.present.remove(&task);
+                            }
                         }
                     }
                     reconcile(&host, &mut worktrees);
@@ -236,17 +253,27 @@ fn start_derived<C: ModelClient + 'static>(
     }
 }
 
-/// Brings each task's worktree in line with its claim: created while the task is claimed,
-/// removed once it is not. A task with a step in flight waits for that step, which reconciles
-/// again when it finishes.
+/// Brings each task's worktree in line with its live generation: created while the task is
+/// claimed or queued, reset and created again when the generation changed, removed once the task
+/// has none. A task with a step in flight waits for that step, which reconciles again when it
+/// finishes.
 fn reconcile<C: ModelClient + 'static>(host: &Host<C>, worktrees: &mut WorktreeSync) {
     let Some(workspace) = host.workspace() else {
         return;
     };
-    let claimed = host.read(claimed_tasks);
-    let create: Vec<TaskId> = claimed.difference(&worktrees.present).copied().collect();
-    let remove: Vec<TaskId> = worktrees.present.difference(&claimed).copied().collect();
-    for task in create {
+    let live = host.read(live_generations);
+    let create: Vec<(TaskId, Generation)> = live
+        .iter()
+        .filter(|(task, generation)| worktrees.present.get(task) != Some(generation))
+        .map(|(task, generation)| (*task, *generation))
+        .collect();
+    let remove: Vec<(TaskId, Generation)> = worktrees
+        .present
+        .iter()
+        .filter(|(task, _)| !live.contains_key(task))
+        .map(|(task, generation)| (*task, *generation))
+        .collect();
+    for (task, generation) in create {
         if is_running(worktrees, task) {
             continue;
         }
@@ -254,13 +281,13 @@ fn reconcile<C: ModelClient + 'static>(host: &Host<C>, worktrees: &mut WorktreeS
         let id = worktrees
             .ops
             .spawn(async move {
-                let result = workspace.worktree(task).await.map(drop);
-                (task, Change::Create, result)
+                let result = workspace.worktree(task, generation).await.map(drop);
+                (task, Change::Create(generation), result)
             })
             .id();
         worktrees.running.insert(id, task);
     }
-    for task in remove {
+    for (task, generation) in remove {
         if is_running(worktrees, task) {
             continue;
         }
@@ -268,8 +295,8 @@ fn reconcile<C: ModelClient + 'static>(host: &Host<C>, worktrees: &mut WorktreeS
         let id = worktrees
             .ops
             .spawn(async move {
-                let result = workspace.reset(task).await;
-                (task, Change::Remove, result)
+                let result = workspace.reset(task, generation).await;
+                (task, Change::Remove(generation), result)
             })
             .id();
         worktrees.running.insert(id, task);
@@ -280,12 +307,21 @@ fn is_running(worktrees: &WorktreeSync, task: TaskId) -> bool {
     worktrees.running.values().any(|running| *running == task)
 }
 
-fn claimed_tasks(world: &World) -> HashSet<TaskId> {
+/// The generation each task's worktree must sit at. A claimed task uses its lease generation. A
+/// queued task keeps the generation of the gate run that passed, so its branch survives until it
+/// lands. Every other state has none, and its worktree is removed.
+fn live_generations(world: &World) -> HashMap<TaskId, Generation> {
     world
         .orders()
         .flat_map(move |order| world.tasks_of(order.id))
-        .filter(|task| matches!(task.state, TaskState::Claimed { .. }))
-        .map(|task| task.id)
+        .filter_map(|task| {
+            let generation = match &task.state {
+                TaskState::Claimed { claim, .. } => Some(claim.lease.generation),
+                TaskState::Queued { run, .. } => world.gate(*run).map(|gate| gate.generation),
+                TaskState::Open | TaskState::Landed { .. } | TaskState::Dropped => None,
+            };
+            generation.map(|generation| (task.id, generation))
+        })
         .collect()
 }
 
@@ -452,16 +488,12 @@ async fn run_witness<C: ModelClient>(
     run: GateRunId,
     witness: WitnessId,
 ) -> Result<Option<SystemCmd>, JobError> {
-    let Some((task, head, check)) = host.read(|world| {
-        let gate = world.gate(run)?;
-        let WitnessKind::Check { check } = &world.witness(witness)?.kind else {
-            return None;
-        };
-        Some((gate.task, gate.head.clone(), check.clone()))
-    }) else {
+    let Some(task) = host.read(|world| world.gate(run).map(|gate| gate.task)) else {
         return Ok(None);
     };
-    let outcome = check_at(host, task, &head, &check).await?;
+    let Some(outcome) = check_at(host, task, run, witness).await? else {
+        return Ok(None);
+    };
     Ok(Some(SystemCmd::WitnessResult {
         run,
         witness,
@@ -469,36 +501,78 @@ async fn run_witness<C: ModelClient>(
     }))
 }
 
-/// Runs `check` in the task's worktree, once that worktree sits at the gated commit. A worktree
-/// at another commit is an error outcome, which the gate counts as a failure. A git failure is an
-/// error of the job and follows the retry path.
+/// Runs the witness in the task's worktree, once that worktree sits at the gated commit.
+///
+/// The world is read again under the task lock. A gate run that is no longer the task's current
+/// run, or a generation that no longer matches, returns no result and creates no worktree. A
+/// worktree at another commit is an error outcome, which the gate counts as a failure. A git
+/// failure is an error of the job and follows the retry path.
 async fn check_at<C: ModelClient>(
     host: &Host<C>,
     task: TaskId,
-    head: &CommitId,
-    check: &Check,
-) -> Result<WitnessOutcome, JobError> {
+    run: GateRunId,
+    witness: WitnessId,
+) -> Result<Option<WitnessOutcome>, JobError> {
     let Some(workspace) = host.workspace() else {
-        return Ok(WitnessOutcome::Error {
+        return Ok(Some(WitnessOutcome::Error {
             detail: "this server has no git repository to run witnesses in".to_owned(),
-        });
+        }));
     };
     // Two runs of one task would share its worktree directory, so they take turns. The task lock
     // comes before the global slot, so a run waiting for its task never holds a slot.
     let _task = workspace.lock_task(task).await;
+    let current = host.read(|world| current_witness(world, task, run, witness));
+    let Some((generation, head, check)) = current else {
+        return Ok(None);
+    };
     let _slot = host
         .witness_slots()
         .acquire_owned()
         .await
         .expect("the witness semaphore is never closed");
-    let worktree = workspace.worktree(task).await?;
+    let worktree = workspace.worktree(task, generation).await?;
     let built = worktree.head().await?;
-    if built != *head {
-        return Ok(WitnessOutcome::Error {
+    if built != head {
+        return Ok(Some(WitnessOutcome::Error {
             detail: format!("the task branch is at {built}, not the gated commit {head}"),
-        });
+        }));
     }
-    Ok(acan_witness::run(check, worktree.path(), &host.witness_limits()).await)
+    Ok(Some(
+        acan_witness::run(&check, worktree.path(), &host.witness_limits()).await,
+    ))
+}
+
+/// The generation, commit and check of `run`, when it is still `task`'s current gate run and
+/// `witness` is still frozen in it. A run that closed, or a generation that moved on, is `None`.
+fn current_witness(
+    world: &World,
+    task: TaskId,
+    run: GateRunId,
+    witness: WitnessId,
+) -> Option<(Generation, CommitId, Check)> {
+    let gate = world.gate(run)?;
+    let current = world.task(task).is_some_and(|found| {
+        matches!(
+            &found.state,
+            TaskState::Claimed {
+                stage: Stage::Gating { run: live, .. },
+                ..
+            } if *live == run
+        )
+    });
+    let generation_holds = world.task(task).is_some_and(|found| {
+        matches!(
+            &found.state,
+            TaskState::Claimed { claim, .. } if claim.lease.generation == gate.generation
+        )
+    });
+    if !current || !generation_holds {
+        return None;
+    }
+    let WitnessKind::Check { check } = &world.witness(witness)?.kind else {
+        return None;
+    };
+    Some((gate.generation, gate.head.clone(), check.clone()))
 }
 
 /// Merges the gated commit at the front of the land queue into the protected branch. The core
