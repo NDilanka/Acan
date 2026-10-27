@@ -6,11 +6,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use acan_core::{
-    Actor, AgentCmd, AgentId, Belt, Check, CodeIndex, Command, Ctx, DeclarationInput, Event, Fence,
-    FilePath, HumanCmd, IndexedFile, IndexedSymbol, Judgement, Locus, MachineKey, MemberId,
-    OrderId, Origin, QuestionDraft, ReadbackId, ReadbackVerdict, Rejection, ReplayError, Role, Seq,
-    Stamped, SymbolRef, SystemCmd, TaskId, TaskSpec, TaskState, Timestamp, WitnessId, WitnessSpec,
-    WorldRef,
+    Actor, AgentCmd, AgentId, Barrier, Belt, Check, CodeIndex, Command, Ctx, DeclarationInput,
+    Event, Fence, FilePath, HumanCmd, IndexedFile, IndexedSymbol, Judgement, LEASE_TTL_MS, Locus,
+    MachineKey, MemberId, OrderId, Origin, QuestionDraft, ReadbackId, ReadbackVerdict, Rejection,
+    ReplayError, Role, Seq, Stamped, SymbolRef, SystemCmd, TaskId, TaskSpec, TaskState, Timestamp,
+    WitnessId, WitnessSpec, WorldRef,
 };
 
 pub fn path(raw: &str) -> FilePath {
@@ -341,7 +341,9 @@ impl Fx {
         })
     }
 
-    /// Claims `task` and declares a footprint no other fixture task touches, so it clears to `Building`.
+    /// Claims `task` and declares a footprint no other fixture task touches, so it clears to
+    /// `Building`. When undeclared siblings hold the order's declare barrier, the clock runs out
+    /// the barrier first; see [`Fx::run_out_barrier`].
     pub fn build(&mut self, agent: &AgentId, task: TaskId) -> Fence {
         let fence = self.claim(agent, task);
         let footprint = DeclarationInput {
@@ -350,6 +352,40 @@ impl Fx {
         };
         self.declare(agent, fence, footprint)
             .expect("declare accepted");
+        let order = self.origin.world().task(task).expect("task exists").order;
+        if self.origin.world().barrier(order).is_some() {
+            self.run_out_barrier(order);
+        }
         fence
+    }
+
+    /// Runs the clock to `order`'s declare barrier deadline, renewing every live lease on the
+    /// way so none expires, then ticks so the barrier lifts.
+    pub fn run_out_barrier(&mut self, order: OrderId) {
+        let Barrier::Armed { deadline } = self.origin.world().order(order).expect("order").barrier
+        else {
+            panic!("the barrier of {order} is not armed");
+        };
+        while self.now < deadline {
+            let held: Vec<(AgentId, Fence)> = self
+                .origin
+                .world()
+                .orders()
+                .flat_map(|o| self.origin.world().tasks_of(o.id))
+                .filter_map(|t| match &t.state {
+                    TaskState::Claimed { claim, .. } => {
+                        Some((claim.lease.holder.clone(), claim.fence(t.id)))
+                    }
+                    _ => None,
+                })
+                .collect();
+            for (agent, fence) in held {
+                self.agent(&agent, AgentCmd::Renew { fence })
+                    .expect("renew accepted");
+            }
+            let left = deadline.as_millis() - self.now.as_millis();
+            self.advance(left.min(LEASE_TTL_MS / 2));
+        }
+        self.system(SystemCmd::Tick).expect("tick accepted");
     }
 }

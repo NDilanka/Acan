@@ -14,7 +14,7 @@ Each world has one append-only event log. The **origin** is the only process tha
 
 The server stores each `Stamped` event as JSON and streams the same JSON. A client resumes from `Replica::next_seq`.
 
-Model calls, witness runs and merges are **jobs**. `World::jobs` derives them from state, so a crashed server restarts them by asking again. The server runs each job and reports the result as a `SystemCmd`. A result for a job that is no longer derived is rejected.
+Model calls, witness runs and merges are **jobs**. `World::jobs` derives them from state, so a crashed server restarts them by asking again. The server runs each job and reports the result as a `SystemCmd`. A `Barrier` job is a timer: it reports `Tick` once its deadline passes. A result for a job that is no longer derived is rejected.
 
 A `Review` job covers every readback of the order, on an open or claimed task, that lacks a verdict at the current revision. A readback on a claimed task is a standby: once matched, its agent can claim the moment the lease ends. A review result is accepted only while the job is derived and no question is open, and only for readbacks still in the job, each named once. Any part of the job is accepted, because the job grows while a review runs. A late retry therefore cannot rewrite the verdict a live claim stands on.
 
@@ -27,7 +27,7 @@ Clash detection is the pure function `detect`. The origin runs it inside `execut
 | `Origin::open`, `Origin::replay` | server | Start a world, or rebuild it from the stored log. Reports `ReplayError::InvalidEvent` for a damaged log. |
 | `Origin::execute(&Ctx, Command)` | server | Decide a command. Returns the stamped events to persist and broadcast, or a `Rejection`. A rejected command changes nothing. |
 | `Replica::from_log`, `Replica::ingest` | browser, joined desktop | Fold a fetched log, then apply streamed events. Reports `ReplayError::SeqGap` when events were missed, and `ReplayError::InvalidEvent` for a damaged or forged event. |
-| `World` read methods | everyone | `order`, `tasks_of`, `clashes_for`, `phase`, `land_queue`, `jobs`, `settle_right`, `usage`. |
+| `World` read methods | everyone | `order`, `tasks_of`, `clashes_for`, `phase`, `barrier`, `land_queue`, `jobs`, `settle_right`, `usage`. |
 | `detect(&[&Declaration], &CodeIndex)` | origin, tests | Pure overlap classification. |
 | `Command`, `HumanCmd`, `AgentCmd`, `SystemCmd` | server, MCP adapter | The write vocabulary. `HumanCmd` is the HTTP body; `AgentCmd` is the MCP tool arguments. |
 
@@ -70,7 +70,7 @@ Replay checks every event before applying it. An event that refers to an order, 
 | `world` | `World` (the fold), `Origin`, `Replica`, `Ctx`, derived reads, and `execute` dispatch. |
 | `order` | Orders, witnesses, tasks, readbacks, questions, and their decisions. |
 | `lease` | Leases, fences, claim, renew, release and expiry. |
-| `clash` | Declarations, `detect`, clashes, settlement menus, and the build-clear rule. |
+| `clash` | Declarations, `detect`, clashes, settlement menus, the declare barrier, and the build-clear rule. |
 | `gate` | Gate runs, verdicts and the land queue. |
 | `member` | Members, agent principals, and `SettleRight`. |
 | `index` | `CodeIndex`, the input to detection. |
@@ -86,7 +86,7 @@ Each domain module owns both its decide functions and the state they change. Eve
 Open --LeaseGranted--> Claimed{Declaring}
 Claimed --LeaseEnded(any)--> Open
 Claimed{Declaring|Declared|Building} --Declared--> Claimed{Declared}
-Claimed{Declared} --BuildCleared--> Claimed{Building}
+Claimed{Declared} --BuildCleared--> Claimed{Building}        (no blocking clash, no predecessor to land, barrier not holding)
 Claimed{Building} --BuildReported--> Claimed{Gating}
 Claimed{Building|Gating} --ClashFound--> Claimed{Declared}   (a gating run is abandoned)
 Claimed{Gating} --GateClosed(Failed)--> Claimed{Declared}    (then BuildCleared if unblocked)
@@ -106,7 +106,17 @@ Claimed --Release | expiry | question answered | gate passed | order cancelled--
 
 A lease does not expire while its task is gating, because the worker is waiting on witnesses it does not run. A failed gate renews the lease from the moment it closes. So does a new clash that abandons the run.
 
-Only `build_clear` grants `Building`. A failed gate returns the task to `Declared`, and `build_clear` clears it in the same batch unless a blocking clash or a settled predecessor still holds it. A new blocking clash on a gating task abandons its run, so a late witness result is rejected and can neither restore `Building` nor queue the task past the clash.
+Only `build_clear` grants `Building`. A failed gate returns the task to `Declared`, and `build_clear` clears it in the same batch unless a blocking clash, a settled predecessor, or its order's declare barrier still holds it. A new blocking clash on a gating task abandons its run, so a late witness result is rejected and can neither restore `Building` nor queue the task past the clash.
+
+**Declare barrier.** Each order has one. It keeps the order's declared tasks out of `Building` until their siblings have declared too, so siblings that overlap meet as a clash before either one writes. Clash detection does not change; the barrier only delays `build_clear`.
+
+```text
+Unarmed --the order's first Declared, stamped at t--> Armed{deadline = t + DECLARE_BARRIER_MS}
+Armed --BuildCleared for any task of the order--> Lifted
+Armed --now >= deadline (Tick or any command)--> Lifted   [BarrierExpired]
+```
+
+An armed barrier holds while any task of the order is open or claimed in `Declaring`. A task that is declared, building, gating, queued, landed or dropped does not hold it. `World::barrier` returns the deadline and the tasks it waits for, which is what a declared task shows as "waiting for siblings to declare". `DECLARE_BARRIER_MS` is 90 s, next to `LEASE_TTL_MS`. The core reads no clock: the origin checks deadlines against `Ctx::now` before every command, as it does for lease expiry, and `World::jobs` derives a `Barrier` job for each armed barrier. The server's job sleeps until the deadline and sends `Tick`. A single-task order never waits: its only task is declared, so nothing holds. The barrier never re-arms, so a reclaim or a failed gate is not held twice.
 
 Generations, order revisions and counter ids never wrap or saturate. When one is exhausted, the command that needs the next value is rejected before any event is recorded.
 

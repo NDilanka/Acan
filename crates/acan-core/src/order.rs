@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::clash::Declaration;
+use crate::clash::{Barrier, Declaration};
 use crate::event::{Event, Rejection};
 use crate::ids::{
     AgentId, CommitId, GateRunId, MachineKey, MemberId, OrderId, OrderRev, QuestionId, ReadbackId,
@@ -122,6 +122,8 @@ pub struct Order {
     pub posted_by: MemberId,
     /// The stored part of the lifecycle. The rest is derived; see [`OrderPhase`].
     pub state: OrderState,
+    /// Holds the order's declared tasks back from building until their siblings declare.
+    pub barrier: Barrier,
 }
 
 /// What the order itself stores. Everything after the split is derived from its tasks.

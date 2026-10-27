@@ -15,7 +15,12 @@
 //! passed. The worktree stays while either holds, and a different generation resets it before
 //! creating it again, so a reclaim starts at the current protected head. The worktree goes only
 //! when the task has no live generation. That step is not a job, because the core derives no key
-//! for it.
+//! for it. After a land, and before its result is recorded, every claimed task that is not
+//! building yet is fast-forwarded onto the landed commit, so a serialized waiter builds on what
+//! its predecessor landed.
+//!
+//! A `Barrier` job sleeps until its order's declare barrier is due and then sends a `Tick`,
+//! the same command the lease expiry runs on.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
@@ -25,14 +30,14 @@ use tokio::time::Instant;
 
 use acan_core::{
     Check, ClashId, Command, CommitId, GateRunId, Generation, Job, OrderId, OrderRev, ReadbackId,
-    Rejection, Stage, Step, SystemCmd, TaskId, TaskState, WitnessId, WitnessKind, WitnessOutcome,
-    World,
+    Rejection, Stage, Step, SystemCmd, TaskId, TaskState, Timestamp, WitnessId, WitnessKind,
+    WitnessOutcome, World,
 };
 use acan_llm::{CallRecord, LlmError, ModelClient, Role};
 use tokio::task::{self, JoinHandle, JoinSet};
 
-use crate::git::LandFailure;
-use crate::host::{Host, SubmitError};
+use crate::git::{LandFailure, Workspace};
+use crate::host::{self, Host, SubmitError};
 use crate::model::{self, ReplyError};
 
 /// Total attempts one job key gets before the loop stops retrying it. Chosen so a broken model
@@ -404,8 +409,24 @@ async fn execute<C: ModelClient>(host: &Host<C>, job: &Job) -> Result<Option<Sys
             readbacks,
         } => review(host, job, *order, *rev, readbacks).await,
         Job::Explain { clash } => explain(host, job, *clash).await,
+        Job::Barrier { deadline, .. } => {
+            sleep_until(*deadline).await;
+            Ok(Some(SystemCmd::Tick))
+        }
         Job::RunWitness { run, witness } => run_witness(host, *run, *witness).await,
         Job::Land { task, head } => land(host, *task, head).await,
+    }
+}
+
+/// Sleeps until the origin's clock reaches `deadline`. The writer stamps commands with the same
+/// clock, so the `Tick` sent afterwards finds the barrier due.
+async fn sleep_until(deadline: Timestamp) {
+    loop {
+        let left = deadline.as_millis().saturating_sub(host::now().as_millis());
+        if left == 0 {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(left)).await;
     }
 }
 
@@ -606,7 +627,10 @@ async fn land<C: ModelClient>(
 ) -> Result<Option<SystemCmd>, JobError> {
     let result = match host.workspace() {
         Some(workspace) => match workspace.land(task, head).await {
-            Ok(commit) => Ok(commit),
+            Ok(commit) => {
+                catch_up(host, &workspace, &commit).await;
+                Ok(commit)
+            }
             Err(LandFailure::Refused(reason)) => Err(reason),
             Err(LandFailure::Git(err)) => return Err(JobError::Git(err)),
         },
@@ -617,6 +641,54 @@ async fn land<C: ModelClient>(
         head: head.clone(),
         result,
     }))
+}
+
+/// Moves the worktree of every task not yet cleared to write onto the commit that just landed.
+///
+/// This runs before the land result is recorded. A `Serialize` or `SplitAtContract` waiter is
+/// cleared to build only once that result marks its predecessor landed, so its agent starts on
+/// the landed code and its own land does not conflict with it. A worker writes nothing before
+/// its task is building, and a worktree with work of its own is left where it is. A failure is
+/// logged and does not undo the land: the waiter then builds on its old base, and a conflicting
+/// land is refused and reopens it.
+async fn catch_up<C: ModelClient>(host: &Host<C>, workspace: &Workspace, landed: &CommitId) {
+    for (task, generation) in host.read(not_yet_building) {
+        // Under the task lock the generation cannot move, so the worktree of a newer claim is
+        // never reset back to this one.
+        let _task = workspace.lock_task(task).await;
+        let still = host.read(|world| not_yet_building(world).get(&task) == Some(&generation));
+        if !still {
+            continue;
+        }
+        match workspace.fast_forward(task, generation, landed).await {
+            Ok(true) => tracing::debug!(%task, %landed, "moved a waiting worktree onto the land"),
+            Ok(false) => tracing::info!(
+                %task,
+                %landed,
+                "a waiting worktree has work of its own; it stays on its base"
+            ),
+            Err(err) => tracing::warn!(
+                %task,
+                error = %err,
+                "moving a waiting worktree onto the land failed; it stays on its base"
+            ),
+        }
+    }
+}
+
+/// The lease generation of each claimed task that is not building yet.
+fn not_yet_building(world: &World) -> HashMap<TaskId, Generation> {
+    world
+        .orders()
+        .flat_map(move |order| world.tasks_of(order.id))
+        .filter_map(|task| match &task.state {
+            TaskState::Claimed {
+                claim,
+                stage: Stage::Declaring | Stage::Declared { .. },
+            } => Some((task.id, claim.lease.generation)),
+            _ => None,
+        })
+        .collect()
 }
 
 async fn record_usage<C: ModelClient>(host: &Host<C>, job: &Job, call: &CallRecord, step: Step) {

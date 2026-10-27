@@ -5,7 +5,7 @@ mod common;
 use acan_core::{FilePath, Generation};
 use acan_git::Author;
 
-use common::{git, init, task_id, task_with_files};
+use common::{commit_files, git, init, task_id, task_with_files};
 
 #[tokio::test]
 async fn create_twice_returns_the_same_worktree() {
@@ -254,4 +254,62 @@ async fn open_rejects_a_non_repository() {
         .await
         .expect_err("not a repo");
     assert!(matches!(err, acan_git::Error::NotARepo(_)), "{err:?}");
+}
+
+#[tokio::test]
+async fn fast_forward_moves_a_worktree_with_no_work_of_its_own() {
+    let t = init().await;
+    let worktree = t
+        .repo
+        .worktrees()
+        .create(task_id("t-1"), Generation::new(1))
+        .await
+        .expect("create");
+    let landed = commit_files(&t.root, &[("shared.txt", "landed\n")], "land");
+    let to = landed.parse().expect("commit id");
+
+    assert!(worktree.fast_forward(&to).await.expect("fast-forward"));
+    assert_eq!(worktree.head().await.expect("head"), to);
+    assert_eq!(
+        std::fs::read_to_string(worktree.path().join("shared.txt"))
+            .expect("read")
+            .replace('\r', ""),
+        "landed\n",
+        "the working tree carries the landed file"
+    );
+    assert!(
+        worktree.fast_forward(&to).await.expect("again"),
+        "a worktree already at the commit stays there"
+    );
+}
+
+#[tokio::test]
+async fn fast_forward_leaves_a_worktree_with_its_own_work() {
+    let t = init().await;
+    let committed = task_with_files(&t.repo, "t-1", &[("task.txt", "task\n")]).await;
+    let dirty = t
+        .repo
+        .worktrees()
+        .create(task_id("t-2"), Generation::new(1))
+        .await
+        .expect("create");
+    std::fs::write(dirty.path().join("shared.txt"), "unsaved\n").expect("write");
+    let landed = commit_files(&t.root, &[("shared.txt", "landed\n")], "land");
+    let to = landed.parse().expect("commit id");
+
+    let committed_head = committed.head().await.expect("head");
+    assert!(!committed.fast_forward(&to).await.expect("checked"));
+    assert_eq!(
+        committed.head().await.expect("head"),
+        committed_head,
+        "a worktree with its own commit is not moved"
+    );
+    let dirty_head = dirty.head().await.expect("head");
+    assert!(!dirty.fast_forward(&to).await.expect("checked"));
+    assert_eq!(dirty.head().await.expect("head"), dirty_head);
+    assert_eq!(
+        std::fs::read_to_string(dirty.path().join("shared.txt")).expect("read"),
+        "unsaved\n",
+        "an uncommitted change is kept"
+    );
 }
