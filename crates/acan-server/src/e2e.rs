@@ -11,6 +11,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;
 use std::str::FromStr;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use acan_core::{
@@ -31,7 +32,11 @@ const LANDED: &str = "landed.txt";
 const AGENT_CONTENT: &str = "written by the agent\n";
 /// Passes when the built commit carries the file, so it checks the commit rather than the disk.
 const WITNESS_COMMAND: &str = "git cat-file -e HEAD:landed.txt";
-const WAIT: Duration = Duration::from_secs(15);
+/// The longest one step of a chain may take. A step runs git processes and, for a witness, one
+/// pwsh start. Measured on this Windows checkout: 1.5 to 3 seconds idle, 6.3 seconds with two
+/// flood tests running, and one unexplained slow run took 11.3 seconds. Sixty seconds leaves
+/// about five times the worst of those, so a real stall still fails within a minute.
+const WAIT: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(20);
 
 #[tokio::test]
@@ -224,6 +229,108 @@ async fn a_conflicting_land_reports_the_files_and_reopens_the_task() {
     running.stop().await.expect("the server stops");
 }
 
+#[tokio::test]
+async fn a_land_onto_a_protected_branch_that_moved_merges_only_the_gated_commit() {
+    let repo = user_repo();
+    let root = repo.path();
+    let running = start_plant(root).await;
+    let task = TaskId::from_str("t-0").expect("valid task id");
+    post_order(&running).await;
+    read_back(&running, task).await;
+    let fence = claim(&running, task).await;
+    wait_for_dir(&worktree_dir(root, task)).await;
+
+    // The user lands a different file while the agent works, so the land is a real merge.
+    let user_commit = commit_on_protected(root, "user.txt", "written by the user\n");
+    let built = build(&running, root, task, fence, LANDED, AGENT_CONTENT).await;
+    settle(&running, "the task to land", |_, world| {
+        in_state(world, task, |state| {
+            matches!(state, TaskState::Landed { .. })
+        })
+        .then_some(())
+    })
+    .await;
+
+    assert_eq!(
+        git(root, &["rev-parse", "main^1"]).trim(),
+        user_commit.to_string(),
+        "the merge's first parent is the protected head it merged onto"
+    );
+    assert_eq!(
+        git(root, &["rev-parse", "main^2"]).trim(),
+        built.to_string(),
+        "the merge's second parent is the gated commit"
+    );
+    assert_eq!(git(root, &["show", "main:landed.txt"]), AGENT_CONTENT);
+    assert_eq!(
+        git(root, &["show", "main:user.txt"]),
+        "written by the user\n",
+        "the user's file survives the land"
+    );
+    running.stop().await.expect("the server stops");
+}
+
+#[tokio::test]
+async fn a_reclaim_after_a_refused_land_starts_from_the_protected_head_the_user_moved_to() {
+    let repo = user_repo();
+    let root = repo.path();
+    let running = start_plant(root).await;
+    let task = TaskId::from_str("t-0").expect("valid task id");
+    post_order(&running).await;
+    read_back(&running, task).await;
+    let fence = claim(&running, task).await;
+    wait_for_dir(&worktree_dir(root, task)).await;
+
+    let user_commit = commit_on_protected(root, LANDED, "written by the user\n");
+    build(&running, root, task, fence, LANDED, AGENT_CONTENT).await;
+    settle(&running, "the land to fail", |log, _| {
+        log.iter().find_map(|stamped| match &stamped.event {
+            Event::LandFailed {
+                task: failed,
+                reason,
+            } if *failed == task => Some(reason.clone()),
+            _ => None,
+        })
+    })
+    .await;
+    settle(&running, "the task to reopen", |_, world| {
+        in_state(world, task, |state| matches!(state, TaskState::Open)).then_some(())
+    })
+    .await;
+    // The directory goes first and the branch after it, so both are awaited.
+    settle(
+        &running,
+        "the reopened worktree and branch to be removed",
+        |_, _| {
+            (!worktree_dir(root, task).exists() && !branch_exists(root, "acan/t-0")).then_some(())
+        },
+    )
+    .await;
+
+    let fence = claim(&running, task).await;
+    wait_for_dir(&worktree_dir(root, task)).await;
+    assert_eq!(
+        git(&worktree_dir(root, task), &["rev-parse", "HEAD"]).trim(),
+        user_commit.to_string(),
+        "the reclaimed worktree starts at the protected head the user moved to"
+    );
+    let built = build(&running, root, task, fence, LANDED, AGENT_CONTENT).await;
+    settle(&running, "the reclaimed task to land", |_, world| {
+        in_state(world, task, |state| {
+            matches!(state, TaskState::Landed { .. })
+        })
+        .then_some(())
+    })
+    .await;
+    assert_eq!(
+        git(root, &["rev-parse", "main"]).trim(),
+        built.to_string(),
+        "the reclaimed task fast-forwards the protected branch"
+    );
+    assert_eq!(git(root, &["show", "main:landed.txt"]), AGENT_CONTENT);
+    running.stop().await.expect("the server stops");
+}
+
 /// A repository with `main` as the protected branch and the user's checkout on `user-work`. The
 /// server must never touch that checkout.
 fn user_repo() -> tempfile::TempDir {
@@ -258,6 +365,18 @@ fn git(dir: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).expect("git prints UTF-8")
+}
+
+/// Whether `branch` exists in the repository that `dir` belongs to.
+fn branch_exists(dir: &Path, branch: &str) -> bool {
+    Process::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["show-ref", "--verify", "--quiet"])
+        .arg(format!("refs/heads/{branch}"))
+        .status()
+        .expect("git runs")
+        .success()
 }
 
 fn canonical(path: &Path) -> PathBuf {
@@ -306,6 +425,12 @@ fn url(running: &Running, path: &str) -> String {
     format!("http://{}{path}", running.local_addr)
 }
 
+/// One client for every request, so each poll reuses its connection instead of building a client.
+fn client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 fn agent() -> AgentId {
     AgentId::from_str(AGENT).expect("valid agent id")
 }
@@ -315,7 +440,7 @@ fn machine() -> MachineKey {
 }
 
 async fn post_order(running: &Running) {
-    let response = reqwest::Client::new()
+    let response = client()
         .post(url(running, "/api/commands"))
         .bearer_auth(OWNER_TOKEN)
         .json(&HumanCmd::PostOrder {
@@ -345,7 +470,7 @@ async fn read_back(running: &Running, task: TaskId) {
         world.task(task).map(drop)
     })
     .await;
-    let response = reqwest::Client::new()
+    let response = client()
         .post(url(running, "/api/commands"))
         .bearer_auth(OWNER_TOKEN)
         .json(&HumanCmd::RegisterAgent { agent: agent() })
@@ -469,7 +594,7 @@ fn commit_on_protected(root: &Path, file: &str, content: &str) -> CommitId {
 }
 
 async fn worktree_route(running: &Running, token: &str, task: TaskId) -> reqwest::Response {
-    reqwest::Client::new()
+    client()
         .get(url(running, &format!("/api/tasks/{task}/worktree")))
         .bearer_auth(token)
         .send()
@@ -493,7 +618,7 @@ fn in_state(world: &World, task: TaskId, state: impl Fn(&TaskState) -> bool) -> 
 
 /// The stored log and the world it replays to, read through the owner's events route.
 async fn snapshot(running: &Running) -> (Vec<Stamped>, Origin) {
-    let log: Vec<Stamped> = reqwest::Client::new()
+    let log: Vec<Stamped> = client()
         .get(url(running, "/api/events"))
         .bearer_auth(OWNER_TOKEN)
         .send()
@@ -508,13 +633,14 @@ async fn snapshot(running: &Running) -> (Vec<Stamped>, Origin) {
     (log, origin)
 }
 
-/// Polls the stored log until `done` accepts it, and returns what it found.
+/// Polls the stored log until `done` accepts it, and returns what it found. A timeout names the
+/// newest events, so a stalled step shows where the chain stopped.
 async fn settle<T>(
     running: &Running,
     what: &str,
     done: impl Fn(&[Stamped], &World) -> Option<T>,
 ) -> T {
-    timeout(WAIT, async {
+    let result = timeout(WAIT, async {
         loop {
             let (log, origin) = snapshot(running).await;
             if let Some(found) = done(&log, origin.world()) {
@@ -523,6 +649,16 @@ async fn settle<T>(
             sleep(POLL).await;
         }
     })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+    .await;
+    let Ok(found) = result else {
+        let (log, _) = snapshot(running).await;
+        let newest: Vec<&Event> = log
+            .iter()
+            .rev()
+            .take(4)
+            .map(|stamped| &stamped.event)
+            .collect();
+        panic!("timed out after {WAIT:?} waiting for {what}; newest events first: {newest:?}");
+    };
+    found
 }

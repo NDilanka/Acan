@@ -93,49 +93,46 @@ impl Repo {
         Worktrees { repo: self }
     }
 
-    /// Merge the task branch into the protected branch, in queue order.
+    /// Merge `gated`, the commit a task's gate tested, into the protected branch.
     ///
-    /// `expected_head` is the protected head the caller decided the land at.
-    /// The merge is computed with `git merge-tree` and committed without a
-    /// checkout, then installed with `git update-ref` guarded by the old value,
-    /// so a concurrent move of the protected branch is detected and reported as
-    /// [`LandOutcome::HeadMoved`], never overwritten. The user's working tree
-    /// is never touched; a checkout of the protected branch elsewhere keeps
-    /// its files, and its status reflects the new head until the user updates
-    /// it there. Fast-forwards when the task branch contains the protected
-    /// head.
+    /// `gated` is merged as given, not the task branch's current head, so commits
+    /// the agent makes after the gate never land untested. `expected_head` is the
+    /// protected head the caller decided the land at. The merge is computed with
+    /// `git merge-tree` and committed without a checkout, then installed with
+    /// `git update-ref` guarded by the old value, so a concurrent move of the
+    /// protected branch is detected and reported as [`LandOutcome::HeadMoved`],
+    /// never overwritten.
     ///
-    /// Idempotent: when the task branch is already contained in the protected
-    /// branch, the commit that landed it is reported again without merging
-    /// twice.
+    /// A checkout that has the protected branch checked out, the user's main one
+    /// included, moves with the branch. A clean checkout gets the new files through
+    /// its own `git merge --ff-only`. A checkout with uncommitted changes to tracked
+    /// files stops the land with [`LandOutcome::CheckoutDirty`] and nothing moves.
+    ///
+    /// Idempotent: when the protected branch already contains `gated`, the commit
+    /// that landed it is reported again without merging twice.
     ///
     /// # Errors
-    /// Fails when the task has no branch, or git itself fails. Merge conflicts
-    /// and stale heads are outcomes, not errors.
-    pub async fn land(&self, task: TaskId, expected_head: &CommitId) -> Result<LandOutcome, Error> {
-        let branch_ref = format!("refs/heads/acan/{task}");
-        let task_head = self.branch_head(&branch_ref).await?;
+    /// Fails when git itself fails, including when `gated` is not a commit of this
+    /// repository. Conflicts, stale heads, and dirty checkouts are outcomes.
+    pub async fn land(
+        &self,
+        task: TaskId,
+        gated: &CommitId,
+        expected_head: &CommitId,
+    ) -> Result<LandOutcome, Error> {
         let current = self.protected_head().await?;
 
-        // A retried land after a crash finds the task branch already merged.
-        // Report the commit that landed it instead of merging again.
-        if self.is_ancestor(&task_head, &current).await? {
-            let commit = self
-                .landed_commit(expected_head, &task_head, &current)
-                .await?;
+        // A retried land after a crash finds the task already merged. Report the
+        // commit that landed it instead of merging again.
+        if self.is_ancestor(gated, &current).await? {
+            let commit = self.landing_commit(gated, &current).await?;
             return Ok(LandOutcome::Landed { commit });
         }
-
         if current != *expected_head {
             return Ok(LandOutcome::HeadMoved { current });
         }
-
-        let protected_ref = format!("refs/heads/{}", self.protected);
-
-        if self.is_ancestor(&current, &task_head).await? {
-            return self
-                .move_protected(&protected_ref, &task_head, expected_head)
-                .await;
+        if self.is_ancestor(&current, gated).await? {
+            return self.advance(gated, expected_head).await;
         }
 
         let out = git::run(
@@ -146,7 +143,7 @@ impl Repo {
                 "--name-only",
                 "-z",
                 current.as_str(),
-                task_head.as_str(),
+                gated.as_str(),
             ],
             &[],
         )
@@ -180,26 +177,40 @@ impl Repo {
             "-p",
             current.as_str(),
             "-p",
-            task_head.as_str(),
+            gated.as_str(),
             "-m",
             &message,
         ];
         let merged: CommitId = git::ok(&self.root, &args, &envs).await?.trim().parse()?;
-        self.move_protected(&protected_ref, &merged, expected_head)
-            .await
+        self.advance(&merged, expected_head).await
     }
 
-    /// Point the protected branch at `commit`, but only if it still sits at
-    /// `expected_head`; a concurrent move is reported, never clobbered.
-    async fn move_protected(
+    /// Point the protected branch at `commit`, which descends from `expected_head`.
+    async fn advance(
         &self,
-        protected_ref: &str,
         commit: &CommitId,
         expected_head: &CommitId,
     ) -> Result<LandOutcome, Error> {
+        match self.checkout_of_protected().await? {
+            Some(checkout) => {
+                self.advance_checkout(&checkout, commit, expected_head)
+                    .await
+            }
+            None => self.advance_ref(commit, expected_head).await,
+        }
+    }
+
+    /// Move the protected ref only if it still sits at `expected_head`. Used when no
+    /// checkout has the protected branch checked out.
+    async fn advance_ref(
+        &self,
+        commit: &CommitId,
+        expected_head: &CommitId,
+    ) -> Result<LandOutcome, Error> {
+        let protected_ref = format!("refs/heads/{}", self.protected);
         let args = [
             "update-ref",
-            protected_ref,
+            protected_ref.as_str(),
             commit.as_str(),
             expected_head.as_str(),
         ];
@@ -217,36 +228,78 @@ impl Repo {
         Err(git::ensure_ok(out, &args).expect_err("status was not success"))
     }
 
-    /// The commit a finished land recorded, for the retry path.
-    async fn landed_commit(
+    /// Move the protected branch through the checkout that has it checked out.
+    ///
+    /// The checkout's own `merge --ff-only` moves the branch and its files in one
+    /// step, and git refuses it rather than overwrite local changes. A dirty checkout
+    /// is checked first so the refusal names the path.
+    async fn advance_checkout(
         &self,
+        checkout: &Path,
+        commit: &CommitId,
         expected_head: &CommitId,
-        task_head: &CommitId,
-        current: &CommitId,
-    ) -> Result<CommitId, Error> {
-        // A fast-forward land made the protected head the task head.
-        if self.is_ancestor(expected_head, task_head).await? {
-            return Ok(task_head.clone());
-        }
-        // A merge land committed one child of the expected head, and later
-        // lands build on it, so it is the first first-parent commit after it.
-        let range = format!("{expected_head}..{current}");
-        let out = git::ok(
-            &self.root,
-            &["rev-list", "--first-parent", "--reverse", &range],
+    ) -> Result<LandOutcome, Error> {
+        let dirty = git::ok(
+            checkout,
+            &["status", "--porcelain", "--untracked-files=no"],
             &[],
         )
         .await?;
-        let commit = out
-            .lines()
-            .next()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .ok_or_else(|| Error::BadOutput {
-                args: format!("rev-list {range}"),
-                detail: "no commit landed after the expected head".to_owned(),
-            })?;
-        Ok(commit.parse()?)
+        if !dirty.trim().is_empty() {
+            return Ok(LandOutcome::CheckoutDirty {
+                path: checkout.to_path_buf(),
+            });
+        }
+        let args = ["merge", "--ff-only", "--quiet", commit.as_str()];
+        let out = git::run(checkout, &args, &[]).await?;
+        if out.status.success() {
+            return Ok(LandOutcome::Landed {
+                commit: commit.clone(),
+            });
+        }
+        let current = self.protected_head().await?;
+        if current != *expected_head {
+            return Ok(LandOutcome::HeadMoved { current });
+        }
+        Err(git::ensure_ok(out, &args).expect_err("status was not success"))
+    }
+
+    /// The checkout that has the protected branch checked out, the user's main
+    /// checkout included.
+    async fn checkout_of_protected(&self) -> Result<Option<PathBuf>, Error> {
+        let out = git::ok(&self.root, &["worktree", "list", "--porcelain"], &[]).await?;
+        let wanted = format!("branch refs/heads/{}", self.protected);
+        let mut path: Option<PathBuf> = None;
+        for line in out.lines() {
+            if let Some(found) = line.strip_prefix("worktree ") {
+                path = Some(PathBuf::from(found));
+            } else if line == wanted {
+                return Ok(path);
+            }
+        }
+        Ok(None)
+    }
+
+    /// The commit that landed `gated` on the way to `head`: `gated` itself after a
+    /// fast-forward, else the merge commit whose second parent it is. Falls back to
+    /// `head` when neither sits on the first-parent history, as when the user merged
+    /// the task by hand.
+    async fn landing_commit(&self, gated: &CommitId, head: &CommitId) -> Result<CommitId, Error> {
+        let args = ["log", "--first-parent", "--format=%H %P", head.as_str()];
+        let out = git::ok(&self.root, &args, &[]).await?;
+        for line in out.lines() {
+            let mut ids = line.split_whitespace();
+            let Some(commit) = ids.next() else {
+                continue;
+            };
+            // Parents after the first are the ones a landing merge adds.
+            let landed =
+                commit == gated.as_str() || ids.skip(1).any(|parent| parent == gated.as_str());
+            if landed {
+                return Ok(commit.parse()?);
+            }
+        }
+        Ok(head.clone())
     }
 
     async fn is_ancestor(&self, older: &CommitId, newer: &CommitId) -> Result<bool, Error> {
@@ -262,19 +315,6 @@ impl Repo {
             Some(1) => Ok(false),
             _ => git::ensure_ok(out, &args).map(|_| false),
         }
-    }
-
-    async fn branch_head(&self, branch_ref: &str) -> Result<CommitId, Error> {
-        let commitish = format!("{branch_ref}^{{commit}}");
-        let args = ["rev-parse", "--verify", "--quiet", &commitish];
-        let out = git::run(&self.root, &args, &[]).await?;
-        if !out.status.success() {
-            let task = branch_ref
-                .strip_prefix("refs/heads/acan/")
-                .unwrap_or(branch_ref);
-            return Err(Error::UnknownTask(task.to_owned()));
-        }
-        Ok(out.stdout.trim().parse()?)
     }
 
     fn author_env(&self) -> [(String, String); 4] {
@@ -294,8 +334,8 @@ impl Repo {
 pub enum LandOutcome {
     /// The task landed; the protected branch now points at this commit.
     Landed {
-        /// The new protected head: the task head on a fast-forward, else the
-        /// merge commit.
+        /// The new protected head: the gated commit on a fast-forward, else the
+        /// merge commit. On a retry, the commit that landed the task.
         commit: CommitId,
     },
     /// The merge conflicts. The protected branch did not move.
@@ -308,6 +348,13 @@ pub enum LandOutcome {
     HeadMoved {
         /// The protected head now.
         current: CommitId,
+    },
+    /// The checkout of the protected branch has uncommitted changes to tracked
+    /// files, so landing would overwrite them. Nothing moved; commit or stash there
+    /// and land again.
+    CheckoutDirty {
+        /// The checkout that has the protected branch.
+        path: PathBuf,
     },
 }
 
@@ -323,6 +370,10 @@ impl From<LandOutcome> for Result<CommitId, String> {
             LandOutcome::HeadMoved { current } => {
                 Err(format!("protected branch moved to {current}"))
             }
+            LandOutcome::CheckoutDirty { path } => Err(format!(
+                "{} has uncommitted changes; commit or stash to land",
+                path.display()
+            )),
         }
     }
 }

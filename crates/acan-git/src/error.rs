@@ -12,9 +12,6 @@ pub enum Error {
     /// `HEAD` is detached, so the current branch cannot name the protected branch.
     #[error("repository at {0} has a detached HEAD; open with an explicit protected branch")]
     DetachedHead(PathBuf),
-    /// The task has no worktree branch to land.
-    #[error("task has no worktree branch: {0}")]
-    UnknownTask(String),
     /// The worktree slot is occupied by a directory that is not on the task branch.
     #[error("worktree path exists on a different branch: {0}")]
     SlotTaken(PathBuf),
