@@ -34,7 +34,7 @@ pub struct Line3 {
     pub points: Vec<[f32; 3]>,
     pub closed: bool,
     pub tone: Ink,
-    /// Stroke width in plan units. The renderer keeps it at least 0.75 device px.
+    /// Stroke width in device pixels at every zoom. The renderer keeps it at least 0.75 px.
     pub width: f32,
     pub detail: Detail,
 }
@@ -57,6 +57,8 @@ pub enum Surface {
     Paper,
     Lit,
     Glass,
+    /// A flat fill lying on the ground, such as a belt. The edge pass treats it as ground.
+    Floor,
     Ink(Ink),
 }
 

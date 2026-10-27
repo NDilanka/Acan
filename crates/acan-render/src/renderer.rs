@@ -1,7 +1,9 @@
 //! The wgpu renderer. A frame has two passes. The first draws the ground, belts, halos,
 //! machines, lines and dots into colour, normal and depth targets, 4x MSAA where the device
-//! allows it. The second runs the edge pass over depth and normals and resolves into the
-//! surface. Model buffers are uploaded once per model set and per scene, never per frame.
+//! allows it. The ground writes depth and an up normal, so the edge pass treats it as a
+//! surface. The second runs the edge pass over every MSAA sample of depth and normals and
+//! resolves into the surface. Model buffers are uploaded once per model set and per scene,
+//! never per frame.
 
 use std::mem::size_of;
 use std::ops::Range;
@@ -22,9 +24,8 @@ const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const MSAA: u32 = 4;
 /// Thinnest stroke on screen, in device pixels. Thinner strokes fade out instead.
 const MIN_STROKE_PX: f32 = 0.75;
-/// Outline weight at zoom 1, in plan units.
-const EDGE_WEIGHT: f32 = 0.6;
-/// Depth step, in plan units, that counts as a silhouette.
+/// Depth step, in plan units, that makes an edge between two objects a silhouette rather than
+/// a crease.
 const SILHOUETTE_STEP: f32 = 0.5;
 const CREASE_DEGREES: f32 = 30.0;
 /// Extra depth range beyond the scene's bounding radius, so halos and belts stay in range.
@@ -60,7 +61,40 @@ pub struct CameraUniform {
     pub scene: [f32; 4],
     pub view: [f32; 4],
     pub edge: [f32; 4],
-    pub grid: [f32; 4],
+    pub halo: [f32; 4],
+}
+
+/// The shader source for a scene target with `samples` MSAA samples per pixel.
+pub fn plant_source(samples: u32) -> String {
+    let multisampled = if samples > 1 { "multisampled_" } else { "" };
+    include_str!("plant.wgsl")
+        .replace("@@MS@@", multisampled)
+        .replace("@@SAMPLES@@", &samples.to_string())
+        .replace("@@GRID@@", &grid_consts())
+}
+
+/// The grid constants of `theme.rs`, as the WGSL constants that `plant.wgsl` reads.
+fn grid_consts() -> String {
+    let (show_lo, show_hi) = theme::GRID_SHOW_PX;
+    let (graze_lo, graze_hi) = theme::GRID_GRAZING;
+    format!(
+        "const GRID_LEVELS: i32 = {};\n\
+         const GRID_BASE: f32 = {:?};\n\
+         const GRID_STEP: f32 = {:?};\n\
+         const GRID_LEVEL_ALPHA: f32 = {:?};\n\
+         const GRID_MAX_ALPHA: f32 = {:?};\n\
+         const GRID_SHOW_PX: vec2<f32> = vec2<f32>({show_lo:?}, {show_hi:?});\n\
+         const GRID_FADE_START: f32 = {:?};\n\
+         const GRID_FADE_END: f32 = {:?};\n\
+         const GRID_GRAZING: vec2<f32> = vec2<f32>({graze_lo:?}, {graze_hi:?});\n",
+        theme::GRID_LEVELS,
+        theme::GRID_BASE,
+        theme::GRID_STEP,
+        theme::GRID_LEVEL_ALPHA,
+        theme::GRID_MAX_ALPHA,
+        theme::GRID_FADE_START,
+        theme::GRID_FADE_END,
+    )
 }
 
 #[repr(C)]
@@ -123,6 +157,7 @@ pub struct Renderer {
     /// Six halo vertices per kind, kind by kind.
     halos: Option<wgpu::Buffer>,
     world: Option<MeshBuffers>,
+    world_lines: Option<StrokeBuffers>,
     instances: Option<wgpu::Buffer>,
     /// Per kind: its range inside `instances`.
     ranges: Vec<Range<u32>>,
@@ -215,11 +250,9 @@ impl Renderer {
         });
         let edge_layout = edge_layout(&device, samples);
 
-        let source = include_str!("plant.wgsl")
-            .replace("@@MS@@", if samples > 1 { "multisampled_" } else { "" });
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("plant"),
-            source: wgpu::ShaderSource::Wgsl(source.into()),
+            source: wgpu::ShaderSource::Wgsl(plant_source(samples).into()),
         });
         let pipelines = Pipelines::new(
             &device,
@@ -254,6 +287,7 @@ impl Renderer {
             models: Vec::new(),
             halos: None,
             world: None,
+            world_lines: None,
             instances: None,
             ranges: Vec::new(),
             centre: [0.0; 3],
@@ -333,6 +367,11 @@ impl Renderer {
     /// If an instance names a kind that `set_models` did not upload.
     pub fn set_scene(&mut self, scene: &Scene) {
         self.world = Some(self.mesh_buffers(&scene.world));
+        self.world_lines = Some(self.strokes(
+            "world lines",
+            geometry::line_vertices(&scene.lines),
+            wgpu::BufferUsages::VERTEX,
+        ));
         let (raw, ranges) = geometry::instance_data(&scene.instances, self.models.len());
         self.instances = Some(upload(
             &self.device,
@@ -520,6 +559,16 @@ impl Renderer {
             pass.set_vertex_buffer(1, instances.slice(..));
             pass.draw(0..count, range.clone());
         }
+        // World lines are always drawn, so the total is the last cumulative count. The identity
+        // instance is instance 0.
+        if let Some(lines) = &self.world_lines {
+            let count = lines.counts[Lod::Close as usize];
+            if count > 0 {
+                pass.set_vertex_buffer(0, lines.buffer.slice(..));
+                pass.set_vertex_buffer(1, instances.slice(..));
+                pass.draw(0..count, 0..1);
+            }
+        }
 
         pass.set_pipeline(&self.pipelines.dot);
         for (model, range) in self.models.iter().zip(&self.ranges) {
@@ -544,13 +593,8 @@ impl Renderer {
             pivot: [pivot[0], pivot[1], 0.0, 0.0],
             scene: [self.centre[0], self.centre[1], self.centre[2], self.radius],
             view: [vw, vh, camera.zoom(), MIN_STROKE_PX],
-            edge: [
-                SILHOUETTE_STEP,
-                CREASE_DEGREES.to_radians().cos(),
-                EDGE_WEIGHT,
-                0.0,
-            ],
-            grid: [HALO_WIDTH, 0.0, 0.0, 0.0],
+            edge: [SILHOUETTE_STEP, CREASE_DEGREES.to_radians().cos(), 0.0, 0.0],
+            halo: [HALO_WIDTH, 0.0, 0.0, 0.0],
         }
     }
 
@@ -821,8 +865,8 @@ impl Pipelines {
                 "vs_full",
                 "fs_grid",
                 &[],
-                depth(false, wgpu::CompareFunction::Always),
-                &[colour(None), normal(false)],
+                depth(true, wgpu::CompareFunction::Always),
+                &[colour(None), normal(true)],
             ),
             mesh: make(
                 "mesh",
@@ -863,7 +907,7 @@ impl Pipelines {
             edge: make(
                 "edges",
                 &edge_pipeline_layout,
-                "vs_edge",
+                "vs_full",
                 "fs_edge",
                 &[],
                 None,

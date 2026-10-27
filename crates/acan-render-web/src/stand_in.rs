@@ -21,9 +21,10 @@ const LIP_WIDTH: f32 = 2.0;
 const LIP_HEIGHT: f32 = 1.2;
 const PANEL_HEIGHT: f32 = 0.4;
 const SCREW_RADIUS: f32 = 1.3;
-const LINE_WIDTH: f32 = 0.6;
-/// Depth of a belt channel below the grid, in plan units.
-const BELT_DEPTH: f32 = 1.5;
+/// Width of a detail line in device pixels. The renderer draws nothing thinner than this.
+const LINE_WIDTH: f32 = 0.75;
+/// Width of a belt's edge lines in device pixels. They stay this thin at every zoom.
+const BELT_EDGE_PX: f32 = 1.0;
 /// Radius of a belt's rounded corners, in plan units.
 const BELT_CORNER: f32 = 10.0;
 /// Segments per rounded corner.
@@ -217,6 +218,18 @@ impl Builder {
     /// A quad with one normal for the whole face.
     fn flat(&mut self, c: [[f32; 3]; 4], n: [f32; 3]) {
         self.quad(c, [n; 4]);
+    }
+
+    /// A quad lying flat on the ground. The edge pass reads it as ground, not as an object.
+    fn floor(&mut self, c: [[f32; 3]; 4]) {
+        let first = self.positions.len() as u32;
+        for p in c {
+            self.positions.push(p);
+            self.normals.push([0.0, 0.0, 1.0]);
+            self.surfaces.push(Surface::Floor);
+        }
+        self.indices
+            .extend([first, first + 1, first + 2, first, first + 2, first + 3]);
     }
 
     fn finish(self) -> Mesh {
@@ -435,11 +448,12 @@ fn circle(radius: f32, z: f32) -> Vec<[f32; 3]> {
         .collect()
 }
 
-/// The world drawn under the machines: a channel for each belt.
+/// The world drawn under the machines: a ribbon and two edge lines for each belt.
 pub fn scene(layout: &Layout, models: &[Model]) -> Scene {
     let mut world = Builder::default();
+    let mut lines = Vec::new();
     for belt in &layout.belts {
-        channel(&mut world, belt);
+        belt_ribbon(&mut world, &mut lines, belt);
     }
     let world = world.finish();
     let mut bounds = Aabb::EMPTY;
@@ -468,47 +482,36 @@ pub fn scene(layout: &Layout, models: &[Model]) -> Scene {
     }
     Scene {
         world,
+        lines,
         instances,
         bounds,
     }
 }
 
-/// A belt channel: a floor below the grid with a wall on each side.
-fn channel(b: &mut Builder, belt: &Belt) {
+/// A belt is a flat ribbon on the ground with a fine line along each side. Walls would draw a
+/// double track, so the ribbon has none.
+fn belt_ribbon(world: &mut Builder, lines: &mut Vec<Line3>, belt: &Belt) {
     let centre = rounded(&belt.path);
     if centre.len() < 2 {
         return;
     }
     let normals = normals(&centre);
     let half = belt_width(belt.imports) / 2.0;
-    let at = |p: [f32; 2], n: [f32; 2], side: f32, z: f32| {
-        [p[0] + side * n[0] * half, p[1] + side * n[1] * half, z]
+    let at = |i: usize, side: f32| {
+        let (p, n) = (centre[i], normals[i]);
+        [p[0] + side * n[0] * half, p[1] + side * n[1] * half, 0.0]
     };
-    let floor = -BELT_DEPTH;
     for i in 0..centre.len() - 1 {
-        let (c0, c1) = (centre[i], centre[i + 1]);
-        let (n0, n1) = (normals[i], normals[i + 1]);
-        b.flat(
-            [
-                at(c0, n0, 1.0, floor),
-                at(c0, n0, -1.0, floor),
-                at(c1, n1, -1.0, floor),
-                at(c1, n1, 1.0, floor),
-            ],
-            [0.0, 0.0, 1.0],
-        );
-        for side in [1.0_f32, -1.0] {
-            let inward = |n: [f32; 2]| [-side * n[0], -side * n[1], 0.0];
-            b.quad(
-                [
-                    at(c0, n0, side, floor),
-                    at(c1, n1, side, floor),
-                    at(c1, n1, side, 0.0),
-                    at(c0, n0, side, 0.0),
-                ],
-                [inward(n0), inward(n1), inward(n1), inward(n0)],
-            );
-        }
+        world.floor([at(i, 1.0), at(i, -1.0), at(i + 1, -1.0), at(i + 1, 1.0)]);
+    }
+    for side in [1.0_f32, -1.0] {
+        lines.push(Line3 {
+            points: (0..centre.len()).map(|i| at(i, side)).collect(),
+            closed: false,
+            tone: Ink::Lo,
+            width: BELT_EDGE_PX,
+            detail: Detail::Always,
+        });
     }
 }
 
@@ -690,7 +693,7 @@ mod tests {
     }
 
     #[test]
-    fn a_belt_channel_dips_below_the_grid_and_stays_in_its_width() {
+    fn a_belt_is_a_flat_ribbon_with_one_edge_line_per_side() {
         let belt = Belt {
             from: 0,
             to: 1,
@@ -698,13 +701,34 @@ mod tests {
             path: vec![[0.0, 0.0], [100.0, 0.0]],
         };
         let mut world = Builder::default();
-        channel(&mut world, &belt);
+        let mut lines = Vec::new();
+        belt_ribbon(&mut world, &mut lines, &belt);
         let mesh = world.finish();
         let half = belt_width(1) / 2.0;
-        for p in &mesh.positions {
-            assert!(p[2] <= 1e-6 && p[2] >= -BELT_DEPTH - 1e-6);
-            assert!(p[1].abs() <= half + 1e-4);
+        assert!(
+            mesh.positions.iter().all(|p| p[2] == 0.0),
+            "belt lies on the ground"
+        );
+        assert!(
+            mesh.normals.iter().all(|n| *n == [0.0, 0.0, 1.0]),
+            "belt has no walls"
+        );
+        assert!(mesh.surfaces.iter().all(|s| *s == Surface::Floor));
+        assert!(mesh.positions.iter().all(|p| p[1].abs() <= half + 1e-4));
+        assert_eq!(lines.len(), 2, "one edge line per side");
+        for line in &lines {
+            assert_eq!(line.tone, Ink::Lo);
+            assert!(line.points.iter().all(|p| (p[1].abs() - half).abs() < 1e-4));
         }
+    }
+
+    #[test]
+    fn every_belt_gets_its_edge_lines_in_the_scene() {
+        let plant = stress(200);
+        let (kinds, edges) = plant.layout_input();
+        let laid = layout(&kinds, &edges);
+        let scene = scene(&laid, &models());
+        assert_eq!(scene.lines.len(), 2 * laid.belts.len());
     }
 
     #[test]

@@ -51,11 +51,11 @@ function placeLabels() {
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
   labelGeneration += 1;
-  const triples = app.label_layout(altDown);
-  for (let k = 0; k < triples.length; k += 3) {
-    const index = triples[k];
-    const x = triples[k + 1];
-    const y = triples[k + 2];
+  const quads = app.label_layout(altDown);
+  for (let k = 0; k < quads.length; k += 3) {
+    const index = quads[k];
+    const x = quads[k + 1];
+    const y = quads[k + 2];
     let el = labels.get(index);
     if (el === undefined) {
       el = makeLabel(index);

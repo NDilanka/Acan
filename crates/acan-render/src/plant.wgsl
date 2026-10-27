@@ -9,21 +9,22 @@ struct Camera {
     scene: vec4<f32>,
     // x, y: viewport in device px; z: zoom in device px per plan unit; w: thinnest stroke in px.
     view: vec4<f32>,
-    // x: silhouette step in plan units; y: cosine of the crease angle; z: outline weight in plan units.
+    // x: depth step in plan units that makes a silhouette; y: cosine of the crease angle.
     edge: vec4<f32>,
     // x: halo falloff in plan units.
-    grid: vec4<f32>,
+    halo: vec4<f32>,
 }
 
 struct Theme {
-    palette: array<vec4<f32>, 23>,
+    palette: array<vec4<f32>, 22>,
     tints: array<vec4<f32>, 8>,
 }
 
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var<uniform> theme: Theme;
 
-// Depth and normals from the scene pass. Read by the edge pass only.
+// Depth and normals from the scene pass, one value per MSAA sample. The normal's alpha is 0 on
+// the ground and on surfaces lying on it, and 1 on objects. Read by the edge pass only.
 @group(1) @binding(0) var depth_tex: texture_depth_@@MS@@2d;
 @group(1) @binding(1) var normal_tex: texture_@@MS@@2d<f32>;
 
@@ -31,47 +32,36 @@ const SLOT_PAGE: u32 = 0u;
 const SLOT_TOP: u32 = 1u;
 const SLOT_SHADE0: u32 = 2u;
 const SLOT_HALO: u32 = 8u;
-const SLOT_GRID_MINOR: u32 = 9u;
-const SLOT_GRID_MAJOR: u32 = 10u;
-const SLOT_HI: u32 = 11u;
-const SLOT_MID: u32 = 12u;
+const SLOT_GRID: u32 = 9u;
+const SLOT_HI: u32 = 10u;
+const SLOT_MID: u32 = 11u;
 
+// Set on the code of a surface that lies on the ground. Matches `theme::FLOOR_FLAG`.
+const FLOOR_FLAG: u32 = 65536u;
+// MSAA samples per pixel in the scene targets: 1 or 4. The renderer fills this in.
+const SAMPLES: i32 = @@SAMPLES@@;
+// The grid constants of `theme.rs`, written in by the renderer.
+@@GRID@@
+// The ground is depth-tested this far below z = 0, so surfaces that lie on it pass the test.
+const GROUND_Z: f32 = -0.05;
 // Faces whose normal is steeper than this are tops.
 const TOP_NZ: f32 = 0.7;
 // Lines and dots sit this far toward the viewer, so they never z-fight the surface under them.
 const LIFT: f32 = 0.05;
-const MINOR: f32 = 8.0;
-const MAJOR: f32 = 40.0;
+// Creases are drawn fainter than silhouettes.
+const CREASE_ALPHA: f32 = 0.75;
 
-const EDGE_DIRS: array<vec2<f32>, 8> = array<vec2<f32>, 8>(
-    vec2<f32>(1.0, 0.0),
-    vec2<f32>(0.70710678, 0.70710678),
-    vec2<f32>(0.0, 1.0),
-    vec2<f32>(-0.70710678, 0.70710678),
-    vec2<f32>(-1.0, 0.0),
-    vec2<f32>(-0.70710678, -0.70710678),
-    vec2<f32>(0.0, -1.0),
-    vec2<f32>(0.70710678, -0.70710678),
-);
-
-struct FragOut {
-    @location(0) colour: vec4<f32>,
-    @location(1) normal: vec4<f32>,
+// Clip-space depth of a world point. Nearer points get smaller depth.
+fn depth_of(p: vec3<f32>) -> f32 {
+    return 0.5 - dot(p - camera.scene.xyz, camera.toward.xyz) / (2.0 * camera.scene.w);
 }
 
-// Clip space for a world point. Orthographic, so depth is linear along the view direction, and
-// nearer points get smaller depth.
+// Clip space for a world point. Orthographic, so depth is linear along the view direction.
 fn to_clip(p: vec3<f32>) -> vec4<f32> {
     let rel = p - vec3<f32>(camera.pivot.xy, 0.0);
     let sx = camera.view.z * dot(rel, camera.right.xyz);
     let sy = camera.view.z * dot(rel, camera.up.xyz);
-    let depth = dot(p - camera.scene.xyz, camera.toward.xyz);
-    return vec4<f32>(
-        2.0 * sx / camera.view.x,
-        2.0 * sy / camera.view.y,
-        0.5 - depth / (2.0 * camera.scene.w),
-        1.0,
-    );
+    return vec4<f32>(2.0 * sx / camera.view.x, 2.0 * sy / camera.view.y, depth_of(p), 1.0);
 }
 
 // The four-tone paper shade of a face, from its normal and the light that sits at the camera's
@@ -87,6 +77,11 @@ fn paper_slot(n: vec3<f32>) -> u32 {
     let light = -normalize(camera.right.xy);
     let lit = (dot(normalize(horizontal), light) + 1.0) * 0.5;
     return SLOT_SHADE0 + u32(clamp(floor(lit * 4.0), 0.0, 3.0));
+}
+
+struct FragOut {
+    @location(0) colour: vec4<f32>,
+    @location(1) normal: vec4<f32>,
 }
 
 // Mesh pass: one draw per kind per level, instanced.
@@ -119,16 +114,24 @@ fn vs_mesh(v: MeshIn) -> MeshOut {
 @fragment
 fn fs_mesh(v: MeshOut) -> FragOut {
     let n = normalize(v.normal);
-    var slot = v.code - 1u;
-    if (v.code == 0u) {
+    let base = v.code & 0xffffu;
+    var slot = SLOT_PAGE;
+    if (base == 0u) {
         slot = paper_slot(n);
+    } else {
+        slot = base - 1u;
     }
-    let colour = theme.palette[slot] * theme.tints[v.tint];
-    return FragOut(colour, vec4<f32>(n * 0.5 + 0.5, 1.0));
+    let ink = theme.palette[slot] * theme.tints[v.tint];
+    var is_object = 1.0;
+    if ((v.code & FLOOR_FLAG) != 0u) {
+        is_object = 0.0;
+    }
+    return FragOut(vec4<f32>(ink.rgb, ink.a), vec4<f32>(n * 0.5 + 0.5, is_object));
 }
 
-// Ground: one full-screen triangle. Each pixel's view ray meets z = 0 at a plan point, and the
-// lines are analytic, so there is no geometry and no depth write.
+// Ground: one full-screen triangle. Each pixel's view ray meets z = GROUND_Z at a plan point, and
+// the lines are analytic, so there is no geometry. The ground writes depth and an up normal, so
+// the edge pass treats it as a surface.
 
 struct FullOut {
     @builtin(position) clip: vec4<f32>,
@@ -145,38 +148,57 @@ fn vs_full(@builtin(vertex_index) i: u32) -> FullOut {
     return FullOut(full_clip(i));
 }
 
-// Returns (line coverage, pixels per cell) for lines every `spacing` plan units.
-fn grid_cells(p: vec2<f32>, spacing: f32) -> vec2<f32> {
-    let c = p / spacing;
+// Coverage of a 1 px anti-aliased line every `spacing` plan units, and the spacing in device px.
+fn grid_line(ground: vec2<f32>, spacing: f32) -> vec2<f32> {
+    let c = ground / spacing;
     let d = max(fwidth(c), vec2<f32>(1e-6));
     let dist = abs(fract(c + 0.5) - 0.5) / d;
     let coverage = 1.0 - clamp(min(dist.x, dist.y), 0.0, 1.0);
     return vec2<f32>(coverage, 1.0 / max(d.x, d.y));
 }
 
+// Ink alpha of the grid at a ground point. Each level adds its alpha while it is shown, so a line
+// that two levels share is darker. The total is capped.
+fn grid_alpha(ground: vec2<f32>) -> f32 {
+    var sum = 0.0;
+    var spacing = GRID_BASE;
+    for (var level = 0; level < GRID_LEVELS; level = level + 1) {
+        let line = grid_line(ground, spacing);
+        let shown = smoothstep(GRID_SHOW_PX[0], GRID_SHOW_PX[1], line.y);
+        sum = sum + GRID_LEVEL_ALPHA * shown * line.x;
+        spacing = spacing * GRID_STEP;
+    }
+    return min(GRID_MAX_ALPHA, sum);
+}
+
+struct GridOut {
+    @location(0) colour: vec4<f32>,
+    @location(1) normal: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+}
+
 @fragment
-fn fs_grid(@builtin(position) frag: vec4<f32>) -> FragOut {
+fn fs_grid(@builtin(position) frag: vec4<f32>) -> GridOut {
     let zoom = camera.view.z;
     let sx = (frag.x - camera.view.x * 0.5) / zoom;
     let sy = (camera.view.y * 0.5 - frag.y) / zoom;
     let t = -sy * camera.up.z / camera.toward.z;
     let ground = camera.pivot.xy + sx * camera.right.xy + sy * camera.up.xy + t * camera.toward.xy;
 
-    let minor = grid_cells(ground, MINOR);
-    let major = grid_cells(ground, MAJOR);
-    let fade_minor = smoothstep(2.0, 6.0, minor.y);
-    let fade_major = smoothstep(1.5, 4.0, major.y);
+    // Fades by distance from the target in half view heights, so it looks the same at every zoom.
+    let half_height = camera.view.y * 0.5 / zoom;
+    let distance = length(ground - camera.pivot.xy);
+    let fade = 1.0 - smoothstep(GRID_FADE_START * half_height, GRID_FADE_END * half_height, distance);
+    // Thins out as the view grazes the ground.
+    let grazing = smoothstep(GRID_GRAZING[0], GRID_GRAZING[1], camera.toward.z);
+    let alpha = grid_alpha(ground) * fade * grazing;
 
-    // Low tilt compresses the far ground into the top of the screen, so it fades out there.
-    let sin_e = camera.toward.z;
-    let tilt = 1.0 - smoothstep(0.25, 0.7, sin_e);
-    let reach = length(camera.view.xy) * 0.5 / zoom / max(sin_e, 0.3);
-    let horizon = 1.0 - tilt * smoothstep(0.25 * reach, reach, length(ground - camera.pivot.xy));
-
-    var colour = theme.palette[SLOT_PAGE].rgb;
-    colour = mix(colour, theme.palette[SLOT_GRID_MINOR].rgb, minor.x * fade_minor * horizon);
-    colour = mix(colour, theme.palette[SLOT_GRID_MAJOR].rgb, major.x * fade_major * horizon);
-    return FragOut(vec4<f32>(colour, 1.0), vec4<f32>(0.0));
+    let page = theme.palette[SLOT_PAGE].rgb;
+    let ink = theme.palette[SLOT_GRID].rgb;
+    // Points far outside the scene's depth range clamp to its ends. No object can lie on such a
+    // pixel, so the clamp never hides one.
+    let depth = clamp(depth_of(vec3<f32>(ground, GROUND_Z)), 0.0, 1.0);
+    return GridOut(vec4<f32>(mix(page, ink, alpha), 1.0), vec4<f32>(0.5, 0.5, 1.0, 0.0), depth);
 }
 
 // Halo: a soft ring on the ground around each footprint, drawn before the machines.
@@ -205,13 +227,13 @@ fn vs_halo(v: HaloIn) -> HaloOut {
 @fragment
 fn fs_halo(v: HaloOut) -> FragOut {
     let q = max(max(v.rect.xy - v.local, v.local - v.rect.zw), vec2<f32>(0.0));
-    let fade = 1.0 - smoothstep(0.0, camera.grid.x, length(q));
+    let fade = 1.0 - smoothstep(0.0, camera.halo.x, length(q));
     let halo = theme.palette[SLOT_HALO];
     return FragOut(vec4<f32>(halo.rgb, halo.a * fade * fade), vec4<f32>(0.0));
 }
 
-// Lines: each segment is six vertices. The vertex shader widens it to a constant pixel width,
-// and the fragment shader anti-aliases the edge.
+// Lines: each segment is six vertices. The vertex shader widens it to a constant device-pixel
+// width, and the fragment shader anti-aliases the edge.
 
 struct LineIn {
     @location(0) a: vec3<f32>,
@@ -233,8 +255,10 @@ struct LineOut {
 @vertex
 fn vs_line(v: LineIn) -> LineOut {
     let lift = camera.toward.xyz * LIFT;
-    let ca = to_clip(v.a + v.offset + lift);
-    let cb = to_clip(v.b + v.offset + lift);
+    let pa = v.a + v.offset + lift;
+    let pb = v.b + v.offset + lift;
+    let ca = to_clip(pa);
+    let cb = to_clip(pb);
     let view = camera.view.xy;
     let delta = (cb.xy - ca.xy) * view * 0.5;
     let len = length(delta);
@@ -244,10 +268,8 @@ fn vs_line(v: LineIn) -> LineOut {
     }
     let normal = vec2<f32>(-dir.y, dir.x);
 
-    let width_px = v.width * camera.view.z;
     let min_px = camera.view.w;
-    let stroke_px = max(width_px, min_px);
-    let half_px = stroke_px * 0.5;
+    let half_px = max(v.width, min_px) * 0.5;
     let across = v.corner.y * half_px;
 
     let base = mix(ca, cb, v.corner.x);
@@ -255,7 +277,7 @@ fn vs_line(v: LineIn) -> LineOut {
     out.clip = vec4<f32>(base.xy + normal * across * 2.0 / view, base.z, 1.0);
     out.across = across;
     out.half_px = half_px;
-    out.cover = min(width_px / min_px, 1.0);
+    out.cover = min(v.width / min_px, 1.0);
     out.tone = v.tone;
     return out;
 }
@@ -309,59 +331,91 @@ fn fs_dot(v: DotOut) -> FragOut {
     return FragOut(vec4<f32>(ink.rgb, coverage), vec4<f32>(0.0));
 }
 
-// Edge pass: a full-screen triangle that reads depth and normals around each pixel. A depth
-// step is a silhouette (hi); a normal turning past the crease angle is a crease (mid). Background
-// has depth 1 and no normal.
+// Edge pass: a full-screen triangle that reads depth and normals at every MSAA sample. A sample
+// is marked when its 1-pixel neighbour is farther away and differs in class or normal. The
+// mark falls on the nearer side, so an edge is one device pixel wide. Silhouettes and contacts
+// are hi; creases are mid. The coverage is the share of samples marked, which anti-aliases the
+// edge at any angle.
 
-@vertex
-fn vs_edge(@builtin(vertex_index) i: u32) -> FullOut {
-    return FullOut(full_clip(i));
+const DIRS: array<vec2<i32>, 4> = array<vec2<i32>, 4>(
+    vec2<i32>(1, 0),
+    vec2<i32>(0, 1),
+    vec2<i32>(-1, 0),
+    vec2<i32>(0, -1),
+);
+
+struct Texel {
+    depth: f32,
+    normal: vec3<f32>,
+    is_object: bool,
+}
+
+fn texel(p: vec2<i32>, s: i32) -> Texel {
+    let n = textureLoad(normal_tex, p, s);
+    return Texel(textureLoad(depth_tex, p, s), n.xyz * 2.0 - 1.0, n.w > 0.5);
+}
+
+// Returns (hi, mid) for one sample: 1 where the sample is an edge of that kind.
+fn sample_marks(p: vec2<i32>, dims: vec2<i32>, s: i32) -> vec2<f32> {
+    let c = texel(p, s);
+    var hi = 0.0;
+    var mid = 0.0;
+    for (var k = 0; k < 4; k = k + 1) {
+        let q = clamp(p + DIRS[k], vec2<i32>(0), dims - vec2<i32>(1));
+        let o = texel(q, s);
+        if (o.depth <= c.depth) {
+            continue;
+        }
+        if (o.is_object != c.is_object) {
+            hi = 1.0;
+        } else if (dot(c.normal, o.normal) < camera.edge.y) {
+            // Within one class, a depth step alone also fires on any slope, so it counts only
+            // where the normal turns.
+            if ((o.depth - c.depth) * 2.0 * camera.scene.w > camera.edge.x) {
+                hi = 1.0;
+            } else {
+                mid = 1.0;
+            }
+        }
+    }
+    return vec2<f32>(hi, mid);
+}
+
+// True when a neighbour of sample 0 differs in class or normal, so an edge can pass this pixel.
+// Most pixels lie inside one surface, and for them this one read is all the pass needs.
+fn near_edge(p: vec2<i32>, dims: vec2<i32>) -> bool {
+    let c = texel(p, 0);
+    for (var k = 0; k < 4; k = k + 1) {
+        let q = clamp(p + DIRS[k], vec2<i32>(0), dims - vec2<i32>(1));
+        let o = texel(q, 0);
+        if (o.is_object != c.is_object || dot(c.normal, o.normal) < camera.edge.y) {
+            return true;
+        }
+    }
+    return false;
 }
 
 @fragment
 fn fs_edge(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let dims = vec2<i32>(textureDimensions(depth_tex));
     let p = vec2<i32>(frag.xy);
-    let zoom = camera.view.z;
-    let min_px = camera.view.w;
-    let width_px = camera.edge.z * zoom;
-    let reach = max(max(width_px, min_px) * 0.5, 1.0);
-    let depth_span = 2.0 * camera.scene.w;
-
-    let c_depth = textureLoad(depth_tex, p, 0);
-    let c_bg = c_depth >= 1.0;
-    let c_n = textureLoad(normal_tex, p, 0).xyz * 2.0 - 1.0;
-
-    var mark = 0u;
-    for (var k = 0u; k < 8u; k = k + 1u) {
-        let q = clamp(p + vec2<i32>(round(EDGE_DIRS[k] * reach)), vec2<i32>(0), dims - vec2<i32>(1));
-        let s_depth = textureLoad(depth_tex, q, 0);
-        let s_bg = s_depth >= 1.0;
-        if (c_bg != s_bg) {
-            mark = 2u;
-        } else if (!c_bg) {
-            // A depth step alone also fires on any slope, so it counts only where the normal turns.
-            let s_n = textureLoad(normal_tex, q, 0).xyz * 2.0 - 1.0;
-            if (dot(c_n, s_n) < camera.edge.y) {
-                if (abs(c_depth - s_depth) * depth_span > camera.edge.x) {
-                    mark = 2u;
-                } else {
-                    mark = max(mark, 1u);
-                }
-            }
-        }
-    }
-    if (mark == 0u) {
+    if (!near_edge(p, dims)) {
         discard;
     }
-
-    let cover = min(width_px / min_px, 1.0);
-    if (cover <= 0.0) {
+    var hi = 0.0;
+    var mid = 0.0;
+    for (var s = 0; s < SAMPLES; s = s + 1) {
+        let marks = sample_marks(p, dims, s);
+        hi = hi + marks.x;
+        mid = mid + marks.y;
+    }
+    hi = hi / f32(SAMPLES);
+    mid = mid / f32(SAMPLES);
+    if (hi <= 0.0 && mid <= 0.0) {
         discard;
     }
-    var ink = theme.palette[SLOT_MID];
-    if (mark == 2u) {
-        ink = theme.palette[SLOT_HI];
+    if (hi > 0.0) {
+        return vec4<f32>(theme.palette[SLOT_HI].rgb, hi);
     }
-    return vec4<f32>(ink.rgb, ink.a * cover);
+    return vec4<f32>(theme.palette[SLOT_MID].rgb, mid * CREASE_ALPHA);
 }

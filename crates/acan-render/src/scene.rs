@@ -1,4 +1,4 @@
-use crate::model::{Aabb, Detail, Mesh};
+use crate::model::{Aabb, Detail, Line3, Mesh};
 
 /// One machine on the plan: a model kind placed at an offset.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -16,6 +16,8 @@ pub struct Instance {
 pub struct Scene {
     /// Static geometry: belts and anything else that is not a model instance.
     pub world: Mesh,
+    /// Static lines in world space, such as the edges of a belt.
+    pub lines: Vec<Line3>,
     pub instances: Vec<Instance>,
     /// Box around everything in the scene, used to size the depth range.
     pub bounds: Aabb,

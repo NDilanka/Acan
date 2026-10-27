@@ -2,6 +2,7 @@
 //! centre, so orbiting never moves the scene under the pointer.
 
 use crate::model::Aabb;
+use crate::theme;
 
 /// Azimuth of the kit's own view, in degrees.
 pub const DEFAULT_AZIMUTH: f32 = 45.0;
@@ -172,6 +173,36 @@ impl Camera {
         self.set_angles(DEFAULT_AZIMUTH, DEFAULT_ELEVATION);
         self.fit(bounds, margin_px);
     }
+
+    /// The grid's alpha factor at a ground point, from 1 at the target to 0 where the grid is
+    /// gone: the distance fade times the grazing fade. Mirrors `fs_grid` in `plant.wgsl`.
+    pub fn grid_fade_at(&self, plan: [f32; 2]) -> f32 {
+        let half_height = self.viewport[1] * 0.5 / self.zoom;
+        let distance = (plan[0] - self.pivot[0]).hypot(plan[1] - self.pivot[1]);
+        grid_distance_fade(distance, half_height) * grazing_fade(self.basis().toward[2])
+    }
+}
+
+/// The grid's fade by ground distance from the target, in plan units, in a view that is
+/// `half_height` plan units tall. Measured in half heights, the fade is the same at every zoom.
+pub fn grid_distance_fade(distance: f32, half_height: f32) -> f32 {
+    1.0 - smoothstep(
+        theme::GRID_FADE_START * half_height,
+        theme::GRID_FADE_END * half_height,
+        distance,
+    )
+}
+
+/// The grid's fade as the view grazes the ground. `sin_elevation` is the z of the direction
+/// toward the viewer, which is the sine of the elevation.
+pub fn grazing_fade(sin_elevation: f32) -> f32 {
+    let (lo, hi) = theme::GRID_GRAZING;
+    smoothstep(lo, hi, sin_elevation)
+}
+
+fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 /// Pivot and zoom that frame `bounds` in `viewport` at the given angles.
@@ -354,5 +385,94 @@ mod tests {
         cam.reset_view(&block(), 24.0);
         assert!((cam.azimuth() - DEFAULT_AZIMUTH).abs() < 1e-4);
         assert!((cam.elevation() - DEFAULT_ELEVATION).abs() < 1e-4);
+    }
+
+    fn landscape(elevation: f32) -> Camera {
+        let mut cam = Camera::new([1440.0, 900.0]);
+        cam.set_angles(DEFAULT_AZIMUTH, elevation);
+        cam.set_zoom(2.0);
+        cam
+    }
+
+    /// Grid fade at the top edge of the screen, the middle of the top edge, and a corner.
+    fn top_edge_fade(elevation: f32) -> f32 {
+        let cam = landscape(elevation);
+        let [w, _] = cam.viewport();
+        cam.grid_fade_at(cam.ground_at([w * 0.5, 0.0]))
+    }
+
+    fn corner_fade(elevation: f32) -> f32 {
+        let cam = landscape(elevation);
+        cam.grid_fade_at(cam.ground_at([0.0, 0.0]))
+    }
+
+    #[test]
+    fn grid_is_full_at_the_target_and_gone_past_its_fade_end() {
+        assert_eq!(grid_distance_fade(0.0, 1.0), 1.0);
+        assert!(grid_distance_fade(theme::GRID_FADE_END, 1.0).abs() < 1e-6);
+        assert!(grid_distance_fade(10.0, 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn grid_fade_falls_monotonically_with_distance() {
+        let mut last = 1.0;
+        for step in 0..=80 {
+            let fade = grid_distance_fade(step as f32 * 0.05, 1.0);
+            assert!((0.0..=1.0).contains(&fade), "fade {fade} at step {step}");
+            assert!(fade <= last + 1e-6, "fade rose to {fade} at step {step}");
+            last = fade;
+        }
+    }
+
+    #[test]
+    fn grid_fade_is_zoom_independent_when_distance_is_in_half_heights() {
+        let grazing = grazing_fade(DEFAULT_ELEVATION.to_radians().sin());
+        for zoom in [1.0, 4.0, 16.0] {
+            let mut cam = Camera::new([1440.0, 900.0]);
+            cam.set_zoom(zoom);
+            let [w, h] = cam.viewport();
+            for fraction in [0.0_f32, 0.5, 1.0, 2.0, 3.0] {
+                // A horizontal screen offset of `fraction` half heights is that many plan units
+                // from the target, measured in half heights.
+                let px = [w * 0.5 + fraction * h * 0.5, h * 0.5];
+                let fade = cam.grid_fade_at(cam.ground_at(px));
+                let expected = grid_distance_fade(fraction, 1.0) * grazing;
+                assert!(
+                    (fade - expected).abs() < 1e-4,
+                    "fade {fade} at {fraction} half heights, zoom {zoom}, expected {expected}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_grazing_fade_thins_the_grid_as_the_view_flattens() {
+        assert_eq!(grazing_fade(1.0), 1.0);
+        assert_eq!(grazing_fade(0.0), 0.0);
+        let mut last = 0.0;
+        for elevation in [15.0_f32, 18.0, 30.0, 60.0, 80.0] {
+            let fade = grazing_fade(elevation.to_radians().sin());
+            assert!(fade >= last - 1e-6, "grazing fell at elevation {elevation}");
+            last = fade;
+        }
+        assert!(grazing_fade(18.0_f32.to_radians().sin()) > 0.9);
+    }
+
+    #[test]
+    fn at_a_low_tilt_the_top_edge_is_nearly_gone_and_at_a_high_tilt_it_is_not() {
+        // Elevation 18: the top edge is about 3.2 half heights out, so most of the grid is gone.
+        assert!(top_edge_fade(18.0) < 0.3, "{}", top_edge_fade(18.0));
+        // Elevation 60: the top edge is about 1.2 half heights out, so the grid is still there.
+        assert!(top_edge_fade(60.0) > 0.9, "{}", top_edge_fade(60.0));
+    }
+
+    #[test]
+    fn at_the_kit_tilt_the_top_edge_keeps_most_of_the_grid_and_the_corners_fade() {
+        // Elevation 30: the top edge is 2 half heights out (about 10% faded), and a corner is
+        // about 2.6 half heights out (about 40% faded).
+        let top = 1.0 - top_edge_fade(30.0);
+        let corner = 1.0 - corner_fade(30.0);
+        assert!((0.05..=0.15).contains(&top), "top faded {top}");
+        assert!((0.35..=0.45).contains(&corner), "corner faded {corner}");
     }
 }
