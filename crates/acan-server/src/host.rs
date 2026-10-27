@@ -9,10 +9,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use acan_core::{Command, Origin, Rejection, Stamped, Timestamp, World};
 use acan_llm::{ModelClient, UsageLedger};
 use anyhow::Context as _;
-use tokio::sync::{Notify, broadcast, watch};
+use tokio::sync::{Notify, Semaphore, broadcast, watch};
 use tokio::task::JoinSet;
 
 use crate::auth::Tokens;
+use crate::git::Workspace;
 use crate::index::Scan;
 use crate::store::EventStore;
 use crate::writer::{Snapshot, Writer};
@@ -52,6 +53,13 @@ pub struct HostParts<C> {
     pub repo: PathBuf,
     /// Signalled when the server shuts down; streams close and new work stops.
     pub shutdown: watch::Receiver<bool>,
+    /// The git repository behind task worktrees and landing. `None` when the directory is not a
+    /// usable repository; those jobs then report that they cannot run.
+    pub git: Option<acan_git::Repo>,
+    /// The base URL HTTP witnesses target. `None` makes every HTTP check report an error.
+    pub witness_http_base_url: Option<String>,
+    /// How many witness runs may run at once.
+    pub witness_concurrency: usize,
 }
 
 /// One world's host. Cloning shares the same writer, log and broadcast.
@@ -71,6 +79,9 @@ struct Inner<C> {
     repo: PathBuf,
     shutdown: watch::Receiver<bool>,
     streams: Arc<Mutex<JoinSet<()>>>,
+    workspace: Option<Arc<Workspace>>,
+    witness_http_base_url: Option<String>,
+    witness_slots: Arc<Semaphore>,
 }
 
 impl<C> Clone for Host<C> {
@@ -118,8 +129,29 @@ impl<C: ModelClient> Host<C> {
                 repo: parts.repo,
                 shutdown: parts.shutdown,
                 streams: Arc::new(Mutex::new(JoinSet::new())),
+                workspace: parts.git.map(|repo| Arc::new(Workspace::new(repo))),
+                witness_http_base_url: parts.witness_http_base_url,
+                witness_slots: Arc::new(Semaphore::new(parts.witness_concurrency)),
             }),
         }
+    }
+
+    /// The git workspace, or `None` when the served directory is not a usable repository.
+    pub(crate) fn workspace(&self) -> Option<Arc<Workspace>> {
+        self.inner.workspace.clone()
+    }
+
+    /// The limits every witness run uses. Only the HTTP base URL comes from configuration.
+    pub(crate) fn witness_limits(&self) -> acan_witness::Limits {
+        acan_witness::Limits {
+            http_base_url: self.inner.witness_http_base_url.clone(),
+            ..acan_witness::Limits::default()
+        }
+    }
+
+    /// One permit per witness run allowed at once.
+    pub(crate) fn witness_slots(&self) -> Arc<Semaphore> {
+        Arc::clone(&self.inner.witness_slots)
     }
 
     /// The bearer tokens.

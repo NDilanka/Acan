@@ -6,6 +6,9 @@
 //! batch. [`Running::stop`] is a barrier: it returns only when no write can still happen.
 
 mod auth;
+#[cfg(test)]
+mod e2e;
+mod git;
 mod host;
 mod http;
 mod index;
@@ -50,6 +53,10 @@ const OWNER: &str = "owner";
 /// read the log and write to their socket, so a wedged one cannot hold a write hostage.
 const STREAM_DRAIN: Duration = Duration::from_secs(2);
 
+/// How many witness runs may run at once unless configured otherwise. Each run is a test command
+/// or an HTTP check, so the default keeps a laptop responsive while a few tasks gate together.
+pub const DEFAULT_WITNESS_CONCURRENCY: usize = 2;
+
 /// What to serve, and where.
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -62,6 +69,16 @@ pub struct ServerConfig {
     /// A dedicated public directory served for every path the API does not claim, such as the
     /// renderer page. It must not contain the repository or its `.acan` state directory.
     pub web: Option<PathBuf>,
+    /// The branch finished work lands on. `None` lands on the branch checked out in the
+    /// repository. A clean checkout of that branch is fast-forwarded to the landed commit. A
+    /// checkout with uncommitted changes, or with an untracked or ignored file the land would
+    /// overwrite, refuses the land and nothing moves.
+    pub protected_branch: Option<String>,
+    /// The base URL HTTP witness checks target, such as `http://127.0.0.1:3000`. `None` makes
+    /// every HTTP check report an error, since the server does not start the app yet.
+    pub witness_http_base_url: Option<String>,
+    /// How many witness runs may run at once. Must be at least 1.
+    pub witness_concurrency: usize,
 }
 
 /// A server that is listening. Dropping it does not stop the server.
@@ -144,6 +161,9 @@ pub async fn start<C: ModelClient + 'static>(
             config.addr.ip()
         );
     }
+    if config.witness_concurrency == 0 {
+        bail!("witness_concurrency must allow at least one witness run");
+    }
 
     let web = config
         .web
@@ -177,6 +197,7 @@ pub async fn start<C: ModelClient + 'static>(
     let local_addr = listener.local_addr()?;
 
     let (shutdown, shutdown_rx) = watch::channel(false);
+    let git = open_git(&config).await;
     let host = Host::new(HostParts {
         origin,
         store,
@@ -186,6 +207,9 @@ pub async fn start<C: ModelClient + 'static>(
         client,
         repo: config.repo.clone(),
         shutdown: shutdown_rx,
+        git,
+        witness_http_base_url: config.witness_http_base_url.clone(),
+        witness_concurrency: config.witness_concurrency,
     });
     if let Err(err) = host.submit(Command::System(SystemCmd::IndexUpdated)).await {
         let _ = host.shutdown().await;
@@ -214,6 +238,37 @@ pub async fn start<C: ModelClient + 'static>(
         writer,
         streams,
     })
+}
+
+/// Opens the repository's git state for worktrees, witnesses and landing. A directory that is not
+/// a usable repository still serves its world. The jobs that need git then report that they
+/// cannot run, so the gate records the failure instead of hanging.
+async fn open_git(config: &ServerConfig) -> Option<acan_git::Repo> {
+    let opened = match &config.protected_branch {
+        Some(branch) => acan_git::Repo::open_with_protected(&config.repo, branch).await,
+        None => acan_git::Repo::open(&config.repo).await,
+    };
+    let repo = match opened {
+        Ok(repo) => repo,
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                "no usable git state; worktrees, witnesses and landing are unavailable"
+            );
+            return None;
+        }
+    };
+    match repo.protected_head().await {
+        Ok(_) => Some(repo),
+        Err(err) => {
+            tracing::warn!(
+                error = %err,
+                branch = repo.protected_branch(),
+                "the protected branch has no commit; git work is unavailable"
+            );
+            None
+        }
+    }
 }
 
 /// Creates the state directory. Its own `.gitignore` keeps the tokens and database out of git.

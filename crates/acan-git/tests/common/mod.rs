@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use acan_core::TaskId;
+use acan_core::{Generation, TaskId};
 use acan_git::{Author, Repo, TaskWorktree};
 
 /// A temporary repository opened as a [`Repo`].
@@ -72,7 +72,7 @@ pub fn commit_files(root: &Path, files: &[(&str, &str)], message: &str) -> Strin
 pub async fn task_with_files(repo: &Repo, task: &str, files: &[(&str, &str)]) -> TaskWorktree {
     let worktree = repo
         .worktrees()
-        .create(task_id(task))
+        .create(task_id(task), Generation::new(1))
         .await
         .expect("create worktree");
     for (path, content) in files {

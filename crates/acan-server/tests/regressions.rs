@@ -14,7 +14,10 @@ use acan_core::{
     SystemCmd, Timestamp, WorldId, WorldRef,
 };
 use acan_llm::{ChatRequest, ChatResponse, LlmError, ModelClient, Reply, Role, Stub, UsageLedger};
-use acan_server::{EventStore, Host, HostParts, Running, ServerConfig, Tokens, scan, start};
+use acan_server::{
+    DEFAULT_WITNESS_CONCURRENCY, EventStore, Host, HostParts, Running, ServerConfig, Tokens, scan,
+    start,
+};
 use sqlx::sqlite::SqliteConnectOptions;
 use sqlx::{Connection, SqliteConnection};
 use tokio::sync::{Notify, Semaphore};
@@ -51,6 +54,9 @@ fn config(dir: &tempfile::TempDir) -> ServerConfig {
         addr: SocketAddr::from(([127, 0, 0, 1], 0)),
         team: false,
         web: None,
+        protected_branch: None,
+        witness_http_base_url: None,
+        witness_concurrency: DEFAULT_WITNESS_CONCURRENCY,
     }
 }
 
@@ -91,6 +97,9 @@ async fn host_for(dir: &tempfile::TempDir) -> (Host<Stub>, EventStore) {
         client: Stub::default(),
         repo: dir.path().to_path_buf(),
         shutdown,
+        git: None,
+        witness_http_base_url: None,
+        witness_concurrency: DEFAULT_WITNESS_CONCURRENCY,
     });
     (host, store)
 }
