@@ -415,7 +415,8 @@ async fn split<C: ModelClient>(
     order: OrderId,
     rev: OrderRev,
 ) -> Result<Option<SystemCmd>, JobError> {
-    let Some(request) = host.read(|world| model::split_request(world, order)) else {
+    let machines = model::plant_machines(&host.scan().index);
+    let Some(request) = host.read(|world| model::split_request(world, order, &machines)) else {
         return Ok(None);
     };
     let reply = host
@@ -423,7 +424,12 @@ async fn split<C: ModelClient>(
         .chat_json::<model::SplitReply>(Role::Foreman, request)
         .await?;
     record_usage(host, job, &reply.call, Step::Split).await;
-    Ok(Some(model::split_result(order, rev, reply.value)?))
+    Ok(Some(model::split_result(
+        order,
+        rev,
+        &machines,
+        reply.value,
+    )?))
 }
 
 async fn review<C: ModelClient>(

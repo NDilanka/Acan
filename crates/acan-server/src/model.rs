@@ -7,20 +7,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
 
 use acan_core::{
-    Clash, ClashId, Explanation, Judgement, Locus, MachineKey, OrderId, OrderRev, ParseIdError,
-    QuestionDraft, ReadbackId, ReadbackVerdict, Settlement, SystemCmd, Task, TaskId, TaskSpec,
-    Witness, WitnessId, World,
+    Clash, ClashId, CodeIndex, Explanation, Judgement, Locus, MachineKey, OrderId, OrderRev,
+    ParseIdError, QuestionDraft, ReadbackId, ReadbackVerdict, Settlement, Stage, SystemCmd, Task,
+    TaskId, TaskSpec, TaskState, Witness, WitnessId, World,
 };
 use acan_llm::{ChatRequest, Message};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-pub(crate) const SPLIT_PROMPT: &str = "You split one order into tasks for AI coding workers. Each task is one piece of work that one worker can finish alone. Scope lists the machine names a task touches. Every witness must still hold once all the tasks have landed.";
+pub const SPLIT_PROMPT: &str = "You split one order into tasks for AI coding workers. Reply with one JSON object with a tasks list of two to four tasks. Each task has a title of a few words, a brief that a worker can start from without the order, and a scope key holding a list of the machines the task changes, even when there is one machine. Copy every scope name exactly from the machines list in the context. Each task is one piece of work that one worker can finish alone. Keep the tasks parallel: two tasks should not rewrite the same code. Every witness must still hold once all the tasks have landed.";
 
-pub(crate) const REVIEW_PROMPT: &str = "You review each worker readback against the order's witnesses. For every witness, answer match when the readback respects it, disagrees when it contradicts it, and unclear when it does not say enough. Give a reason for every answer that is not match. If readbacks disagree about what the order means, ask one question with exactly two options. Otherwise ask nothing.";
+pub const REVIEW_PROMPT: &str = "You review each worker readback against the order's witnesses. Reply with one JSON object with two keys. readbacks is a list with one entry per readback in the context. Each entry has a readback key, holding the readback id, and a witnesses key: a list with one entry per witness of the order. Each witness entry has a witness key, holding the witness id, and a judgement key. A judgement is an object with a judgement key, which is match when the readback respects the witness, disagrees when it contradicts the witness, or unclear when it does not say enough. Give a reason key for every judgement that is not match. Judge each readback on its own. question is null when every judgement is match. Otherwise write one only when the readbacks disagree about what the order means; then it has text and exactly two options.";
 
-pub(crate) const EXPLAIN_PROMPT: &str = "You explain a clash between two tasks that touch the same code. Say what goes wrong if both proceed. Name the witness that would break, if one would. Suggest one choice from the menu, or none.";
+pub const EXPLAIN_PROMPT: &str = "You explain a clash between two tasks that declared overlapping changes. Reply with one JSON object with three keys. consequence is one or two plain sentences on what goes wrong if both proceed, naming the declared files and symbols the tasks share. breaks is the id of the witness that would break, such as w-2, or null when none would. suggested is one choice copied exactly from the menu, or null when no choice fits. Never suggest a choice that is not on the menu.";
 
 /// Which job a model request was built for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +49,9 @@ pub enum ReplyError {
     /// The reply names an id or machine that is not valid.
     #[error("reply names an invalid id: {0}")]
     Id(#[from] ParseIdError),
+    /// The reply names a machine that is not on the plant.
+    #[error("reply names machine {0:?}, which is not on the plant")]
+    UnknownMachine(String),
     /// A split reply has no tasks, so the order would have nothing to do.
     #[error("split reply has no tasks")]
     NoTasks,
@@ -57,7 +60,7 @@ pub enum ReplyError {
     Options(usize),
 }
 
-fn request(system: &str, context: Value) -> ChatRequest {
+fn request(system: &str, context: &Value) -> ChatRequest {
     ChatRequest {
         messages: vec![Message::system(system), Message::user(context.to_string())],
         ..ChatRequest::default()
@@ -88,6 +91,26 @@ fn task_json(task: &Task) -> Value {
     })
 }
 
+/// A task with the footprint it declared. A clash only exists between declared tasks, so the
+/// footprint is null only for a task that has since lost its declaration.
+fn declared_task_json(task: &Task) -> Value {
+    let declared = match &task.state {
+        TaskState::Claimed {
+            stage: Stage::Declared { decl } | Stage::Building { decl } | Stage::Gating { decl, .. },
+            ..
+        } => json!({
+            "files": decl.footprint.files,
+            "symbols": decl.footprint.symbols,
+            "interfaces": decl.footprint.interfaces,
+            "inserts": decl.footprint.inserts,
+        }),
+        _ => Value::Null,
+    };
+    let mut value = task_json(task);
+    value["declared"] = declared;
+    value
+}
+
 fn settlement_json(choice: &Settlement) -> Value {
     match choice {
         Settlement::Narrow { task } => json!({ "narrow": { "task": task.to_string() } }),
@@ -100,15 +123,34 @@ fn settlement_json(choice: &Settlement) -> Value {
     }
 }
 
-/// The split prompt for `order`, or `None` when the order is gone.
+/// Every machine the code index names, in name order: the owner of each file and both ends of
+/// each belt. The split prompt lists these, and a split may name only these.
 #[must_use]
-pub fn split_request(world: &World, order: OrderId) -> Option<ChatRequest> {
+pub fn plant_machines(index: &CodeIndex) -> Vec<MachineKey> {
+    let mut machines: BTreeSet<&MachineKey> =
+        index.files.values().map(|file| &file.machine).collect();
+    for belt in &index.belts {
+        machines.insert(&belt.from);
+        machines.insert(&belt.to);
+    }
+    machines.into_iter().cloned().collect()
+}
+
+/// The split prompt for `order`, or `None` when the order is gone. `machines` is the plant's
+/// machine list, from [`plant_machines`].
+#[must_use]
+pub fn split_request(
+    world: &World,
+    order: OrderId,
+    machines: &[MachineKey],
+) -> Option<ChatRequest> {
     let order = world.order(order)?;
     Some(request(
         SPLIT_PROMPT,
-        json!({
+        &json!({
             "order": order.sentence,
             "machine": order.machine,
+            "machines": machines,
             "witnesses": witnesses_json(world, &order.witnesses),
         }),
     ))
@@ -137,7 +179,7 @@ pub fn review_request(
         .collect();
     Some(request(
         REVIEW_PROMPT,
-        json!({
+        &json!({
             "order": order.sentence,
             "witnesses": witnesses_json(world, &order.witnesses),
             "readbacks": reviewed,
@@ -145,20 +187,24 @@ pub fn review_request(
     ))
 }
 
-/// The explain prompt for `clash`, or `None` when the clash or a party to it is gone.
+/// The explain prompt for `clash`, or `None` when the clash or a party to it is gone. It carries
+/// both tasks with their declared footprints, the order's witnesses, and the menu.
 #[must_use]
 pub fn explain_request(world: &World, clash: ClashId) -> Option<ChatRequest> {
     let clash: &Clash = world.clash(clash)?;
     let first = world.task(clash.key.a())?;
     let second = world.task(clash.key.b())?;
+    let order = world.order(first.order)?;
     let menu: Vec<Value> = clash.menu().iter().map(settlement_json).collect();
     Some(request(
         EXPLAIN_PROMPT,
-        json!({
+        &json!({
             "clash": clash.id.to_string(),
             "kind": clash.kind,
             "at": clash.key.at(),
-            "tasks": [task_json(first), task_json(second)],
+            "order": order.sentence,
+            "witnesses": witnesses_json(world, &order.witnesses),
+            "tasks": [declared_task_json(first), declared_task_json(second)],
             "menu": menu,
         }),
     ))
@@ -167,29 +213,34 @@ pub fn explain_request(world: &World, clash: ClashId) -> Option<ChatRequest> {
 /// A split reply: the tasks the foreman cut the order into.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SplitReply {
-    /// The tasks, in the order they should be worked.
+    /// Two to four tasks, in the order they should be worked. Each can run in parallel with the
+    /// others.
     pub tasks: Vec<SplitTask>,
 }
 
 /// One task in a split reply.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SplitTask {
-    /// A short title.
+    /// A short title of a few words.
     pub title: String,
-    /// What the worker should do.
+    /// What the worker should do, complete enough to start without the order.
     pub brief: String,
-    /// The machine names the task touches.
+    /// The machines this task changes. Copy each name exactly from the machines list in the
+    /// context.
     pub scope: Vec<String>,
 }
 
-/// Maps a split reply to the `SplitReady` command for `order` at `rev`.
+/// Maps a split reply to the `SplitReady` command for `order` at `rev`. Every scope name must be
+/// one of `machines`.
 ///
 /// # Errors
 ///
-/// Returns [`ReplyError`] when the reply has no tasks or names an invalid machine.
+/// Returns [`ReplyError`] when the reply has no tasks, or names a machine that is not on the
+/// plant.
 pub fn split_result(
     order: OrderId,
     rev: OrderRev,
+    machines: &[MachineKey],
     reply: SplitReply,
 ) -> Result<SystemCmd, ReplyError> {
     if reply.tasks.is_empty() {
@@ -198,17 +249,24 @@ pub fn split_result(
     let tasks = reply
         .tasks
         .into_iter()
-        .map(task_spec)
-        .collect::<Result<Vec<_>, ParseIdError>>()?;
+        .map(|task| task_spec(task, machines))
+        .collect::<Result<Vec<_>, ReplyError>>()?;
     Ok(SystemCmd::SplitReady { order, rev, tasks })
 }
 
-fn task_spec(task: SplitTask) -> Result<TaskSpec, ParseIdError> {
-    let scope: Vec<MachineKey> = task
+fn task_spec(task: SplitTask, machines: &[MachineKey]) -> Result<TaskSpec, ReplyError> {
+    let scope = task
         .scope
         .iter()
-        .map(|name| MachineKey::from_str(name))
-        .collect::<Result<_, _>>()?;
+        .map(|name| -> Result<MachineKey, ReplyError> {
+            let machine = MachineKey::from_str(name)?;
+            if machines.contains(&machine) {
+                Ok(machine)
+            } else {
+                Err(ReplyError::UnknownMachine(name.clone()))
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(TaskSpec {
         title: task.title,
         brief: task.brief,
@@ -219,44 +277,46 @@ fn task_spec(task: SplitTask) -> Result<TaskSpec, ParseIdError> {
 /// A review reply: one entry per readback the foreman judged, and at most one question.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReviewReply {
-    /// One entry per readback.
+    /// One entry per readback in the context.
     pub readbacks: Vec<ReviewedReadback>,
-    /// A question, when readbacks disagree about what the order means.
+    /// A question for a human, only when the readbacks disagree about what the order means. Null
+    /// otherwise.
     pub question: Option<ReviewQuestion>,
 }
 
 /// The judgements for one readback.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReviewedReadback {
-    /// The readback id, such as `r-4`.
+    /// The readback id from the context, such as `r-4`.
     pub readback: String,
-    /// One judgement per witness of the order.
+    /// One judgement per witness of the order, each with its witness id.
     pub witnesses: Vec<WitnessJudgement>,
 }
 
 /// The judgement of one witness.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WitnessJudgement {
-    /// The witness id, such as `w-2`.
+    /// The witness id from the context, such as `w-2`.
     pub witness: String,
     /// The judgement.
     pub judgement: JudgementReply,
 }
 
-/// A judgement as the model writes it.
+/// A judgement as the model writes it: `{"judgement": "match"}`, or `disagrees` or `unclear`
+/// with a `reason`. The same tag as the origin's judgement.
 #[derive(Debug, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "judgement", rename_all = "snake_case")]
 pub enum JudgementReply {
     /// The readback respects the witness.
     Match,
     /// The readback contradicts the witness.
     Disagrees {
-        /// Why.
+        /// Why the readback contradicts the witness, in one sentence.
         reason: String,
     },
-    /// The readback does not say enough.
+    /// The readback does not say enough to tell whether it respects the witness.
     Unclear {
-        /// Why.
+        /// What is missing from the readback, in one sentence.
         reason: String,
     },
 }
@@ -264,9 +324,9 @@ pub enum JudgementReply {
 /// A question the foreman drafts for a human.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReviewQuestion {
-    /// The question.
+    /// The question, in plain words.
     pub text: String,
-    /// Exactly two answers.
+    /// Exactly two answers, each one a complete choice.
     pub options: Vec<String>,
 }
 
@@ -344,38 +404,38 @@ fn question_draft(
     })
 }
 
-/// An explain reply: the consequence of letting both tasks proceed.
+/// An explain reply: what goes wrong when both tasks proceed, and one choice if one fits.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ExplainReply {
-    /// What goes wrong if both proceed.
+    /// What goes wrong if both tasks proceed, in one or two plain sentences.
     pub consequence: String,
-    /// The witness that would break, such as `w-2`, if one would.
+    /// The witness id, such as `w-2`, that would break. Null when no witness would break.
     pub breaks: Option<String>,
-    /// A suggested choice from the menu, if one fits.
+    /// One choice from the menu, copied exactly. Null when no choice fits.
     pub suggested: Option<SettlementReply>,
 }
 
-/// A settlement as the model writes it.
+/// A settlement as the model writes it. Task ids are copied from the context, such as `t-2`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum SettlementReply {
-    /// Narrow one task's declaration.
+    /// One task narrows its declaration so the overlap goes away.
     Narrow {
         /// The task that narrows.
         task: String,
     },
-    /// Build one task after another.
+    /// One task builds after the other lands.
     Serialize {
         /// The task that goes first.
         first: String,
         /// The task that waits.
         then: String,
     },
-    /// Land a contract first, then build against it.
+    /// The owner lands the named contract first, and the other task builds against it.
     SplitAtContract {
         /// The task that owns the contract.
         owner: String,
-        /// The contract name.
+        /// The contract name, copied from the menu.
         contract: String,
     },
 }
@@ -423,6 +483,10 @@ mod tests {
         OrderId::from_str(id).expect("valid order id")
     }
 
+    fn plant() -> Vec<MachineKey> {
+        vec![MachineKey::from_str("ui").expect("valid key")]
+    }
+
     fn split(machines: &[&str]) -> SplitReply {
         SplitReply {
             tasks: vec![SplitTask {
@@ -435,8 +499,8 @@ mod tests {
 
     #[test]
     fn split_reply_becomes_split_ready_with_machine_keys() {
-        let cmd =
-            split_result(order("o-3"), OrderRev::new(1), split(&["ui"])).expect("valid reply");
+        let cmd = split_result(order("o-3"), OrderRev::new(1), &plant(), split(&["ui"]))
+            .expect("valid reply");
         assert_eq!(
             cmd,
             SystemCmd::SplitReady {
@@ -453,9 +517,19 @@ mod tests {
 
     #[test]
     fn split_reply_with_an_empty_machine_name_is_refused() {
-        let err = split_result(order("o-3"), OrderRev::new(1), split(&[""]))
+        let err = split_result(order("o-3"), OrderRev::new(1), &plant(), split(&[""]))
             .expect_err("empty machine name");
         assert!(matches!(err, ReplyError::Id(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn split_reply_naming_a_machine_off_the_plant_is_refused() {
+        let err = split_result(order("o-3"), OrderRev::new(1), &plant(), split(&["db"]))
+            .expect_err("db is not on the plant");
+        assert!(
+            matches!(&err, ReplyError::UnknownMachine(name) if name == "db"),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -463,6 +537,7 @@ mod tests {
         let err = split_result(
             order("o-3"),
             OrderRev::new(1),
+            &plant(),
             SplitReply { tasks: Vec::new() },
         )
         .expect_err("no tasks");
@@ -589,5 +664,44 @@ mod tests {
             }),
         };
         assert!(explanation(reply).is_err(), "task-2 is not a task id");
+    }
+
+    #[test]
+    fn review_reply_in_the_documented_shape_parses() {
+        let reply: ReviewReply = serde_json::from_value(json!({
+            "readbacks": [{
+                "readback": "r-0",
+                "witnesses": [
+                    { "witness": "w-0", "judgement": { "judgement": "match" } },
+                    { "witness": "w-1", "judgement": {
+                        "judgement": "disagrees", "reason": "the default is dropped"
+                    } }
+                ]
+            }],
+            "question": null
+        }))
+        .expect("the documented shape parses");
+
+        let judged = &reply.readbacks[0].witnesses;
+        assert!(matches!(judged[0].judgement, JudgementReply::Match));
+        assert!(matches!(
+            &judged[1].judgement,
+            JudgementReply::Disagrees { reason } if reason == "the default is dropped"
+        ));
+    }
+
+    #[test]
+    fn explain_reply_in_the_documented_shape_parses() {
+        let reply: ExplainReply = serde_json::from_value(json!({
+            "consequence": "Both edit the greet function.",
+            "breaks": "w-0",
+            "suggested": { "narrow": { "task": "t-2" } }
+        }))
+        .expect("the documented shape parses");
+
+        assert!(matches!(
+            reply.suggested,
+            Some(SettlementReply::Narrow { task }) if task == "t-2"
+        ));
     }
 }
