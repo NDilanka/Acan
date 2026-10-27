@@ -1,10 +1,18 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::model::{Belt, FileId, ImportTarget, Machine, MachineId, Plant, SourceFile};
 
-/// Assigns files to machines by name. Files not listed here group by their directory.
+/// A repo with at most this many source files splits its large directories into modules.
+/// A bigger repo groups every file by its directory.
+const SMALL_REPO_FILES: usize = 40;
+/// In a small repo, a directory with at least this many files gives one machine per file.
+const MODULE_DIR_FILES: usize = 5;
+/// Directory names whose files stay one machine however many there are.
+const TEST_DIRS: [&str; 4] = ["test", "tests", "__tests__", "spec"];
+
+/// Assigns files to machines by name. Files not listed here group by their module or directory.
 ///
 /// The foreman edits this data and calls [`Plant::regroup`]; the file list and symbols stay the same.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -24,13 +32,14 @@ impl Plant {
 }
 
 fn build(files: &[SourceFile], grouping: &Grouping) -> (Vec<Machine>, Vec<Belt>) {
+    let automatic = automatic_names(files);
     let mut groups: BTreeMap<String, Vec<&SourceFile>> = BTreeMap::new();
     for file in files {
         let name = grouping
             .assign
             .get(&file.path)
             .cloned()
-            .unwrap_or_else(|| directory_of(&file.path).to_string());
+            .unwrap_or_else(|| automatic[file.path.as_str()].clone());
         groups.entry(name).or_default().push(file);
     }
 
@@ -75,6 +84,89 @@ fn build(files: &[SourceFile], grouping: &Grouping) -> (Vec<Machine>, Vec<Belt>)
         .map(|((from, to), imports)| Belt { from, to, imports })
         .collect();
     (machines, belts)
+}
+
+/// The machine name each file gets when the grouping does not assign it, keyed by path.
+///
+/// In a small repo, each file of a large non-test directory is its own machine, named by its
+/// file stem. A stem that another machine already uses falls back to the path without its
+/// extension, and a name still in use gets a numeric suffix.
+fn automatic_names(files: &[SourceFile]) -> BTreeMap<&str, String> {
+    let mut dir_sizes: BTreeMap<&str, usize> = BTreeMap::new();
+    for file in files {
+        *dir_sizes.entry(directory_of(&file.path)).or_insert(0) += 1;
+    }
+    let small = files.len() <= SMALL_REPO_FILES;
+    let splits = |path: &str| {
+        small
+            && dir_sizes.get(directory_of(path)).copied().unwrap_or(0) >= MODULE_DIR_FILES
+            && !is_test_path(path)
+    };
+
+    let mut names: BTreeMap<&str, String> = BTreeMap::new();
+    let mut used: BTreeSet<String> = BTreeSet::new();
+    let mut modules: Vec<&str> = Vec::new();
+    for file in files {
+        let path = file.path.as_str();
+        if splits(path) {
+            modules.push(path);
+        } else {
+            let dir = directory_of(path);
+            names.insert(path, dir.to_string());
+            used.insert(dir.to_string());
+        }
+    }
+
+    let mut stem_counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for path in &modules {
+        *stem_counts.entry(stem(path)).or_insert(0) += 1;
+    }
+    modules.sort_unstable();
+    for path in modules {
+        let plain = stem(path);
+        let candidate = if stem_counts[plain] == 1 && !used.contains(plain) {
+            plain.to_string()
+        } else {
+            without_extension(path).to_string()
+        };
+        names.insert(path, unique(candidate, &mut used));
+    }
+    names
+}
+
+fn unique(name: String, used: &mut BTreeSet<String>) -> String {
+    let mut candidate = name.clone();
+    let mut suffix = 2;
+    while used.contains(&candidate) {
+        candidate = format!("{name}-{suffix}");
+        suffix += 1;
+    }
+    used.insert(candidate.clone());
+    candidate
+}
+
+fn is_test_path(path: &str) -> bool {
+    directory_of(path)
+        .split('/')
+        .any(|part| TEST_DIRS.contains(&part))
+}
+
+fn file_name(path: &str) -> &str {
+    path.rsplit_once('/').map_or(path, |(_, name)| name)
+}
+
+/// The file name without its extension. A leading dot is part of the name, not an extension.
+fn stem(path: &str) -> &str {
+    let name = file_name(path);
+    match name.rfind('.') {
+        Some(dot) if dot > 0 => &name[..dot],
+        _ => name,
+    }
+}
+
+fn without_extension(path: &str) -> &str {
+    let extension = file_name(path).len() - stem(path).len();
+    &path[..path.len() - extension]
 }
 
 fn directory_of(path: &str) -> &str {
