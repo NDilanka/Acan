@@ -1,29 +1,24 @@
 //! The assembler: a service that runs as a stack of boards, with a gauge, a knob, two dials and a lamp.
 //!
-//! Parts sit at their resting heights, which is the reference's zero explode. Every part is in plan
-//! coordinates centred on the origin, so the mounted parts carry their own absolute positions.
+//! Parts sit at their resting heights, the reference's zero explode, in plan coordinates centred on the origin.
 
-use crate::figure::{Detail, Figure, Ink};
-use crate::parts::Ticks;
-use crate::pen::{Look, Pen, Stroke};
-use crate::plan::{Plan, circle_ring};
-use crate::scene::Scene;
+use crate::mesh::{Base, Finish, LIFT, Part, Station, Stroke};
+use crate::model::{Ink, Model};
+use crate::parts::{self, Dial};
+use crate::plan::{Plan, Point};
 
 /// The top of the shell. The gauge, knob, dials and lamp all stand on it.
 const SHELL: f32 = 40.0;
 /// Where the gauge needle points, from 0 at the left stop to 1 at the right stop.
 const NEEDLE: f32 = 0.38;
-const GAUGE: [f32; 2] = [18.0, 14.0];
-const KNOB: [f32; 2] = [-12.0, -10.0];
-const DIALS: [[f32; 2]; 2] = [[-30.0, 22.0], [-30.0, 8.0]];
-const LAMP: [f32; 2] = [32.0, -28.0];
+const GAUGE: Point = [18.0, 14.0];
+const KNOB: Point = [-12.0, -10.0];
+const DIALS: [Point; 2] = [[-30.0, 22.0], [-30.0, 8.0]];
+const LAMP: Point = [32.0, -28.0];
 
-pub(crate) fn build() -> Figure {
-    let mut scene = Scene::new();
-
-    let mut floor = Pen::new();
-    floor.plinth(0.0, 0.0, 96.0, 86.0);
-    scene.floor(floor);
+pub(crate) fn build() -> Model {
+    let mut part = Part::new();
+    parts::plinth(&mut part, 96.0, 86.0);
 
     let body = Plan {
         x: -38.0,
@@ -32,89 +27,131 @@ pub(crate) fn build() -> Figure {
         d: 68.0,
         r: 4.0,
     };
-    let board = Look::new(Ink::Mid).bevel(0.8);
-
-    let mut base = Pen::new();
-    base.solid(&body.ring(4), 4.0, 12.0, board);
-    scene.put([0.0, 0.0, 10.0], base, vec![]);
-
-    let mut upper = Pen::new();
-    upper.solid(&body.ring(4), 16.0, 14.0, board);
-    scene.put([0.0, 0.0, 23.0], upper, vec![]);
-
-    let mut shell = Pen::new();
-    shell.solid(&body.ring(4), 30.0, 10.0, board);
-    shell.plan_outline(body.inset(4.0), SHELL, 4, Stroke::new(Ink::Faint));
-    shell.screws(body, 3.5, SHELL);
-    shell.dot_grid([6.0, -30.0], (8, 2), 3.2, SHELL, 0.45, Ink::Lo);
-    scene.put(
-        [0.0, 0.0, 35.0],
-        shell,
-        vec![
-            ([GAUGE[0], GAUGE[1], SHELL + 2.0], gauge()),
-            ([KNOB[0], KNOB[1], SHELL + 10.0], knob()),
-            ([DIALS[0][0], DIALS[0][1], SHELL + 1.0], dial(DIALS[0])),
-            ([DIALS[1][0], DIALS[1][1], SHELL + 1.0], dial(DIALS[1])),
-            ([LAMP[0], LAMP[1], SHELL + 1.0], lamp()),
-        ],
+    // The three boards are one solid with a V-groove at each seam. Separate boards would share caps, which
+    // makes the seams non-manifold.
+    let boards = [
+        Station::at(-0.8, 3.0),
+        Station::at(0.0, 3.8),
+        Station::at(0.0, 15.2),
+        Station::at(-0.8, 16.0),
+        Station::at(0.0, 16.8),
+        Station::at(0.0, 29.2),
+        Station::at(-0.8, 30.0),
+        Station::at(0.0, 30.8),
+        Station::at(0.0, 39.2),
+        Station::at(-0.8, SHELL),
+    ];
+    part.sweep(&Base::Plan(body, 4), &boards, Finish::paper());
+    parts::plan_line(
+        &mut part,
+        body.inset(4.0),
+        SHELL,
+        3,
+        Stroke::new(Ink::Faint),
     );
+    parts::screws(&mut part, body, 3.5, SHELL);
+    for row in 0..2 {
+        for column in 0..8 {
+            part.dot(
+                [
+                    6.0 + column as f32 * 3.2,
+                    -30.0 + row as f32 * 3.2,
+                    SHELL + LIFT,
+                ],
+                [0.0, 0.0, 1.0],
+                0.45,
+                Stroke::new(Ink::Lo).close(),
+            );
+        }
+    }
 
-    scene.finish()
+    gauge(&mut part);
+    knob(&mut part);
+    for centre in DIALS {
+        dial(&mut part, centre);
+    }
+    parts::lamp(&mut part, LAMP, SHELL);
+    part.finish()
 }
 
-/// The dial gauge: a puck with a knurled band, a scale around its top, and a needle.
-fn gauge() -> Pen {
-    let mut pen = Pen::new();
-    pen.solid(
-        &circle_ring(GAUGE[0], GAUGE[1], 13.0, 56),
+/// The dial gauge: a puck with a seam ring round its top, a scale, and a needle.
+fn gauge(part: &mut Part) {
+    let top = SHELL + 5.0;
+    part.slab(
+        &Base::Circle {
+            center: GAUGE,
+            radius: 13.0,
+            steps: 56,
+        },
         SHELL,
-        5.0,
-        Look::new(Ink::Hi).crease(Some(Ink::Lo)).bevel(0.6),
+        top,
+        0.6,
+        Finish::paper(),
     );
-    pen.ring(GAUGE, 11.0, SHELL + 5.0, 56, Stroke::new(Ink::Lo));
-    let ticks = Ticks {
+    parts::circle_line(part, GAUGE, 11.0, top, 56, Stroke::new(Ink::Lo));
+    let scale = Dial {
         from: -2.4,
         span: 4.8,
-        ..Ticks::full(GAUGE, 10.0, 40, 5, SHELL + 5.0, [1.2, 2.6])
+        ..Dial::full(GAUGE, 10.0, top, 40, 5, [1.2, 2.6])
     };
-    pen.radial_ticks(
-        ticks,
+    parts::dial_ticks(
+        part,
+        scale,
         Stroke::new(Ink::Lo).close(),
         Stroke::new(Ink::Mid).near(),
     );
     let angle = -2.4 + 4.8 * NEEDLE;
-    let tip = [GAUGE[0] + angle.sin() * 9.0, GAUGE[1] - angle.cos() * 9.0];
-    pen.on_top(
-        &[GAUGE, tip],
-        SHELL + 5.2,
+    let (sin, cos) = angle.sin_cos();
+    let tip = [GAUGE[0] + sin * 9.0, GAUGE[1] - cos * 9.0];
+    part.line(
+        &[
+            [GAUGE[0], GAUGE[1], top + LIFT],
+            [tip[0], tip[1], top + LIFT],
+        ],
         false,
-        Stroke::new(Ink::Lit).width(1.1),
+        Stroke::new(Ink::Hi).width(1.1),
     );
-    pen.dots(
-        &[[GAUGE[0], GAUGE[1], SHELL + 5.3]],
+    part.dot(
+        [GAUGE[0], GAUGE[1], top + LIFT],
+        [0.0, 0.0, 1.0],
         0.9,
-        Ink::Hi,
-        Detail::Always,
+        Stroke::new(Ink::Hi),
     );
-    pen
 }
 
-/// The knob: a flange, a knurled stem with a pointer, and the cap of the box it sits on.
-fn knob() -> Pen {
-    let mut pen = Pen::new();
-    pen.solid(
-        &circle_ring(KNOB[0], KNOB[1], 10.0, 32),
+/// The knob: a flange, a knurled stem, and the cap of the box it sits in.
+fn knob(part: &mut Part) {
+    part.slab(
+        &Base::Circle {
+            center: KNOB,
+            radius: 10.0,
+            steps: 32,
+        },
         SHELL,
-        4.0,
-        Look::new(Ink::Mid).bevel(0.5),
-    );
-    pen.solid(
-        &circle_ring(KNOB[0], KNOB[1], 5.0, 28),
         SHELL + 4.0,
-        14.0,
-        Look::new(Ink::Mid),
+        0.5,
+        Finish::paper(),
     );
-    pen.knurl(KNOB, 5.0, SHELL + 6.0, SHELL + 16.0, 18, Ink::Lo);
+    part.slab(
+        &Base::Circle {
+            center: KNOB,
+            radius: 5.0,
+            steps: 28,
+        },
+        SHELL + 4.0,
+        SHELL + 18.0,
+        0.0,
+        Finish::paper(),
+    );
+    parts::knurl(
+        part,
+        KNOB,
+        5.0,
+        SHELL + 6.0,
+        SHELL + 16.0,
+        18,
+        Stroke::new(Ink::Lo).close(),
+    );
     let cap = Plan {
         x: -24.0,
         y: -22.0,
@@ -122,43 +159,43 @@ fn knob() -> Pen {
         d: 24.0,
         r: 1.5,
     };
-    pen.solid(
-        &cap.ring(3),
+    part.slab(
+        &Base::Plan(cap, 3),
         SHELL + 18.0,
-        6.0,
-        Look::new(Ink::Hi).crease(Some(Ink::Lo)).bevel(0.6),
+        SHELL + 24.0,
+        0.6,
+        Finish::paper(),
     );
-    pen.screws(cap, 3.0, SHELL + 24.0);
-    pen
+    parts::screws(part, cap, 3.0, SHELL + 24.0);
 }
 
 /// A small dial: a disc with 12 ticks and a hand.
-fn dial(center: [f32; 2]) -> Pen {
-    let [ox, oy] = center;
-    let mut pen = Pen::new();
-    pen.solid(
-        &circle_ring(ox, oy, 5.5, 28),
+fn dial(part: &mut Part, centre: Point) {
+    let top = SHELL + 2.4;
+    part.slab(
+        &Base::Circle {
+            center: centre,
+            radius: 5.5,
+            steps: 28,
+        },
         SHELL,
-        2.4,
-        Look::new(Ink::Mid).bevel(0.4),
+        top,
+        0.4,
+        Finish::paper(),
     );
-    let ticks = Ticks::full(center, 4.8, 12, 3, SHELL + 2.4, [0.8, 1.4]);
-    pen.radial_ticks(
-        ticks,
+    parts::dial_ticks(
+        part,
+        Dial::full(centre, 4.8, top, 12, 3, [0.8, 1.4]),
         Stroke::new(Ink::Lo).close(),
         Stroke::new(Ink::Mid).near(),
     );
-    pen.on_top(
-        &[center, [ox + 3.6, oy - 1.8]],
-        SHELL + 2.5,
+    let tip = [centre[0] + 3.6, centre[1] - 1.8];
+    part.line(
+        &[
+            [centre[0], centre[1], top + LIFT],
+            [tip[0], tip[1], top + LIFT],
+        ],
         false,
         Stroke::new(Ink::Hi),
     );
-    pen
-}
-
-fn lamp() -> Pen {
-    let mut pen = Pen::new();
-    pen.lamp(LAMP, SHELL);
-    pen
 }
