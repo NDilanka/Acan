@@ -185,12 +185,14 @@ struct Planned {
 }
 
 /// A claimed task and the generation the origin granted. `files` is the footprint as declared,
-/// already in the origin's normalized form.
+/// already in the origin's normalized form. `gave_up` is every place a Narrow settlement took from
+/// this claim, in the order taken. No later plan of the claim may declare one of them again.
 #[derive(Debug, Clone)]
 struct Claim {
     task: String,
     generation: u64,
     files: Vec<String>,
+    gave_up: Vec<Given>,
 }
 
 /// What one attempt at a task produced.
@@ -425,6 +427,7 @@ async fn try_claim<C: ModelClient>(
                 task,
                 generation,
                 files: planned.footprint,
+                gave_up: Vec::new(),
             }))
         }
     }
@@ -794,9 +797,10 @@ async fn narrow_in_edit<C: ModelClient>(
 }
 
 /// Re-plans a claim that a Narrow settlement cut, and declares the files it keeps. The re-plan may
-/// not name a file the narrowing took, and it is told which files it lost and why. The error is
-/// the reason the work cannot go on: no plan keeps to the files that remain, the plan keeps no file,
-/// or the origin refuses the declaration. Every such reason releases the claim.
+/// not name a place the claim gave up, in this narrowing or an earlier one, and it is told which
+/// places it lost and why. The error is the reason the work cannot go on: no plan keeps to the
+/// places that remain, the plan keeps no file, or the origin refuses the declaration. Every such
+/// reason releases the claim.
 async fn redeclare<C: ModelClient>(
     config: &WorkerConfig,
     model: &C,
@@ -805,13 +809,15 @@ async fn redeclare<C: ModelClient>(
     given: &[Given],
     steps: &mut Vec<String>,
 ) -> anyhow::Result<Result<(), String>> {
-    let lost = match given_files(given) {
+    remember(&mut claim.gave_up, given);
+    let lost = match given_files(&claim.gave_up) {
         Ok(lost) => lost,
         Err(reason) => return Ok(Err(reason)),
     };
     let row = get_task(mcp, &claim.task).await?;
     let repo = RepoFiles::load(&config.repo).await?;
-    let planned = match plan_work(model, &repo, &row, given, steps).await {
+    let started = Instant::now();
+    let planned = match plan_work(model, &repo, &row, &claim.gave_up, steps).await {
         Ok(planned) => planned,
         Err(reasons) => {
             return Ok(Err(format!(
@@ -853,14 +859,25 @@ async fn redeclare<C: ModelClient>(
     log(
         steps,
         format!(
-            "narrowed {}: gave up {}; declared {} file(s) without them; {clashes} new clash(es)",
+            "narrowed {}: gave up {}; declared {} file(s) without them; {clashes} new clash(es); re-planned in {:.1}s",
             claim.task,
             lost.join(", "),
-            planned.footprint.len()
+            planned.footprint.len(),
+            started.elapsed().as_secs_f64()
         ),
     );
     claim.files = planned.footprint;
     Ok(Ok(()))
+}
+
+/// Adds the places a narrowing took to the places the claim already gave up. A place is listed
+/// once, in the order it was first taken.
+fn remember(gave_up: &mut Vec<Given>, taken: &[Given]) {
+    for place in taken {
+        if !gave_up.iter().any(|known| known.at == place.at) {
+            gave_up.push(place.clone());
+        }
+    }
 }
 
 /// Waits for build clearance before a write or a commit. The error carries the step that ends
@@ -1279,7 +1296,29 @@ mod tests {
             task: "t-1".to_owned(),
             generation: 3,
             files: vec!["model/store.ts".to_owned()],
+            gave_up: Vec::new(),
         }
+    }
+
+    fn taken(file: &str, why: &str) -> Given {
+        Given {
+            at: Locus::File {
+                file: file.parse().expect("a file path"),
+            },
+            why: why.to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_places_a_claim_gave_up_accumulate_across_narrowings() {
+        let mut gave_up = Vec::new();
+        remember(&mut gave_up, &[taken("src/a.ts", "first")]);
+        remember(&mut gave_up, &[taken("src/b.ts", "second")]);
+        // A place taken again is listed once, with the reason it was first taken for.
+        remember(&mut gave_up, &[taken("src/a.ts", "third")]);
+        let files = given_files(&gave_up).expect("both places are files");
+        assert_eq!(files, vec!["src/a.ts".to_owned(), "src/b.ts".to_owned()]);
+        assert_eq!(gave_up[0].why, "first");
     }
 
     fn view(state: &str, stage: Value, holder: bool, generation: Value) -> Value {

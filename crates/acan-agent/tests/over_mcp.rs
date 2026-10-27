@@ -158,11 +158,16 @@ impl ModelClient for Worker {
 
 /// The worker's script: plan the declared file, write it, commit it, then stop.
 fn worker_script() -> Stub {
+    worker_script_planning(&[FILE])
+}
+
+/// The worker's script with the files it plans: it writes `FILE`, commits it, then stops.
+fn worker_script_planning(files: &[&str]) -> Stub {
     Stub::default()
         .when(
             Role::Worker,
             |request| request.tools.is_empty(),
-            StubReply::json(&json!({ "summary": "change the loader", "files": [FILE] })),
+            StubReply::json(&json!({ "summary": "change the loader", "files": files })),
         )
         .when(
             Role::Worker,
@@ -251,7 +256,7 @@ fn spawn_scripted(
 /// A worker whose first plan names `FILE`. Once a narrowing has taken the file, the planning
 /// call carries that and the worker plans `after` instead. Its edit writes `OTHER` and commits.
 fn narrowed_script(after: Value) -> Stub {
-    Stub::default()
+    let plans = Stub::default()
         .when(
             Role::Worker,
             |request| {
@@ -266,7 +271,43 @@ fn narrowed_script(after: Value) -> Stub {
             Role::Worker,
             |request| request.tools.is_empty(),
             StubReply::json(&json!({ "summary": "change the loader", "files": [FILE] })),
+        );
+    writes_other(plans)
+}
+
+/// A worker whose plans follow the places it gave up. Once a narrowing takes `FILE` it plans
+/// `OTHER`. Once a second narrowing takes `OTHER` as well, it plans `FILE` again, which the harness
+/// must refuse. Its edit writes `OTHER` and commits.
+fn twice_narrowed_script() -> Stub {
+    let plans = Stub::default()
+        .when(
+            Role::Worker,
+            |request| request.tools.is_empty() && gave_up(request, OTHER),
+            StubReply::json(&json!({ "summary": "change the loader", "files": [FILE] })),
         )
+        .when(
+            Role::Worker,
+            |request| request.tools.is_empty() && gave_up(request, FILE),
+            StubReply::json(&json!({ "summary": "change the other file", "files": [OTHER] })),
+        )
+        .when(
+            Role::Worker,
+            |request| request.tools.is_empty(),
+            StubReply::json(&json!({ "summary": "change the loader", "files": [FILE] })),
+        );
+    writes_other(plans)
+}
+
+/// Whether a planning call lists `file` among the places the task gave up.
+fn gave_up(request: &ChatRequest, file: &str) -> bool {
+    request.last_user_text().is_some_and(|text| {
+        text.contains("gave up these places") && text.contains(&format!("- {file}:"))
+    })
+}
+
+/// Adds the edit to a worker's plans: it writes `OTHER`, commits it, then stops.
+fn writes_other(plans: Stub) -> Stub {
+    plans
         .when(
             Role::Worker,
             |request| tool_replies(request) == 0,
@@ -507,6 +548,16 @@ fn clash_parties(log: &[Stamped]) -> Option<(ClashId, TaskId, TaskId)> {
     })
 }
 
+/// Every clash the log has found, in the order it was found.
+fn clashes_found(log: &[Stamped]) -> Vec<ClashId> {
+    log.iter()
+        .filter_map(|stamped| match &stamped.event {
+            Event::ClashFound { clash, .. } => Some(*clash),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Whether a task was cleared to build after the first clash in the log.
 fn cleared_after_clash(log: &[Stamped]) -> bool {
     log.iter()
@@ -664,12 +715,13 @@ async fn two_workers_on_one_file_clash_before_either_writes() {
     running.stop().await.expect("the origin stops");
 }
 
-/// Posts the order and starts two workers on it. The first runs the ordinary script and the
-/// second runs `two_script`. Waits until each worker holds a task and both tasks are declared on
-/// `FILE` with the clash open. Returns the clash, the task each worker holds, and both workers.
+/// Posts the order and starts two workers on it, each with its script. Waits until each worker
+/// holds a task and both tasks are declared on `FILE` with the clash open. Returns the clash, the
+/// task each worker holds, and both workers.
 async fn two_declared_on_one_file(
     running: &Running,
     root: &Path,
+    one_script: Stub,
     two_script: Stub,
     open: watch::Receiver<bool>,
 ) -> (
@@ -690,7 +742,7 @@ async fn two_declared_on_one_file(
     .await;
     assert_eq!(tasks.len(), 2, "the order splits into two tasks");
 
-    let one = spawn_worker(&base, ONE_TOKEN, root, open.clone());
+    let one = spawn_scripted(&base, ONE_TOKEN, root, one_script, open.clone());
     let two = spawn_scripted(&base, TWO_TOKEN, root, two_script, open);
     let first = settle(running, "agent-1 to claim a task", |_, world| {
         held_by(world, &AgentId::from_str(ONE).expect("valid agent id"))
@@ -737,7 +789,8 @@ async fn a_narrowed_task_redeclares_without_the_file_it_gave_up_and_lands() {
     let running = start_origin(root, 2).await;
     let (_gate, open) = watch::channel(true);
     let script = narrowed_script(json!({ "summary": "change the other file", "files": [OTHER] }));
-    let (clash, _, second, one, two) = two_declared_on_one_file(&running, root, script, open).await;
+    let (clash, _, second, one, two) =
+        two_declared_on_one_file(&running, root, worker_script(), script, open).await;
 
     narrow(&running, clash, second).await;
 
@@ -794,7 +847,8 @@ async fn a_narrowed_task_that_cannot_go_on_without_the_file_releases_with_the_re
         "summary": "the change needs the loader file",
         "files": [],
     }));
-    let (clash, _, second, one, two) = two_declared_on_one_file(&running, root, script, open).await;
+    let (clash, _, second, one, two) =
+        two_declared_on_one_file(&running, root, worker_script(), script, open).await;
 
     narrow(&running, clash, second).await;
 
@@ -820,6 +874,64 @@ async fn a_narrowed_task_that_cannot_go_on_without_the_file_releases_with_the_re
         narrowed.steps
     );
     // The other worker waits on the declare barrier while its sibling is open again, so this test
+    // does not wait for its build.
+    one.abort();
+    running.stop().await.expect("the origin stops");
+}
+
+/// The first narrowing moves the task to `OTHER`. The second narrowing takes `OTHER` too, and the
+/// planner then plans `FILE` again. The harness refuses that plan, because the task gave up `FILE`
+/// earlier, so the claim is released with both places named.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_narrowed_task_narrowed_again_is_not_planned_back_onto_a_file_it_gave_up() {
+    let repo = user_repo();
+    let root = repo.path();
+    let running = start_origin(root, 2).await;
+    let (_gate, open) = watch::channel(true);
+    let (clash, _, second, one, two) = two_declared_on_one_file(
+        &running,
+        root,
+        worker_script_planning(&[FILE, OTHER]),
+        twice_narrowed_script(),
+        open,
+    )
+    .await;
+
+    narrow(&running, clash, second).await;
+    // The first narrowing moves the task onto `OTHER`, which the first worker also declares. That
+    // declaration is the second clash in the log.
+    let other = settle(
+        &running,
+        "the narrowed task to clash on the other file",
+        |log, _| clashes_found(log).get(1).copied(),
+    )
+    .await;
+    narrow(&running, other, second).await;
+
+    let narrowed = timeout(WAIT, two)
+        .await
+        .expect("the narrowed worker finishes in time")
+        .expect("the narrowed worker does not panic");
+    let expected = format!("no plan without {FILE}, {OTHER} was accepted");
+    assert!(
+        matches!(
+            &narrowed.exit,
+            Exit::Narrowed { task, reason }
+                if task == &second.to_string() && reason.contains(&expected)
+        ),
+        "the second re-plan is refused for the file the first narrowing took: {}",
+        narrowed.exit
+    );
+    assert!(
+        narrowed
+            .steps
+            .iter()
+            .any(|step| step.starts_with(&format!("released {second}: "))),
+        "the claim is released with the reason: {:#?}",
+        narrowed.steps
+    );
+
+    // The other worker waits on the declare barrier while its sibling is released, so this test
     // does not wait for its build.
     one.abort();
     running.stop().await.expect("the origin stops");
