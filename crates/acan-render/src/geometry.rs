@@ -1,409 +1,351 @@
-//! CPU geometry. Each draw list is turned into index ranges once. A zoom change picks
-//! other ranges and never rebuilds a vertex. Fills are tessellated with lyon. Strokes and
-//! dots are quads that the vertex shader expands to the device width.
+//! Turns models and scenes into the vertex data the GPU draws. It runs once per model set and
+//! once per scene, never per frame.
+
+use std::ops::Range;
 
 use bytemuck::{Pod, Zeroable};
-use lyon_tessellation::math::point;
-use lyon_tessellation::path::Path;
-use lyon_tessellation::{
-    BuffersBuilder, FillOptions, FillTessellator, FillVertex as LyonVertex, VertexBuffers,
-};
 
-pub use lyon_tessellation::TessellationError;
+use crate::model::{Aabb, Detail, Dot3, Line3, Mesh};
+use crate::scene::Instance;
+use crate::theme::{dot_slot, flat_code, ink_slot};
 
-use crate::draw_list::{Detail, DrawList, Fill, Ink, Item};
-use crate::projection::project;
-use crate::scene::Lod;
-use crate::theme::{fill_slot, ink_slot};
+/// Width of the floor halo's falloff beyond a machine's plinth, in plan units.
+pub const HALO_WIDTH: f32 = 28.0;
 
-/// Rings in the floor's soft halo. Their alpha falls off quadratically.
-const HALO_STEPS: u32 = 8;
+/// The levels of detail in the order of their index in `Model::meshes` and in cumulative counts.
+pub const DETAILS: [Detail; 3] = [Detail::Always, Detail::Near, Detail::Close];
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct FillVertex {
-    pub pos: [f32; 2],
-    pub alpha: f32,
-    pub tone: u32,
-    pub order: f32,
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+pub struct MeshVertex {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub code: u32,
 }
 
+/// One end of a stroke segment. Each segment is six vertices: two corners at each end.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
 pub struct LineVertex {
-    pub a: [f32; 2],
-    pub b: [f32; 2],
-    /// x in 0..1 along the segment, y in -1..1 across it.
+    pub a: [f32; 3],
+    pub b: [f32; 3],
+    /// `x` is 0 at `a` and 1 at `b`. `y` is -1 or 1 across the stroke.
     pub corner: [f32; 2],
     pub width: f32,
     pub tone: u32,
-    pub order: f32,
+}
+
+/// One corner of a disc. `tangent` and `bitangent` span the disc, scaled by its radius.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+pub struct DotVertex {
+    pub center: [f32; 3],
+    pub tangent: [f32; 3],
+    pub bitangent: [f32; 3],
+    pub corner: [f32; 2],
+    pub tone: u32,
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct DotVertex {
-    pub center: [f32; 2],
-    pub corner: [f32; 2],
-    pub radius: f32,
-    pub tone: u32,
-    pub order: f32,
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+pub struct HaloVertex {
+    pub position: [f32; 3],
+    /// The model's footprint in model space: min x, min y, max x, max y.
+    pub rect: [f32; 4],
 }
 
-/// An index range inside one class's index buffer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Span {
-    pub start: u32,
-    pub end: u32,
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+pub struct InstanceRaw {
+    pub offset: [f32; 3],
+    pub tint: u32,
 }
 
-/// The four primitive classes. Opaque fills, lines and dots write depth. Halo fills
-/// are translucent and draw last, depth-tested but not written.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Class {
-    Opaque = 0,
-    Halo = 1,
-    Line = 2,
-    Dot = 3,
+/// Vertex data split by detail. `counts[level]` is the number of vertices drawn at that level
+/// of detail, cumulative, so a level draws the prefix `0..counts[level]`.
+#[derive(Debug, PartialEq)]
+pub struct Strokes<V> {
+    pub vertices: Vec<V>,
+    pub counts: [u32; 3],
 }
 
-/// Spans per class and per level of detail, for one model.
-pub type KindSpans = [[Vec<Span>; 3]; 4];
-
-#[derive(Default)]
-pub struct Batch {
-    pub fill: Vec<FillVertex>,
-    pub fill_opaque: Vec<u32>,
-    pub fill_halo: Vec<u32>,
-    pub line: Vec<LineVertex>,
-    pub line_idx: Vec<u32>,
-    pub dot: Vec<DotVertex>,
-    pub dot_idx: Vec<u32>,
-    /// One entry per pushed draw list, in push order.
-    pub kinds: Vec<KindSpans>,
+pub fn mesh_vertices(mesh: &Mesh) -> Vec<MeshVertex> {
+    assert_eq!(
+        mesh.positions.len(),
+        mesh.normals.len(),
+        "mesh needs one normal per position"
+    );
+    assert_eq!(
+        mesh.positions.len(),
+        mesh.surfaces.len(),
+        "mesh needs one surface per position"
+    );
+    mesh.positions
+        .iter()
+        .zip(&mesh.normals)
+        .zip(&mesh.surfaces)
+        .map(|((&position, &normal), &surface)| MeshVertex {
+            position,
+            normal,
+            code: flat_code(surface),
+        })
+        .collect()
 }
 
-impl Batch {
-    /// Appends one draw list as the next kind.
-    pub fn push_list(&mut self, list: &DrawList) -> Result<(), TessellationError> {
-        let mut spans = KindSpans::default();
-        let mut tess = FillTessellator::new();
-        let n = list.items.len().max(1) as f32;
-        for (i, item) in list.items.iter().enumerate() {
-            let order = (i as f32 + 0.5) / n;
-            match item {
-                Item::Fill { ring, tone } => {
-                    let class = if *tone == Fill::Halo {
-                        Class::Halo
-                    } else {
-                        Class::Opaque
-                    };
-                    let (start, end) = self.add_fill(&mut tess, ring, *tone, order, 1.0)?;
-                    record(&mut spans, class, start, end, Detail::Always);
-                }
-                Item::Line {
-                    points,
-                    closed,
-                    tone,
-                    width,
-                    detail,
-                } => {
-                    let (start, end) = self.add_line(points, *closed, *tone, *width, order);
-                    record(&mut spans, Class::Line, start, end, *detail);
-                }
-                Item::Dots {
-                    points,
-                    radius,
-                    tone,
-                    detail,
-                } => {
-                    let (start, end) = self.add_dots(points, *radius, *tone, order);
-                    record(&mut spans, Class::Dot, start, end, *detail);
-                }
-            }
-        }
-        self.kinds.push(spans);
-        Ok(())
-    }
-
-    /// Appends the floor's soft halo: rings outside `min..max` that fade to nothing.
-    /// It draws at the back of the ground, so the floor and machines cover it.
-    pub fn push_floor_halo(&mut self, min: [f32; 2], max: [f32; 2], width: f32) {
-        let start = self.fill_halo.len() as u32;
-        let ring = |e: f32| {
-            [
-                project(min[0] - e, min[1] - e, 0.0),
-                project(max[0] + e, min[1] - e, 0.0),
-                project(max[0] + e, max[1] + e, 0.0),
-                project(min[0] - e, max[1] + e, 0.0),
-            ]
-        };
-        let alpha = |k: u32| {
-            let t = k as f32 / HALO_STEPS as f32;
-            (1.0 - t) * (1.0 - t)
-        };
-        for k in 0..HALO_STEPS {
-            let inner = ring(width * k as f32 / HALO_STEPS as f32);
-            let outer = ring(width * (k + 1) as f32 / HALO_STEPS as f32);
-            for i in 0..4 {
-                let j = (i + 1) % 4;
-                let base = self.fill.len() as u32;
-                for (p, a) in [
-                    (inner[i], alpha(k)),
-                    (inner[j], alpha(k)),
-                    (outer[j], alpha(k + 1)),
-                    (outer[i], alpha(k + 1)),
-                ] {
-                    self.fill.push(FillVertex {
-                        pos: p,
-                        alpha: a,
-                        tone: fill_slot(Fill::Halo),
-                        order: 0.0,
-                    });
-                }
-                self.fill_halo
-                    .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
-            }
-        }
-        let end = self.fill_halo.len() as u32;
-        if self.kinds.is_empty() {
-            self.kinds.push(KindSpans::default());
-        }
-        if let Some(spans) = self.kinds.last_mut() {
-            for lod in [Lod::Far, Lod::Near, Lod::Close] {
-                spans[Class::Halo as usize][lod as usize].push(Span { start, end });
-            }
-        }
-    }
-
-    fn add_fill(
-        &mut self,
-        tess: &mut FillTessellator,
-        ring: &[[f32; 2]],
-        tone: Fill,
-        order: f32,
-        alpha: f32,
-    ) -> Result<(u32, u32), TessellationError> {
-        let start = self.index_len(tone == Fill::Halo);
-        if ring.len() < 3 {
-            return Ok((start, start));
-        }
-        let mut builder = Path::builder();
-        builder.begin(point(ring[0][0], ring[0][1]));
-        for p in &ring[1..] {
-            builder.line_to(point(p[0], p[1]));
-        }
-        builder.end(true);
-        let path = builder.build();
-        let mut out: VertexBuffers<[f32; 2], u32> = VertexBuffers::new();
-        tess.tessellate_path(
-            &path,
-            &FillOptions::default(),
-            &mut BuffersBuilder::new(&mut out, |v: LyonVertex| {
-                let p = v.position();
-                [p.x, p.y]
-            }),
-        )?;
-        let base = self.fill.len() as u32;
-        let tone_slot = fill_slot(tone);
-        self.fill.extend(out.vertices.iter().map(|pos| FillVertex {
-            pos: *pos,
-            alpha,
-            tone: tone_slot,
-            order,
-        }));
-        let idx = if tone == Fill::Halo {
-            &mut self.fill_halo
-        } else {
-            &mut self.fill_opaque
-        };
-        idx.extend(out.indices.iter().map(|i| i + base));
-        Ok((start, self.index_len(tone == Fill::Halo)))
-    }
-
-    fn add_line(
-        &mut self,
-        points: &[[f32; 2]],
-        closed: bool,
-        tone: Ink,
-        width: f32,
-        order: f32,
-    ) -> (u32, u32) {
-        let start = self.line_idx.len() as u32;
-        let n = points.len();
-        if n >= 2 {
-            let segments = if closed { n } else { n - 1 };
-            let tone_slot = ink_slot(tone);
-            for k in 0..segments {
-                let a = points[k];
-                let b = points[(k + 1) % n];
-                if (b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) < 1e-12 {
-                    continue;
-                }
-                let base = self.line.len() as u32;
-                for corner in [[0.0, -1.0], [0.0, 1.0], [1.0, 1.0], [1.0, -1.0]] {
-                    self.line.push(LineVertex {
-                        a,
-                        b,
-                        corner,
-                        width,
-                        tone: tone_slot,
-                        order,
-                    });
-                }
-                self.line_idx
-                    .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
-            }
-        }
-        (start, self.line_idx.len() as u32)
-    }
-
-    fn add_dots(&mut self, points: &[[f32; 2]], radius: f32, tone: Ink, order: f32) -> (u32, u32) {
-        let start = self.dot_idx.len() as u32;
-        let tone_slot = ink_slot(tone);
-        for &center in points {
-            let base = self.dot.len() as u32;
-            for corner in [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]] {
-                self.dot.push(DotVertex {
-                    center,
+pub fn line_vertices(lines: &[Line3]) -> Strokes<LineVertex> {
+    const CORNERS: [[f32; 2]; 6] = [
+        [0.0, -1.0],
+        [1.0, -1.0],
+        [1.0, 1.0],
+        [0.0, -1.0],
+        [1.0, 1.0],
+        [0.0, 1.0],
+    ];
+    let mut buckets: [Vec<LineVertex>; 3] = Default::default();
+    for line in lines {
+        let segments =
+            line.points.len().saturating_sub(1) + usize::from(line.closed && line.points.len() > 2);
+        let bucket = &mut buckets[level_of(line.detail)];
+        for s in 0..segments {
+            let a = line.points[s];
+            let b = line.points[(s + 1) % line.points.len()];
+            for corner in CORNERS {
+                bucket.push(LineVertex {
+                    a,
+                    b,
                     corner,
-                    radius,
-                    tone: tone_slot,
-                    order,
+                    width: line.width,
+                    tone: ink_slot(line.tone),
                 });
             }
-            self.dot_idx
-                .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
-        }
-        (start, self.dot_idx.len() as u32)
-    }
-
-    fn index_len(&self, halo: bool) -> u32 {
-        if halo {
-            self.fill_halo.len() as u32
-        } else {
-            self.fill_opaque.len() as u32
         }
     }
+    cumulative(buckets)
 }
 
-/// Adds the span `start..end` of `class` to every level of detail that shows `detail`.
-/// A span that touches the previous one merges into it, so a visible run is one range.
-fn record(spans: &mut KindSpans, class: Class, start: u32, end: u32, detail: Detail) {
-    if start == end {
-        return;
-    }
-    for lod in [Lod::Far, Lod::Near, Lod::Close] {
-        if !lod.shows(detail) {
-            continue;
+pub fn dot_vertices(dots: &[Dot3]) -> Strokes<DotVertex> {
+    const CORNERS: [[f32; 2]; 6] = [
+        [-1.0, -1.0],
+        [1.0, -1.0],
+        [1.0, 1.0],
+        [-1.0, -1.0],
+        [1.0, 1.0],
+        [-1.0, 1.0],
+    ];
+    let mut buckets: [Vec<DotVertex>; 3] = Default::default();
+    for dot in dots {
+        let (tangent, bitangent) = disc_axes(dot.normal, dot.radius);
+        let bucket = &mut buckets[level_of(dot.detail)];
+        for corner in CORNERS {
+            bucket.push(DotVertex {
+                center: dot.center,
+                tangent,
+                bitangent,
+                corner,
+                tone: dot_slot(dot.tone),
+            });
         }
-        let list = &mut spans[class as usize][lod as usize];
-        match list.last_mut() {
-            Some(last) if last.end == start => last.end = end,
-            _ => list.push(Span { start, end }),
-        }
     }
+    cumulative(buckets)
+}
+
+/// Six vertices covering `bounds` plus the halo's falloff.
+pub fn halo_vertices(bounds: &Aabb) -> [HaloVertex; 6] {
+    let [x0, y0, x1, y1] = [
+        bounds.min[0] - HALO_WIDTH,
+        bounds.min[1] - HALO_WIDTH,
+        bounds.max[0] + HALO_WIDTH,
+        bounds.max[1] + HALO_WIDTH,
+    ];
+    let rect = [bounds.min[0], bounds.min[1], bounds.max[0], bounds.max[1]];
+    let corner = |x: f32, y: f32| HaloVertex {
+        position: [x, y, 0.0],
+        rect,
+    };
+    let (a, b, c, d) = (
+        corner(x0, y0),
+        corner(x1, y0),
+        corner(x1, y1),
+        corner(x0, y1),
+    );
+    [a, b, c, a, c, d]
+}
+
+/// Instance data for the world (one identity instance at index 0) and then each kind in order.
+/// Returns the data and the instance range of each kind.
+pub fn instance_data(instances: &[Instance], kinds: usize) -> (Vec<InstanceRaw>, Vec<Range<u32>>) {
+    let mut raw = vec![InstanceRaw {
+        offset: [0.0; 3],
+        tint: 0,
+    }];
+    let mut ranges = Vec::with_capacity(kinds);
+    for kind in 0..kinds {
+        let start = raw.len() as u32;
+        raw.extend(
+            instances
+                .iter()
+                .filter(|inst| usize::from(inst.kind) == kind)
+                .map(|inst| InstanceRaw {
+                    offset: inst.offset,
+                    tint: u32::from(inst.tint),
+                }),
+        );
+        ranges.push(start..raw.len() as u32);
+    }
+    let known = instances
+        .iter()
+        .filter(|i| usize::from(i.kind) < kinds)
+        .count();
+    assert_eq!(
+        raw.len() - 1,
+        known,
+        "every instance must name a model kind below {kinds}"
+    );
+    (raw, ranges)
+}
+
+/// Two unit-free axes spanning the disc with normal `normal`, each as long as `radius`.
+fn disc_axes(normal: [f32; 3], radius: f32) -> ([f32; 3], [f32; 3]) {
+    let n = normalize(normal);
+    let helper = if n[2].abs() < 0.9 {
+        [0.0, 0.0, 1.0]
+    } else {
+        [1.0, 0.0, 0.0]
+    };
+    let t1 = normalize(cross(n, helper));
+    let t2 = cross(n, t1);
+    (scale(t1, radius), scale(t2, radius))
+}
+
+fn level_of(detail: Detail) -> usize {
+    detail as usize
+}
+
+fn cumulative<V>(buckets: [Vec<V>; 3]) -> Strokes<V> {
+    let counts = [
+        buckets[0].len() as u32,
+        (buckets[0].len() + buckets[1].len()) as u32,
+        (buckets[0].len() + buckets[1].len() + buckets[2].len()) as u32,
+    ];
+    let vertices: Vec<V> = buckets.into_iter().flatten().collect();
+    Strokes { vertices, counts }
+}
+
+fn normalize(v: [f32; 3]) -> [f32; 3] {
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-12);
+    scale(v, 1.0 / len)
+}
+
+fn scale(v: [f32; 3], k: f32) -> [f32; 3] {
+    [v[0] * k, v[1] * k, v[2] * k]
+}
+
+fn cross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{Ink, Surface};
 
-    fn line(detail: Detail) -> Item {
-        Item::Line {
-            points: vec![[0.0, 0.0], [10.0, 0.0]],
-            closed: false,
-            tone: Ink::Hi,
+    fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
+        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+
+    fn stroke(points: Vec<[f32; 3]>, closed: bool, detail: Detail) -> Line3 {
+        Line3 {
+            points,
+            closed,
+            tone: Ink::Mid,
             width: 0.6,
             detail,
         }
     }
 
     #[test]
-    fn detail_levels_get_their_own_index_ranges() {
-        let list = DrawList {
-            items: vec![
-                line(Detail::Always),
-                line(Detail::Near),
-                line(Detail::Always),
-                line(Detail::Close),
-            ],
-            bounds: [0.0; 4],
-        };
-        let mut batch = Batch::default();
-        batch.push_list(&list).unwrap();
-        let spans = &batch.kinds[0][Class::Line as usize];
-        assert_eq!(
-            spans[Lod::Far as usize],
-            vec![Span { start: 0, end: 6 }, Span { start: 12, end: 18 }]
+    fn open_and_closed_polylines_make_their_segments() {
+        let open = stroke(
+            vec![[0.0; 3], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+            false,
+            Detail::Always,
         );
-        assert_eq!(spans[Lod::Near as usize], vec![Span { start: 0, end: 18 }]);
-        assert_eq!(spans[Lod::Close as usize], vec![Span { start: 0, end: 24 }]);
+        let closed = stroke(
+            vec![[0.0; 3], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0]],
+            true,
+            Detail::Always,
+        );
+        assert_eq!(line_vertices(&[open]).vertices.len(), 2 * 6);
+        assert_eq!(line_vertices(&[closed]).vertices.len(), 3 * 6);
     }
 
     #[test]
-    fn closed_outline_has_one_segment_per_edge() {
-        let list = DrawList {
-            items: vec![Item::Line {
-                points: vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]],
-                closed: true,
-                tone: Ink::Lo,
-                width: 0.6,
-                detail: Detail::Always,
-            }],
-            bounds: [0.0; 4],
-        };
-        let mut batch = Batch::default();
-        batch.push_list(&list).unwrap();
-        assert_eq!(batch.line.len(), 16);
-        assert_eq!(batch.line_idx.len(), 24);
-    }
-
-    #[test]
-    fn fills_split_into_opaque_and_halo_classes() {
-        let square = vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]];
-        let list = DrawList {
-            items: vec![
-                Item::Fill {
-                    ring: square.clone(),
-                    tone: Fill::Shade1,
-                },
-                Item::Fill {
-                    ring: square,
-                    tone: Fill::Halo,
-                },
-            ],
-            bounds: [0.0; 4],
-        };
-        let mut batch = Batch::default();
-        batch.push_list(&list).unwrap();
-        assert!(!batch.fill_opaque.is_empty());
-        assert!(!batch.fill_halo.is_empty());
-        let spans = &batch.kinds[0];
-        assert_eq!(spans[Class::Opaque as usize][0].len(), 1);
-        assert_eq!(spans[Class::Halo as usize][0].len(), 1);
-    }
-
-    #[test]
-    fn a_concave_fill_tessellates_without_error() {
-        let l_shape = vec![
-            [0.0, 0.0],
-            [3.0, 0.0],
-            [3.0, 1.0],
-            [1.0, 1.0],
-            [1.0, 3.0],
-            [0.0, 3.0],
+    fn lines_are_grouped_so_each_level_draws_a_prefix() {
+        let lines = [
+            stroke(vec![[0.0; 3], [1.0, 0.0, 0.0]], false, Detail::Close),
+            stroke(vec![[0.0; 3], [2.0, 0.0, 0.0]], false, Detail::Always),
+            stroke(vec![[0.0; 3], [3.0, 0.0, 0.0]], false, Detail::Near),
         ];
-        let list = DrawList {
-            items: vec![Item::Fill {
-                ring: l_shape,
-                tone: Fill::Top,
-            }],
-            bounds: [0.0; 4],
+        let strokes = line_vertices(&lines);
+        assert_eq!(strokes.counts, [6, 12, 18]);
+        assert_eq!(strokes.vertices[0].b, [2.0, 0.0, 0.0]);
+        assert_eq!(strokes.vertices[6].b, [3.0, 0.0, 0.0]);
+        assert_eq!(strokes.vertices[12].b, [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn dot_axes_lie_in_the_surface_and_have_the_radius() {
+        let (t1, t2) = disc_axes([0.0, 0.0, 1.0], 0.9);
+        assert!((dot(t1, t1).sqrt() - 0.9).abs() < 1e-5);
+        assert!((dot(t2, t2).sqrt() - 0.9).abs() < 1e-5);
+        assert!(dot(t1, t2).abs() < 1e-5);
+        assert!(dot(t1, [0.0, 0.0, 1.0]).abs() < 1e-5);
+        let (u1, u2) = disc_axes([1.0, 0.0, 0.0], 2.0);
+        assert!(dot(u1, [1.0, 0.0, 0.0]).abs() < 1e-5);
+        assert!(dot(u2, [1.0, 0.0, 0.0]).abs() < 1e-5);
+    }
+
+    #[test]
+    fn halo_covers_the_footprint_and_its_falloff() {
+        let bounds = Aabb {
+            min: [-48.0, -43.0, 0.0],
+            max: [48.0, 43.0, 6.0],
         };
-        let mut batch = Batch::default();
-        batch.push_list(&list).unwrap();
-        assert_eq!(batch.fill_opaque.len() % 3, 0);
-        assert!(batch.fill_opaque.len() >= 12);
+        let corners = halo_vertices(&bounds);
+        let xs: Vec<f32> = corners.iter().map(|v| v.position[0]).collect();
+        let lowest = xs.iter().copied().fold(f32::INFINITY, f32::min);
+        assert!((lowest - (-48.0 - HALO_WIDTH)).abs() < 1e-4);
+        assert!(corners.iter().all(|v| v.rect == [-48.0, -43.0, 48.0, 43.0]));
+    }
+
+    #[test]
+    fn instances_group_by_kind_after_the_identity_instance() {
+        let inst = |kind: u16, x: f32| Instance {
+            offset: [x, 0.0, 0.0],
+            kind,
+            tint: 0,
+        };
+        let (raw, ranges) = instance_data(&[inst(1, 1.0), inst(0, 2.0), inst(1, 3.0)], 2);
+        assert_eq!(raw[0].offset, [0.0; 3]);
+        assert_eq!(ranges, vec![1..2, 2..4]);
+        assert_eq!(raw[2].offset[0], 1.0);
+        assert_eq!(raw[3].offset[0], 3.0);
+    }
+
+    #[test]
+    fn mesh_vertices_carry_the_flat_code_of_each_surface() {
+        let mesh = Mesh {
+            positions: vec![[0.0; 3]; 2],
+            normals: vec![[0.0, 0.0, 1.0]; 2],
+            surfaces: vec![Surface::Paper, Surface::Glass],
+            indices: vec![0, 1, 1],
+        };
+        let vertices = mesh_vertices(&mesh);
+        assert_eq!(vertices[0].code, 0);
+        assert_ne!(vertices[1].code, 0);
     }
 }

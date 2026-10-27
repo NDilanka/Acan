@@ -1,19 +1,17 @@
-//! Plant canvas renderer. Figures arrive as draw lists in plan units, tessellated once
-//! and drawn as GPU vector geometry with a camera uniform per frame. The renderer takes a
-//! `wgpu::Surface` and never learns what owns it, so a browser canvas and a native window
-//! are interchangeable hosts.
+//! The Acan plant renderer. The scene is 3D meshes on an infinite grid, drawn by wgpu with an
+//! orthographic orbit camera, four-tone paper shading and a screen-space edge pass. The model
+//! shape is the shared contract in `ui-figure-contract-v2`.
 
-mod camera;
-mod draw_list;
-mod geometry;
-mod projection;
-mod renderer;
-mod scene;
-mod theme;
+pub mod camera;
+pub mod geometry;
+pub mod model;
+pub mod renderer;
+pub mod scene;
+pub mod theme;
 
 pub use camera::Camera;
-pub use draw_list::{Detail, DrawList, Fill, Ink, Item};
-pub use projection::{depth, project};
+pub use model::{Aabb, Detail, Dot3, Ink, Line3, Mesh, Model, Surface};
 pub use renderer::{RenderError, Renderer};
 pub use scene::{Instance, Lod, Scene};
+/// The wgpu version this crate was built against. Callers create the instance and surface with it.
 pub use wgpu;

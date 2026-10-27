@@ -1,10 +1,12 @@
 // The Acan plant page. The wasm App draws; this file owns the canvas size, input, the HTML
-// labels and the token. A frame is drawn only after input, resize or new data.
+// labels and the token. A frame is drawn only after input, resize, new data or while a turn
+// eases. An idle page asks for no frames.
 import init, { App } from './pkg/acan_render_web.js';
 
 const PAN_KEY_PX = 80;
 const ZOOM_KEY = 1.25;
 const WHEEL_RATE = 0.0015;
+const TURN_DEG = 45;
 const TOKEN_KEY = 'acan.token';
 
 const params = new URLSearchParams(location.search);
@@ -16,6 +18,8 @@ const noticeEl = document.getElementById('notice');
 const timing = { started: performance.now() };
 let app = null;
 let scheduled = false;
+let lastFrame = null;
+let drag = null;
 let altDown = false;
 let labelGeneration = 0;
 const labels = new Map();
@@ -26,11 +30,21 @@ function requestRender() {
   requestAnimationFrame(drawFrame);
 }
 
-function drawFrame() {
+// `now` is the frame time. The bench calls this with no argument, which reads as a frame with
+// no time elapsed on a turn.
+function drawFrame(now = performance.now()) {
   scheduled = false;
-  app.render();
+  const elapsed = lastFrame === null ? 0 : now - lastFrame;
+  lastFrame = now;
+  const turning = app.advance(elapsed);
+  if (!app.render()) requestRender();
   if (timing.firstFrame === undefined) timing.firstFrame = performance.now();
   placeLabels();
+  if (turning) {
+    requestRender();
+  } else {
+    lastFrame = null;
+  }
 }
 
 function placeLabels() {
@@ -102,6 +116,11 @@ function zoomAtCentre(factor) {
   requestRender();
 }
 
+function turn(degrees) {
+  app.turn(degrees);
+  requestRender();
+}
+
 // The token arrives as `#token=` from `acan serve`. It is kept, then the fragment is removed
 // so it does not sit in the address bar or the history.
 function takeToken() {
@@ -159,7 +178,6 @@ async function boot() {
   const { rect, dpr } = setDrawingSize();
   app.resize(rect.width, rect.height, dpr);
   await loadPlant();
-  app.fit();
   requestRender();
   if (params.get('bench') === '1') {
     const { installBench } = await import('./bench.js');
@@ -169,24 +187,37 @@ async function boot() {
 
 window.addEventListener('resize', sizeCanvas);
 
+// Left drag pans. Right drag, or Alt with left drag, orbits and tilts about the ground point
+// under the screen centre.
+canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+
 canvas.addEventListener('pointerdown', (event) => {
+  if (app === null || (event.button !== 0 && event.button !== 2)) return;
   canvas.setPointerCapture(event.pointerId);
-  canvas.dataset.dragX = event.clientX;
-  canvas.dataset.dragY = event.clientY;
+  drag = {
+    x: event.clientX,
+    y: event.clientY,
+    orbit: event.button === 2 || event.altKey,
+  };
   canvas.classList.add('dragging');
 });
 
 canvas.addEventListener('pointermove', (event) => {
-  if (!canvas.classList.contains('dragging') || app === null) return;
-  const dx = event.clientX - Number(canvas.dataset.dragX);
-  const dy = event.clientY - Number(canvas.dataset.dragY);
-  canvas.dataset.dragX = event.clientX;
-  canvas.dataset.dragY = event.clientY;
-  app.pan(dx, dy);
+  if (drag === null) return;
+  const dx = event.clientX - drag.x;
+  const dy = event.clientY - drag.y;
+  drag.x = event.clientX;
+  drag.y = event.clientY;
+  if (drag.orbit) {
+    app.orbit(dx, dy);
+  } else {
+    app.pan(dx, dy);
+  }
   requestRender();
 });
 
 function endDrag() {
+  drag = null;
   canvas.classList.remove('dragging');
 }
 canvas.addEventListener('pointerup', endDrag);
@@ -226,18 +257,35 @@ window.addEventListener('keydown', (event) => {
     setAlt(true);
     return;
   }
-  if (app === null) return;
+  if (app === null || event.ctrlKey || event.metaKey) return;
   if (ARROW_PAN[event.key]) {
     event.preventDefault();
     app.pan(...ARROW_PAN[event.key]);
     requestRender();
-  } else if (event.key === '+' || event.key === '=') {
-    zoomAtCentre(ZOOM_KEY);
-  } else if (event.key === '-' || event.key === '_') {
-    zoomAtCentre(1 / ZOOM_KEY);
-  } else if (event.key === '0') {
-    app.fit();
-    requestRender();
+    return;
+  }
+  switch (event.key) {
+    case '+':
+    case '=':
+      zoomAtCentre(ZOOM_KEY);
+      break;
+    case '-':
+    case '_':
+      zoomAtCentre(1 / ZOOM_KEY);
+      break;
+    case '0':
+      app.fit();
+      requestRender();
+      break;
+    case 'q':
+    case 'Q':
+      if (!event.repeat) turn(-TURN_DEG);
+      break;
+    case 'e':
+    case 'E':
+      if (!event.repeat) turn(TURN_DEG);
+      break;
+    default:
   }
 });
 

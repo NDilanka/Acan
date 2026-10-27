@@ -1,24 +1,24 @@
-use crate::draw_list::{Detail, DrawList};
+use crate::model::{Aabb, Detail, Mesh};
 
-/// One machine on the plan: a model kind placed at a projected offset.
+/// One machine on the plan: a model kind placed at an offset.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Instance {
-    /// Projected position of the model's plan origin (see `projection::project`).
-    pub offset: [f32; 2],
+    /// Where the model's origin sits. The model's plan centre is on the ground at `z = 0`.
+    pub offset: [f32; 3],
     /// Index into the models given to `Renderer::set_models`.
     pub kind: u16,
-    /// Index into the theme's tint slots.
+    /// Index into the theme's tint slots. Slot 0 is the identity.
     pub tint: u8,
 }
 
-/// What the renderer draws. `instances` must be in painter order, back to front.
+/// What the renderer draws, set once per plant change.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scene {
-    /// Static geometry on the ground: floor, belts and anything else flat.
-    pub world: DrawList,
-    /// A soft halo that fades out beyond this plan rectangle `(min, max)`, if set.
-    pub floor_halo: Option<([f32; 2], [f32; 2])>,
+    /// Static geometry: belts and anything else that is not a model instance.
+    pub world: Mesh,
     pub instances: Vec<Instance>,
+    /// Box around everything in the scene, used to size the depth range.
+    pub bounds: Aabb,
 }
 
 /// Level of detail, picked from zoom relative to the fit zoom.
@@ -31,9 +31,9 @@ pub enum Lod {
 }
 
 impl Lod {
-    /// Zoom divided by fit zoom at which `Near` items appear.
+    /// Zoom divided by fit zoom at which `Near` detail appears.
     pub const NEAR_RATIO: f32 = 1.0;
-    /// Zoom divided by fit zoom at which `Close` items appear.
+    /// Zoom divided by fit zoom at which `Close` detail appears.
     pub const CLOSE_RATIO: f32 = 2.5;
 
     pub fn for_ratio(ratio: f32) -> Self {
@@ -46,6 +46,7 @@ impl Lod {
         }
     }
 
+    /// Whether detail authored at `detail` is drawn at this level.
     pub fn shows(self, detail: Detail) -> bool {
         detail as u8 <= self as u8
     }

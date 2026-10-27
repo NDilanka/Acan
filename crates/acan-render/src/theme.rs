@@ -1,11 +1,35 @@
-//! The light theme, from the kit's iso.css (MIT). Colours live here and nowhere in a figure.
+//! The light theme, from the kit's iso.css (MIT) and the shared figure contract. Colours live
+//! here and nowhere in a model.
 
-use crate::draw_list::{Fill, Ink};
+use crate::model::{Ink, Surface};
 
-/// Palette slots on the GPU: fills, then inks, then four agent slots.
-pub const PALETTE_LEN: usize = 22;
+/// Palette slots on the GPU.
+pub const PALETTE_LEN: usize = 23;
 /// Tint slots. Slot 0 is the identity; instances pick a slot to tint a machine.
 pub const TINT_LEN: usize = 8;
+
+pub const SLOT_PAGE: u32 = 0;
+pub const SLOT_TOP: u32 = 1;
+/// Side faces, darkest first. Paper picks one of these four from its normal.
+pub const SLOT_SHADE0: u32 = 2;
+pub const SLOT_SHADE1: u32 = 3;
+pub const SLOT_SHADE2: u32 = 4;
+pub const SLOT_SHADE3: u32 = 5;
+pub const SLOT_LIT: u32 = 6;
+pub const SLOT_GLASS: u32 = 7;
+pub const SLOT_HALO: u32 = 8;
+pub const SLOT_GRID_MINOR: u32 = 9;
+pub const SLOT_GRID_MAJOR: u32 = 10;
+pub const SLOT_HI: u32 = 11;
+pub const SLOT_MID: u32 = 12;
+pub const SLOT_LO: u32 = 13;
+pub const SLOT_FAINT: u32 = 14;
+pub const SLOT_DOT: u32 = 15;
+pub const SLOT_RED: u32 = 16;
+pub const SLOT_GREEN: u32 = 17;
+pub const SLOT_BLUE: u32 = 18;
+/// Four agent slots. Placeholders until agents get a palette.
+pub const SLOT_AGENT0: u32 = 19;
 
 const fn rgb(hex: u32, alpha: f32) -> [f32; 4] {
     [
@@ -16,61 +40,64 @@ const fn rgb(hex: u32, alpha: f32) -> [f32; 4] {
     ]
 }
 
-/// Page background, sRGB.
-pub const PAGE: [f32; 4] = rgb(0xffffff, 1.0);
-
-/// sRGB, straight alpha. Agent slots are placeholders until agents get a palette.
+/// sRGB with straight alpha. Glass has no colour in the contract, so it takes shade-3.
 const PALETTE: [[f32; 4]; PALETTE_LEN] = [
-    rgb(0xffffff, 1.0),  // 0 Face
-    rgb(0xffffff, 1.0),  // 1 Top
-    rgb(0xdcdcd9, 1.0),  // 2 Shade0
-    rgb(0xe5e5e2, 1.0),  // 3 Shade1
-    rgb(0xededea, 1.0),  // 4 Shade2
-    rgb(0xf4f4f1, 1.0),  // 5 Shade3
-    rgb(0xffffff, 1.0),  // 6 LitTop
-    rgb(0xeeeeeb, 1.0),  // 7 LitShade
-    rgb(0x8a8a80, 0.32), // 8 Halo
-    rgb(0xfbfbfa, 1.0),  // 9 Paper
-    rgb(0x26262a, 1.0),  // 10 Hi
-    rgb(0x8a8a8f, 1.0),  // 11 Mid
-    rgb(0xb4b4b8, 1.0),  // 12 Lo
-    rgb(0xd4d4d6, 1.0),  // 13 Faint
-    rgb(0x000000, 1.0),  // 14 Lit
-    rgb(0xe5484d, 1.0),  // 15 Red
-    rgb(0x30a46c, 1.0),  // 16 Green
-    rgb(0x3e63dd, 1.0),  // 17 Blue
-    rgb(0x8e4ec6, 1.0),  // 18 Agent 0 (placeholder)
-    rgb(0xf76b15, 1.0),  // 19 Agent 1 (placeholder)
-    rgb(0x12a594, 1.0),  // 20 Agent 2 (placeholder)
-    rgb(0xab6400, 1.0),  // 21 Agent 3 (placeholder)
+    rgb(0xffffff, 1.0),  // page
+    rgb(0xffffff, 1.0),  // top
+    rgb(0xdcdcd9, 1.0),  // shade-0
+    rgb(0xe5e5e2, 1.0),  // shade-1
+    rgb(0xededea, 1.0),  // shade-2
+    rgb(0xf4f4f1, 1.0),  // shade-3
+    rgb(0xffffff, 1.0),  // lit
+    rgb(0xf4f4f1, 1.0),  // glass
+    rgb(0x8a8a80, 0.32), // halo
+    rgb(0xf0f0ee, 1.0),  // grid minor
+    rgb(0xe5e5e2, 1.0),  // grid major
+    rgb(0x26262a, 1.0),  // hi
+    rgb(0x8a8a8f, 1.0),  // mid
+    rgb(0xb4b4b8, 1.0),  // lo
+    rgb(0xd4d4d6, 1.0),  // faint
+    rgb(0x3a3a3e, 1.0),  // dot
+    rgb(0xe5484d, 1.0),  // red
+    rgb(0x30a46c, 1.0),  // green
+    rgb(0x3e63dd, 1.0),  // blue
+    rgb(0x8e4ec6, 1.0),  // agent 0 (placeholder)
+    rgb(0xf76b15, 1.0),  // agent 1 (placeholder)
+    rgb(0x12a594, 1.0),  // agent 2 (placeholder)
+    rgb(0xab6400, 1.0),  // agent 3 (placeholder)
 ];
 
-pub fn fill_slot(tone: Fill) -> u32 {
-    match tone {
-        Fill::Face => 0,
-        Fill::Top => 1,
-        Fill::Shade0 => 2,
-        Fill::Shade1 => 3,
-        Fill::Shade2 => 4,
-        Fill::Shade3 => 5,
-        Fill::LitTop => 6,
-        Fill::LitShade => 7,
-        Fill::Halo => 8,
-        Fill::Paper => 9,
+/// Palette slot of an ink used by a line.
+pub fn ink_slot(ink: Ink) -> u32 {
+    match ink {
+        Ink::Hi => SLOT_HI,
+        Ink::Mid => SLOT_MID,
+        Ink::Lo => SLOT_LO,
+        Ink::Faint => SLOT_FAINT,
+        Ink::Lit => SLOT_LIT,
+        Ink::Red => SLOT_RED,
+        Ink::Green => SLOT_GREEN,
+        Ink::Blue => SLOT_BLUE,
+        Ink::Agent(slot) => SLOT_AGENT0 + u32::from(slot % 4),
     }
 }
 
-pub fn ink_slot(tone: Ink) -> u32 {
-    match tone {
-        Ink::Hi => 10,
-        Ink::Mid => 11,
-        Ink::Lo => 12,
-        Ink::Faint => 13,
-        Ink::Lit => 14,
-        Ink::Red => 15,
-        Ink::Green => 16,
-        Ink::Blue => 17,
-        Ink::Agent(slot) => 18 + u32::from(slot % 4),
+/// Palette slot of a dot. A hi dot is the kit's dot ink, a little lighter than a hi line.
+pub fn dot_slot(ink: Ink) -> u32 {
+    match ink {
+        Ink::Hi => SLOT_DOT,
+        other => ink_slot(other),
+    }
+}
+
+/// The per-vertex code of a flat surface: 0 for paper (shaded in the shader), otherwise the
+/// palette slot plus one.
+pub fn flat_code(surface: Surface) -> u32 {
+    match surface {
+        Surface::Paper => 0,
+        Surface::Lit => SLOT_LIT + 1,
+        Surface::Glass => SLOT_GLASS + 1,
+        Surface::Ink(ink) => ink_slot(ink) + 1,
     }
 }
 
@@ -83,8 +110,9 @@ pub fn tints() -> [[f32; 4]; TINT_LEN] {
     [[1.0; 4]; TINT_LEN]
 }
 
+/// The page colour for the clear, linear when the surface is an sRGB format.
 pub fn page(srgb_surface: bool) -> [f32; 4] {
-    if srgb_surface { to_linear(PAGE) } else { PAGE }
+    palette(srgb_surface)[SLOT_PAGE as usize]
 }
 
 fn to_linear(c: [f32; 4]) -> [f32; 4] {
@@ -103,19 +131,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn slots_are_distinct_and_in_range() {
-        let fills = [
-            Fill::Face,
-            Fill::Top,
-            Fill::Shade0,
-            Fill::Shade1,
-            Fill::Shade2,
-            Fill::Shade3,
-            Fill::LitTop,
-            Fill::LitShade,
-            Fill::Halo,
-            Fill::Paper,
-        ];
+    fn every_ink_maps_to_its_own_slot_in_range() {
         let inks = [
             Ink::Hi,
             Ink::Mid,
@@ -125,20 +141,26 @@ mod tests {
             Ink::Red,
             Ink::Green,
             Ink::Blue,
+            Ink::Agent(0),
+            Ink::Agent(3),
         ];
-        let mut slots: Vec<u32> = fills.iter().map(|f| fill_slot(*f)).collect();
-        slots.extend(inks.iter().map(|i| ink_slot(*i)));
-        slots.extend((0..4).map(|n| ink_slot(Ink::Agent(n))));
-        let mut sorted = slots.clone();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(sorted.len(), slots.len());
-        assert!(slots.iter().all(|s| (*s as usize) < PALETTE_LEN));
+        let slots: Vec<u32> = inks.iter().map(|&ink| ink_slot(ink)).collect();
+        assert!(slots.iter().all(|&s| (s as usize) < PALETTE_LEN));
+        assert_eq!(ink_slot(Ink::Agent(0)), ink_slot(Ink::Agent(4)));
+        assert_eq!(dot_slot(Ink::Hi), SLOT_DOT);
+        assert_eq!(dot_slot(Ink::Mid), SLOT_MID);
+    }
+
+    #[test]
+    fn flat_codes_leave_zero_for_paper() {
+        assert_eq!(flat_code(Surface::Paper), 0);
+        assert_eq!(flat_code(Surface::Lit), SLOT_LIT + 1);
+        assert_eq!(flat_code(Surface::Ink(Ink::Hi)), SLOT_HI + 1);
     }
 
     #[test]
     fn halo_is_the_kit_grey_at_a_third_opacity() {
-        let halo = PALETTE[fill_slot(Fill::Halo) as usize];
+        let halo = PALETTE[SLOT_HALO as usize];
         assert!((halo[3] - 0.32).abs() < 1e-6);
         assert!((halo[0] - 0x8a as f32 / 255.0).abs() < 1e-6);
     }

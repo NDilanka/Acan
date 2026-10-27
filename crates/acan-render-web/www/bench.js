@@ -1,8 +1,9 @@
 // Benchmarks, loaded only with `?bench=1`. They drive the same App the page uses. Frame
 // intervals come from requestAnimationFrame timestamps, and CPU comes from timing App.render.
-// Run them from the console: `await bench.pan(10)`, `await bench.idle(3)`, `bench.timing`.
+// Run them from the console: `await bench.pan(10)`, `await bench.orbit(10)`, `await bench.idle(3)`.
 
 const PAN_PX_PER_FRAME = 3;
+const ORBIT_PX_PER_FRAME = 3;
 
 const round = (x) => Math.round(x * 100) / 100;
 
@@ -35,43 +36,53 @@ export function installBench({ App, app, canvas, timing, redraw }) {
     return result;
   };
 
+  // Runs `step` and one full frame (render and labels) per vsync for `seconds`.
+  function sweep(seconds, step) {
+    return new Promise((resolve) => {
+      const intervals = [];
+      const frameCpu = [];
+      const rendererCpu = [];
+      const begin = performance.now();
+      let last = null;
+      const tick = (now) => {
+        if (last !== null) intervals.push(now - last);
+        last = now;
+        step();
+        const rendererBefore = renderMs;
+        const started = performance.now();
+        redraw();
+        frameCpu.push(performance.now() - started);
+        rendererCpu.push(renderMs - rendererBefore);
+        if (now - begin < seconds * 1000) {
+          rawRaf(tick);
+        } else {
+          resolve({
+            frames: frameCpu.length,
+            intervalMs: summary(intervals),
+            frameCpuMs: summary(frameCpu),
+            rendererCpuMs: summary(rendererCpu),
+            detail: app.detail(),
+            machines: app.machine_count(),
+            canvas: [canvas.width, canvas.height],
+            backend: app.backend(),
+          });
+        }
+      };
+      rawRaf(tick);
+    });
+  }
+
   window.bench = {
     timing,
 
-    /** Pans at a constant speed for `seconds`, one full frame (render and labels) per vsync. */
+    /** Pans at a constant speed for `seconds`. */
     pan(seconds = 10) {
-      return new Promise((resolve) => {
-        const intervals = [];
-        const frameCpu = [];
-        const rendererCpu = [];
-        const begin = performance.now();
-        let last = null;
-        const tick = (now) => {
-          if (last !== null) intervals.push(now - last);
-          last = now;
-          app.pan(PAN_PX_PER_FRAME, PAN_PX_PER_FRAME / 3);
-          const rendererBefore = renderMs;
-          const started = performance.now();
-          redraw();
-          frameCpu.push(performance.now() - started);
-          rendererCpu.push(renderMs - rendererBefore);
-          if (now - begin < seconds * 1000) {
-            rawRaf(tick);
-          } else {
-            resolve({
-              frames: frameCpu.length,
-              intervalMs: summary(intervals),
-              frameCpuMs: summary(frameCpu),
-              rendererCpuMs: summary(rendererCpu),
-              detail: app.detail(),
-              machines: app.machine_count(),
-              canvas: [canvas.width, canvas.height],
-              backend: app.backend(),
-            });
-          }
-        };
-        rawRaf(tick);
-      });
+      return sweep(seconds, () => app.pan(PAN_PX_PER_FRAME, PAN_PX_PER_FRAME / 3));
+    },
+
+    /** Orbits at a constant rate for `seconds`, which wraps the azimuth through 360 degrees. */
+    orbit(seconds = 10) {
+      return sweep(seconds, () => app.orbit(ORBIT_PX_PER_FRAME, 0));
     },
 
     /** Counts requestAnimationFrame calls and renders over `seconds` with no input. */

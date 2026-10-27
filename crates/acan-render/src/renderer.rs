@@ -1,3 +1,8 @@
+//! The wgpu renderer. A frame has two passes. The first draws the ground, belts, halos,
+//! machines, lines and dots into colour, normal and depth targets, 4x MSAA where the device
+//! allows it. The second runs the edge pass over depth and normals and resolves into the
+//! surface. Model buffers are uploaded once per model set and per scene, never per frame.
+
 use std::mem::size_of;
 use std::ops::Range;
 
@@ -5,20 +10,30 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::camera::Camera;
-use crate::draw_list::DrawList;
 use crate::geometry::{
-    Batch, Class, DotVertex, FillVertex, KindSpans, LineVertex, TessellationError,
+    self, DotVertex, HALO_WIDTH, HaloVertex, InstanceRaw, LineVertex, MeshVertex, Strokes,
 };
-use crate::scene::{Instance, Lod, Scene};
+use crate::model::{Mesh, Model};
+use crate::scene::{Lod, Scene};
 use crate::theme::{self, PALETTE_LEN, TINT_LEN};
 
-const SAMPLES: u32 = 4;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+const MSAA: u32 = 4;
 /// Thinnest stroke on screen, in device pixels. Thinner strokes fade out instead.
-const MIN_PX: f32 = 0.75;
-/// Width of the floor's soft halo, in plan units.
-const HALO_WIDTH: f32 = 28.0;
+const MIN_STROKE_PX: f32 = 0.75;
+/// Outline weight at zoom 1, in plan units.
+const EDGE_WEIGHT: f32 = 0.6;
+/// Depth step, in plan units, that counts as a silhouette.
+const SILHOUETTE_STEP: f32 = 0.5;
+const CREASE_DEGREES: f32 = 30.0;
+/// Extra depth range beyond the scene's bounding radius, so halos and belts stay in range.
+const DEPTH_MARGIN: f32 = 8.0;
+/// Depth half-range for a scene with no bounds, so the depth range stays valid when it is empty.
+const EMPTY_SCENE_RADIUS: f32 = 100.0;
 
+/// Why a renderer could not be created or a frame could not be drawn.
+#[non_exhaustive]
 #[derive(Debug, thiserror::Error)]
 pub enum RenderError {
     #[error("no compatible GPU adapter: {0}")]
@@ -31,8 +46,21 @@ pub enum RenderError {
     SurfaceLost,
     #[error("validation error while acquiring the surface texture")]
     SurfaceValidation,
-    #[error("tessellation failed: {0}")]
-    Tessellation(#[from] TessellationError),
+}
+
+/// The per-frame camera, as the shader reads it. Every field is a `vec4` so the layout needs no
+/// padding. See `plant.wgsl` for what each lane means.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+pub struct CameraUniform {
+    pub right: [f32; 4],
+    pub up: [f32; 4],
+    pub toward: [f32; 4],
+    pub pivot: [f32; 4],
+    pub scene: [f32; 4],
+    pub view: [f32; 4],
+    pub edge: [f32; 4],
+    pub grid: [f32; 4],
 }
 
 #[repr(C)]
@@ -42,48 +70,39 @@ struct ThemeUniform {
     tints: [[f32; 4]; TINT_LEN],
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct InstanceRaw {
-    offset: [f32; 2],
-    rank: f32,
-    tint: u32,
+struct MeshBuffers {
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    index_count: u32,
 }
 
-/// One set of GPU buffers for a batch of kinds.
-struct Gpu {
-    fill: wgpu::Buffer,
-    fill_opaque: wgpu::Buffer,
-    fill_halo: wgpu::Buffer,
-    line: wgpu::Buffer,
-    line_idx: wgpu::Buffer,
-    dot: wgpu::Buffer,
-    dot_idx: wgpu::Buffer,
-    kinds: Vec<KindSpans>,
+struct StrokeBuffers {
+    buffer: wgpu::Buffer,
+    /// Cumulative vertex counts by level of detail.
+    counts: [u32; 3],
 }
 
-impl Gpu {
-    fn new(device: &wgpu::Device, batch: &Batch) -> Self {
-        let vb = wgpu::BufferUsages::VERTEX;
-        let ib = wgpu::BufferUsages::INDEX;
-        Self {
-            fill: upload(device, "fill vertices", vb, &batch.fill),
-            fill_opaque: upload(device, "fill opaque indices", ib, &batch.fill_opaque),
-            fill_halo: upload(device, "fill halo indices", ib, &batch.fill_halo),
-            line: upload(device, "line vertices", vb, &batch.line),
-            line_idx: upload(device, "line indices", ib, &batch.line_idx),
-            dot: upload(device, "dot vertices", vb, &batch.dot),
-            dot_idx: upload(device, "dot indices", ib, &batch.dot_idx),
-            kinds: batch.kinds.clone(),
-        }
-    }
+struct ModelBuffers {
+    levels: [MeshBuffers; 3],
+    lines: StrokeBuffers,
+    dots: StrokeBuffers,
 }
 
 struct Pipelines {
-    fill_opaque: wgpu::RenderPipeline,
-    fill_halo: wgpu::RenderPipeline,
+    grid: wgpu::RenderPipeline,
+    mesh: wgpu::RenderPipeline,
+    halo: wgpu::RenderPipeline,
     line: wgpu::RenderPipeline,
     dot: wgpu::RenderPipeline,
+    edge: wgpu::RenderPipeline,
+}
+
+/// Targets that the scene pass writes and the edge pass reads.
+struct Targets {
+    /// The multisampled colour target, or `None` when the surface is drawn directly.
+    colour: Option<wgpu::TextureView>,
+    normal: wgpu::TextureView,
+    depth: wgpu::TextureView,
 }
 
 pub struct Renderer {
@@ -92,18 +111,23 @@ pub struct Renderer {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
     adapter_info: wgpu::AdapterInfo,
+    samples: u32,
     camera_buf: wgpu::Buffer,
-    bind: wgpu::BindGroup,
+    uniform_bind: wgpu::BindGroup,
+    edge_layout: wgpu::BindGroupLayout,
+    edge_bind: wgpu::BindGroup,
+    targets: Targets,
     pipelines: Pipelines,
-    msaa_color: wgpu::TextureView,
-    depth: wgpu::TextureView,
     clear: wgpu::Color,
-    models: Option<Gpu>,
-    world: Option<Gpu>,
+    models: Vec<ModelBuffers>,
+    /// Six halo vertices per kind, kind by kind.
+    halos: Option<wgpu::Buffer>,
+    world: Option<MeshBuffers>,
     instances: Option<wgpu::Buffer>,
-    /// Per model kind: its range inside `instances`.
-    instance_ranges: Vec<Range<u32>>,
-    depth_step: f32,
+    /// Per kind: its range inside `instances`.
+    ranges: Vec<Range<u32>>,
+    centre: [f32; 3],
+    radius: f32,
 }
 
 impl Renderer {
@@ -153,6 +177,7 @@ impl Renderer {
         };
         surface.configure(&device, &config);
 
+        let samples = sample_count(&adapter, format);
         let srgb = format.is_srgb();
         let page = theme::page(srgb);
         let theme_uniform = ThemeUniform {
@@ -161,7 +186,7 @@ impl Renderer {
         };
         let camera_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera"),
-            size: size_of::<crate::camera::CameraUniform>() as u64,
+            size: size_of::<CameraUniform>() as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -170,13 +195,13 @@ impl Renderer {
             contents: bytemuck::bytes_of(&theme_uniform),
             usage: wgpu::BufferUsages::UNIFORM,
         });
-        let bind_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("plant"),
+        let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("uniforms"),
             entries: &[uniform_entry(0), uniform_entry(1)],
         });
-        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("plant"),
-            layout: &bind_layout,
+        let uniform_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("uniforms"),
+            layout: &uniform_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -188,210 +213,154 @@ impl Renderer {
                 },
             ],
         });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        let edge_layout = edge_layout(&device, samples);
+
+        let source = include_str!("plant.wgsl")
+            .replace("@@MS@@", if samples > 1 { "multisampled_" } else { "" });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("plant"),
-            bind_group_layouts: &[Some(&bind_layout)],
-            immediate_size: 0,
+            source: wgpu::ShaderSource::Wgsl(source.into()),
         });
-        let shader = device.create_shader_module(wgpu::include_wgsl!("plant.wgsl"));
+        let pipelines = Pipelines::new(
+            &device,
+            &shader,
+            &uniform_layout,
+            &edge_layout,
+            format,
+            samples,
+        );
 
-        let fill_vertex = wgpu::VertexBufferLayout {
-            array_stride: size_of::<FillVertex>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Uint32, 3 => Float32],
-        };
-        let fill_instance = wgpu::VertexBufferLayout {
-            array_stride: size_of::<InstanceRaw>() as u64,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![4 => Float32x2, 5 => Float32, 6 => Uint32],
-        };
-        let line_vertex = wgpu::VertexBufferLayout {
-            array_stride: size_of::<LineVertex>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32x2, 3 => Float32, 4 => Uint32, 5 => Float32],
-        };
-        let line_instance = wgpu::VertexBufferLayout {
-            array_stride: size_of::<InstanceRaw>() as u64,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![6 => Float32x2, 7 => Float32, 8 => Uint32],
-        };
-        let dot_vertex = wgpu::VertexBufferLayout {
-            array_stride: size_of::<DotVertex>() as u64,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Float32, 3 => Uint32, 4 => Float32],
-        };
-        let dot_instance = wgpu::VertexBufferLayout {
-            array_stride: size_of::<InstanceRaw>() as u64,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![5 => Float32x2, 6 => Float32, 7 => Uint32],
-        };
-        let make = |label: &str,
-                    vs: &str,
-                    fs: &str,
-                    buffers: &[Option<wgpu::VertexBufferLayout>],
-                    depth_write: bool| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some(vs),
-                    compilation_options: Default::default(),
-                    buffers,
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: Some(wgpu::DepthStencilState {
-                    format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(depth_write),
-                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
-                    stencil: wgpu::StencilState::default(),
-                    bias: wgpu::DepthBiasState::default(),
-                }),
-                multisample: wgpu::MultisampleState {
-                    count: SAMPLES,
-                    ..Default::default()
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(fs),
-                    compilation_options: Default::default(),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let pipelines = Pipelines {
-            fill_opaque: make(
-                "fill opaque",
-                "vs_fill",
-                "fs_fill",
-                &[Some(fill_vertex.clone()), Some(fill_instance.clone())],
-                true,
-            ),
-            fill_halo: make(
-                "fill halo",
-                "vs_fill",
-                "fs_fill",
-                &[Some(fill_vertex), Some(fill_instance)],
-                false,
-            ),
-            line: make(
-                "lines",
-                "vs_line",
-                "fs_line",
-                &[Some(line_vertex), Some(line_instance)],
-                true,
-            ),
-            dot: make(
-                "dots",
-                "vs_dot",
-                "fs_dot",
-                &[Some(dot_vertex), Some(dot_instance)],
-                true,
-            ),
-        };
-        let (msaa_color, depth) = targets(&device, format, config.width, config.height);
-
+        let targets = targets(&device, format, samples, config.width, config.height);
+        let edge_bind = edge_bind(&device, &edge_layout, &targets);
         Ok(Self {
             adapter_info: adapter.get_info(),
             device,
             queue,
             surface,
             config,
+            samples,
             camera_buf,
-            bind,
+            uniform_bind,
+            edge_layout,
+            edge_bind,
+            targets,
             pipelines,
-            msaa_color,
-            depth,
             clear: wgpu::Color {
                 r: page[0] as f64,
                 g: page[1] as f64,
                 b: page[2] as f64,
                 a: page[3] as f64,
             },
-            models: None,
+            models: Vec::new(),
+            halos: None,
             world: None,
             instances: None,
-            instance_ranges: Vec::new(),
-            depth_step: 1.0,
+            ranges: Vec::new(),
+            centre: [0.0; 3],
+            radius: 1.0,
         })
     }
 
+    /// The adapter in use, for reporting which backend drew the frames.
     pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
         &self.adapter_info
     }
 
+    /// The format of the surface the frames are presented to.
     pub fn surface_format(&self) -> wgpu::TextureFormat {
         self.config.format
     }
 
+    /// The MSAA sample count of the scene pass: 4, or 1 where the device lacks it.
+    pub fn samples(&self) -> u32 {
+        self.samples
+    }
+
+    /// Resizes the surface and its targets. `size` is the drawable size in physical pixels.
     pub fn resize(&mut self, size: [u32; 2]) {
         self.config.width = size[0].max(1);
         self.config.height = size[1].max(1);
         self.surface.configure(&self.device, &self.config);
-        let (msaa, depth) = targets(
+        self.targets = targets(
             &self.device,
             self.config.format,
+            self.samples,
             self.config.width,
             self.config.height,
         );
-        self.msaa_color = msaa;
-        self.depth = depth;
+        self.edge_bind = edge_bind(&self.device, &self.edge_layout, &self.targets);
     }
 
-    /// Uploads and tessellates the model kinds once. Instances in a scene refer to these by index.
-    /// Call `set_scene` after this, because it clears the scene.
-    pub fn set_models(&mut self, models: &[DrawList]) -> Result<(), RenderError> {
-        let mut batch = Batch::default();
-        for model in models {
-            batch.push_list(model)?;
-        }
-        self.models = Some(Gpu::new(&self.device, &batch));
-        self.instance_ranges = vec![0..0; models.len()];
+    /// Uploads every kind's three meshes, lines, dots and halo once. Instances refer to kinds by
+    /// index into this slice. Call `set_scene` afterwards, because the instance ranges depend
+    /// on the kinds.
+    pub fn set_models(&mut self, models: &[Model]) {
+        self.models = models
+            .iter()
+            .map(|model| ModelBuffers {
+                levels: model.meshes.each_ref().map(|mesh| self.mesh_buffers(mesh)),
+                lines: self.strokes(
+                    "lines",
+                    geometry::line_vertices(&model.lines),
+                    wgpu::BufferUsages::VERTEX,
+                ),
+                dots: self.strokes(
+                    "dots",
+                    geometry::dot_vertices(&model.dots),
+                    wgpu::BufferUsages::VERTEX,
+                ),
+            })
+            .collect();
+        let halos: Vec<HaloVertex> = models
+            .iter()
+            .flat_map(|model| geometry::halo_vertices(&model.bounds))
+            .collect();
+        self.halos = Some(upload(
+            &self.device,
+            "halos",
+            wgpu::BufferUsages::VERTEX,
+            &halos,
+        ));
+        self.ranges.clear();
         self.instances = None;
-        Ok(())
     }
 
-    /// Uploads the ground and the machine instances. Call when the plant changes, not per frame.
-    pub fn set_scene(&mut self, scene: &Scene) -> Result<(), RenderError> {
-        let mut world = Batch::default();
-        world.push_list(&scene.world)?;
-        if let Some((min, max)) = scene.floor_halo {
-            world.push_floor_halo(min, max, HALO_WIDTH);
-        }
-        self.world = Some(Gpu::new(&self.device, &world));
-
-        let mut raw = Vec::with_capacity(scene.instances.len() + 1);
-        raw.push(InstanceRaw {
-            offset: [0.0, 0.0],
-            rank: 0.0,
-            tint: 0,
-        });
-        for (kind, range) in self.instance_ranges.iter_mut().enumerate() {
-            let start = raw.len() as u32;
-            for (i, inst) in scene.instances.iter().enumerate() {
-                if usize::from(inst.kind) == kind {
-                    raw.push(instance_raw(inst, i));
-                }
-            }
-            *range = start..raw.len() as u32;
-        }
+    /// Uploads the static world (belts and the like) and the machine instances. Call when the
+    /// plant changes, not per frame.
+    ///
+    /// # Panics
+    ///
+    /// If an instance names a kind that `set_models` did not upload.
+    pub fn set_scene(&mut self, scene: &Scene) {
+        self.world = Some(self.mesh_buffers(&scene.world));
+        let (raw, ranges) = geometry::instance_data(&scene.instances, self.models.len());
         self.instances = Some(upload(
             &self.device,
             "instances",
             wgpu::BufferUsages::VERTEX,
             &raw,
         ));
-        self.depth_step = 1.0 / (scene.instances.len() as f32 + 2.0);
-        Ok(())
+        self.ranges = ranges;
+
+        let bounds = scene.bounds;
+        if bounds.min[0] <= bounds.max[0] {
+            self.centre = bounds.centre();
+            let half = [
+                bounds.max[0] - bounds.min[0],
+                bounds.max[1] - bounds.min[1],
+                bounds.max[2] - bounds.min[2],
+            ];
+            let half_diagonal =
+                0.5 * (half[0] * half[0] + half[1] * half[1] + half[2] * half[2]).sqrt();
+            self.radius = half_diagonal + 2.0 * HALO_WIDTH + DEPTH_MARGIN;
+        } else {
+            self.centre = [0.0; 3];
+            self.radius = EMPTY_SCENE_RADIUS;
+        }
     }
 
-    /// Draws one frame. Skipped frames (timeout, occlusion) return `Ok(false)`.
+    /// Draws one frame at the given level of detail. Returns `Ok(false)` for a frame the surface
+    /// skipped (timeout, occlusion, or a resize in flight).
     pub fn render(&mut self, camera: &Camera, lod: Lod) -> Result<bool, RenderError> {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) => f,
@@ -414,9 +383,9 @@ impl Renderer {
         self.queue.write_buffer(
             &self.camera_buf,
             0,
-            bytemuck::bytes_of(&camera.uniform(self.depth_step, MIN_PX)),
+            bytemuck::bytes_of(&self.uniform(camera)),
         );
-        let view = frame
+        let surface_view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = self
@@ -424,23 +393,35 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame"),
             });
+        let scene_colour = self.targets.colour.as_ref().unwrap_or(&surface_view);
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("plant"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &self.msaa_color,
-                    depth_slice: None,
-                    resolve_target: Some(&view),
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(self.clear),
-                        store: wgpu::StoreOp::Discard,
-                    },
-                })],
+                label: Some("scene"),
+                color_attachments: &[
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: scene_colour,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(self.clear),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                    Some(wgpu::RenderPassColorAttachment {
+                        view: &self.targets.normal,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    }),
+                ],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.depth,
+                    view: &self.targets.depth,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Discard,
+                        store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
                 }),
@@ -448,60 +429,447 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            if let Some(instances) = &self.instances {
-                pass.set_bind_group(0, &self.bind, &[]);
-                pass.set_vertex_buffer(1, instances.slice(..));
-                pass.set_pipeline(&self.pipelines.fill_opaque);
-                self.draw_class(&mut pass, Class::Opaque, lod);
-                pass.set_pipeline(&self.pipelines.line);
-                self.draw_class(&mut pass, Class::Line, lod);
-                pass.set_pipeline(&self.pipelines.dot);
-                self.draw_class(&mut pass, Class::Dot, lod);
-                pass.set_pipeline(&self.pipelines.fill_halo);
-                self.draw_class(&mut pass, Class::Halo, lod);
-            }
+            self.draw_scene(&mut pass, lod);
+        }
+        {
+            let (view, resolve) = match &self.targets.colour {
+                Some(msaa) => (msaa, Some(&surface_view)),
+                None => (&surface_view, None),
+            };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("edges"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    depth_slice: None,
+                    resolve_target: resolve,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: if resolve.is_some() {
+                            wgpu::StoreOp::Discard
+                        } else {
+                            wgpu::StoreOp::Store
+                        },
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.pipelines.edge);
+            pass.set_bind_group(0, &self.uniform_bind, &[]);
+            pass.set_bind_group(1, &self.edge_bind, &[]);
+            pass.draw(0..3, 0..1);
         }
         self.queue.submit([encoder.finish()]);
         self.queue.present(frame);
         Ok(true)
     }
 
-    fn draw_class(&self, pass: &mut wgpu::RenderPass<'_>, class: Class, lod: Lod) {
-        for (is_world, gpu) in [(true, &self.world), (false, &self.models)] {
-            let Some(gpu) = gpu else { continue };
-            let (vb, ib) = match class {
-                Class::Opaque => (&gpu.fill, &gpu.fill_opaque),
-                Class::Halo => (&gpu.fill, &gpu.fill_halo),
-                Class::Line => (&gpu.line, &gpu.line_idx),
-                Class::Dot => (&gpu.dot, &gpu.dot_idx),
-            };
-            pass.set_vertex_buffer(0, vb.slice(..));
-            pass.set_index_buffer(ib.slice(..), wgpu::IndexFormat::Uint32);
-            for (kind, spans) in gpu.kinds.iter().enumerate() {
-                let instances = if is_world {
-                    0..1
-                } else {
-                    match self.instance_ranges.get(kind) {
-                        Some(range) => range.clone(),
-                        None => continue,
-                    }
-                };
-                if instances.is_empty() {
-                    continue;
-                }
-                for span in &spans[class as usize][lod as usize] {
-                    pass.draw_indexed(span.start..span.end, 0, instances.clone());
+    fn draw_scene(&self, pass: &mut wgpu::RenderPass<'_>, lod: Lod) {
+        pass.set_bind_group(0, &self.uniform_bind, &[]);
+        pass.set_pipeline(&self.pipelines.grid);
+        pass.draw(0..3, 0..1);
+
+        let Some(instances) = &self.instances else {
+            return;
+        };
+        if let Some(world) = &self.world {
+            pass.set_pipeline(&self.pipelines.mesh);
+            pass.set_vertex_buffer(0, world.vertices.slice(..));
+            pass.set_vertex_buffer(1, instances.slice(..));
+            pass.set_index_buffer(world.indices.slice(..), wgpu::IndexFormat::Uint32);
+            pass.draw_indexed(0..world.index_count, 0, 0..1);
+        }
+
+        if let Some(halos) = &self.halos {
+            pass.set_pipeline(&self.pipelines.halo);
+            pass.set_vertex_buffer(0, halos.slice(..));
+            pass.set_vertex_buffer(1, instances.slice(..));
+            for (kind, range) in self.ranges.iter().enumerate() {
+                if !range.is_empty() {
+                    let first = 6 * kind as u32;
+                    pass.draw(first..first + 6, range.clone());
                 }
             }
+        }
+
+        pass.set_pipeline(&self.pipelines.mesh);
+        for (model, range) in self.models.iter().zip(&self.ranges) {
+            if range.is_empty() {
+                continue;
+            }
+            for mesh in &model.levels[..=lod as usize] {
+                if mesh.index_count == 0 {
+                    continue;
+                }
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_vertex_buffer(1, instances.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.index_count, 0, range.clone());
+            }
+        }
+
+        pass.set_pipeline(&self.pipelines.line);
+        for (model, range) in self.models.iter().zip(&self.ranges) {
+            let count = model.lines.counts[lod as usize];
+            if count == 0 || range.is_empty() {
+                continue;
+            }
+            pass.set_vertex_buffer(0, model.lines.buffer.slice(..));
+            pass.set_vertex_buffer(1, instances.slice(..));
+            pass.draw(0..count, range.clone());
+        }
+
+        pass.set_pipeline(&self.pipelines.dot);
+        for (model, range) in self.models.iter().zip(&self.ranges) {
+            let count = model.dots.counts[lod as usize];
+            if count == 0 || range.is_empty() {
+                continue;
+            }
+            pass.set_vertex_buffer(0, model.dots.buffer.slice(..));
+            pass.set_vertex_buffer(1, instances.slice(..));
+            pass.draw(0..count, range.clone());
+        }
+    }
+
+    fn uniform(&self, camera: &Camera) -> CameraUniform {
+        let b = camera.basis();
+        let pivot = camera.pivot();
+        let [vw, vh] = camera.viewport();
+        CameraUniform {
+            right: [b.right[0], b.right[1], b.right[2], 0.0],
+            up: [b.up[0], b.up[1], b.up[2], 0.0],
+            toward: [b.toward[0], b.toward[1], b.toward[2], 0.0],
+            pivot: [pivot[0], pivot[1], 0.0, 0.0],
+            scene: [self.centre[0], self.centre[1], self.centre[2], self.radius],
+            view: [vw, vh, camera.zoom(), MIN_STROKE_PX],
+            edge: [
+                SILHOUETTE_STEP,
+                CREASE_DEGREES.to_radians().cos(),
+                EDGE_WEIGHT,
+                0.0,
+            ],
+            grid: [HALO_WIDTH, 0.0, 0.0, 0.0],
+        }
+    }
+
+    fn mesh_buffers(&self, mesh: &Mesh) -> MeshBuffers {
+        let vertices = geometry::mesh_vertices(mesh);
+        MeshBuffers {
+            vertices: upload(
+                &self.device,
+                "mesh vertices",
+                wgpu::BufferUsages::VERTEX,
+                &vertices,
+            ),
+            indices: upload(
+                &self.device,
+                "mesh indices",
+                wgpu::BufferUsages::INDEX,
+                &mesh.indices,
+            ),
+            index_count: mesh.indices.len() as u32,
+        }
+    }
+
+    fn strokes<V: Pod>(
+        &self,
+        label: &str,
+        strokes: Strokes<V>,
+        usage: wgpu::BufferUsages,
+    ) -> StrokeBuffers {
+        StrokeBuffers {
+            buffer: upload(&self.device, label, usage, &strokes.vertices),
+            counts: strokes.counts,
         }
     }
 }
 
-fn instance_raw(inst: &Instance, index: usize) -> InstanceRaw {
-    InstanceRaw {
-        offset: inst.offset,
-        rank: (index + 1) as f32,
-        tint: u32::from(inst.tint),
+/// 4x when the surface format and both targets support it with resolve, otherwise 1.
+fn sample_count(adapter: &wgpu::Adapter, surface: wgpu::TextureFormat) -> u32 {
+    let supports = |format: wgpu::TextureFormat| {
+        adapter
+            .get_texture_format_features(format)
+            .flags
+            .sample_count_supported(MSAA)
+    };
+    let resolves = adapter
+        .get_texture_format_features(surface)
+        .flags
+        .contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE);
+    if resolves && supports(surface) && supports(NORMAL_FORMAT) && supports(DEPTH_FORMAT) {
+        MSAA
+    } else {
+        1
+    }
+}
+
+fn targets(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    samples: u32,
+    width: u32,
+    height: u32,
+) -> Targets {
+    let make = |label: &str, format: wgpu::TextureFormat, usage: wgpu::TextureUsages| {
+        device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width: width.max(1),
+                    height: height.max(1),
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: samples,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default())
+    };
+    let sampled = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+    Targets {
+        colour: (samples > 1).then(|| {
+            make(
+                "scene colour",
+                format,
+                wgpu::TextureUsages::RENDER_ATTACHMENT,
+            )
+        }),
+        normal: make("scene normal", NORMAL_FORMAT, sampled),
+        depth: make("scene depth", DEPTH_FORMAT, sampled),
+    }
+}
+
+fn edge_layout(device: &wgpu::Device, samples: u32) -> wgpu::BindGroupLayout {
+    let multisampled = samples > 1;
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("edge inputs"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled,
+                },
+                count: None,
+            },
+        ],
+    })
+}
+
+fn edge_bind(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    targets: &Targets,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("edge inputs"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&targets.depth),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(&targets.normal),
+            },
+        ],
+    })
+}
+
+impl Pipelines {
+    fn new(
+        device: &wgpu::Device,
+        shader: &wgpu::ShaderModule,
+        uniform_layout: &wgpu::BindGroupLayout,
+        edge_layout: &wgpu::BindGroupLayout,
+        format: wgpu::TextureFormat,
+        samples: u32,
+    ) -> Self {
+        let scene_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("scene"),
+            bind_group_layouts: &[Some(uniform_layout)],
+            immediate_size: 0,
+        });
+        let edge_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("edge"),
+            bind_group_layouts: &[Some(uniform_layout), Some(edge_layout)],
+            immediate_size: 0,
+        });
+
+        let colour = |blend: Option<wgpu::BlendState>| {
+            Some(wgpu::ColorTargetState {
+                format,
+                blend,
+                write_mask: wgpu::ColorWrites::ALL,
+            })
+        };
+        let normal = |write: bool| {
+            Some(wgpu::ColorTargetState {
+                format: NORMAL_FORMAT,
+                blend: None,
+                write_mask: if write {
+                    wgpu::ColorWrites::ALL
+                } else {
+                    wgpu::ColorWrites::empty()
+                },
+            })
+        };
+        let depth = |write: bool, compare: wgpu::CompareFunction| {
+            Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(write),
+                depth_compare: Some(compare),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            })
+        };
+        let multisample = wgpu::MultisampleState {
+            count: samples,
+            ..Default::default()
+        };
+
+        let mesh_vertex = wgpu::VertexBufferLayout {
+            array_stride: size_of::<MeshVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Uint32],
+        };
+        let mesh_instance = wgpu::VertexBufferLayout {
+            array_stride: size_of::<InstanceRaw>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &wgpu::vertex_attr_array![3 => Float32x3, 4 => Uint32],
+        };
+        let line_vertex = wgpu::VertexBufferLayout {
+            array_stride: size_of::<LineVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32, 4 => Uint32],
+        };
+        let dot_vertex = wgpu::VertexBufferLayout {
+            array_stride: size_of::<DotVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x2, 4 => Uint32],
+        };
+        let halo_vertex = wgpu::VertexBufferLayout {
+            array_stride: size_of::<HaloVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4],
+        };
+        let offset_instance = wgpu::VertexBufferLayout {
+            array_stride: size_of::<InstanceRaw>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &wgpu::vertex_attr_array![5 => Float32x3],
+        };
+        let halo_instance = wgpu::VertexBufferLayout {
+            array_stride: size_of::<InstanceRaw>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &wgpu::vertex_attr_array![2 => Float32x3],
+        };
+
+        let make = |label: &str,
+                    layout: &wgpu::PipelineLayout,
+                    vs: &str,
+                    fs: &str,
+                    buffers: &[Option<wgpu::VertexBufferLayout>],
+                    depth_state: Option<wgpu::DepthStencilState>,
+                    targets: &[Option<wgpu::ColorTargetState>]|
+         -> wgpu::RenderPipeline {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module: shader,
+                    entry_point: Some(vs),
+                    compilation_options: Default::default(),
+                    buffers,
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: depth_state,
+                multisample,
+                fragment: Some(wgpu::FragmentState {
+                    module: shader,
+                    entry_point: Some(fs),
+                    compilation_options: Default::default(),
+                    targets,
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let alpha = Some(wgpu::BlendState::ALPHA_BLENDING);
+        let less = wgpu::CompareFunction::LessEqual;
+        Self {
+            grid: make(
+                "grid",
+                &scene_layout,
+                "vs_full",
+                "fs_grid",
+                &[],
+                depth(false, wgpu::CompareFunction::Always),
+                &[colour(None), normal(false)],
+            ),
+            mesh: make(
+                "mesh",
+                &scene_layout,
+                "vs_mesh",
+                "fs_mesh",
+                &[Some(mesh_vertex), Some(mesh_instance)],
+                depth(true, less),
+                &[colour(None), normal(true)],
+            ),
+            halo: make(
+                "halo",
+                &scene_layout,
+                "vs_halo",
+                "fs_halo",
+                &[Some(halo_vertex), Some(halo_instance)],
+                depth(false, less),
+                &[colour(alpha), normal(false)],
+            ),
+            line: make(
+                "lines",
+                &scene_layout,
+                "vs_line",
+                "fs_line",
+                &[Some(line_vertex), Some(offset_instance.clone())],
+                depth(false, less),
+                &[colour(alpha), normal(false)],
+            ),
+            dot: make(
+                "dots",
+                &scene_layout,
+                "vs_dot",
+                "fs_dot",
+                &[Some(dot_vertex), Some(offset_instance)],
+                depth(false, less),
+                &[colour(alpha), normal(false)],
+            ),
+            edge: make(
+                "edges",
+                &edge_pipeline_layout,
+                "vs_edge",
+                "fs_edge",
+                &[],
+                None,
+                &[colour(alpha)],
+            ),
+        }
     }
 }
 
@@ -516,33 +884,6 @@ fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
         },
         count: None,
     }
-}
-
-fn targets(
-    device: &wgpu::Device,
-    format: wgpu::TextureFormat,
-    width: u32,
-    height: u32,
-) -> (wgpu::TextureView, wgpu::TextureView) {
-    let make = |label: &str, format: wgpu::TextureFormat| {
-        device
-            .create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width: width.max(1),
-                    height: height.max(1),
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: SAMPLES,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-                view_formats: &[],
-            })
-            .create_view(&wgpu::TextureViewDescriptor::default())
-    };
-    (make("msaa color", format), make("depth", DEPTH_FORMAT))
 }
 
 const EMPTY: [u8; 16] = [0; 16];
