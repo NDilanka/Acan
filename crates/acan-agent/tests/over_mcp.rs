@@ -105,7 +105,7 @@ fn review(context: &Value) -> Value {
         .into_iter()
         .flatten()
         .filter_map(|witness| witness["id"].as_str())
-        .map(|id| json!({ "witness": id, "judgement": "match" }))
+        .map(|id| json!({ "witness": id, "judgement": { "judgement": "match" } }))
         .collect();
     let readbacks: Vec<Value> = context["readbacks"]
         .as_array()
