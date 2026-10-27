@@ -47,9 +47,11 @@ const POLL: Duration = Duration::from_millis(20);
 const HOLD: Duration = Duration::from_millis(300);
 
 /// The foreman answers by the shape of its request: a review carries readbacks, an explanation
-/// carries a clash, and a split carries a machine. It splits the order into two tasks on one
-/// machine, matches every readback, and explains a clash without a suggestion.
-struct Foreman;
+/// carries a clash, and a split carries a machine. It splits the order into `tasks` tasks on one
+/// machine, at most two, matches every readback, and explains a clash without a suggestion.
+struct Foreman {
+    tasks: usize,
+}
 
 impl ModelClient for Foreman {
     async fn chat(&self, role: Role, request: ChatRequest) -> Result<ChatResponse, LlmError> {
@@ -62,7 +64,7 @@ impl ModelClient for Foreman {
         } else if context.get("clash").is_some() {
             explain()
         } else if context.get("machine").is_some() {
-            split()
+            split(self.tasks)
         } else {
             return Err(LlmError::NoScriptedReply { role });
         };
@@ -88,7 +90,7 @@ fn answer(role: Role, content: String) -> ChatResponse {
     }
 }
 
-fn split() -> Value {
+fn split(tasks: usize) -> Value {
     let task = |title: &str| {
         json!({
             "title": title,
@@ -96,7 +98,8 @@ fn split() -> Value {
             "scope": [MACHINE],
         })
     };
-    json!({ "tasks": [task("Change the loader"), task("Change the loader again")] })
+    let all = [task("Change the loader"), task("Change the loader again")];
+    json!({ "tasks": all[..tasks] })
 }
 
 fn review(context: &Value) -> Value {
@@ -292,7 +295,7 @@ fn write_tokens(root: &Path) {
     .expect("tokens file");
 }
 
-async fn start_origin(root: &Path) -> Running {
+async fn start_origin(root: &Path, tasks: usize) -> Running {
     write_tokens(root);
     let config = ServerConfig {
         repo: root.to_path_buf(),
@@ -303,7 +306,7 @@ async fn start_origin(root: &Path) -> Running {
         witness_http_base_url: None,
         witness_concurrency: DEFAULT_WITNESS_CONCURRENCY,
     };
-    start(config, Foreman, UsageLedger::default())
+    start(config, Foreman { tasks }, UsageLedger::default())
         .await
         .expect("the origin starts on the test repository")
 }
@@ -482,7 +485,7 @@ fn git_status(dir: &Path) -> Option<String> {
 async fn two_workers_on_one_file_clash_before_either_writes() {
     let repo = user_repo();
     let root = repo.path();
-    let running = start_origin(root).await;
+    let running = start_origin(root, 2).await;
     let base = base_url(&running);
     post_order(&running).await;
     register(&running, ONE).await;
@@ -610,7 +613,7 @@ async fn running_world(running: &Running) -> World {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_refuses_a_wrong_or_member_token_as_the_http_routes_do() {
     let repo = user_repo();
-    let running = start_origin(repo.path()).await;
+    let running = start_origin(repo.path(), 2).await;
     let base = base_url(&running);
     let initialize = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {} });
 
@@ -651,7 +654,7 @@ async fn mcp_refuses_a_wrong_or_member_token_as_the_http_routes_do() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tools_list_offers_the_nine_tools() {
     let repo = user_repo();
-    let running = start_origin(repo.path()).await;
+    let running = start_origin(repo.path(), 2).await;
     let response = mcp_post(
         &running,
         ONE_TOKEN,
@@ -688,7 +691,7 @@ async fn tools_list_offers_the_nine_tools() {
 async fn a_stale_fence_is_refused_with_the_rejection_text() {
     let repo = user_repo();
     let root = repo.path();
-    let running = start_origin(root).await;
+    let running = start_origin(root, 2).await;
     let base = base_url(&running);
     post_order(&running).await;
     register(&running, ONE).await;
@@ -835,12 +838,14 @@ impl ModelClient for AnnouncedEdit {
 async fn a_lost_claim_stops_the_work_and_nothing_is_written() {
     let repo = user_repo();
     let root = repo.path();
-    let running = start_origin(root).await;
+    // One worker alone: a sibling task nobody claims would hold the declare barrier for its
+    // whole deadline, so the order splits into one task.
+    let running = start_origin(root, 1).await;
     let base = base_url(&running);
     post_order(&running).await;
     register(&running, ONE).await;
     settle(&running, "the split", |_, world| {
-        (tasks_of_world(world).len() == 2).then_some(())
+        (tasks_of_world(world).len() == 1).then_some(())
     })
     .await;
 
@@ -918,12 +923,14 @@ async fn a_lost_claim_stops_the_work_and_nothing_is_written() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_model_error_releases_the_claim() {
     let repo = user_repo();
-    let running = start_origin(repo.path()).await;
+    // One worker alone: a sibling task nobody claims would hold the declare barrier for its
+    // whole deadline, so the order splits into one task.
+    let running = start_origin(repo.path(), 1).await;
     let base = base_url(&running);
     post_order(&running).await;
     register(&running, ONE).await;
     settle(&running, "the split", |_, world| {
-        (tasks_of_world(world).len() == 2).then_some(())
+        (tasks_of_world(world).len() == 1).then_some(())
     })
     .await;
 
@@ -962,7 +969,7 @@ async fn a_model_error_releases_the_claim() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_envelope_is_checked_before_any_method_runs() {
     let repo = user_repo();
-    let running = start_origin(repo.path()).await;
+    let running = start_origin(repo.path(), 2).await;
     let bad_request = reqwest::StatusCode::BAD_REQUEST;
 
     let wrong_version = mcp_post(

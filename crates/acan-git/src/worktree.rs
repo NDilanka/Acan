@@ -100,6 +100,33 @@ impl TaskWorktree {
         self.head().await
     }
 
+    /// Fast-forward this worktree to `to` when it has no work of its own: no
+    /// uncommitted change, and a head that `to` already contains. Returns whether
+    /// the worktree now sits at `to`. A worktree with work of its own is left
+    /// alone, so nothing an agent wrote is moved or lost.
+    ///
+    /// # Errors
+    /// Fails if git cannot read the worktree or move it.
+    pub async fn fast_forward(&self, to: &CommitId) -> Result<bool, Error> {
+        let status = git::ok(&self.path, &["status", "--porcelain"], &[]).await?;
+        if !status.trim().is_empty() {
+            return Ok(false);
+        }
+        let head = self.head().await?;
+        if head == *to {
+            return Ok(true);
+        }
+        let args = ["merge-base", "--is-ancestor", head.as_str(), to.as_str()];
+        let out = git::run(&self.path, &args, &[]).await?;
+        match out.status.code() {
+            Some(0) => {}
+            Some(1) => return Ok(false),
+            _ => return git::ensure_ok(out, &args).map(|_| false),
+        }
+        git::ok(&self.path, &["merge", "--ff-only", "-q", to.as_str()], &[]).await?;
+        Ok(true)
+    }
+
     /// Files this worktree changed relative to `base`, as repo-relative
     /// forward-slash paths, sorted as git prints them.
     ///

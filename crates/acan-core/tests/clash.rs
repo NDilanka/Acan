@@ -475,7 +475,7 @@ fn stage_of(fx: &Fx, task: TaskId) -> &'static str {
 }
 
 #[test]
-fn releasing_a_party_dissolves_the_clash_and_clears_the_other() {
+fn releasing_a_party_dissolves_the_clash_and_clears_the_other_at_the_barrier() {
     let mut fx = clashing();
     let (a, t1, t2) = (fx.agent_a.clone(), fx.task1, fx.task2);
     let fence = fx.fence(t1).expect("claimed");
@@ -488,11 +488,12 @@ fn releasing_a_party_dissolves_the_clash_and_clears_the_other() {
             .any(|e| matches!(e, Event::ClashDissolved { .. })),
         "{got:?}"
     );
-    assert!(
-        got.iter()
-            .any(|e| matches!(e, Event::BuildCleared { task } if *task == t2)),
-        "{got:?}"
+    assert_eq!(
+        stage_of(&fx, t2),
+        "declared",
+        "the released task is open again, so the barrier waits for it to declare"
     );
+    fx.run_out_barrier(fx.order);
     assert_eq!(stage_of(&fx, t2), "building");
 }
 
@@ -802,16 +803,20 @@ fn a_settlement_arriving_with_the_predecessors_expiry_does_not_strand_the_waiter
         },
     )
     .expect("settle accepted");
+    assert_eq!(stage_of(&fx, t2), "declared", "the barrier waits for task1");
+    fx.run_out_barrier(fx.order);
     assert_eq!(stage_of(&fx, t2), "building");
 }
 
 #[test]
-fn an_expired_party_dissolves_an_open_clash_and_clears_the_other() {
+fn an_expired_party_dissolves_an_open_clash_and_clears_the_other_at_the_barrier() {
     let mut fx = clashing();
     let t2 = fx.task2;
     expire_task1(&mut fx);
     fx.system(SystemCmd::Tick).expect("tick accepted");
     let clash = fx.origin.world().clashes().next().expect("clash");
     assert!(!clash.blocking());
+    assert_eq!(stage_of(&fx, t2), "declared", "the barrier waits for task1");
+    fx.run_out_barrier(fx.order);
     assert_eq!(stage_of(&fx, t2), "building");
 }

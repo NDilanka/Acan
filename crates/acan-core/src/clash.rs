@@ -12,6 +12,9 @@
 //! Open|Proposed --redetection no longer finds the key, or a party has no declaration--> Dissolved
 //! Settled(Serialize|SplitAtContract) --the same, unless its first task is queued to land--> Dissolved
 //! ```
+//!
+//! Building waits on the order's declare [`Barrier`] as well as on clashes, so siblings that
+//! overlap are detected while both still only hold declarations.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
@@ -20,12 +23,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::{Event, Rejection};
 use crate::ids::{
-    AgentId, ClashId, CodeRev, FilePath, Generation, MachineKey, MemberId, TaskId, WitnessId,
+    AgentId, ClashId, CodeRev, FilePath, Generation, MachineKey, MemberId, TaskId, Timestamp,
+    WitnessId,
 };
 use crate::index::{CodeIndex, Locus};
 use crate::lease::{self, Fence, LEASE_TTL_MS};
 use crate::member::SettleRight;
-use crate::order::{Stage, TaskState};
+use crate::order::{OrderState, Stage, TaskState};
 use crate::world::{Ctx, World};
 
 /// File names that are produced by a tool and must have one producer. Matched on the last path segment.
@@ -36,6 +40,43 @@ pub(crate) const GENERATED_FILES: &[&str] = &[
     "yarn.lock",
     "bun.lockb",
 ];
+
+/// An order's declare barrier. While it holds, no task of the order is cleared to build, so
+/// siblings with overlapping footprints meet as a clash before either one writes.
+///
+/// ```text
+/// Unarmed --the order's first Declared, stamped at t--> Armed{deadline = t + DECLARE_BARRIER_MS}
+/// Armed --BuildCleared for any task of the order--> Lifted
+/// Armed --now >= deadline (Tick or any command)--> Lifted     [BarrierExpired]
+/// ```
+///
+/// An armed barrier holds while any task of the order is open or claimed without a declaration;
+/// [`crate::World::barrier`] reports what it waits for. Once every sibling has declared or is
+/// queued, landed or dropped, it stops holding, and the first task cleared lifts it. Tasks that
+/// all wait on clashes keep it armed until the deadline. It never re-arms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "barrier", rename_all = "snake_case")]
+pub enum Barrier {
+    /// No task of the order has declared yet.
+    Unarmed,
+    /// Armed by the order's first declaration.
+    Armed {
+        /// When the barrier lifts even if a sibling never declares.
+        deadline: Timestamp,
+    },
+    /// A task of the order was cleared to build, or the deadline passed.
+    Lifted,
+}
+
+/// What an armed [`Barrier`] waits for while it holds. Every declared task of the order is
+/// waiting for these siblings to declare.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BarrierHold {
+    /// When the barrier lifts even if they never declare.
+    pub deadline: Timestamp,
+    /// The order's tasks with no declaration: open, or claimed and still declaring.
+    pub waiting_for: Vec<TaskId>,
+}
 
 /// A symbol named by file and name. The origin resolves it to byte ranges through the index.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -764,8 +805,22 @@ pub(crate) fn decide_explained(
     Ok(vec![Event::ClashExplained { clash, explanation }])
 }
 
-/// `BuildCleared` for every `Declared` task with no blocking clash and no `Serialize`
-/// predecessor that is still to land. The origin runs this after every accepted command.
+/// `BarrierExpired` for every armed barrier of a split order whose deadline is at or before
+/// `ctx.now`. Runs before every command, as lease expiry does.
+pub(crate) fn expire_barriers(world: &World, ctx: &Ctx<'_>) -> Vec<Event> {
+    world
+        .orders()
+        .filter(|o| {
+            o.state == OrderState::Split
+                && matches!(o.barrier, Barrier::Armed { deadline } if ctx.now >= deadline)
+        })
+        .map(|o| Event::BarrierExpired { order: o.id })
+        .collect()
+}
+
+/// `BuildCleared` for every `Declared` task whose order's barrier does not hold, with no
+/// blocking clash and no `Serialize` predecessor that is still to land. The origin runs this
+/// after every accepted command.
 pub(crate) fn build_clear(world: &World) -> Vec<Event> {
     let waiting_on = |first: TaskId| {
         world
@@ -790,6 +845,7 @@ pub(crate) fn build_clear(world: &World) -> Vec<Event> {
                     ..
                 }
             ) && !blocked(t.id)
+                && world.barrier(t.order).is_none()
         })
         .map(|t| Event::BuildCleared { task: t.id })
         .collect()

@@ -16,11 +16,14 @@ use std::time::Duration;
 
 use acan_core::{
     AgentCmd, AgentId, Check, Command, CommitId, DeclarationInput, Event, Fence, FilePath,
-    GateVerdict, HumanCmd, Locus, MachineKey, Origin, Stage, Stamped, TaskId, TaskState,
-    WitnessOutcome, WitnessSpec, World,
+    GateVerdict, HumanCmd, Locus, MachineKey, Origin, Settlement, Stage, Stamped, TaskId,
+    TaskState, WitnessOutcome, WitnessSpec, World,
 };
+use acan_llm::{ChatRequest, ChatResponse, LlmError, ModelClient, Role, UsageLedger};
+use serde_json::Value;
 use tokio::time::{sleep, timeout};
 
+use crate::model::{self, Ask};
 use crate::offline::Offline;
 use crate::{DEFAULT_WITNESS_CONCURRENCY, Running, ServerConfig, start};
 
@@ -453,6 +456,150 @@ async fn a_queued_task_keeps_its_branch_until_it_lands() {
     running.stop().await.expect("the server stops");
 }
 
+#[tokio::test]
+async fn a_serialized_waiter_builds_on_its_landed_predecessor_and_lands_cleanly() {
+    let repo = user_repo();
+    let root = repo.path();
+    let running = start_with(root, TwoTasks::default(), UsageLedger::default()).await;
+    let first = TaskId::from_str("t-0").expect("valid task id");
+    let second = TaskId::from_str("t-1").expect("valid task id");
+    post_order(&running).await;
+    read_back(&running, first).await;
+    review(&running, second).await;
+    let first_fence = claim(&running, first).await;
+    let second_fence = claim(&running, second).await;
+    for task in [first, second] {
+        wait_for_dir(&worktree_dir(root, task)).await;
+    }
+    let cut_at = git(root, &["rev-parse", "main"]);
+
+    declare(&running, first_fence, LANDED).await;
+    declare(&running, second_fence, LANDED).await;
+    let clash = settle(&running, "the two declarations to clash", |_, world| {
+        world.clashes().find(|c| c.blocking()).map(|c| c.id)
+    })
+    .await;
+    let response = client()
+        .post(url(&running, "/api/commands"))
+        .bearer_auth(OWNER_TOKEN)
+        .json(&HumanCmd::SettleClash {
+            clash,
+            choice: Settlement::Serialize {
+                first,
+                then: second,
+            },
+        })
+        .send()
+        .await
+        .expect("the settle request is sent");
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "the clash settles"
+    );
+
+    wait_building(&running, first).await;
+    let first_content = "written by the first task\n";
+    let first_head = commit_file(&worktree_dir(root, first), LANDED, first_content);
+    agent_command(
+        &running,
+        AgentCmd::ReportBuilt {
+            fence: first_fence,
+            head: first_head,
+        },
+    )
+    .await;
+    wait_building(&running, second).await;
+
+    let landed_head = git(root, &["rev-parse", "main"]);
+    assert_ne!(landed_head, cut_at, "the first task landed");
+    let waiter = worktree_dir(root, second);
+    assert_eq!(
+        git(&waiter, &["rev-parse", "HEAD"]),
+        landed_head,
+        "the waiter's worktree starts from the protected head its predecessor landed on"
+    );
+    assert_eq!(
+        // A checkout with core.autocrlf writes CRLF on Windows.
+        fs::read_to_string(waiter.join(LANDED))
+            .expect("the landed file is in the worktree")
+            .replace('\r', ""),
+        first_content,
+        "the waiter sees its predecessor's change before it writes"
+    );
+
+    let second_content = "written by the first task\nand extended by the second\n";
+    let second_head = commit_file(&waiter, LANDED, second_content);
+    agent_command(
+        &running,
+        AgentCmd::ReportBuilt {
+            fence: second_fence,
+            head: second_head.clone(),
+        },
+    )
+    .await;
+    settle(&running, "the waiter to land", |_, world| {
+        in_state(world, second, |state| {
+            matches!(state, TaskState::Landed { .. })
+        })
+        .then_some(())
+    })
+    .await;
+
+    let (log, _) = snapshot(&running).await;
+    assert!(
+        !log.iter()
+            .any(|stamped| matches!(&stamped.event, Event::LandFailed { .. })),
+        "neither land conflicted"
+    );
+    let passes = log
+        .iter()
+        .filter(|stamped| {
+            matches!(
+                &stamped.event,
+                Event::WitnessReported {
+                    outcome: WitnessOutcome::Pass,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(passes, 2, "each task's witness passed on its built commit");
+    assert_eq!(
+        git(root, &["rev-parse", "main"]).trim(),
+        second_head.to_string(),
+        "the waiter fast-forwarded the protected branch"
+    );
+    assert_eq!(git(root, &["show", "main:landed.txt"]), second_content);
+    running.stop().await.expect("the server stops");
+}
+
+/// The offline models, except that a split makes two tasks on the order's machine.
+#[derive(Default)]
+struct TwoTasks {
+    offline: Offline,
+}
+
+impl ModelClient for TwoTasks {
+    async fn chat(&self, role: Role, request: ChatRequest) -> Result<ChatResponse, LlmError> {
+        let split = model::ask_of(&request) == Some(Ask::Split);
+        let mut response = self.offline.chat(role, request).await?;
+        if split {
+            let content = response.content.as_deref().unwrap_or_default();
+            let mut reply: Value =
+                serde_json::from_str(content).expect("the offline split is JSON");
+            let tasks = reply["tasks"]
+                .as_array_mut()
+                .expect("the split lists tasks");
+            let mut again = tasks[0].clone();
+            again["title"] = Value::from("the same file again");
+            tasks.push(again);
+            response.content = Some(reply.to_string());
+        }
+        Ok(response)
+    }
+}
+
 /// A repository with `main` as the protected branch and the user's checkout on `user-work`. The
 /// server must never touch that checkout.
 fn user_repo() -> tempfile::TempDir {
@@ -550,6 +697,16 @@ fn write_tokens(root: &Path) {
 }
 
 async fn start_plant(root: &Path) -> Running {
+    let offline = Offline::default();
+    let ledger = offline.ledger().clone();
+    start_with(root, offline, ledger).await
+}
+
+async fn start_with<C: ModelClient + 'static>(
+    root: &Path,
+    client: C,
+    ledger: UsageLedger,
+) -> Running {
     write_tokens(root);
     let config = ServerConfig {
         repo: root.to_path_buf(),
@@ -560,9 +717,7 @@ async fn start_plant(root: &Path) -> Running {
         witness_http_base_url: None,
         witness_concurrency: DEFAULT_WITNESS_CONCURRENCY,
     };
-    let offline = Offline::default();
-    let ledger = offline.ledger().clone();
-    start(config, offline, ledger)
+    start(config, client, ledger)
         .await
         .expect("the server starts on the test repository")
 }
@@ -628,6 +783,11 @@ async fn read_back(running: &Running, task: TaskId) {
         reqwest::StatusCode::OK,
         "the agent is registered"
     );
+    review(running, task).await;
+}
+
+/// Reads `task` back as the registered agent and waits until the review has judged it.
+async fn review(running: &Running, task: TaskId) {
     agent_command(
         running,
         AgentCmd::PostReadback {
@@ -669,6 +829,22 @@ async fn build(
     file: &str,
     content: &str,
 ) -> CommitId {
+    declare(running, fence, file).await;
+    wait_building(running, task).await;
+    let head = commit_file(&worktree_dir(root, task), file, content);
+    agent_command(
+        running,
+        AgentCmd::ReportBuilt {
+            fence,
+            head: head.clone(),
+        },
+    )
+    .await;
+    head
+}
+
+/// Declares a whole-file write of `file`.
+async fn declare(running: &Running, fence: Fence, file: &str) {
     agent_command(
         running,
         AgentCmd::Declare {
@@ -680,6 +856,9 @@ async fn build(
         },
     )
     .await;
+}
+
+async fn wait_building(running: &Running, task: TaskId) {
     settle(running, "the build to start", |_, world| {
         in_state(world, task, |state| {
             matches!(
@@ -693,16 +872,6 @@ async fn build(
         .then_some(())
     })
     .await;
-    let head = commit_file(&worktree_dir(root, task), file, content);
-    agent_command(
-        running,
-        AgentCmd::ReportBuilt {
-            fence,
-            head: head.clone(),
-        },
-    )
-    .await;
-    head
 }
 
 async fn agent_command(running: &Running, cmd: AgentCmd) {

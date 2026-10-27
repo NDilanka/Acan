@@ -381,11 +381,13 @@ fn rate_limit() -> acan_core::DeclarationInput {
     }
 }
 
-/// task1 is gating when task2 declares the same symbol. Returns task1's fence and abandoned run.
+/// task1 is gating when task2 declares the same symbol, after the declare barrier ran out.
+/// Returns task1's fence and abandoned run.
 fn late_clash_while_gating(fx: &mut Fx) -> (Fence, GateRunId) {
     let (a, b, t1, t2) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1, fx.task2);
     let f1 = fx.claim(&a, t1);
     fx.declare(&a, f1, rate_limit()).expect("declare accepted");
+    fx.run_out_barrier(fx.order);
     fx.agent(
         &a,
         AgentCmd::ReportBuilt {
@@ -471,6 +473,7 @@ fn a_late_clash_renews_the_lease_that_paused_while_gating() {
     let (a, b, t1, t2) = (fx.agent_a.clone(), fx.agent_b.clone(), fx.task1, fx.task2);
     let f1 = fx.claim(&a, t1);
     fx.declare(&a, f1, rate_limit()).expect("declare accepted");
+    fx.run_out_barrier(fx.order);
     fx.agent(
         &a,
         AgentCmd::ReportBuilt {
