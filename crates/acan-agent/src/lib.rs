@@ -6,6 +6,7 @@
 //! build, and which generation a write must carry. The harness sequences the calls, renews the
 //! lease while it works, and keeps its own writes behind the origin's build clearance.
 
+mod grounding;
 mod mcp;
 mod tools;
 mod worker;

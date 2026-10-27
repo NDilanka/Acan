@@ -164,4 +164,7 @@ Write-Output "stop: pwsh $PSScriptRoot\stop.ps1 -RunDir `"$RunDir`""
 
 if ($Watch) {
     & (Join-Path $PSScriptRoot 'watch.ps1') -RunDir $RunDir -Port $Port -Settle $Settle
+    # The watch has ended, so this process ends with it. The stack keeps running until stop.ps1 runs.
+    # Every process this script starts writes to a log file, not to this process's output.
+    exit 0
 }

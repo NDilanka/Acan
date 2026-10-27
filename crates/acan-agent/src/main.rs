@@ -22,6 +22,9 @@ struct Cli {
     /// The agent's bearer token.
     #[arg(long)]
     token: String,
+    /// The repository the origin serves. Its tracked files ground each plan.
+    #[arg(long)]
+    repo: PathBuf,
     /// The role to run as. The worker is the only role.
     #[arg(long, value_enum, default_value_t = Role::Worker)]
     role: Role,
@@ -85,6 +88,7 @@ async fn run_cli() -> Result<Exit> {
     let worker = WorkerConfig {
         server: cli.server,
         token: cli.token,
+        repo: cli.repo,
         test_command: cli.test_command,
         max_steps: cli.max_steps,
         wait: Duration::from_secs(cli.wait_secs),

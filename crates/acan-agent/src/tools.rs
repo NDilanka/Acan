@@ -307,7 +307,7 @@ pub fn normalize_path(path: &str) -> Result<String, String> {
 }
 
 /// Runs git in `dir`. A failure returns git's own words, from stderr or else stdout.
-async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) async fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(dir)

@@ -23,6 +23,7 @@ if ($null -eq $entry) { throw "no agent token for $Agent in $acanDir\tokens.json
 $arguments = @(
     '--token', $entry.token,
     '--server', "http://127.0.0.1:$Port",
+    '--repo', $RunDir,
     '--llm', (Join-Path $acanDir 'llm.toml'),
     '--env', (Join-Path $RunDir '.env'),
     '--test-command', 'bun run test',
