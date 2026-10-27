@@ -612,7 +612,12 @@ async fn run_tool(
             if let Err(step) = cleared(config, mcp, claim, steps).await? {
                 return Ok(step);
             }
-            tools.write_file(&string_arg(&args, "path"), &string_arg(&args, "content"))
+            let path = string_arg(&args, "path");
+            let written = tools.write_file(&path, &string_arg(&args, "content"));
+            if written.is_ok() {
+                log(steps, format!("wrote {path} on {}", claim.task));
+            }
+            written
         }
         "commit" => {
             if let Err(step) = cleared(config, mcp, claim, steps).await? {
@@ -694,6 +699,10 @@ async fn release(mcp: &McpClient, claim: &Claim, steps: &mut Vec<String>) {
     }
 }
 
+/// How many times a planning call is tried. A live model can return a reply that misses the
+/// requested schema, and one miss should not end the worker's run before it declares anything.
+const PLAN_ATTEMPTS: usize = 3;
+
 async fn plan_work<C: ModelClient>(model: &C, row: &Value) -> anyhow::Result<Plan> {
     let request = ChatRequest {
         messages: vec![
@@ -709,11 +718,18 @@ async fn plan_work<C: ModelClient>(model: &C, row: &Value) -> anyhow::Result<Pla
         ],
         ..ChatRequest::default()
     };
-    let structured = model
-        .chat_json::<Plan>(Role::Worker, request)
-        .await
-        .context("planning the readback failed")?;
-    Ok(structured.value)
+    let mut last_error = None;
+    for attempt in 1..=PLAN_ATTEMPTS {
+        match model.chat_json::<Plan>(Role::Worker, request.clone()).await {
+            Ok(structured) => return Ok(structured.value),
+            Err(err) => {
+                tracing::warn!(attempt, error = %err, "a planning call failed; trying again");
+                last_error = Some(err);
+            }
+        }
+    }
+    let err = last_error.expect("PLAN_ATTEMPTS is at least one");
+    Err(err).context("planning the readback failed")
 }
 
 /// The machines a task is scoped to, as the loci a readback touches.
@@ -777,7 +793,32 @@ fn log(steps: &mut Vec<String>, text: String) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use acan_llm::{Reply, Stub};
+
     use super::*;
+
+    #[tokio::test]
+    async fn a_planning_reply_that_misses_its_schema_is_asked_again() {
+        let calls = AtomicUsize::new(0);
+        let model = Stub::default()
+            .when(
+                Role::Worker,
+                move |_| calls.fetch_add(1, Ordering::SeqCst) == 0,
+                Reply::text("not a plan"),
+            )
+            .when(
+                Role::Worker,
+                |_| true,
+                Reply::text(r#"{"summary":"write the file","files":["src/a.ts"]}"#),
+            );
+        let row = json!({ "title": "t", "brief": "b", "scope": ["src"] });
+        let plan = plan_work(&model, &row)
+            .await
+            .expect("the second reply is a plan");
+        assert_eq!(plan.files, vec!["src/a.ts".to_owned()]);
+    }
 
     fn claim() -> Claim {
         Claim {
