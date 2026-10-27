@@ -2,7 +2,7 @@
 //! report. The origin decides every rule. This module sequences the calls, renews the lease, and
 //! keeps the worker's own writes behind the origin's build clearance and its fence.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::HashSet;
 use std::fmt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -13,10 +13,11 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::grounding::RepoFiles;
 use crate::mcp::{McpClient, Reply};
-use crate::tools::{Worktree, normalize_path};
+use crate::tools::Worktree;
 
-const PLAN_PROMPT: &str = "You plan one task for an AI coding worker in a shared repository. Reply with JSON: summary, one or two sentences on the change you will make, and files, the repository-relative paths you will write. List every file you will write and no other.";
+const PLAN_PROMPT: &str = "You plan one task for an AI coding worker in a shared repository. Reply with JSON: summary, one or two sentences on the change you will make; files, the existing repository files you will edit, each copied exactly from the repository file list; and new_files, the files you will create, only when they do not exist yet and their directory is already in the repository. Do not invent paths. List every file you will write and no other.";
 
 const EDIT_PROMPT: &str = "You are an AI coding worker. Your task is cleared to build, and you may change only the files you declared. Read a file before you write it. Run the tests when you can. When the change is complete, call commit once with a short message, then stop.";
 
@@ -27,6 +28,9 @@ pub struct WorkerConfig {
     pub server: String,
     /// The agent's bearer token.
     pub token: String,
+    /// The repository the origin serves. Its tracked files ground each plan, so a plan can only
+    /// declare paths the repository holds, or new files in its existing directories.
+    pub repo: PathBuf,
     /// The command `run_tests` runs in the worktree. `None` means no tests are configured.
     pub test_command: Option<String>,
     /// The most model calls the edit loop may make before the worker gives up.
@@ -44,6 +48,7 @@ impl fmt::Debug for WorkerConfig {
         f.debug_struct("WorkerConfig")
             .field("server", &self.server)
             .field("token", &"<redacted>")
+            .field("repo", &self.repo)
             .field("test_command", &self.test_command)
             .field("max_steps", &self.max_steps)
             .field("wait", &self.wait)
@@ -149,8 +154,19 @@ pub async fn run<C: ModelClient>(config: &WorkerConfig, model: &C) -> Outcome {
 struct Plan {
     /// One or two sentences on the change.
     summary: String,
-    /// The repository-relative paths the change writes.
+    /// The existing files the change edits, each copied exactly from the repository file list.
     files: Vec<String>,
+    /// The files the change creates. List a file here only when it does not exist yet.
+    #[serde(default)]
+    new_files: Vec<String>,
+}
+
+/// A plan the repository accepted: the summary, the footprint, and the fixes the check made.
+#[derive(Debug)]
+struct Planned {
+    summary: String,
+    footprint: Vec<String>,
+    fixes: Vec<String>,
 }
 
 /// A claimed task and the generation the origin granted. `files` is the footprint as declared,
@@ -224,11 +240,11 @@ async fn drive<C: ModelClient>(
     match finished {
         Ok(exit @ (Exit::Built { .. } | Exit::Lost { .. })) => Ok(exit),
         Ok(exit) => {
-            release(&mcp, &claim, steps).await;
+            release(&mcp, &claim, &exit.to_string(), steps).await;
             Ok(exit)
         }
         Err(err) => {
-            release(&mcp, &claim, steps).await;
+            release(&mcp, &claim, &format!("{err:#}"), steps).await;
             Err(err)
         }
     }
@@ -299,13 +315,18 @@ async fn try_claim<C: ModelClient>(
     // Every attempt reads back a fresh plan, so the files the claim declares are the files the
     // matched readback describes. A readback left from an earlier run is not reused.
     let task = string_field(row, "task");
-    let planned = plan_work(model, row).await?;
-    let files = match footprint(&planned.files) {
-        Ok(files) => files,
-        Err(reason) => {
-            return Ok(Attempt::Skipped(format!("{task}: plan refused: {reason}")));
+    let repo = RepoFiles::load(&config.repo).await?;
+    let planned = match plan_work(model, &repo, row, steps).await {
+        Ok(planned) => planned,
+        Err(reasons) => {
+            return Ok(Attempt::Skipped(format!(
+                "{task}: plan refused after {PLAN_ATTEMPTS} tries: {reasons}"
+            )));
         }
     };
+    for fix in &planned.fixes {
+        log(steps, format!("plan fix on {task}: {fix}"));
+    }
     let posted = mcp
         .call(
             "post_readback",
@@ -335,24 +356,10 @@ async fn try_claim<C: ModelClient>(
             Ok(Attempt::Claimed(Claim {
                 task,
                 generation,
-                files,
+                files: planned.footprint,
             }))
         }
     }
-}
-
-/// The planned footprint in the origin's form. Aliases of one path merge, so the origin sees each
-/// file once. A plan with no file, or with a path outside the worktree, is refused before it is
-/// read back.
-fn footprint(files: &[String]) -> Result<Vec<String>, String> {
-    let mut normalized = BTreeSet::new();
-    for file in files {
-        normalized.insert(normalize_path(file)?);
-    }
-    if normalized.is_empty() {
-        return Err("the plan names no file".to_owned());
-    }
-    Ok(normalized.into_iter().collect())
 }
 
 /// Polls until the readback has a verdict. Returns `pending` when the wait ends first.
@@ -612,7 +619,16 @@ async fn run_tool(
             if let Err(step) = cleared(config, mcp, claim, steps).await? {
                 return Ok(step);
             }
-            tools.write_file(&string_arg(&args, "path"), &string_arg(&args, "content"))
+            let path = string_arg(&args, "path");
+            let written = tools.write_file(&path, &string_arg(&args, "content"));
+            match &written {
+                Ok(_) => log(steps, format!("wrote {path} on {}", claim.task)),
+                Err(reason) => log(
+                    steps,
+                    format!("write to {path} refused on {}: {reason}", claim.task),
+                ),
+            }
+            written
         }
         "commit" => {
             if let Err(step) = cleared(config, mcp, claim, steps).await? {
@@ -623,7 +639,10 @@ async fn run_tool(
                     log(steps, format!("committed {head} on {}", claim.task));
                     return Ok(ToolStep::Committed(head));
                 }
-                Err(reason) => Err(reason),
+                Err(reason) => {
+                    log(steps, format!("commit refused on {}: {reason}", claim.task));
+                    Err(reason)
+                }
             }
         }
         "get_task" => get_task(mcp, &claim.task)
@@ -669,7 +688,9 @@ async fn report(
     }
 }
 
-async fn release(mcp: &McpClient, claim: &Claim, steps: &mut Vec<String>) {
+/// Gives the claim back and logs why. The reason is the exit the run ended with, or the error it
+/// failed on, so every release in the log says what caused it.
+async fn release(mcp: &McpClient, claim: &Claim, why: &str, steps: &mut Vec<String>) {
     let released = mcp
         .call(
             "release_task",
@@ -677,7 +698,7 @@ async fn release(mcp: &McpClient, claim: &Claim, steps: &mut Vec<String>) {
         )
         .await;
     match released {
-        Ok(Reply::Done(_)) => log(steps, format!("released {}", claim.task)),
+        Ok(Reply::Done(_)) => log(steps, format!("released {}: {why}", claim.task)),
         Ok(Reply::Refused(reason)) => {
             log(
                 steps,
@@ -694,26 +715,80 @@ async fn release(mcp: &McpClient, claim: &Claim, steps: &mut Vec<String>) {
     }
 }
 
-async fn plan_work<C: ModelClient>(model: &C, row: &Value) -> anyhow::Result<Plan> {
-    let request = ChatRequest {
-        messages: vec![
-            Message::system(PLAN_PROMPT),
-            Message::user(
-                json!({
-                    "title": row["title"],
-                    "brief": row["brief"],
-                    "scope": row["scope"],
-                })
-                .to_string(),
+/// How many planning calls a task gets. A live model can miss the requested schema, or name a path
+/// the repository does not hold. Each miss is sent back with its reasons, and after the last miss
+/// the task is skipped, so a plan that cannot be grounded never reaches the origin.
+const PLAN_ATTEMPTS: usize = 3;
+
+/// Plans one task and checks the plan against the repository. A refused plan is sent back with
+/// the reasons and the file list. The error is the reasons of the last refusal.
+async fn plan_work<C: ModelClient>(
+    model: &C,
+    repo: &RepoFiles,
+    row: &Value,
+    steps: &mut Vec<String>,
+) -> Result<Planned, String> {
+    let task = string_field(row, "task");
+    let brief = planning_brief(repo, row).await;
+    let mut refusal: Vec<String> = Vec::new();
+    for attempt in 1..=PLAN_ATTEMPTS {
+        let mut messages = vec![Message::system(PLAN_PROMPT), Message::user(brief.clone())];
+        if !refusal.is_empty() {
+            messages.push(Message::user(format!(
+                "Your last plan was refused:\n{}\nReply with a corrected plan. Copy each existing file's path exactly from the repository file list, and list a new file under new_files only when its directory is in that list.",
+                refusal.join("\n")
+            )));
+        }
+        let request = ChatRequest {
+            messages,
+            ..ChatRequest::default()
+        };
+        refusal = match model.chat_json::<Plan>(Role::Worker, request).await {
+            Ok(structured) => {
+                let plan = structured.value;
+                match repo.check(&plan.files, &plan.new_files) {
+                    Ok(checked) => {
+                        return Ok(Planned {
+                            summary: plan.summary,
+                            footprint: checked.footprint,
+                            fixes: checked.fixes,
+                        });
+                    }
+                    Err(reasons) => reasons,
+                }
+            }
+            Err(err) => vec![format!(
+                "the planning call failed, or its reply missed the plan schema: {err}"
+            )],
+        };
+        log(
+            steps,
+            format!(
+                "plan refused on {task} (attempt {attempt} of {PLAN_ATTEMPTS}): {}",
+                refusal.join("; ")
             ),
-        ],
-        ..ChatRequest::default()
-    };
-    let structured = model
-        .chat_json::<Plan>(Role::Worker, request)
-        .await
-        .context("planning the readback failed")?;
-    Ok(structured.value)
+        );
+    }
+    Err(refusal.join("; "))
+}
+
+/// The planning message for one task: its title, brief and scope, the repository's tracked files,
+/// and the full text of the files its scope machines hold.
+async fn planning_brief(repo: &RepoFiles, row: &Value) -> String {
+    let scope: Vec<String> = row["scope"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|machine| machine.as_str().map(str::to_owned))
+        .collect();
+    format!(
+        "Task: {}\nBrief: {}\nScope machines: {}\n\nRepository files (tracked; use these paths exactly):\n{}\n\nFull text of the files in the scope machines:\n{}",
+        string_field(row, "title"),
+        string_field(row, "brief"),
+        scope.join(", "),
+        repo.listing(),
+        repo.scope_text(&scope).await,
+    )
 }
 
 /// The machines a task is scoped to, as the loci a readback touches.
@@ -777,7 +852,96 @@ fn log(steps: &mut Vec<String>, text: String) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use acan_llm::{Reply, Stub};
+
     use super::*;
+
+    fn repo() -> RepoFiles {
+        RepoFiles::from_paths("unused", vec!["src/a.ts".to_owned()])
+    }
+
+    /// The text of every message in a request, so a test can look for a reason in it.
+    fn text_of(request: &ChatRequest) -> String {
+        serde_json::to_string(&request.messages).unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn a_planning_reply_that_misses_its_schema_is_asked_again() {
+        let calls = AtomicUsize::new(0);
+        let model = Stub::default()
+            .when(
+                Role::Worker,
+                move |_| calls.fetch_add(1, Ordering::SeqCst) == 0,
+                Reply::text("not a plan"),
+            )
+            .when(
+                Role::Worker,
+                |_| true,
+                Reply::text(r#"{"summary":"write the file","files":["src/a.ts"]}"#),
+            );
+        let row = json!({ "title": "t", "brief": "b", "scope": ["src"], "task": "t-1" });
+        let planned = plan_work(&model, &repo(), &row, &mut Vec::new())
+            .await
+            .expect("the second reply is a plan");
+        assert_eq!(planned.footprint, vec!["src/a.ts".to_owned()]);
+    }
+
+    #[tokio::test]
+    async fn a_refused_plan_is_sent_back_with_its_reasons_and_the_file_list() {
+        // The first reply names a path the repository does not hold. The second call must carry
+        // that refusal and the file list, and the corrected reply then passes.
+        let model = Stub::default()
+            .when(
+                Role::Worker,
+                |request| !text_of(request).contains("was refused"),
+                Reply::text(r#"{"summary":"s","files":["middleware/a.ts"]}"#),
+            )
+            .when(
+                Role::Worker,
+                |request| {
+                    let text = text_of(request);
+                    text.contains("is not a tracked file") && text.contains("- src/a.ts")
+                },
+                Reply::text(r#"{"summary":"s","files":["src/a.ts"]}"#),
+            );
+        let row = json!({ "title": "t", "brief": "b", "scope": ["src"], "task": "t-1" });
+        let mut steps = Vec::new();
+        let planned = plan_work(&model, &repo(), &row, &mut steps)
+            .await
+            .expect("the corrected plan passes");
+        assert_eq!(planned.footprint, vec!["src/a.ts".to_owned()]);
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.starts_with("plan refused on t-1 (attempt 1 of 3)")),
+            "{steps:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_plan_that_never_passes_is_refused_after_its_tries_with_the_reason() {
+        let model = Stub::default().when(
+            Role::Worker,
+            |_| true,
+            Reply::text(r#"{"summary":"s","files":["nope.ts"]}"#),
+        );
+        let row = json!({ "title": "t", "brief": "b", "scope": ["src"], "task": "t-1" });
+        let mut steps = Vec::new();
+        let reasons = plan_work(&model, &repo(), &row, &mut steps)
+            .await
+            .expect_err("no attempt names a tracked file");
+        assert!(
+            reasons.contains("`nope.ts` is not a tracked file"),
+            "{reasons}"
+        );
+        let refusals = steps
+            .iter()
+            .filter(|step| step.starts_with("plan refused"))
+            .count();
+        assert_eq!(refusals, PLAN_ATTEMPTS);
+    }
 
     fn claim() -> Claim {
         Claim {
@@ -817,23 +981,5 @@ mod tests {
             clearance(&view("open", Value::Null, false, Value::Null), &claim),
             Clearance::Lost(_)
         ));
-    }
-
-    #[test]
-    fn a_plan_merges_aliases_and_refuses_paths_outside_the_worktree() {
-        assert_eq!(
-            footprint(&[
-                "./model/store.ts".to_owned(),
-                "model/store.ts".to_owned(),
-                "model//util.ts".to_owned(),
-            ]),
-            Ok(vec![
-                "model/store.ts".to_owned(),
-                "model/util.ts".to_owned()
-            ])
-        );
-        assert!(footprint(&["../escape.ts".to_owned()]).is_err());
-        assert!(footprint(&["/etc/passwd".to_owned()]).is_err());
-        assert!(footprint(&[]).is_err());
     }
 }

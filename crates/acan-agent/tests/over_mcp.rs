@@ -211,10 +211,11 @@ fn tool_call(name: &str, arguments: Value) -> ToolCall {
     }
 }
 
-fn worker_config(base: &str, token: &str) -> WorkerConfig {
+fn worker_config(base: &str, token: &str, repo: &Path) -> WorkerConfig {
     WorkerConfig {
         server: base.to_owned(),
         token: token.to_owned(),
+        repo: repo.to_path_buf(),
         test_command: None,
         max_steps: 5,
         wait: WAIT,
@@ -226,9 +227,10 @@ fn worker_config(base: &str, token: &str) -> WorkerConfig {
 fn spawn_worker(
     base: &str,
     token: &'static str,
+    repo: &Path,
     gate: watch::Receiver<bool>,
 ) -> JoinHandle<Outcome> {
-    let config = worker_config(base, token);
+    let config = worker_config(base, token, repo);
     tokio::spawn(async move {
         let model = Worker::new(gate);
         run(&config, &model).await
@@ -498,8 +500,8 @@ async fn two_workers_on_one_file_clash_before_either_writes() {
     assert_eq!(tasks.len(), 2, "the order splits into two tasks");
 
     let (gate, open) = watch::channel(false);
-    let one = spawn_worker(&base, ONE_TOKEN, open.clone());
-    let two = spawn_worker(&base, TWO_TOKEN, open);
+    let one = spawn_worker(&base, ONE_TOKEN, repo.path(), open.clone());
+    let two = spawn_worker(&base, TWO_TOKEN, repo.path(), open);
 
     let first = settle(&running, "agent-1 to claim a task", |_, world| {
         held_by(world, &AgentId::from_str(ONE).expect("valid agent id"))
@@ -852,7 +854,7 @@ async fn a_lost_claim_stops_the_work_and_nothing_is_written() {
     // The gate stays shut, so the worker waits inside its first edit step, holding its claim.
     let (gate, open) = watch::channel(false);
     let (entered_tx, mut entered) = watch::channel(false);
-    let config = worker_config(&base, ONE_TOKEN);
+    let config = worker_config(&base, ONE_TOKEN, repo.path());
     let worker = tokio::spawn(async move {
         let model = AnnouncedEdit {
             script: worker_script(),
@@ -934,7 +936,7 @@ async fn a_model_error_releases_the_claim() {
     })
     .await;
 
-    let config = worker_config(&base, ONE_TOKEN);
+    let config = worker_config(&base, ONE_TOKEN, repo.path());
     let worker = tokio::spawn(async move {
         let model = FailingEdit {
             script: worker_script(),
