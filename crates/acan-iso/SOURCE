@@ -1,0 +1,17 @@
+Rust port of the isometric geometry in the anatomy kit.
+
+Repository: https://github.com/wheresryan22/anatomy
+Commit:     1482e84
+Licence:    MIT, copied verbatim to LICENSE-anatomy in this directory
+
+Ported from:
+  kit/iso-kit.mjs   projection and depth, rounded plans, extrude and slab with
+                    the four-tone shading and bevels, cylinders, circle rings,
+                    on-top lines, radial and edge ticks, knurls, dot grids,
+                    side seams and the painter rules that order them
+  kit/iso.css       the light theme palette (values only, used by the sheet)
+
+The camera, the shading buckets and the outline runs follow the kit's formulas.
+The models under src/models are original. Their proportions follow the
+assembler and crate references in the user's earlier explorations, and their
+parts follow the craft recipes in the kit's references/craft.md.
