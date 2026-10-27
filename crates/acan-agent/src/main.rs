@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use acan_agent::{Exit, WorkerConfig, run};
 use acan_llm::{ApiKeys, LlmConfig, OpenAiCompatible};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
 
 /// One worker run against one origin.
@@ -96,10 +96,55 @@ async fn run_cli() -> Result<Exit> {
 
 /// Loads the provider keys from `path`. A missing file is normal; a file that does not parse is
 /// an error, so keys are not silently missing.
+///
+/// The parser's error quotes the line it failed on, and that line can hold a key, so the error
+/// names the file and the failure without the parser's text.
 fn load_env(path: &Path) -> Result<()> {
     match dotenvy::from_path(path) {
         Ok(()) => Ok(()),
-        Err(dotenvy::Error::Io(err)) if err.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err).with_context(|| format!("loading {}", path.display())),
+        Err(err) if err.not_found() => Ok(()),
+        Err(dotenvy::Error::LineParse(..)) => {
+            bail!(
+                "the provider key file {} does not parse; check its lines",
+                path.display()
+            )
+        }
+        Err(dotenvy::Error::Io(err)) => {
+            bail!(
+                "the provider key file {} could not be read: {}",
+                path.display(),
+                err.kind()
+            )
+        }
+        Err(_) => bail!("the provider key file {} could not be read", path.display()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::load_env;
+
+    #[test]
+    fn a_key_file_that_does_not_parse_is_reported_without_its_text() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        let path = dir.path().join(".env");
+        // A line that starts with a quote is not a key, so the parser fails on the line itself,
+        // which is where a key would sit.
+        fs::write(&path, "\"sk-live-secret-value\" oops\n").expect("the key file");
+        let err = load_env(&path).expect_err("a file that does not parse is an error");
+        let text = format!("{err:#}");
+        assert!(
+            !text.contains("sk-live-secret-value"),
+            "the message carries the key: {text}"
+        );
+        assert!(text.contains(".env"), "the message names the file: {text}");
+    }
+
+    #[test]
+    fn a_missing_key_file_is_normal() {
+        let dir = tempfile::tempdir().expect("temporary directory");
+        load_env(&dir.path().join("absent.env")).expect("a missing file loads nothing");
     }
 }

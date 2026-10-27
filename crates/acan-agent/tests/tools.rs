@@ -5,7 +5,7 @@ use std::fs;
 use std::path::Path;
 use std::process::Command as Process;
 
-use acan_agent::Worktree;
+use acan_agent::{Worktree, normalize_path};
 
 const DECLARED: &str = "model/store.ts";
 
@@ -121,31 +121,131 @@ async fn paths_outside_the_worktree_are_refused() {
     );
 }
 
+/// Creates a link at `at` to `target`. Windows needs the directory form for a directory, and a
+/// Windows account without developer mode or elevation cannot create links at all.
+fn link(target: &Path, at: &Path, is_dir: bool) {
+    #[cfg(unix)]
+    {
+        let _ = is_dir;
+        std::os::unix::fs::symlink(target, at).expect("the link is created");
+    }
+    #[cfg(windows)]
+    {
+        let made = if is_dir {
+            std::os::windows::fs::symlink_dir(target, at)
+        } else {
+            std::os::windows::fs::symlink_file(target, at)
+        };
+        made.expect("the link is created (Windows needs developer mode or elevation for links)");
+    }
+}
+
 /// A link inside the worktree that points outside it must not carry reads or writes out.
-/// Symlinks need a privilege on Windows, so this check runs on unix only.
-#[cfg(unix)]
 #[tokio::test]
 async fn a_symlink_that_leaves_the_worktree_is_refused() {
     let dir = repo();
     let outside = tempfile::tempdir().expect("a directory outside the worktree");
     let secret = outside.path().join("secret.txt");
     fs::write(&secret, "outside\n").expect("the outside file");
-    let link = "model/link.ts";
-    std::os::unix::fs::symlink(&secret, dir.path().join(link)).expect("the link");
-    let tools = Worktree::new(dir.path().to_path_buf(), &[link.to_owned()], None);
+    let link_path = "model/link.ts";
+    link(&secret, &dir.path().join(link_path), false);
+    let tools = Worktree::new(dir.path().to_path_buf(), &[link_path.to_owned()], None);
 
     assert!(
-        tools.read_file(link).await.is_err(),
+        tools.read_file(link_path).await.is_err(),
         "reading through the link is refused"
     );
     assert!(
-        tools.write_file(link, "changed\n").is_err(),
+        tools.write_file(link_path, "changed\n").is_err(),
         "writing through the link is refused"
     );
     assert_eq!(
         fs::read_to_string(&secret).expect("readable"),
         "outside\n",
         "the outside file is untouched"
+    );
+}
+
+/// A declared path that is a link to an undeclared file in the same worktree must not carry the
+/// write to that file, and neither may a declared path under a linked directory.
+#[test]
+fn a_write_never_goes_through_a_link_even_inside_the_worktree() {
+    let dir = repo();
+    let root = dir.path();
+    link(
+        &root.join("model/other.ts"),
+        &root.join("model/linked.ts"),
+        false,
+    );
+    link(&root.join("model"), &root.join("alias"), true);
+    let tools = Worktree::new(
+        root.to_path_buf(),
+        &["model/linked.ts".to_owned(), "alias/other.ts".to_owned()],
+        None,
+    );
+
+    assert!(
+        tools.write_file("model/linked.ts", "changed\n").is_err(),
+        "a declared link is not written through"
+    );
+    assert!(
+        tools.write_file("alias/other.ts", "changed\n").is_err(),
+        "a declared path under a linked directory is not written through"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("model/other.ts")).expect("readable"),
+        "other\n",
+        "the undeclared file is untouched"
+    );
+}
+
+#[test]
+fn a_path_has_one_form_to_the_origin_and_the_worktree() {
+    assert_eq!(
+        normalize_path("./model/store.ts").expect("a plain path"),
+        DECLARED
+    );
+    assert_eq!(
+        normalize_path("model//store.ts").expect("a plain path"),
+        DECLARED
+    );
+    for bad in [
+        "model/store.ts.",
+        "model/store.ts ",
+        "model/a:b",
+        "./",
+        ".GIT/config",
+    ] {
+        assert!(normalize_path(bad).is_err(), "accepted {bad:?}");
+    }
+}
+
+/// A backslash is a separator on Windows and a name character elsewhere, so the form it takes
+/// depends on the platform the worktree lives on. The origin only ever sees the `/` form.
+#[test]
+fn a_backslash_path_is_refused_or_read_as_a_separator_by_platform() {
+    let backslash = normalize_path("model\\store.ts");
+    if cfg!(windows) {
+        assert_eq!(backslash.expect("a separator on Windows"), DECLARED);
+    } else {
+        assert!(backslash.is_err(), "a name the origin does not keep");
+    }
+}
+
+#[test]
+fn a_declared_alias_names_the_declared_file_for_writes() {
+    let dir = repo();
+    let tools = Worktree::new(
+        dir.path().to_path_buf(),
+        &["./model/store.ts".to_owned()],
+        None,
+    );
+    tools
+        .write_file("model/store.ts", "changed\n")
+        .expect("the plain form of a declared alias is written");
+    assert_eq!(
+        fs::read_to_string(dir.path().join(DECLARED)).expect("readable"),
+        "changed\n"
     );
 }
 
@@ -214,4 +314,18 @@ async fn run_tests_needs_a_configured_command() {
         .await
         .expect_err("no test command is configured");
     assert!(refused.contains("no test command"), "{refused}");
+}
+
+#[tokio::test]
+async fn run_tests_reports_pass_and_fail_as_the_gate_does() {
+    let dir = repo();
+    let passing = Worktree::new(dir.path().to_path_buf(), &[], Some("exit 0".to_owned()));
+    assert_eq!(passing.run_tests().await.expect("the command runs"), "pass");
+
+    let failing = Worktree::new(dir.path().to_path_buf(), &[], Some("exit 3".to_owned()));
+    let text = failing
+        .run_tests()
+        .await
+        .expect("a failing command is reported, not refused");
+    assert!(text.starts_with("fail:") && text.contains('3'), "{text}");
 }

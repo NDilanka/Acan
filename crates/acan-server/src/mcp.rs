@@ -48,13 +48,16 @@ const TOOLS: [&str; 9] = [
     "get_worktree",
 ];
 
-/// One JSON-RPC message. A message without an id is a notification and gets no reply body.
-#[derive(Deserialize)]
-struct Message {
-    id: Option<Value>,
-    method: Option<String>,
-    #[serde(default)]
-    params: Value,
+/// One JSON-RPC message, checked against the 2.0 envelope before any method runs.
+enum Envelope {
+    /// A request. Its answer carries the same id, which is a string, a number, or null.
+    Request {
+        id: Value,
+        method: String,
+        params: Value,
+    },
+    /// A notification has no id, so it gets no reply body.
+    Notification,
 }
 
 /// A JSON-RPC protocol error. Tool failures are not these; they travel as tool results.
@@ -85,32 +88,74 @@ pub(crate) async fn post<C: ModelClient + 'static>(
         }
         Err(err) => return err.into_response(),
     };
-    let message: Message = match serde_json::from_str(&body) {
-        Ok(message) => message,
+    let value: Value = match serde_json::from_str(&body) {
+        Ok(value) => value,
         Err(err) => {
             let rpc = Rpc::new(PARSE_ERROR, format!("parse error: {err}"));
             return (StatusCode::BAD_REQUEST, Json(error_body(Value::Null, rpc))).into_response();
         }
     };
-    let Some(id) = message.id else {
-        return StatusCode::ACCEPTED.into_response();
+    let (id, method, params) = match envelope(&value) {
+        Ok(Envelope::Request { id, method, params }) => (id, method, params),
+        Ok(Envelope::Notification) => return StatusCode::ACCEPTED.into_response(),
+        Err((id, rpc)) => {
+            return (StatusCode::BAD_REQUEST, Json(error_body(id, rpc))).into_response();
+        }
     };
-    let outcome = match message.method.as_deref() {
-        Some("initialize") => Ok(initialize(&message.params)),
-        Some("ping") => Ok(json!({})),
-        Some("tools/list") => Ok(json!({ "tools": tool_list() })),
-        Some("tools/call") => call_tool(&host, &agent, &message.params).await,
-        Some(other) => Err(Rpc::new(
+    let outcome = match method.as_str() {
+        "initialize" => Ok(initialize(&params)),
+        "ping" => Ok(json!({})),
+        "tools/list" => Ok(json!({ "tools": tool_list() })),
+        "tools/call" => call_tool(&host, &agent, &params).await,
+        other => Err(Rpc::new(
             METHOD_NOT_FOUND,
             format!("unknown method {other}"),
         )),
-        None => Err(Rpc::new(INVALID_REQUEST, "the message names no method")),
     };
     let body = match outcome {
         Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
         Err(rpc) => error_body(id, rpc),
     };
     (StatusCode::OK, Json(body)).into_response()
+}
+
+/// Checks the JSON-RPC 2.0 envelope of one message. A message that breaks it is an invalid
+/// request. Its error carries the request's own id when that id is valid, and null otherwise.
+fn envelope(value: &Value) -> Result<Envelope, (Value, Rpc)> {
+    let invalid = |id: &Value, text: &str| (id.clone(), Rpc::new(INVALID_REQUEST, text));
+    let Some(object) = value.as_object() else {
+        return Err(invalid(&Value::Null, "a message is a JSON object"));
+    };
+    // A present id is a request, even when it is null. Only a missing id makes a notification.
+    let id = object.get("id");
+    let reply_id = match id {
+        None => Value::Null,
+        Some(id) if id.is_string() || id.is_number() || id.is_null() => id.clone(),
+        Some(_) => {
+            return Err(invalid(
+                &Value::Null,
+                "id must be a string, a number, or null",
+            ));
+        }
+    };
+    if object.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
+        return Err(invalid(&reply_id, "jsonrpc must be \"2.0\""));
+    }
+    let Some(method) = object.get("method").and_then(Value::as_str) else {
+        return Err(invalid(&reply_id, "the message names no method"));
+    };
+    let params = object.get("params").cloned().unwrap_or(Value::Null);
+    if !(params.is_null() || params.is_object() || params.is_array()) {
+        return Err(invalid(&reply_id, "params must be an object or an array"));
+    }
+    Ok(match id {
+        None => Envelope::Notification,
+        Some(id) => Envelope::Request {
+            id: id.clone(),
+            method: method.to_owned(),
+            params,
+        },
+    })
 }
 
 fn error_body(id: Value, rpc: Rpc) -> Value {

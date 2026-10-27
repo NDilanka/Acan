@@ -12,7 +12,9 @@ name = "acan-worker"
 path = "src/main.rs"
 
 [dependencies]
+acan-core = { path = "../acan-core" }
 acan-llm = { path = "../acan-llm" }
+acan-witness = { path = "../acan-witness" }
 anyhow.workspace = true
 clap = { version = "4", features = ["derive"] }
 dotenvy = "0.15"
@@ -25,6 +27,5 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
-acan-core = { path = "../acan-core" }
 acan-server = { path = "../acan-server" }
 tempfile = "3"

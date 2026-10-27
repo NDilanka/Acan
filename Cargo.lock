@@ -9,6 +9,7 @@ dependencies = [
  "acan-core",
  "acan-llm",
  "acan-server",
+ "acan-witness",
  "anyhow",
  "clap",
  "dotenvy",

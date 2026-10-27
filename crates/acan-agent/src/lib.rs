@@ -11,5 +11,5 @@ mod tools;
 mod worker;
 
 pub use mcp::{McpClient, Reply};
-pub use tools::Worktree;
+pub use tools::{Worktree, normalize_path};
 pub use worker::{Exit, Outcome, WorkerConfig, run};

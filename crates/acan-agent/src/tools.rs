@@ -1,11 +1,11 @@
 //! The worker's local tools. Every path stays inside the task's worktree, and a write is allowed
 //! only to a file the task declared. The worker decides when a write may run (see `worker`).
 
-use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
-use std::time::Duration;
 
+use acan_core::{Check, WitnessOutcome};
 use acan_llm::ToolSpec;
+use acan_witness::Limits;
 use serde_json::{Value, json};
 use tokio::process::Command;
 
@@ -13,10 +13,6 @@ use tokio::process::Command;
 const MAX_READ_BYTES: usize = 32 * 1024;
 /// The most entries a directory listing returns.
 const MAX_LISTING: usize = 200;
-/// The most bytes of test output the model sees, taken from the end where failures are.
-const MAX_TEST_OUTPUT: usize = 4 * 1024;
-/// How long one test run may take. A run that hangs ends so the worker can release its task.
-const TEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// One task's worktree, with the files it declared and the test command it may run.
 #[derive(Debug)]
@@ -27,13 +23,14 @@ pub struct Worktree {
 }
 
 impl Worktree {
-    /// The worktree at `root` for a task that declared `declared`. A declared path that is not
-    /// confined to the worktree is dropped, so it can never be written.
+    /// The worktree at `root` for a task that declared `declared`. The declared paths are
+    /// normalized the way [`normalize_path`] does; a path that cannot be normalized is dropped,
+    /// so it can never be written. The worker only passes paths it has already normalized.
     #[must_use]
     pub fn new(root: PathBuf, declared: &[String], test_command: Option<String>) -> Self {
         let declared = declared
             .iter()
-            .filter_map(|path| confined(path).ok())
+            .filter_map(|path| normalize_path(path).ok())
             .collect();
         Self {
             root,
@@ -98,7 +95,7 @@ impl Worktree {
     ///
     /// Returns the reason when the path is not inside the worktree or cannot be read.
     pub async fn read_file(&self, path: &str) -> Result<String, String> {
-        let relative = confined(path)?;
+        let relative = normalize_path(path)?;
         let bytes = tokio::fs::read(self.inside(&relative)?)
             .await
             .map_err(|err| format!("cannot read {relative}: {err}"))?;
@@ -119,7 +116,7 @@ impl Worktree {
         let dir = if path.trim().is_empty() || path == "." {
             self.root.clone()
         } else {
-            self.inside(&confined(path)?)?
+            self.inside(&normalize_path(path)?)?
         };
         let entries = std::fs::read_dir(&dir)
             .map_err(|err| format!("cannot list {}: {err}", dir.display()))?;
@@ -140,19 +137,22 @@ impl Worktree {
         Ok(names.join("\n"))
     }
 
-    /// Writes a declared file, creating its directories.
+    /// Writes a declared file, creating its directories. The write does not go through a link,
+    /// so it lands on the declared path and nowhere else.
     ///
     /// # Errors
     ///
-    /// Returns the reason when the file is not declared or cannot be written.
+    /// Returns the reason when the file is not declared, its path runs through a link, or it
+    /// cannot be written.
     pub fn write_file(&self, path: &str, content: &str) -> Result<String, String> {
-        let relative = confined(path)?;
+        let relative = normalize_path(path)?;
         if !self.declared.contains(&relative) {
             return Err(format!(
                 "{relative} is not declared; declared files are: {}",
                 self.declared.join(", ")
             ));
         }
+        self.no_links(&relative)?;
         let target = self.inside(&relative)?;
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)
@@ -163,35 +163,24 @@ impl Worktree {
         Ok(format!("wrote {} bytes to {relative}", content.len()))
     }
 
-    /// Runs the configured test command in the worktree and reports its exit and output tail.
+    /// Runs the configured test command in the worktree and reports its outcome. It runs through
+    /// the same runner and limits as the origin's gate, so a pass here is a pass there.
     ///
     /// # Errors
     ///
-    /// Returns the reason when no test command is configured or it cannot start.
+    /// Returns the reason when no test command is configured or the command could not run.
     pub async fn run_tests(&self) -> Result<String, String> {
         let Some(command) = &self.test_command else {
             return Err("no test command is configured for this worker".to_owned());
         };
-        let run = shell(command)
-            .current_dir(&self.root)
-            .kill_on_drop(true)
-            .output();
-        let output = tokio::time::timeout(TEST_TIMEOUT, run)
-            .await
-            .map_err(|_| {
-                format!(
-                    "the test command did not finish within {} seconds",
-                    TEST_TIMEOUT.as_secs()
-                )
-            })?
-            .map_err(|err| format!("the test command did not start: {err}"))?;
-        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-        text.push_str(&String::from_utf8_lossy(&output.stderr));
-        let exit = output
-            .status
-            .code()
-            .map_or_else(|| "by signal".to_owned(), |code| code.to_string());
-        Ok(format!("exit {exit}\n{}", tail(&text, MAX_TEST_OUTPUT)))
+        let check = Check::Test {
+            command: command.clone(),
+        };
+        match acan_witness::run(&check, &self.root, &Limits::default()).await {
+            WitnessOutcome::Pass => Ok("pass".to_owned()),
+            WitnessOutcome::Fail { detail } => Ok(format!("fail: {detail}")),
+            WitnessOutcome::Error { detail } => Err(detail),
+        }
     }
 
     /// Stages every change, refuses it when a file outside the declaration changed, and commits.
@@ -222,9 +211,7 @@ impl Worktree {
             .trim()
             .to_owned())
     }
-}
 
-impl Worktree {
     /// The path inside the worktree. Every existing link on the way is resolved, so a symlink
     /// that points outside the worktree is refused, and so is a link that cannot be resolved.
     fn inside(&self, relative: &str) -> Result<PathBuf, String> {
@@ -246,6 +233,27 @@ impl Worktree {
             Err(format!("{relative} resolves outside the worktree"))
         }
     }
+
+    /// Refuses a write whose path runs through a link. The declaration names one file, and a link
+    /// can lead to any other file, so no write follows one.
+    fn no_links(&self, relative: &str) -> Result<(), String> {
+        let mut current = self.root.clone();
+        for part in relative.split('/') {
+            current.push(part);
+            match std::fs::symlink_metadata(&current) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err(format!(
+                        "{relative} runs through a link, and writes do not follow links"
+                    ));
+                }
+                Ok(_) => {}
+                // Nothing exists past a missing component, so the rest is created as plain files
+                // and directories.
+                Err(_) => break,
+            }
+        }
+        Ok(())
+    }
 }
 
 fn spec(name: &str, description: &str, parameters: Value) -> ToolSpec {
@@ -256,19 +264,34 @@ fn spec(name: &str, description: &str, parameters: Value) -> ToolSpec {
     }
 }
 
-/// The path as `/`-separated normal components, or why it is not a file inside the worktree.
-fn confined(path: &str) -> Result<String, String> {
+/// The repository-relative form of `path` that the origin keeps: `/`-separated normal components.
+/// A `.` is dropped, so `./model/store.ts` and `model/store.ts` are one path to the origin and to
+/// the worktree alike.
+///
+/// # Errors
+///
+/// Returns the reason when the path is absolute, climbs out with `..`, names nothing, is inside
+/// `.git`, or has a name the origin does not keep as a path.
+pub fn normalize_path(path: &str) -> Result<String, String> {
     let mut parts = Vec::new();
     for component in Path::new(path).components() {
         match component {
-            Component::Normal(part) if part == OsStr::new(".git") => {
-                return Err(format!("{path} is inside .git"));
+            Component::Normal(part) => {
+                let part = part
+                    .to_str()
+                    .ok_or_else(|| format!("{path:?} is not UTF-8"))?;
+                if part.eq_ignore_ascii_case(".git") {
+                    return Err(format!("{path} is inside .git"));
+                }
+                // The origin keeps neither `\` nor `:`, and Windows drops a trailing dot or space,
+                // so such a name would name a different file on one side than the other.
+                if part.contains(['\\', ':']) || part.ends_with(['.', ' ']) {
+                    return Err(format!(
+                        "{path:?} has a name the origin does not keep as a path"
+                    ));
+                }
+                parts.push(part);
             }
-            Component::Normal(part) => parts.push(
-                part.to_str()
-                    .ok_or_else(|| format!("{path} is not UTF-8"))?
-                    .to_owned(),
-            ),
             Component::CurDir => {}
             _ => {
                 return Err(format!(
@@ -281,30 +304,6 @@ fn confined(path: &str) -> Result<String, String> {
         return Err(format!("{path:?} names no file"));
     }
     Ok(parts.join("/"))
-}
-
-fn shell(command: &str) -> Command {
-    if cfg!(windows) {
-        let mut shell = Command::new("cmd");
-        shell.arg("/C").arg(command);
-        shell
-    } else {
-        let mut shell = Command::new("sh");
-        shell.arg("-c").arg(command);
-        shell
-    }
-}
-
-/// The last `max` bytes of `text`, moved forward to a character boundary.
-fn tail(text: &str, max: usize) -> &str {
-    if text.len() <= max {
-        return text;
-    }
-    let mut start = text.len() - max;
-    while !text.is_char_boundary(start) {
-        start += 1;
-    }
-    &text[start..]
 }
 
 /// Runs git in `dir`. A failure returns git's own words, from stderr or else stdout.

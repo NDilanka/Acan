@@ -798,6 +798,242 @@ async fn a_stale_fence_is_refused_with_the_rejection_text() {
     running.stop().await.expect("the origin stops");
 }
 
+/// A worker whose plan answers at once and whose edit step fails, as a model outage would.
+struct FailingEdit {
+    script: Stub,
+}
+
+impl ModelClient for FailingEdit {
+    async fn chat(&self, role: Role, request: ChatRequest) -> Result<ChatResponse, LlmError> {
+        if request.tools.is_empty() {
+            return self.script.chat(role, request).await;
+        }
+        Err(LlmError::NoScriptedReply { role })
+    }
+}
+
+/// A worker that announces its first edit step, then waits on the gate as `Worker` does. The
+/// announcement tells the test the worker is past clearance and the worktree, inside the edit.
+struct AnnouncedEdit {
+    script: Stub,
+    gate: watch::Receiver<bool>,
+    entered: watch::Sender<bool>,
+}
+
+impl ModelClient for AnnouncedEdit {
+    async fn chat(&self, role: Role, request: ChatRequest) -> Result<ChatResponse, LlmError> {
+        if !request.tools.is_empty() {
+            self.entered.send_replace(true);
+            let mut gate = self.gate.clone();
+            let _ = gate.wait_for(|open| *open).await;
+        }
+        self.script.chat(role, request).await
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lost_claim_stops_the_work_and_nothing_is_written() {
+    let repo = user_repo();
+    let root = repo.path();
+    let running = start_origin(root).await;
+    let base = base_url(&running);
+    post_order(&running).await;
+    register(&running, ONE).await;
+    settle(&running, "the split", |_, world| {
+        (tasks_of_world(world).len() == 2).then_some(())
+    })
+    .await;
+
+    // The gate stays shut, so the worker waits inside its first edit step, holding its claim.
+    let (gate, open) = watch::channel(false);
+    let (entered_tx, mut entered) = watch::channel(false);
+    let config = worker_config(&base, ONE_TOKEN);
+    let worker = tokio::spawn(async move {
+        let model = AnnouncedEdit {
+            script: worker_script(),
+            gate: open,
+            entered: entered_tx,
+        };
+        run(&config, &model).await
+    });
+    timeout(WAIT, entered.wait_for(|seen| *seen))
+        .await
+        .expect("the worker reaches its edit step")
+        .expect("the worker is still running");
+    let one = AgentId::from_str(ONE).expect("valid agent id");
+    let task = settle(&running, "agent-1 to hold the task", |_, world| {
+        held_by(world, &one)
+    })
+    .await;
+    let worktree = worktree_dir(root, task);
+    wait_for_checkout(&worktree).await;
+
+    // The claim ends at the origin, as an expired lease would end it. The worker's next renewal
+    // is refused, and that refusal is what stops its work.
+    let holder = McpClient::new(&base, ONE_TOKEN.to_owned());
+    holder.connect().await.expect("the holder connects");
+    let Reply::Done(detail) = holder
+        .call("get_task", json!({ "task": task.to_string() }))
+        .await
+        .expect("get_task completes")
+    else {
+        panic!("get_task is accepted for the holder");
+    };
+    let generation = detail["generation"]
+        .as_u64()
+        .expect("the claim names a generation");
+    let released = holder
+        .call(
+            "release_task",
+            json!({ "task": task.to_string(), "generation": generation }),
+        )
+        .await
+        .expect("the release completes");
+    assert!(
+        matches!(released, Reply::Done(_)),
+        "the claim is released: {released:?}"
+    );
+
+    let outcome = timeout(WAIT, worker)
+        .await
+        .expect("the worker stops once its lease is refused")
+        .expect("the worker does not panic");
+    assert!(
+        matches!(&outcome.exit, Exit::Lost { task: lost, .. } if lost == &task.to_string()),
+        "the worker reports the loss: {}",
+        outcome.exit
+    );
+
+    // The gate opens only after the work has stopped, so nothing the model does can write now.
+    // The origin may already have removed the released task's worktree, so a missing file is
+    // fine; a file with the change in it is not.
+    gate.send_replace(true);
+    sleep(HOLD).await;
+    if let Ok(text) = fs::read_to_string(worktree.join(FILE)) {
+        assert_eq!(text, ORIGINAL, "the lost worker wrote nothing");
+    }
+    running.stop().await.expect("the origin stops");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_model_error_releases_the_claim() {
+    let repo = user_repo();
+    let running = start_origin(repo.path()).await;
+    let base = base_url(&running);
+    post_order(&running).await;
+    register(&running, ONE).await;
+    settle(&running, "the split", |_, world| {
+        (tasks_of_world(world).len() == 2).then_some(())
+    })
+    .await;
+
+    let config = worker_config(&base, ONE_TOKEN);
+    let worker = tokio::spawn(async move {
+        let model = FailingEdit {
+            script: worker_script(),
+        };
+        run(&config, &model).await
+    });
+    let outcome = timeout(WAIT, worker)
+        .await
+        .expect("the worker finishes after the model fails")
+        .expect("the worker does not panic");
+    assert!(
+        matches!(&outcome.exit, Exit::Failed { reason } if reason.contains("the edit step failed")),
+        "the worker names the failed step: {}",
+        outcome.exit
+    );
+    assert!(
+        outcome
+            .steps
+            .iter()
+            .any(|step| step.starts_with("released ")),
+        "the claim was released: {:?}",
+        outcome.steps
+    );
+    let world = running_world(&running).await;
+    assert!(
+        held_by(&world, &AgentId::from_str(ONE).expect("valid agent id")).is_none(),
+        "the origin holds no claim for agent-1"
+    );
+    running.stop().await.expect("the origin stops");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_envelope_is_checked_before_any_method_runs() {
+    let repo = user_repo();
+    let running = start_origin(repo.path()).await;
+    let bad_request = reqwest::StatusCode::BAD_REQUEST;
+
+    let wrong_version = mcp_post(
+        &running,
+        ONE_TOKEN,
+        &json!({ "jsonrpc": "1.0", "id": 7, "method": "ping" }),
+    )
+    .await;
+    assert_eq!(wrong_version.status(), bad_request);
+    let body: Value = wrong_version.json().await.expect("the refusal is JSON");
+    assert_eq!(body["error"]["code"], json!(-32600));
+    assert_eq!(body["id"], json!(7), "the refusal answers the request's id");
+
+    let no_version = mcp_post(&running, ONE_TOKEN, &json!({ "id": 8, "method": "ping" })).await;
+    assert_eq!(no_version.status(), bad_request);
+    let body: Value = no_version.json().await.expect("the refusal is JSON");
+    assert_eq!(body["error"]["code"], json!(-32600));
+
+    let batch = mcp_post(
+        &running,
+        ONE_TOKEN,
+        &json!([{ "jsonrpc": "2.0", "id": 9, "method": "ping" }]),
+    )
+    .await;
+    assert_eq!(batch.status(), bad_request);
+    let body: Value = batch.json().await.expect("the refusal is JSON");
+    assert_eq!(body["error"]["code"], json!(-32600));
+    assert_eq!(
+        body["id"],
+        Value::Null,
+        "a message that is not an object has no id"
+    );
+
+    let object_id = mcp_post(
+        &running,
+        ONE_TOKEN,
+        &json!({ "jsonrpc": "2.0", "id": { "x": 1 }, "method": "ping" }),
+    )
+    .await;
+    assert_eq!(object_id.status(), bad_request);
+    let body: Value = object_id.json().await.expect("the refusal is JSON");
+    assert_eq!(body["error"]["code"], json!(-32600));
+    assert_eq!(body["id"], Value::Null, "an object id is not a valid id");
+
+    // A null id is still a request, so it gets an answer that carries the null id.
+    let null_id = mcp_post(
+        &running,
+        ONE_TOKEN,
+        &json!({ "jsonrpc": "2.0", "id": null, "method": "ping" }),
+    )
+    .await;
+    assert_eq!(null_id.status(), reqwest::StatusCode::OK);
+    let body: Value = null_id.json().await.expect("the answer is JSON");
+    assert_eq!(
+        body.get("id"),
+        Some(&Value::Null),
+        "the answer carries null"
+    );
+    assert_eq!(body["result"], json!({}));
+
+    // A notification has no id and gets no reply body.
+    let notice = mcp_post(
+        &running,
+        ONE_TOKEN,
+        &json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+    )
+    .await;
+    assert_eq!(notice.status(), reqwest::StatusCode::ACCEPTED);
+    running.stop().await.expect("the origin stops");
+}
+
 async fn mcp_post(running: &Running, token: &str, body: &Value) -> reqwest::Response {
     client()
         .post(format!("{}/mcp", base_url(running)))
