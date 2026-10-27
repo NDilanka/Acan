@@ -1,18 +1,17 @@
-//! Isometric machine models as draw lists.
+//! View-independent 3D models of the plant's machines.
 //!
-//! A model is a [`Figure`]: fills, lines and dots in painter order, already projected to the iso plane at
-//! scale 1. The renderer draws it with its own theme and uses each item's [`Detail`] to decide what to show
-//! at a given zoom. The geometry is ported from the anatomy kit (MIT, see `LICENSE-anatomy`).
+//! A model is a [`Model`]: one triangle mesh per level of detail, painted lines and dots, and a bounding box.
+//! It is in plan units with z up and its base on the ground, so the renderer can orbit it through 360 degrees
+//! and shade it with [`tone_for`]. Each item carries a [`Detail`] so the renderer decides what to show at a
+//! given zoom. The kit's proportions and palette are the reference (MIT, see `LICENSE-anatomy`).
 
-mod camera;
-mod figure;
-mod geom;
+mod mesh;
+mod model;
 mod models;
 mod parts;
-mod pen;
 mod plan;
-mod scene;
-mod solid;
+mod shade;
 
-pub use figure::{Detail, Figure, Fill, Ink, Item};
+pub use model::{Aabb, Detail, Dot3, Ink, Line3, Mesh, Model, Surface};
 pub use models::{Footprint, Kind, footprint, model};
+pub use shade::{Tone, tone_for};

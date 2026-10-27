@@ -1,4 +1,5 @@
-//! The machine models. Each kind with a drawing has one file here. A kind without one draws as the crate.
+//! The machine models. Each kind has one file here. Every model is pure and deterministic, centred on the origin
+//! with its base on z = 0.
 
 mod assembler;
 // `crate` is a reserved word, so the crate's file cannot be named `crate.rs`.
@@ -6,23 +7,25 @@ mod crate_box;
 mod gate;
 mod intake;
 mod splitter;
+mod tank;
+mod valve;
 
-use crate::figure::Figure;
+use crate::model::Model;
 
-/// The machine kinds. `Tank` and `Valve` have no drawing yet, so they draw as the crate.
+/// The machine kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     /// A tall unit with a side panel of lights and four stacked trays.
     Intake,
-    /// A tall post with a centre hub, a side block and a head lamp.
+    /// A tall auth post pair with a turnstile hub, a badge reader and a lintel lamp.
     Gate,
     /// A stack of boards with a gauge, a knob, two dials and a lamp.
     Assembler,
-    /// A vessel. Not drawn yet; draws as the crate.
+    /// A relational database: a squat cylinder stack with banded seams, a gauge and pipe stubs.
     Tank,
     /// A round hub with four chutes and a crown dial.
     Splitter,
-    /// A valve. Not drawn yet; draws as the crate.
+    /// A small belt fitting: a body with a handwheel.
     Valve,
     /// A plain box, and what every kind without a drawing draws as.
     Crate,
@@ -40,19 +43,21 @@ pub struct Footprint {
     pub top: f32,
 }
 
-/// The draw list for `kind`. The same kind always gives the same figure.
+/// The model for `kind`. The same kind always gives the same model.
 #[must_use]
-pub fn model(kind: Kind) -> Figure {
+pub fn model(kind: Kind) -> Model {
     match kind {
         Kind::Intake => intake::build(),
         Kind::Gate => gate::build(),
         Kind::Assembler => assembler::build(),
+        Kind::Tank => tank::build(),
         Kind::Splitter => splitter::build(),
-        Kind::Tank | Kind::Valve | Kind::Crate => crate_box::build(),
+        Kind::Valve => valve::build(),
+        Kind::Crate => crate_box::build(),
     }
 }
 
-/// The footprint of `kind`, from the kit's table. A kind that draws as the crate reports the crate's footprint.
+/// The footprint of `kind`, from the kit's table.
 #[must_use]
 pub fn footprint(kind: Kind) -> Footprint {
     match kind {
@@ -71,12 +76,22 @@ pub fn footprint(kind: Kind) -> Footprint {
             d: 86.0,
             top: 66.0,
         },
+        Kind::Tank => Footprint {
+            w: 78.0,
+            d: 62.0,
+            top: 56.0,
+        },
         Kind::Splitter => Footprint {
             w: 86.0,
             d: 86.0,
             top: 34.0,
         },
-        Kind::Tank | Kind::Valve | Kind::Crate => Footprint {
+        Kind::Valve => Footprint {
+            w: 18.0,
+            d: 18.0,
+            top: 16.0,
+        },
+        Kind::Crate => Footprint {
             w: 40.0,
             d: 40.0,
             top: 30.0,
@@ -87,7 +102,8 @@ pub fn footprint(kind: Kind) -> Footprint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::figure::{Detail, Fill, Item};
+    use crate::mesh::tests::{check_closed, check_outward};
+    use crate::model::{Detail, Ink, Surface};
 
     const ALL: [Kind; 7] = [
         Kind::Intake,
@@ -99,23 +115,9 @@ mod tests {
         Kind::Crate,
     ];
 
-    fn points(item: &Item) -> Vec<[f32; 2]> {
-        match item {
-            Item::Fill { ring, .. } => ring.clone(),
-            Item::Line { points, .. } | Item::Dots { points, .. } => points.clone(),
-        }
-    }
-
-    /// Items drawn at `level` or coarser: fills always, lines and dots when their detail is at or below `level`.
-    fn visible(figure: &Figure, level: Detail) -> usize {
-        figure
-            .items
-            .iter()
-            .filter(|item| match item {
-                Item::Fill { .. } => true,
-                Item::Line { detail, .. } | Item::Dots { detail, .. } => *detail <= level,
-            })
-            .count()
+    /// The triangles a model draws at every level of detail.
+    fn triangles(model: &Model) -> usize {
+        model.meshes.iter().map(|mesh| mesh.indices.len() / 3).sum()
     }
 
     #[test]
@@ -126,119 +128,111 @@ mod tests {
     }
 
     #[test]
-    fn every_model_has_finite_bounds_that_contain_all_its_items() {
+    fn every_mesh_is_a_union_of_closed_solids_with_outward_normals() {
         for kind in ALL {
-            let figure = model(kind);
-            assert!(!figure.items.is_empty(), "{kind:?} is empty");
-            let [x0, y0, x1, y1] = figure.bounds;
+            let built = model(kind);
+            for (level, mesh) in built.meshes.iter().enumerate() {
+                check_closed(mesh).unwrap_or_else(|e| panic!("{kind:?} level {level}: {e}"));
+                check_outward(mesh).unwrap_or_else(|e| panic!("{kind:?} level {level}: {e}"));
+                assert_eq!(
+                    mesh.positions.len(),
+                    mesh.normals.len(),
+                    "{kind:?} level {level}"
+                );
+                assert_eq!(
+                    mesh.positions.len(),
+                    mesh.surfaces.len(),
+                    "{kind:?} level {level}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bounds_contain_every_vertex_line_and_dot_and_fit_the_footprint() {
+        for kind in ALL {
+            let built = model(kind);
+            let fp = footprint(kind);
+            let bounds = built.bounds;
+            let inside =
+                |p: [f32; 3]| (0..3).all(|a| p[a] >= bounds.min[a] && p[a] <= bounds.max[a]);
+            for mesh in &built.meshes {
+                assert!(mesh.positions.iter().all(|&p| inside(p)), "{kind:?}");
+            }
+            for line in &built.lines {
+                assert!(line.points.iter().all(|&p| inside(p)), "{kind:?}");
+            }
+            assert!(bounds.min[2] >= 0.0, "{kind:?} sits on the ground");
             assert!(
-                [x0, y0, x1, y1].iter().all(|v| v.is_finite()),
-                "{kind:?} bounds {:?}",
-                figure.bounds
+                bounds.max[2] <= fp.top + 1e-3,
+                "{kind:?} top {} above footprint {}",
+                bounds.max[2],
+                fp.top
             );
-            assert!(x0 < x1 && y0 < y1, "{kind:?} bounds {:?}", figure.bounds);
-            for item in &figure.items {
-                for [x, y] in points(item) {
-                    assert!(x.is_finite() && y.is_finite(), "{kind:?} non-finite point");
+            assert!(
+                bounds.min[0] >= -fp.w / 2.0 - 1e-3 && bounds.max[0] <= fp.w / 2.0 + 1e-3,
+                "{kind:?} x"
+            );
+            assert!(
+                bounds.min[1] >= -fp.d / 2.0 - 1e-3 && bounds.max[1] <= fp.d / 2.0 + 1e-3,
+                "{kind:?} y"
+            );
+        }
+    }
+
+    #[test]
+    fn every_model_stays_within_the_budget_at_close() {
+        for kind in ALL {
+            let built = model(kind);
+            let total = triangles(&built);
+            println!(
+                "{kind:?}: triangles always {}, near {}, close {}, total {total}; lines {}, dots {}",
+                built.meshes[0].indices.len() / 3,
+                built.meshes[1].indices.len() / 3,
+                built.meshes[2].indices.len() / 3,
+                built.lines.len(),
+                built.dots.len(),
+            );
+            assert!(total <= 4000, "{kind:?} draws {total} triangles");
+        }
+    }
+
+    /// Only agents are saturated, and amber is reserved for waiting on the user.
+    fn saturated(ink: Ink) -> bool {
+        matches!(
+            ink,
+            Ink::Red | Ink::Green | Ink::Blue | Ink::Lit | Ink::Agent(_)
+        )
+    }
+
+    #[test]
+    fn no_model_draws_a_saturated_colour_at_any_detail() {
+        for kind in ALL {
+            let built = model(kind);
+            for level in [Detail::Always, Detail::Near, Detail::Close] {
+                for surface in &built.meshes[level as usize].surfaces {
+                    let is_saturated = match *surface {
+                        Surface::Paper | Surface::Glass => false,
+                        Surface::Lit => true,
+                        Surface::Ink(ink) => saturated(ink),
+                    };
+                    assert!(!is_saturated, "{kind:?} {level:?} surface {surface:?}");
+                }
+                for line in built.lines.iter().filter(|line| line.detail == level) {
                     assert!(
-                        x >= x0 && x <= x1 && y >= y0 && y <= y1,
-                        "{kind:?}: {x},{y} outside {:?}",
-                        figure.bounds
+                        !saturated(line.tone),
+                        "{kind:?} {level:?} line {:?}",
+                        line.tone
+                    );
+                }
+                for dot in built.dots.iter().filter(|dot| dot.detail == level) {
+                    assert!(
+                        !saturated(dot.tone),
+                        "{kind:?} {level:?} dot {:?}",
+                        dot.tone
                     );
                 }
             }
         }
-    }
-
-    #[test]
-    fn every_solid_draws_its_top_after_its_sides() {
-        // A solid starts with its face fill. Within it, no side may come after the top.
-        for kind in ALL {
-            let mut top_seen = false;
-            for item in &model(kind).items {
-                match item {
-                    Item::Fill {
-                        tone: Fill::Face, ..
-                    } => top_seen = false,
-                    Item::Fill {
-                        tone: Fill::Top, ..
-                    } => top_seen = true,
-                    Item::Fill {
-                        tone: Fill::Shade0 | Fill::Shade1 | Fill::Shade2 | Fill::Shade3,
-                        ..
-                    } => {
-                        assert!(!top_seen, "{kind:?}: a side was drawn after its top");
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    #[test]
-    fn the_assembler_fits_the_renderer_budget_at_close() {
-        let figure = model(Kind::Assembler);
-        let total = visible(&figure, Detail::Close);
-        assert!(total <= 600, "{total} items at Close");
-    }
-
-    #[test]
-    fn every_model_fits_the_renderer_budget_at_close() {
-        for kind in ALL {
-            let total = visible(&model(kind), Detail::Close);
-            assert!(total <= 600, "{kind:?}: {total} items at Close");
-        }
-    }
-
-    #[test]
-    fn kinds_without_a_drawing_draw_and_measure_as_the_crate() {
-        assert_eq!(model(Kind::Tank), model(Kind::Crate));
-        assert_eq!(model(Kind::Valve), model(Kind::Crate));
-        assert_eq!(footprint(Kind::Tank), footprint(Kind::Crate));
-        assert_eq!(footprint(Kind::Valve), footprint(Kind::Crate));
-    }
-
-    #[test]
-    fn footprints_match_the_kit_table() {
-        assert_eq!(
-            footprint(Kind::Assembler),
-            Footprint {
-                w: 96.0,
-                d: 86.0,
-                top: 66.0
-            }
-        );
-        assert_eq!(
-            footprint(Kind::Crate),
-            Footprint {
-                w: 40.0,
-                d: 40.0,
-                top: 30.0
-            }
-        );
-        assert_eq!(
-            footprint(Kind::Intake),
-            Footprint {
-                w: 50.0,
-                d: 96.0,
-                top: 30.0
-            }
-        );
-        assert_eq!(
-            footprint(Kind::Gate),
-            Footprint {
-                w: 44.0,
-                d: 74.0,
-                top: 40.0
-            }
-        );
-        assert_eq!(
-            footprint(Kind::Splitter),
-            Footprint {
-                w: 86.0,
-                d: 86.0,
-                top: 34.0
-            }
-        );
     }
 }
