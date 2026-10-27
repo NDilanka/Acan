@@ -48,6 +48,21 @@ function Test-RecordedProcess {
     $null -ne $proc -and $proc.StartTime.Ticks -eq $StartTicks
 }
 
+# Makes this process's stdio handles non-inheritable. A process started later without redirection
+# would inherit the caller's output pipe, and the caller would wait for the stack to exit even after
+# run.ps1 has returned. The stack's own output goes to log files, so nothing needs these handles.
+function Clear-InheritedStdio {
+    if (-not ('Acan.Demo.StdioHandles' -as [type])) {
+        Add-Type -Namespace Acan.Demo -Name StdioHandles -MemberDefinition @'
+[DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetHandleInformation(System.IntPtr h, uint mask, uint flags);
+[DllImport("kernel32.dll")] public static extern System.IntPtr GetStdHandle(int which);
+'@
+    }
+    foreach ($which in @(-10, -11, -12)) {
+        [void][Acan.Demo.StdioHandles]::SetHandleInformation([Acan.Demo.StdioHandles]::GetStdHandle($which), 1, 0)
+    }
+}
+
 # Starts a process with stdout and stderr in the run's logs folder and records it in the run state.
 function Start-Logged {
     param(

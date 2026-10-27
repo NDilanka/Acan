@@ -95,6 +95,10 @@ try {
     Pop-Location
 }
 
+# The stack outlives this script, so its processes must not inherit this process's output pipe.
+# Everything below starts with its output redirected to log files.
+Clear-InheritedStdio
+
 $serve = Start-Logged -State $state -RunDir $RunDir -Name 'acan-serve' -File $acan -WorkingDirectory $RunDir -Arguments @(
     'serve',
     '--repo', $RunDir,
