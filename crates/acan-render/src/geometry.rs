@@ -93,6 +93,7 @@ pub struct HaloVertex {
 pub struct InstanceRaw {
     pub offset: [f32; 3],
     pub tint: u32,
+    pub grow: [f32; 2],
 }
 
 /// Vertex data split by detail. `counts[level]` is the number of vertices drawn at that level
@@ -304,6 +305,7 @@ pub fn instance_data(instances: &[Instance], kinds: usize) -> (Vec<InstanceRaw>,
                 .map(|inst| InstanceRaw {
                     offset: inst.offset,
                     tint: u32::from(inst.tint),
+                    grow: inst.grow,
                 }),
         );
         ranges.push(start..raw.len() as u32);
@@ -484,6 +486,7 @@ mod tests {
             offset: [x, 0.0, 0.0],
             kind,
             tint: 0,
+            grow: [0.0; 2],
         };
         let (raw, ranges) = instance_data(&[inst(1, 1.0), inst(0, 2.0), inst(1, 3.0)], 2);
         assert_eq!(ranges, vec![0..1, 1..3]);
@@ -498,6 +501,7 @@ mod tests {
             offset: [0.0; 3],
             kind: 5,
             tint: 0,
+            grow: [0.0; 2],
         };
         instance_data(&[stray], 2);
     }

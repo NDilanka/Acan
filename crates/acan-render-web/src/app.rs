@@ -9,17 +9,19 @@ use std::collections::HashMap;
 
 use acan_core::Stamped;
 use acan_render::camera::{DEFAULT_AZIMUTH, DEFAULT_ELEVATION};
-use acan_render::{Aabb, Camera, Lod, Model, Renderer, wgpu};
+use acan_render::{Aabb, Camera, Lod, Model, Renderer, Scene, wgpu};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
-use crate::kind::PlanFootprint;
+use crate::kind::{self, ALL, PlanFootprint};
 use crate::labels::{self, LabelSpot};
 use crate::layout::{Layout, layout};
-use crate::mirror::Mirror;
+use crate::marks::{self, AgentSlots, Marks, Motion, Stand};
+use crate::mirror::{Mirror, View};
 use crate::plan::Plan;
 use crate::plant::{Plant, PlantMachine, from_scan_json, rest_labels, stress};
 use crate::scene;
+use crate::stand;
 
 /// Space around the plant at fit, in CSS pixels.
 const FIT_MARGIN_CSS: f32 = 24.0;
@@ -35,11 +37,23 @@ pub struct App {
     renderer: Renderer,
     camera: Camera,
     models: Vec<Model>,
+    /// The free spots a bot can stand on, per model kind, relative to the model's origin.
+    kind_spots: Vec<Vec<[f32; 2]>>,
     dpr: f32,
     turn: Option<Turn>,
     plant: Option<Loaded>,
     plan: Option<Plan>,
     mirror: Option<Mirror>,
+    /// The view as of the last rebuild. The marks and the clash card are read from it.
+    view: Option<View>,
+    marks: Marks,
+    motion: Motion,
+    /// Each agent's hue slot. It keeps a slot while the agent is in the view.
+    slots: AgentSlots,
+    /// Whether the marks' eases were moving on the last frame.
+    moving: bool,
+    /// The index of the clash whose card is open, if any.
+    card_clash: Option<usize>,
     view_json: String,
     view_version: u32,
     dirty: bool,
@@ -65,6 +79,12 @@ struct Loaded {
     label_half_px: Vec<f32>,
     /// Whether each machine carries a name at rest once it is large enough on screen.
     rest: Vec<bool>,
+    /// The machines and belts as the layout places them, before any mark is added.
+    base: Scene,
+    /// For each plan machine, its instance in `base`.
+    plan_instance: Vec<usize>,
+    /// For each plan machine, its model's top and the free spots on its plinth top.
+    stands: Vec<Stand>,
 }
 
 #[wasm_bindgen]
@@ -93,15 +113,33 @@ impl App {
             .map_err(js_err)?;
         let models = scene::models();
         renderer.set_models(&models);
+        // The default view looks at the plant from the front corner. A bot stands on the side
+        // nearest that corner first.
+        let facing = DEFAULT_AZIMUTH.to_radians();
+        let front = [facing.cos(), facing.sin()];
+        let kind_spots = ALL
+            .iter()
+            .map(|&kind| {
+                let (w, d) = kind.footprint();
+                stand::spots(&models[kind::index(kind)], [w / 2.0, d / 2.0], front)
+            })
+            .collect();
         Ok(App {
             renderer,
             camera: Camera::new([size[0] as f32, size[1] as f32]),
             models,
+            kind_spots,
             dpr: 1.0,
             turn: None,
             plant: None,
             plan: None,
             mirror: None,
+            view: None,
+            marks: Marks::default(),
+            motion: Motion::default(),
+            slots: AgentSlots::default(),
+            moving: false,
+            card_clash: None,
             view_json: String::new(),
             view_version: 0,
             dirty: false,
@@ -199,6 +237,8 @@ impl App {
         ];
         self.camera.set_viewport([size[0] as f32, size[1] as f32]);
         self.renderer.resize(size);
+        // The screen-size floors of the marks are in device px, so a new ratio moves them.
+        self.sync_scene();
     }
 
     /// Moves the scene so the ground under the CSS point `(x0, y0)` lands under `(x1, y1)`.
@@ -246,9 +286,20 @@ impl App {
         });
     }
 
-    /// Moves an active turn on by `dt_ms`. Returns true while it is still moving, so the page
-    /// asks for another frame only then.
+    /// Moves an active turn and the eases of the marks on by `dt_ms`. Returns true while either is
+    /// still moving, so the page asks for another frame only then.
     pub fn advance(&mut self, dt_ms: f32) -> bool {
+        let turning = self.advance_turn(dt_ms);
+        let moving = self.motion.advance(dt_ms);
+        // The frame an ease ends on still uploads, so the marks land on their final places.
+        if moving || self.moving {
+            self.sync_scene();
+        }
+        self.moving = moving;
+        turning || moving
+    }
+
+    fn advance_turn(&mut self, dt_ms: f32) -> bool {
         let Some(turn) = self.turn.as_mut() else {
             return false;
         };
@@ -382,6 +433,85 @@ impl App {
             .collect()
     }
 
+    /// The flags and the open clash card, as JSON: `{"flags": [...], "card": {...} | null}`. The
+    /// page reads it when the view changes or a card opens. Flag `i` anchors where `flag_layout`
+    /// puts index `i`.
+    pub fn marks_json(&self) -> String {
+        #[derive(serde::Serialize)]
+        struct Out<'a> {
+            flags: &'a [marks::Flag],
+            card: Option<marks::Card>,
+        }
+        let card = self.card_clash.and_then(|index| {
+            let view = self.view.as_ref()?;
+            let mirror = self.mirror.as_ref()?;
+            marks::card(view, mirror.world(), index, &self.slots)
+        });
+        serde_json::to_string(&Out {
+            flags: &self.marks.flags,
+            card,
+        })
+        .expect("marks serialize as JSON")
+    }
+
+    /// Each flag's anchor on screen, as flat `[flag index, machine or -1, css x, css y]` quads, in
+    /// the order `marks_json` lists the flags. The machine is the one an agent's flag stacks on,
+    /// and -1 is a flag that stands alone. The anchors follow the bodies and diamonds while they
+    /// move.
+    pub fn flag_layout(&self) -> Vec<f32> {
+        self.marks
+            .flags
+            .iter()
+            .enumerate()
+            .flat_map(|(index, flag)| {
+                let at = self.motion.flag_at(flag);
+                let [x, y] = marks::flag_anchor(flag, at, |p| self.screen(p));
+                let machine = flag.machine.map_or(-1.0, |machine| machine as f32);
+                [index as f32, machine, x, y]
+            })
+            .collect()
+    }
+
+    /// Each clash diamond's centre on screen, as flat `[clash index, css x, css y]` triples. The
+    /// page opens the card of the diamond a click lands on.
+    pub fn pin_layout(&self) -> Vec<f32> {
+        self.marks
+            .pins
+            .iter()
+            .flat_map(|pin| {
+                let foot = self.motion.pin_at(&pin.id).unwrap_or(pin.at);
+                let [x, y] = marks::diamond_centre(foot, |p| self.screen(p));
+                [pin.clash as f32, x, y]
+            })
+            .collect()
+    }
+
+    /// Opens the card of the clash at `index` in the view. The camera does not move.
+    pub fn open_card(&mut self, index: u32) {
+        let index = index as usize;
+        if self
+            .view
+            .as_ref()
+            .is_some_and(|view| index < view.clashes.len())
+        {
+            self.card_clash = Some(index);
+        }
+    }
+
+    /// Closes the card, if one is open.
+    pub fn close_card(&mut self) {
+        self.card_clash = None;
+    }
+
+    /// Closes the card when it is open. Otherwise opens the card of the first unsettled clash.
+    pub fn toggle_card(&mut self) {
+        if self.card_clash.is_some() {
+            self.card_clash = None;
+        } else {
+            self.card_clash = self.marks.pins.first().map(|pin| pin.clash);
+        }
+    }
+
     /// CSS-pixel position of a plan point on the ground, relative to the canvas. The page pins
     /// its panels to the plant with it.
     pub fn world_to_screen(&self, x: f32, y: f32) -> Vec<f32> {
@@ -416,7 +546,6 @@ impl App {
         let (kinds, edges) = plant.layout_input();
         let laid = layout(&kinds, &edges);
         let scene = scene::plant_scene(&laid, &self.models);
-        self.renderer.set_scene(&scene);
         self.camera.set_fog_bounds(scene.bounds);
         let occluders = scene
             .instances
@@ -438,9 +567,39 @@ impl App {
             .map(|(machine, placed)| (machine.name.as_str(), placed.footprint()))
             .collect();
         let count = plant.machines.len() as u32;
-        self.plan = Some(Plan::new(&plant, |name| {
+        let plan = Plan::new(&plant, |name| {
             footprints.get(name).copied().unwrap_or([0.0; 4])
-        }));
+        });
+        let instance_of: HashMap<&str, usize> = plant
+            .machines
+            .iter()
+            .enumerate()
+            .map(|(i, machine)| (machine.name.as_str(), i))
+            .collect();
+        let plan_instance: Vec<usize> = plan
+            .machines
+            .iter()
+            .map(|machine| instance_of[machine.name.as_str()])
+            .collect();
+        let stands: Vec<Stand> = plan_instance
+            .iter()
+            .map(|&i| {
+                let instance = &scene.instances[i];
+                let kind = usize::from(instance.kind);
+                Stand {
+                    top: self.models[kind].bounds.max[2],
+                    spots: self.kind_spots[kind]
+                        .iter()
+                        .map(|spot| [instance.offset[0] + spot[0], instance.offset[1] + spot[1]])
+                        .collect(),
+                }
+            })
+            .collect();
+        self.plan = Some(plan);
+        self.view = None;
+        self.marks = Marks::default();
+        self.motion = Motion::default();
+        self.card_clash = None;
         self.dirty = true;
         self.plant = Some(Loaded {
             repo: plant.repo,
@@ -460,20 +619,58 @@ impl App {
             layout: laid,
             bounds: scene.bounds,
             occluders,
+            base: scene,
+            plan_instance,
+            stands,
         });
         self.fit();
+        self.sync_scene();
         count
     }
 
+    /// Folds the log into the view, and places the marks it calls for on the plant.
     fn rebuild_view(&mut self) -> Result<(), JsError> {
         self.dirty = false;
-        let (Some(mirror), Some(plan)) = (&self.mirror, &self.plan) else {
+        let (Some(mirror), Some(plan), Some(loaded)) = (&self.mirror, &self.plan, &self.plant)
+        else {
             return Ok(());
         };
         let view = mirror.view(plan);
+        self.slots.assign(&view);
+        let marks = Marks::build(&view, plan, &loaded.stands, &self.slots);
         self.view_json = serde_json::to_string(&view).map_err(js_err)?;
         self.view_version += 1;
+        self.motion.sync(&marks);
+        self.marks = marks;
+        self.view = Some(view);
+        self.sync_scene();
         Ok(())
+    }
+
+    /// Uploads the plant with the marks: each machine's footprint tint, then the body, ring and
+    /// pin instances as the motion has them now. The tint table follows the footprints.
+    fn sync_scene(&mut self) {
+        let Some(loaded) = &self.plant else {
+            return;
+        };
+        let mut scene = loaded.base.clone();
+        for (plan_index, &instance) in loaded.plan_instance.iter().enumerate() {
+            scene.instances[instance].tint = self.marks.footprint_tint(plan_index);
+        }
+        scene.instances.extend(marks::mark_instances(
+            &self.motion,
+            &self.marks,
+            scene::mark_kinds(),
+            self.dpr,
+        ));
+        self.renderer.set_scene(&scene);
+        self.renderer.set_tints(&self.marks.tint_table());
+    }
+
+    /// A world point on screen, in CSS px.
+    fn screen(&self, point: [f32; 3]) -> [f32; 2] {
+        let [x, y] = self.camera.world_to_screen(point);
+        [x / self.dpr, y / self.dpr]
     }
 
     /// The zoom at which the plant fills the view at the default angles, in the current

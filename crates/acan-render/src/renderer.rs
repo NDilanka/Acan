@@ -21,7 +21,40 @@ use crate::model::{Mesh, Model};
 use crate::scene::{Lod, Scene};
 use crate::theme::{self, PALETTE_LEN, TINT_LEN};
 
+pub type TintTable = [[f32; 4]; TINT_LEN];
+
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// The per-instance attributes of an `InstanceRaw`: the offset and tint, then the screen-size
+/// floor at byte 16. The floor is not in `vertex_attr_array!`, which packs attributes in order.
+const MESH_INSTANCE: [wgpu::VertexAttribute; 3] = [
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x3,
+        offset: 0,
+        shader_location: 3,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Uint32,
+        offset: 12,
+        shader_location: 4,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x2,
+        offset: 16,
+        shader_location: 5,
+    },
+];
+const EDGE_INSTANCE: [wgpu::VertexAttribute; 2] = [
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x3,
+        offset: 0,
+        shader_location: 6,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x2,
+        offset: 16,
+        shader_location: 7,
+    },
+];
 /// Line ink, as how much it darkens the frame. One channel, so lines are grey: under MSAA the
 /// line pass is bound by its target's bandwidth, and RGBA ink was measurably slower on a large
 /// plant zoomed out.
@@ -71,6 +104,7 @@ pub struct CameraUniform {
 pub fn plant_source() -> String {
     include_str!("plant.wgsl")
         .replace("@@PALETTE_LEN@@", &PALETTE_LEN.to_string())
+        .replace("@@TINT_LEN@@", &TINT_LEN.to_string())
         .replace("@@THEME@@", &theme::wgsl_consts())
 }
 
@@ -133,6 +167,8 @@ pub struct Renderer {
     adapter_info: wgpu::AdapterInfo,
     samples: u32,
     camera_buf: wgpu::Buffer,
+    theme_buf: wgpu::Buffer,
+    srgb: bool,
     uniform_bind: wgpu::BindGroup,
     ink_layout: wgpu::BindGroupLayout,
     ink_bind: wgpu::BindGroup,
@@ -203,7 +239,7 @@ impl Renderer {
         let page = theme::page(srgb);
         let theme_uniform = ThemeUniform {
             palette: theme::palette(srgb),
-            tints: theme::tints(),
+            tints: theme::tints().map(|c| theme::surface_colour(c, srgb)),
         };
         let camera_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("camera"),
@@ -214,7 +250,7 @@ impl Renderer {
         let theme_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("theme"),
             contents: bytemuck::bytes_of(&theme_uniform),
-            usage: wgpu::BufferUsages::UNIFORM,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let uniform_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("uniforms"),
@@ -259,6 +295,8 @@ impl Renderer {
             config,
             samples,
             camera_buf,
+            theme_buf,
+            srgb,
             uniform_bind,
             ink_layout,
             ink_bind,
@@ -350,7 +388,18 @@ impl Renderer {
         self.instances = None;
     }
 
-    /// Uploads the belts and the machine instances. Call when the plant changes, not per frame.
+    /// Replaces the tint table. Each entry is sRGB, converted here to the surface's encoding. An
+    /// instance's tint slot multiplies the colour of its mesh faces.
+    pub fn set_tints(&mut self, tints: &TintTable) {
+        let uniform = ThemeUniform {
+            palette: theme::palette(self.srgb),
+            tints: tints.map(|c| theme::surface_colour(c, self.srgb)),
+        };
+        self.queue
+            .write_buffer(&self.theme_buf, 0, bytemuck::bytes_of(&uniform));
+    }
+
+    /// Uploads the belts and the instances. Call again whenever an instance moves or appears.
     ///
     /// # Panics
     ///
@@ -806,7 +855,7 @@ impl Pipelines {
         let mesh_instance = wgpu::VertexBufferLayout {
             array_stride: size_of::<InstanceRaw>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![3 => Float32x3, 4 => Uint32],
+            attributes: &MESH_INSTANCE,
         };
         let edge_vertex = wgpu::VertexBufferLayout {
             array_stride: size_of::<EdgeVertex>() as u64,
@@ -816,7 +865,7 @@ impl Pipelines {
         let edge_instance = wgpu::VertexBufferLayout {
             array_stride: size_of::<InstanceRaw>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![6 => Float32x3],
+            attributes: &EDGE_INSTANCE,
         };
         let line_vertex = wgpu::VertexBufferLayout {
             array_stride: size_of::<LineVertex>() as u64,

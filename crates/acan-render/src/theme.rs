@@ -6,8 +6,20 @@ use crate::model::{Ink, Surface};
 
 /// Palette slots on the GPU.
 pub const PALETTE_LEN: usize = 21;
-/// Tint slots. Slot 0 is the identity; instances pick a slot to tint a machine.
-pub const TINT_LEN: usize = 8;
+/// Tint slots. Slot 0 is the identity; instances pick a slot to tint what they draw.
+pub const TINT_LEN: usize = 16;
+/// Agent hues, as `#rrggbb`. An agent's hue comes from its id, so it is the same on every reload.
+pub const AGENT_HUES: [u32; AGENT_SLOTS] =
+    [0x1f9e8f, 0x7a5cd6, 0x3d7fd1, 0xc0548c, 0x6a9a2e, 0x9b4d9b];
+pub const AGENT_SLOTS: usize = 6;
+/// The share of an agent's hue a machine's footprint takes, mixed into white.
+pub const FOOTPRINT_MIX: f32 = 0.22;
+/// Tint slot of each agent's body at full hue: `TINT_BODY0 + slot`.
+pub const TINT_BODY0: u32 = 1;
+/// Tint slot of each agent's footprint mix: `TINT_FOOTPRINT0 + slot`.
+pub const TINT_FOOTPRINT0: u32 = 7;
+/// Tint slot for a machine two or more agents touch. The page sets it per frame.
+pub const TINT_SHARED: u32 = 13;
 
 pub const SLOT_PAGE: u32 = 0;
 pub const SLOT_LIT: u32 = 1;
@@ -110,7 +122,7 @@ const fn rgb(hex: u32, alpha: f32) -> [f32; 4] {
 /// sRGB with straight alpha.
 const PALETTE: [[f32; 4]; PALETTE_LEN] = [
     rgb(0xffffff, 1.0),  // page
-    rgb(0xffffff, 1.0),  // lit
+    rgb(0xd99a1e, 1.0),  // lit: amber, waiting on the user
     rgb(0xf2f2f2, 1.0),  // glass
     rgb(0x000000, 0.08), // contact shadow
     rgb(0x000000, 1.0),  // grid, at its alpha
@@ -119,17 +131,17 @@ const PALETTE: [[f32; 4]; PALETTE_LEN] = [
     rgb(0xb4b4b8, 1.0),  // lo
     rgb(0xd4d4d6, 1.0),  // faint
     rgb(0x3a3a3e, 1.0),  // dot
-    rgb(0xe5484d, 1.0),  // red
+    rgb(0xd0453a, 1.0),  // red: the clash pin
     rgb(0x30a46c, 1.0),  // green
     rgb(0x3e63dd, 1.0),  // blue
-    rgb(0x8e4ec6, 1.0),  // agent 0 (placeholder)
-    rgb(0xf76b15, 1.0),  // agent 1 (placeholder)
-    rgb(0x12a594, 1.0),  // agent 2 (placeholder)
-    rgb(0xab6400, 1.0),  // agent 3 (placeholder)
-    rgb(0xe9e9e9, 1.0),  // belt
-    rgb(0xb8b8b8, 1.0),  // belt edge
-    rgb(0x767676, 1.0),  // contour and crease
-    rgb(0xa8a8a8, 1.0),  // seam
+    rgb(AGENT_HUES[0], 1.0),
+    rgb(AGENT_HUES[1], 1.0),
+    rgb(AGENT_HUES[2], 1.0),
+    rgb(AGENT_HUES[3], 1.0),
+    rgb(0xe9e9e9, 1.0), // belt
+    rgb(0xb8b8b8, 1.0), // belt edge
+    rgb(0x767676, 1.0), // contour and crease
+    rgb(0xa8a8a8, 1.0), // seam
 ];
 
 /// Palette slot of an ink used by a line.
@@ -172,8 +184,36 @@ pub fn palette(srgb_surface: bool) -> [[f32; 4]; PALETTE_LEN] {
     PALETTE.map(|c| if srgb_surface { to_linear(c) } else { c })
 }
 
+/// The tint table in sRGB. Slot 0 is the identity, each agent has a body slot at full hue and a
+/// footprint slot mixed into white, and the shared slot starts as the identity.
 pub fn tints() -> [[f32; 4]; TINT_LEN] {
-    [[1.0; 4]; TINT_LEN]
+    let mut table = [[1.0; 4]; TINT_LEN];
+    for slot in 0..AGENT_SLOTS {
+        let hue = agent_colour(slot);
+        table[TINT_BODY0 as usize + slot] = hue;
+        table[TINT_FOOTPRINT0 as usize + slot] = footprint_mix(hue);
+    }
+    table
+}
+
+/// An agent's hue in sRGB, for the slot it holds.
+pub fn agent_colour(slot: usize) -> [f32; 4] {
+    rgb(AGENT_HUES[slot], 1.0)
+}
+
+/// A hue mixed into white by [`FOOTPRINT_MIX`], in sRGB.
+pub fn footprint_mix(hue: [f32; 4]) -> [f32; 4] {
+    let mix = |channel: f32| 1.0 + (channel - 1.0) * FOOTPRINT_MIX;
+    [mix(hue[0]), mix(hue[1]), mix(hue[2]), 1.0]
+}
+
+/// A colour given in sRGB, converted to the surface's encoding.
+pub fn surface_colour(colour: [f32; 4], srgb_surface: bool) -> [f32; 4] {
+    if srgb_surface {
+        to_linear(colour)
+    } else {
+        colour
+    }
 }
 
 /// The page colour for the clear, linear when the surface is an sRGB format.
@@ -234,6 +274,12 @@ fn to_linear(c: [f32; 4]) -> [f32; 4] {
 const _: () = assert!(
     SLOT_AGENT0 + 3 < SLOT_BELT,
     "agents do not run into the belt slots"
+);
+const _: () = assert!(
+    TINT_BODY0 as usize + AGENT_SLOTS <= TINT_FOOTPRINT0 as usize
+        && TINT_FOOTPRINT0 as usize + AGENT_SLOTS <= TINT_SHARED as usize
+        && (TINT_SHARED as usize) < TINT_LEN,
+    "body, footprint and shared tints do not overlap"
 );
 const _: () = assert!(GRID_MINOR_ALPHA < GRID_MAJOR_ALPHA);
 const _: () = assert!(PAPER_TOP > 0.0, "a top never matches the page");

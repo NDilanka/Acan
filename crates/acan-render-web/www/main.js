@@ -14,18 +14,36 @@ const WHEEL_RATE = 0.0015;
 const TURN_DEG = 45;
 const LABEL_OFFSET_PX = 6;
 const LABEL_PAD_PX = 4;
+// A press that moves less than this is a click, and a click within PIN_PICK_PX of a clash pin's
+// tip opens its card.
+const CLICK_PX = 4;
+const PIN_PICK_PX = 18;
+// The gap between the flags of one machine, stacked in a column above its bots.
+const FLAG_ROW_GAP_PX = 4;
+// A settled card shows its one line this long, then fades out over FADE_MS.
+const FADE_HOLD_MS = 1500;
+const FADE_MS = 400;
+const SVG_NS = "http://www.w3.org/2000/svg";
 
 const params = new URLSearchParams(location.search);
+// `?freeze=1` holds the plant still for screenshots. The page loads the log and folds only the
+// events of its own settles, so the server's later events, such as a lease ending, do not move
+// the marks.
+const freeze = params.get("freeze") === "1";
 const $ = (id) => document.getElementById(id);
 const canvas = $("plant");
 const labelsEl = $("labels");
-const pins = $("pins");
+const leadersEl = $("leaders");
+const flagsEl = $("flags");
 const card = $("card");
 const gate = $("gate");
 const link = $("link");
 const orderEl = $("order");
 const orderLine = $("order-line");
+const usagePanel = $("usage");
+const usageTable = $("usage-table");
 const usageBody = $("usage-body");
+const usageNone = $("usage-none");
 const repoEl = $("repo");
 const noticeEl = $("notice");
 
@@ -34,15 +52,20 @@ let app = null;
 let token = null;
 let view = null;
 let renderedVersion = -1;
-let selectedClash = null;
+// The marks as the wasm side last gave them: the flags in order, and the open clash card.
+let markState = { flags: [], card: null };
+let flagEls = [];
+let leaderEls = [];
+let fadeTimer = null;
 let socket = null;
 let usageTimer = null;
+let usageRows = [];
 let settling = false;
-let placed = [];
 let note = "";
 let scheduled = false;
 let lastFrame = null;
 let drag = null;
+let press = null;
 let altDown = false;
 let labelGeneration = 0;
 const labels = new Map();
@@ -64,7 +87,6 @@ function drawFrame(now = performance.now()) {
     if (!app.render()) requestRender();
     if (timing.firstFrame === undefined) timing.firstFrame = performance.now();
     syncView();
-    placePins();
     placeLabels();
     if (turning) {
       requestRender();
@@ -84,18 +106,22 @@ function syncView() {
   renderedVersion = version;
   view = JSON.parse(app.view_json());
   paint();
+  // The marks ease in from where they start, so the next frame must advance them.
+  requestRender();
   scheduleUsage();
   if (socket) setLink(`live · seq ${app.next_seq()}`);
 }
 
 // Labels come in priority order, larger and nearer first. A label that would overlap one
-// already placed stays hidden, so the plant never shows a pile of names.
+// already placed stays hidden, so the plant never shows a pile of names. The flags are placed
+// first, so a machine name never hides one.
 function placeLabels() {
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
   labelGeneration += 1;
-  const quads = app.label_layout(altDown);
   const placedBoxes = [];
+  placeFlags(placedBoxes);
+  const quads = app.label_layout(altDown);
   for (let k = 0; k < quads.length; k += 4) {
     const index = quads[k];
     const x = quads[k + 1];
@@ -186,7 +212,11 @@ async function start() {
   setLink("loading");
   app.set_plant(await get("/api/plant"));
   await reload();
-  connect();
+  if (freeze) {
+    setLink(`frozen · seq ${app.next_seq()}`);
+  } else {
+    connect();
+  }
   refreshUsage();
 }
 
@@ -239,13 +269,8 @@ async function resync() {
 }
 
 function paint() {
-  if (selectedClash === null) {
-    const open = view.clashes.find((clash) => clash.state === "open" || clash.state === "proposed");
-    if (open) selectedClash = open.id;
-  }
   paintOrderLine();
-  paintPins();
-  paintCard();
+  paintMarks();
 }
 
 function paintOrderLine() {
@@ -260,123 +285,189 @@ function paintOrderLine() {
   orderLine.textContent = `${label("order", order.id)} · ${order.machine} · ${order.phase.replace("_", " ")} · ${order.sentence}`;
 }
 
-// Pins sit on the plant's ground plan, at the same coordinates as the labels. Machine names
-// are the labels, so they get no pin here.
-function paintPins() {
-  placed = [];
-  pins.replaceChildren();
-  const machines = new Map(view.machines.map((machine) => [machine.name, machine]));
-
-  for (const order of view.orders) {
-    const home = machines.get(order.machine);
-    if (!home || !order.at) continue;
-    const x = home.min[0] + home.size[0] / 2;
-    addPin("pin order", x, home.min[1], `${label("order", order.id)} ${order.phase.replace("_", " ")}`, { dy: -22, dx: -40 });
-  }
-  for (const agent of view.agents) {
-    if (!agent.body) continue;
-    const [x, y] = agent.body;
-    addPin("pin flag", x, y, `${agent.id} · ${agent.activity}`, { dy: -22, color: agent.color });
-  }
-  for (const question of view.questions) {
-    if (!question.at) continue;
-    addPin("pin question", question.at[0], question.at[1], `${label("question", question.id)} ${question.text}`, { dy: -14 });
-  }
-  for (const clash of view.clashes) {
-    if (!clash.at) continue;
-    const el = addPin(`pin clash ${clash.state === "open" || clash.state === "proposed" ? "" : "resolved"}`, clash.at[0], clash.at[1], clash.label, { diamond: true });
-    if (clash.id === selectedClash) el.classList.add("selected");
-    el.addEventListener("click", () => {
-      selectedClash = clash.id;
-      note = "";
-      paint();
-      requestRender();
-    });
-  }
+// The marks come from the wasm side: each agent with its activity, the active order, each open
+// clash and each question. They are rebuilt when the view changes, and placed every frame.
+function paintMarks() {
+  markState = JSON.parse(app.marks_json());
+  flagsEl.replaceChildren();
+  flagEls = markState.flags.map((flag) => {
+    const el = flagElement(flag);
+    flagsEl.append(el);
+    return el;
+  });
+  paintCard();
 }
 
-function addPin(className, wx, wy, text, options = {}) {
+function flagElement(flag) {
   const el = document.createElement("div");
-  el.className = className.trim();
-  if (options.diamond) {
-    const diamond = document.createElement("span");
-    diamond.className = "diamond";
-    el.append(diamond);
+  el.className = `flag ${flag.kind}`;
+  if (flag.hue) {
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.style.background = flag.hue;
+    el.append(dot);
   }
-  const span = document.createElement("span");
-  span.className = options.diamond ? "text" : "";
-  span.textContent = text;
-  el.append(span);
-  if (options.color) el.style.color = options.color;
-  pins.append(el);
-  placed.push({ el, wx, wy, dx: options.dx ?? 0, dy: options.dy ?? 0 });
+  const text = document.createElement("span");
+  text.textContent = flag.text;
+  el.append(text);
+  if (flag.waiting) {
+    const amber = document.createElement("span");
+    amber.className = "dot wait";
+    el.append(amber);
+  }
+  if (flag.clash !== null) {
+    el.addEventListener("click", () => openCard(flag.clash));
+  }
   return el;
 }
 
-function placePins() {
-  for (const pin of placed) {
-    const [x, y] = app.world_to_screen(pin.wx, pin.wy);
-    pin.el.style.transform = `translate(${x + pin.dx}px, ${y + pin.dy}px)`;
+// Flags are placed before the names and are never hidden for overlap; a flag is hidden only when
+// it is off the canvas. An agent's flags stack in a column above their machine's bots, each with
+// a leader line to its bot's crown. A clash label starts to the right of its diamond, and the
+// order flag sits above its machine. Each flag keeps its place as the bots and diamonds move.
+function placeFlags(placedBoxes) {
+  const quads = app.flag_layout();
+  const columns = new Map();
+  for (let k = 0; k < quads.length; k += 4) {
+    const el = flagEls[quads[k]];
+    if (el === undefined) continue;
+    const machine = quads[k + 1];
+    const x = quads[k + 2];
+    const y = quads[k + 3];
+    if (el.size === undefined) el.size = [el.offsetWidth, el.offsetHeight];
+    if (machine >= 0) {
+      if (!columns.has(machine)) columns.set(machine, []);
+      columns.get(machine).push({ el, x, y });
+      continue;
+    }
+    const [w, h] = el.size;
+    const clash = el.classList.contains("clash");
+    const left = clash ? x : x - w / 2;
+    const top = clash ? y - h / 2 : y - LABEL_OFFSET_PX - h;
+    placeFlag(el, left, top, placedBoxes);
+  }
+  let leaders = 0;
+  for (const column of columns.values()) {
+    const centre = column.reduce((sum, item) => sum + item.x, 0) / column.length;
+    let bottom = Math.min(...column.map((item) => item.y)) - LABEL_OFFSET_PX;
+    for (const item of column) {
+      const [w, h] = item.el.size;
+      placeFlag(item.el, centre - w / 2, bottom - h, placedBoxes);
+      drawLeader(leaders, centre, bottom, item.x, item.y);
+      leaders += 1;
+      bottom -= h + FLAG_ROW_GAP_PX;
+    }
+  }
+  for (let i = leaders; i < leaderEls.length; i += 1) {
+    leaderEls[i].style.display = "none";
   }
 }
 
-function currentClash() {
-  if (!view) return null;
-  return view.clashes.find((clash) => clash.id === selectedClash) ?? null;
+function placeFlag(el, left, top, placedBoxes) {
+  const [w, h] = el.size;
+  const box = {
+    left: left - LABEL_PAD_PX,
+    right: left + w + LABEL_PAD_PX,
+    top: top - LABEL_PAD_PX,
+    bottom: top + h + LABEL_PAD_PX,
+  };
+  placedBoxes.push(box);
+  const inside = box.right >= 0 && box.left <= canvas.clientWidth
+    && box.bottom >= 0 && box.top <= canvas.clientHeight;
+  el.style.visibility = inside ? "visible" : "hidden";
+  el.style.transform = `translate(${left}px, ${top}px)`;
 }
 
+// A thin line from a flag's bottom edge to its bot's crown. The leaders sit under the flags, so
+// a flag hides the start of its own line.
+function drawLeader(index, x1, y1, x2, y2) {
+  let line = leaderEls[index];
+  if (line === undefined) {
+    line = document.createElementNS(SVG_NS, "line");
+    leadersEl.append(line);
+    leaderEls[index] = line;
+  }
+  line.setAttribute("x1", String(x1));
+  line.setAttribute("y1", String(y1));
+  line.setAttribute("x2", String(x2));
+  line.setAttribute("y2", String(y2));
+  line.style.display = "";
+}
+
+function openCard(index) {
+  app.open_card(index);
+  note = "";
+  cancelFade();
+  showCard();
+}
+
+function toggleCard() {
+  app.toggle_card();
+  note = "";
+  cancelFade();
+  showCard();
+}
+
+function showCard() {
+  markState = JSON.parse(app.marks_json());
+  paintCard();
+  requestRender();
+}
+
+// The pin whose tip lies within PIN_PICK_PX of the CSS point, nearest first, or null.
+function pinAt(x, y) {
+  const quads = app.pin_layout();
+  let found = null;
+  let best = PIN_PICK_PX;
+  for (let k = 0; k < quads.length; k += 3) {
+    const distance = Math.hypot(quads[k + 1] - x, quads[k + 2] - y);
+    if (distance < best) {
+      best = distance;
+      found = quads[k];
+    }
+  }
+  return found;
+}
+
+// The clash card: the two declarations with their hues, and the witness the clash would break.
+// Below them, the settlement options as a list, each with its key chip. The suggested option says
+// so. Once the clash is settled, one line says how, and the card fades out.
 function paintCard() {
-  const clash = currentClash();
-  if (!clash) {
+  const data = markState.card;
+  if (!data || !view) {
     card.hidden = true;
     return;
   }
   card.hidden = false;
+  const clash = view.clashes[data.clash];
   const unsettled = clash.state === "open" || clash.state === "proposed";
+
+  const head = document.createElement("div");
+  head.className = "head";
   const title = document.createElement("h2");
-  title.textContent = clash.label;
-
-  const kind = document.createElement("p");
-  kind.className = "muted";
-  kind.textContent = `${clash.kind.replace(/_/g, " ")} between ${label("task", clash.a)} and ${label("task", clash.b)}`;
-
-  const body = document.createElement("p");
-  body.textContent = clash.consequence ?? "explaining the overlap";
-  if (clash.consequence === null) body.className = "muted";
-
-  const children = [title, kind, body];
-  if (clash.breaks) {
-    const breaks = document.createElement("p");
-    breaks.textContent = `breaks ${clash.breaks}`;
-    children.push(breaks);
-  }
+  title.textContent = data.title;
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "close";
+  close.textContent = "close";
+  close.addEventListener("click", toggleCard);
+  head.append(title, close);
+  const children = [head];
 
   if (unsettled) {
-    const list = document.createElement("ol");
-    clash.options.forEach((option) => {
-      const item = document.createElement("li");
-      const key = document.createElement("span");
-      key.className = "key";
-      key.textContent = String(option.key);
-      const button = document.createElement("button");
-      button.type = "button";
-      button.textContent = option.label;
-      button.disabled = settling;
-      button.addEventListener("click", () => settle(clash, option));
-      item.append(key, button);
-      list.append(item);
-    });
-    children.push(list);
-    const hint = document.createElement("p");
-    hint.className = "hint";
-    hint.textContent = "press 1, 2 or 3 to settle";
-    children.push(hint);
-  } else {
-    const resolved = document.createElement("p");
-    resolved.textContent = clash.resolved ?? clash.state;
-    children.push(resolved);
+    cancelFade();
+    for (const row of data.rows) {
+      if (row.kind !== "settle") children.push(cardRow(row));
+    }
+    const suggested = data.rows.find((row) => row.kind === "settle" && row.suggested);
+    children.push(optionList(clash, suggested ? suggested.key : null));
+  } else if (data.resolved) {
+    const settled = document.createElement("p");
+    settled.className = "resolved";
+    settled.textContent = `settled · ${data.resolved}`;
+    children.push(settled);
+    scheduleFade();
   }
-
   if (note) {
     const error = document.createElement("p");
     error.className = "note";
@@ -384,6 +475,84 @@ function paintCard() {
     children.push(error);
   }
   card.replaceChildren(...children);
+}
+
+function cardRow(row) {
+  const el = document.createElement("p");
+  el.className = `row ${row.kind}`;
+  if (row.kind === "declaration") {
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    dot.style.background = row.hue;
+    const text = document.createElement("span");
+    text.textContent = row.text;
+    el.title = row.agent;
+    el.append(dot, text);
+  } else {
+    el.textContent = row.text;
+  }
+  return el;
+}
+
+function optionList(clash, suggestedKey) {
+  const list = document.createElement("ol");
+  list.className = "options";
+  for (const option of clash.options) {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "option";
+    button.disabled = settling;
+    const chip = document.createElement("kbd");
+    chip.textContent = String(option.key);
+    const label = document.createElement("span");
+    label.textContent = option.label;
+    button.append(chip, label);
+    if (option.key === suggestedKey) {
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = "suggested";
+      button.append(tag);
+    }
+    button.addEventListener("click", () => settle(clash, option));
+    item.append(button);
+    list.append(item);
+  }
+  return list;
+}
+
+// A settled card shows its one line for FADE_HOLD_MS, then fades out and closes.
+function scheduleFade() {
+  if (fadeTimer !== null) return;
+  fadeTimer = setTimeout(() => {
+    card.classList.add("fading");
+    fadeTimer = setTimeout(closeSettledCard, FADE_MS);
+  }, FADE_HOLD_MS);
+}
+
+function cancelFade() {
+  if (fadeTimer !== null) clearTimeout(fadeTimer);
+  fadeTimer = null;
+  card.classList.remove("fading");
+}
+
+function closeSettledCard() {
+  fadeTimer = null;
+  card.classList.remove("fading");
+  app.close_card();
+  markState = JSON.parse(app.marks_json());
+  paintCard();
+  requestRender();
+}
+
+// Keys 1, 2 and 3 settle the open clash on the card with the matching choice.
+function settleByKey(key) {
+  const data = markState.card;
+  if (!data || !view) return;
+  const clash = view.clashes[data.clash];
+  if (!clash || (clash.state !== "open" && clash.state !== "proposed")) return;
+  const option = clash.options[key - 1];
+  if (option) settle(clash, option);
 }
 
 async function settle(clash, option) {
@@ -401,6 +570,10 @@ async function settle(clash, option) {
       forgetToken();
     } else if (!res.ok) {
       note = `the origin refused: ${(await res.text()).slice(0, 160)}`;
+    } else if (freeze) {
+      // The frozen page does not hear the stream, so it folds the settle's own events here.
+      for (const event of await res.json()) app.ingest(JSON.stringify(event));
+      requestRender();
     }
   } catch (err) {
     note = "the settle did not reach the server";
@@ -427,17 +600,10 @@ async function refreshUsage() {
   }
 }
 
+// The usage panel stays hidden until a model has been called. Holding Alt shows the one-line
+// `no model calls yet` instead, so the panel is never empty on screen.
 function renderUsage(rows) {
-  if (rows.length === 0) {
-    const empty = document.createElement("tr");
-    const cell = document.createElement("td");
-    cell.className = "muted";
-    cell.colSpan = 6;
-    cell.textContent = "no model calls yet";
-    empty.append(cell);
-    usageBody.replaceChildren(empty);
-    return;
-  }
+  usageRows = rows;
   usageBody.replaceChildren(...rows.map((row) => {
     const tr = document.createElement("tr");
     const cells = [row.role, row.model, row.provider, row.calls, row.prompt_tokens, row.completion_tokens];
@@ -449,6 +615,14 @@ function renderUsage(rows) {
     });
     return tr;
   }));
+  paintUsage();
+}
+
+function paintUsage() {
+  const any = usageRows.length > 0;
+  usageTable.hidden = !any;
+  usageNone.hidden = any;
+  usagePanel.hidden = !any && !altDown;
 }
 
 // Sets the drawing buffer to the CSS box times the device pixel ratio. The wasm side rounds
@@ -499,6 +673,7 @@ function bindCanvas() {
       y: event.clientY,
       orbit: event.button === 2 || event.altKey,
     };
+    press = event.button === 0 ? { x: event.clientX, y: event.clientY } : null;
     canvas.classList.add("dragging");
   });
 
@@ -520,9 +695,18 @@ function bindCanvas() {
     requestRender();
   });
 
-  const endDrag = () => {
+  // A press that did not move is a click. A click near a clash pin's tip opens its card; the
+  // camera stays where it is.
+  const endDrag = (event) => {
+    const pressed = press;
+    press = null;
     drag = null;
     canvas.classList.remove("dragging");
+    if (event.type !== "pointerup" || pressed === null) return;
+    if (Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) >= CLICK_PX) return;
+    const rect = canvas.getBoundingClientRect();
+    const clash = pinAt(event.clientX - rect.left, event.clientY - rect.top);
+    if (clash !== null) openCard(clash);
   };
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
@@ -553,6 +737,7 @@ function setAlt(down) {
   if (altDown === down) return;
   altDown = down;
   labelsEl.classList.toggle("alt", down);
+  paintUsage();
   requestRender();
 }
 
@@ -579,13 +764,14 @@ function bindKeys() {
       return;
     }
     if (/^[1-3]$/.test(event.key)) {
-      const clash = currentClash();
-      if (!clash || (clash.state !== "open" && clash.state !== "proposed")) return;
-      const option = clash.options[Number(event.key) - 1];
-      if (option) settle(clash, option);
+      settleByKey(Number(event.key));
       return;
     }
     switch (event.key) {
+      case "c":
+      case "C":
+        if (!event.repeat) toggleCard();
+        break;
       case "+":
       case "=":
         zoomAtCentre(ZOOM_KEY);

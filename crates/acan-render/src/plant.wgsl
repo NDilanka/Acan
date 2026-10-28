@@ -22,7 +22,7 @@ struct Camera {
 
 struct Theme {
     palette: array<vec4<f32>, @@PALETTE_LEN@@>,
-    tints: array<vec4<f32>, 8>,
+    tints: array<vec4<f32>, @@TINT_LEN@@>,
 }
 
 @group(0) @binding(0) var<uniform> camera: Camera;
@@ -75,6 +75,23 @@ fn to_clip(p: vec3<f32>) -> vec4<f32> {
     return vec4<f32>(x, y, camera.depth.x, w);
 }
 
+// Device px per plan unit at a point: the zoom in orthographic, else the focal length over depth.
+fn px_per_unit(origin: vec3<f32>) -> f32 {
+    if (is_ortho()) {
+        return camera.view.z;
+    }
+    return camera.depth.z / max(depth_of(origin), camera.depth.x);
+}
+
+// How far a mark grows about its origin to stay at least `grow.x` device px tall. `grow.y` is the
+// mark's height in plan units. A mark with no floor (`grow.x` 0) keeps its plan size.
+fn grown(origin: vec3<f32>, grow: vec2<f32>) -> f32 {
+    if (grow.x <= 0.0) {
+        return 1.0;
+    }
+    return max(1.0, grow.x / (grow.y * px_per_unit(origin)));
+}
+
 // Fog from the eye: nothing fades nearer than the fog start, and the far end is page white.
 // Mirrors `Camera::fog_at`.
 fn fog_at(p: vec3<f32>) -> f32 {
@@ -104,6 +121,7 @@ struct MeshIn {
     @location(2) code: u32,
     @location(3) offset: vec3<f32>,
     @location(4) tint: u32,
+    @location(5) grow: vec2<f32>,
 }
 
 struct MeshOut {
@@ -117,7 +135,7 @@ struct MeshOut {
 @vertex
 fn vs_mesh(v: MeshIn) -> MeshOut {
     var out: MeshOut;
-    let p = v.position + v.offset;
+    let p = v.position * grown(v.offset, v.grow) + v.offset;
     out.clip = to_clip(p);
     out.normal = v.normal;
     out.code = v.code;
@@ -339,6 +357,7 @@ struct EdgeIn {
     @location(4) corner: vec2<f32>,
     @location(5) crease: u32,
     @location(6) offset: vec3<f32>,
+    @location(7) grow: vec2<f32>,
 }
 
 struct LineIn {
@@ -460,8 +479,9 @@ fn stroke(
 
 @vertex
 fn vs_edge(v: EdgeIn) -> StrokeOut {
-    let a = v.a + v.offset;
-    let b = v.b + v.offset;
+    let k = grown(v.offset, v.grow);
+    let a = v.a * k + v.offset;
+    let b = v.b * k + v.offset;
     let mid = 0.5 * (a + b);
     let front_a = faces_eye(v.normal_a, mid);
     let front_b = faces_eye(v.normal_b, mid);

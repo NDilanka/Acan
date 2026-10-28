@@ -11,7 +11,7 @@ const SCREW: f32 = 0.5;
 /// How far a knurl ridge stops short of the rings above and below, so the ridges do not touch them.
 const KNURL_INSET: f32 = 0.4;
 /// The plinth's height.
-const PLINTH: f32 = 3.0;
+pub(crate) const PLINTH: f32 = 3.0;
 
 /// Ticks around a dial lying on the plane at `z`. Each tick runs from `radius - length` to `radius`, and every
 /// `every`-th tick is major.
