@@ -1,8 +1,9 @@
 use std::time::Duration;
 
 use acan_llm::{
-    ApiKey, ApiKeys, ChatRequest, FunctionCall, LlmConfig, LlmError, Message, ModelClient,
-    OpenAiCompatible, RetryPolicy, Role, ToolCall, ToolKind, ToolSpec,
+    ApiKey, ApiKeys, ChatRequest, FunctionCall, JsonSchemaFormat, LlmConfig, LlmError, Message,
+    ModelClient, OpenAiCompatible, RequestId, RequestIdSource, RetryPolicy, Role, ToolCall,
+    ToolKind, ToolSpec,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -31,6 +32,10 @@ fn text_reply(content: &str) -> ResponseTemplate {
 }
 
 fn client(meta: &MockServer, baseten: &MockServer, worker_provider: &str) -> OpenAiCompatible {
+    client_for(test_config(meta, baseten, worker_provider))
+}
+
+fn test_config(meta: &MockServer, baseten: &MockServer, worker_provider: &str) -> LlmConfig {
     let meta_url = meta.uri();
     let baseten_url = baseten.uri();
     let toml = format!(
@@ -61,7 +66,10 @@ provider = "{worker_provider}"
 provider = "baseten"
 "#
     );
-    let config = LlmConfig::from_toml_str(&toml).expect("test config is valid");
+    LlmConfig::from_toml_str(&toml).expect("test config is valid")
+}
+
+fn client_for(config: LlmConfig) -> OpenAiCompatible {
     let mut keys = ApiKeys::default();
     keys.insert("meta", ApiKey::new(META_KEY));
     keys.insert("baseten", ApiKey::new(BASETEN_KEY));
@@ -761,4 +769,254 @@ async fn oversized_error_body_is_cut_to_the_byte_budget() {
         }
         _ => panic!("expected Status with HTTP 400"),
     }
+}
+
+/// A reply that carries the provider's body `id` and echoed `model`.
+fn traced_reply(content: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(json!({
+        "id": "chatcmpl-body-1",
+        "model": "muse-spark-1.3-served",
+        "choices": [{
+            "index": 0,
+            "finish_reason": "stop",
+            "message": {"role": "assistant", "content": content}
+        }],
+        "usage": {"prompt_tokens": 12, "completion_tokens": 3}
+    }))
+}
+
+fn ping() -> ChatRequest {
+    ChatRequest {
+        messages: vec![Message::user("ping")],
+        ..Default::default()
+    }
+}
+
+#[tokio::test]
+async fn request_id_header_is_preferred_over_the_body_id() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(traced_reply("OK").insert_header("x-request-id", "req-header-1"))
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    let traced = client(&meta, &baseten, "baseten")
+        .chat_traced(Role::Foreman, ping())
+        .await
+        .expect("chat succeeds");
+
+    assert_eq!(
+        traced.request_id,
+        Some(RequestId {
+            value: "req-header-1".to_owned(),
+            source: RequestIdSource::Header("x-request-id".to_owned()),
+        })
+    );
+    assert_eq!(traced.reply_model.as_deref(), Some("muse-spark-1.3-served"));
+}
+
+#[tokio::test]
+async fn baseten_request_id_header_is_read() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(traced_reply("OK").insert_header("x-baseten-request-id", "bt-req-1"))
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    let traced = client(&meta, &baseten, "meta")
+        .chat_traced(Role::Foreman, ping())
+        .await
+        .expect("chat succeeds");
+
+    assert_eq!(
+        traced.request_id,
+        Some(RequestId {
+            value: "bt-req-1".to_owned(),
+            source: RequestIdSource::Header("x-baseten-request-id".to_owned()),
+        })
+    );
+}
+
+#[tokio::test]
+async fn request_id_falls_back_to_the_body_id_when_the_header_is_blank() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(traced_reply("OK").insert_header("x-request-id", "   "))
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    let traced = client(&meta, &baseten, "baseten")
+        .chat_traced(Role::Foreman, ping())
+        .await
+        .expect("chat succeeds");
+
+    assert_eq!(
+        traced.request_id,
+        Some(RequestId {
+            value: "chatcmpl-body-1".to_owned(),
+            source: RequestIdSource::Body,
+        })
+    );
+}
+
+#[tokio::test]
+async fn reply_with_neither_header_nor_body_id_has_no_request_id() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(text_reply("OK"))
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    let traced = client(&meta, &baseten, "baseten")
+        .chat_traced(Role::Foreman, ping())
+        .await
+        .expect("chat succeeds");
+
+    assert_eq!(traced.request_id, None);
+    assert_eq!(traced.reply_model, None);
+}
+
+#[tokio::test]
+async fn json_reply_keeps_its_request_id() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(
+            traced_reply(r#"{"clash":true,"files":["src/lib.rs"]}"#)
+                .insert_header("x-request-id", "req-json-1"),
+        )
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    let traced = client(&meta, &baseten, "baseten")
+        .chat_json_traced::<Verdict>(Role::Foreman, ping())
+        .await
+        .expect("reply matches the schema");
+
+    assert!(traced.value.value.clash);
+    assert_eq!(
+        traced.request_id.map(|id| id.value),
+        Some("req-json-1".to_owned())
+    );
+}
+
+#[derive(Debug, PartialEq, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RouteArgs {
+    route: String,
+}
+
+#[tokio::test]
+async fn tool_call_arguments_parse_against_the_declared_schema() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "choices": [{
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": "call_7",
+                        "type": "function",
+                        "function": {
+                            "name": "get_route_status",
+                            "arguments": "{\"route\":\"worker-7\"}"
+                        }
+                    }]
+                }
+            }],
+            "usage": {"prompt_tokens": 40, "completion_tokens": 8}
+        })))
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    let schema = JsonSchemaFormat::for_type::<RouteArgs>();
+    let response = client(&meta, &baseten, "baseten")
+        .chat(
+            Role::Foreman,
+            ChatRequest {
+                messages: vec![Message::user("Check route worker-7.")],
+                tools: vec![ToolSpec {
+                    name: "get_route_status".to_owned(),
+                    description: "Return the status of one route.".to_owned(),
+                    parameters: schema.schema,
+                }],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("chat succeeds");
+
+    assert_eq!(response.finish_reason.as_deref(), Some("tool_calls"));
+    assert_eq!(response.content, None);
+    assert_eq!(response.tool_calls.len(), 1);
+    let call = &response.tool_calls[0];
+    assert_eq!(call.function.name, "get_route_status");
+    let args: RouteArgs =
+        serde_json::from_str(&call.function.arguments).expect("arguments match the schema");
+    assert_eq!(
+        args,
+        RouteArgs {
+            route: "worker-7".to_owned()
+        }
+    );
+
+    let body = body_of(&meta, 0).await;
+    assert_eq!(body["tools"][0]["function"]["name"], "get_route_status");
+    assert_eq!(
+        body["tools"][0]["function"]["parameters"]["required"],
+        json!(["route"])
+    );
+}
+
+#[tokio::test]
+async fn route_to_moves_a_role_to_another_provider() {
+    let meta = MockServer::start().await;
+    let baseten = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(text_reply("OK"))
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    let mut config = test_config(&meta, &baseten, "baseten");
+    config
+        .route_to(Role::Worker, "meta")
+        .expect("meta is a defined provider");
+    client_for(config)
+        .chat(
+            Role::Worker,
+            ChatRequest {
+                messages: vec![Message::user("edit")],
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("worker call routed to meta succeeds");
+
+    assert_eq!(
+        baseten.received_requests().await.unwrap_or_default().len(),
+        0
+    );
+    assert_eq!(body_of(&meta, 0).await["model"], "muse-spark-1.3");
 }
