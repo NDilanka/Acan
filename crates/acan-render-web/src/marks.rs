@@ -14,7 +14,7 @@ use acan_render::Instance;
 use acan_render::theme::{self, AGENT_SLOTS, TINT_BODY0, TINT_FOOTPRINT0, TINT_LEN, TINT_SHARED};
 use serde::Serialize;
 
-use crate::mirror::{ClashView, View};
+use crate::mirror::{CheckView, ClashView, View};
 use crate::plan::Plan;
 
 /// Distance between two bots on one machine, in plan units.
@@ -22,9 +22,15 @@ const SEAT_STEP: f32 = 10.0;
 /// Height above a machine's top where its order flag anchors, in plan units.
 const ORDER_LIFT: f32 = 4.0;
 /// The shortest a bot and a clash diamond are drawn on screen, in CSS px. The renderer grows
-/// either one that would be shorter.
-pub const BOT_MIN_PX: f32 = 14.0;
+/// either one that would be shorter. A bot needs 20 px to read at fit zoom.
+pub const BOT_MIN_PX: f32 = 20.0;
 pub const PIN_MIN_PX: f32 = 18.0;
+/// Milliseconds a landed machine's dot shows its change word before it goes quiet.
+pub const LANDED_HOLD_MS: f32 = 4_000.0;
+/// Milliseconds a bot takes to ease off its machine and fade, and an order flag to fade out.
+pub const LEAVE_MS: f32 = 400.0;
+/// Height above a machine's top where its landed dot anchors, in plan units.
+const LANDED_LIFT: f32 = 2.0;
 /// The diamond's half width as a share of its height. It sets where a clash label starts.
 const DIAMOND_HALF_WIDTH: f32 = 0.42;
 /// Gap between a bot's crown or a diamond and its flag, in CSS px.
@@ -102,6 +108,8 @@ pub struct Body {
     pub activity: &'static str,
     /// Whether the agent waits on the user: its task is in an open clash, or its order asks a question.
     pub waiting: bool,
+    /// The check the agent's task answers to, as the chip beside its flag shows it.
+    pub check: Option<CheckView>,
 }
 
 /// A clash the pin marks: an unsettled clash with a machine to stand on.
@@ -127,6 +135,9 @@ pub enum Follow {
     Body(String),
     /// Rides the diamond of the named clash.
     Pin(String),
+    /// The landed dot of a machine. `count` is how many of its tasks have landed, so a new
+    /// landing restarts the dot's hold.
+    Landed { machine: usize, count: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -136,6 +147,7 @@ pub enum FlagKind {
     Order,
     Clash,
     Question,
+    Landed,
 }
 
 /// A label the page draws over the plant, with its anchor in world units.
@@ -149,6 +161,11 @@ pub struct Flag {
     pub waiting: bool,
     /// The clash index a clash flag belongs to, so a click opens its card.
     pub clash: Option<usize>,
+    /// The check an agent's task answers to, shown as a chip beside the agent's flag.
+    pub check: Option<CheckView>,
+    /// Whether the flag is fading out. A flag that has left the view keeps its place for
+    /// [`LEAVE_MS`] and then goes.
+    pub leaving: bool,
     /// The plan index of the machine an agent's flag stacks on, so the page groups them.
     #[serde(skip)]
     pub machine: Option<usize>,
@@ -328,19 +345,36 @@ struct Glide {
     to: [f32; 3],
     elapsed: f32,
     duration: f32,
+    /// The tint the body draws with, kept so the body can still draw once it has left.
+    tint: u8,
 }
 
 impl Glide {
-    fn new(from: [f32; 3], to: [f32; 3], duration: f32) -> Self {
+    fn new(from: [f32; 3], to: [f32; 3], duration: f32, tint: u8) -> Self {
         Self {
             from,
             to,
             elapsed: 0.0,
             duration,
+            tint,
+        }
+    }
+
+    /// The glide already at its end, for a mark that must not move.
+    fn settled(to: [f32; 3], tint: u8) -> Self {
+        Self {
+            from: to,
+            to,
+            elapsed: 0.0,
+            duration: 0.0,
+            tint,
         }
     }
 
     fn at(&self) -> [f32; 3] {
+        if !self.running() {
+            return self.to;
+        }
         let t = ease(self.elapsed / self.duration);
         std::array::from_fn(|axis| self.from[axis] + (self.to[axis] - self.from[axis]) * t)
     }
@@ -348,6 +382,37 @@ impl Glide {
     fn running(&self) -> bool {
         self.elapsed < self.duration
     }
+}
+
+/// A body that has left its machine: it eases down into the plinth and shrinks away over
+/// [`LEAVE_MS`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Leave {
+    at: [f32; 3],
+    tint: u8,
+    elapsed: f32,
+}
+
+/// A machine's landed dot: how many of its tasks have landed, and for how long the dot has held
+/// its word.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Landing {
+    count: usize,
+    elapsed: f32,
+}
+
+/// An order flag that has left the view and is fading out.
+#[derive(Debug, Clone, PartialEq)]
+struct Fade {
+    flag: Flag,
+    elapsed: f32,
+}
+
+/// A body on its way out, as the instances draw it now.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Leaving {
+    pub at: [f32; 3],
+    pub tint: u8,
 }
 
 /// A pin's rise in, or its sink out once the view no longer shows it.
@@ -376,34 +441,77 @@ impl Rise {
 }
 
 /// The eases the marks run between the view's positions. Nothing here is read back into the view.
+///
+/// A still motion, from `?freeze=1`, lands every ease at once: a bot does not glide, a bot that
+/// left is gone, no flag fades, and a landed dot keeps its word because its hold never runs.
 #[derive(Debug, Default)]
 pub struct Motion {
+    still: bool,
     bodies: BTreeMap<String, Glide>,
+    leaving: BTreeMap<String, Leave>,
     pins: BTreeMap<String, Rise>,
+    landed: BTreeMap<usize, Landing>,
+    fades: Vec<Fade>,
+    order_flag: Option<Flag>,
+    flags_changed: bool,
 }
 
 impl Motion {
+    #[must_use]
+    pub fn new(still: bool) -> Self {
+        Self {
+            still,
+            ..Self::default()
+        }
+    }
+
     /// Points each ease at the marks the view now gives. A body that moves glides from where it
-    /// is, and a pin that leaves sinks out.
+    /// is, a body that leaves eases off its machine, and a pin that leaves sinks out.
     pub fn sync(&mut self, marks: &Marks) {
         for body in &marks.bodies {
+            let tint = body_tint(body.slot);
             let glide = match self.bodies.get(&body.agent) {
                 Some(glide) if glide.to == body.at => continue,
-                Some(glide) => Glide::new(glide.at(), body.at, MOVE_MS),
+                Some(glide) => Glide::new(glide.at(), body.at, MOVE_MS, tint),
                 None => Glide::new(
                     [body.at[0], body.at[1], body.at[2] - RISE],
                     body.at,
                     ARRIVE_MS,
+                    tint,
                 ),
             };
+            let glide = if self.still {
+                Glide::settled(glide.to, glide.tint)
+            } else {
+                glide
+            };
             self.bodies.insert(body.agent.clone(), glide);
+            self.leaving.remove(&body.agent);
         }
         let live: BTreeSet<&str> = marks
             .bodies
             .iter()
             .map(|body| body.agent.as_str())
             .collect();
+        let gone: Vec<(String, Glide)> = self
+            .bodies
+            .iter()
+            .filter(|(agent, _)| !live.contains(agent.as_str()))
+            .map(|(agent, glide)| (agent.clone(), *glide))
+            .collect();
         self.bodies.retain(|agent, _| live.contains(agent.as_str()));
+        for (agent, glide) in gone {
+            if !self.still {
+                self.leaving.insert(
+                    agent,
+                    Leave {
+                        at: glide.at(),
+                        tint: glide.tint,
+                        elapsed: 0.0,
+                    },
+                );
+            }
+        }
 
         for pin in &marks.pins {
             self.pins
@@ -425,21 +533,149 @@ impl Motion {
                 rise.elapsed = 0.0;
             }
         }
-        self.pins.retain(|_, rise| !rise.leaving || rise.running());
+        let still = self.still;
+        self.pins
+            .retain(|_, rise| !rise.leaving || (!still && rise.running()));
+
+        self.sync_landed(marks);
+        self.sync_order(marks);
     }
 
-    /// Moves every ease on by `dt_ms`. Returns true while any of them is still running.
+    /// Starts a machine's hold again when one more of its tasks lands. Machines that no longer
+    /// show a landed dot lose their hold.
+    fn sync_landed(&mut self, marks: &Marks) {
+        let mut shown = BTreeSet::new();
+        for flag in &marks.flags {
+            let Follow::Landed { machine, count } = flag.follow else {
+                continue;
+            };
+            shown.insert(machine);
+            if !matches!(self.landed.get(&machine), Some(landing) if landing.count == count) {
+                self.landed.insert(
+                    machine,
+                    Landing {
+                        count,
+                        elapsed: 0.0,
+                    },
+                );
+            }
+        }
+        self.landed.retain(|machine, _| shown.contains(machine));
+    }
+
+    /// An order flag that the view drops fades out over [`LEAVE_MS`], so the flag stays on the
+    /// plant a moment after its order has landed.
+    fn sync_order(&mut self, marks: &Marks) {
+        let order = marks
+            .flags
+            .iter()
+            .find(|flag| flag.kind == FlagKind::Order)
+            .cloned();
+        if order.is_none()
+            && let Some(previous) = self.order_flag.take()
+            && !self.still
+        {
+            self.fades.push(Fade {
+                flag: Flag {
+                    leaving: true,
+                    ..previous
+                },
+                elapsed: 0.0,
+            });
+        }
+        self.order_flag = order;
+    }
+
+    /// Moves every ease on by `dt_ms`. Returns true while any of them is still running. A landed
+    /// dot going quiet and a fade ending both change what the page lists, so they set
+    /// [`Motion::take_flags_changed`].
     pub fn advance(&mut self, dt_ms: f32) -> bool {
+        if self.still {
+            return false;
+        }
         let dt = dt_ms.max(0.0);
         for glide in self.bodies.values_mut() {
             glide.elapsed += dt;
         }
+        for leave in self.leaving.values_mut() {
+            leave.elapsed += dt;
+        }
+        self.leaving.retain(|_, leave| leave.elapsed < LEAVE_MS);
         for rise in self.pins.values_mut() {
             rise.elapsed += dt;
         }
+        for landing in self.landed.values_mut() {
+            let holding = landing.elapsed < LANDED_HOLD_MS;
+            landing.elapsed += dt;
+            if holding && landing.elapsed >= LANDED_HOLD_MS {
+                self.flags_changed = true;
+            }
+        }
+        for fade in &mut self.fades {
+            fade.elapsed += dt;
+        }
+        let fades_before = self.fades.len();
+        self.fades.retain(|fade| fade.elapsed < LEAVE_MS);
+        self.flags_changed |= self.fades.len() != fades_before;
         let bodies = self.bodies.values().any(Glide::running);
         let pins = self.pins.values().any(Rise::running);
-        bodies || pins
+        let leaving = !self.leaving.is_empty();
+        let holding = self
+            .landed
+            .values()
+            .any(|landing| landing.elapsed < LANDED_HOLD_MS);
+        let fading = !self.fades.is_empty();
+        bodies || pins || leaving || holding || fading
+    }
+
+    /// Whether a flag listing changed while time passed, such as a landed dot going quiet. Reading
+    /// it clears it.
+    pub fn take_flags_changed(&mut self) -> bool {
+        std::mem::take(&mut self.flags_changed)
+    }
+
+    /// Whether a machine's landed dot has held its word for [`LANDED_HOLD_MS`]. A still motion
+    /// never lets the hold run out, so its dots keep their words.
+    #[must_use]
+    pub fn landed_quiet(&self, machine: usize) -> bool {
+        !self.still
+            && self
+                .landed
+                .get(&machine)
+                .is_some_and(|landing| landing.elapsed >= LANDED_HOLD_MS)
+    }
+
+    /// The flags as the page lists them now: the view's flags, with each landed dot quiet once
+    /// its hold has run out, and the order flags still fading out at the end.
+    #[must_use]
+    pub fn flags_now(&self, flags: &[Flag]) -> Vec<Flag> {
+        let mut out: Vec<Flag> = flags
+            .iter()
+            .map(|flag| match flag.follow {
+                Follow::Landed { machine, .. } if self.landed_quiet(machine) => Flag {
+                    text: String::new(),
+                    ..flag.clone()
+                },
+                _ => flag.clone(),
+            })
+            .collect();
+        out.extend(self.fades.iter().map(|fade| fade.flag.clone()));
+        out
+    }
+
+    /// The bodies that are leaving now. Each sinks into its plinth over [`LEAVE_MS`].
+    #[must_use]
+    pub fn leaving_now(&self) -> Vec<Leaving> {
+        self.leaving
+            .values()
+            .map(|leave| {
+                let t = ease(leave.elapsed / LEAVE_MS);
+                Leaving {
+                    at: [leave.at[0], leave.at[1], leave.at[2] - RISE * t],
+                    tint: leave.tint,
+                }
+            })
+            .collect()
     }
 
     /// Where an agent's body stands now.
@@ -459,7 +695,7 @@ impl Motion {
     #[must_use]
     pub fn flag_at(&self, flag: &Flag) -> [f32; 3] {
         match &flag.follow {
-            Follow::Still => flag.at,
+            Follow::Still | Follow::Landed { .. } => flag.at,
             Follow::Body(agent) => self.body_at(agent).unwrap_or(flag.at),
             Follow::Pin(clash) => self.pin_at(clash).unwrap_or(flag.at),
         }
@@ -486,9 +722,9 @@ pub struct MarkKinds {
     pub stalk: u16,
 }
 
-/// The instances of the marks now: every bot, the ring round each waiting bot, and each pin's
-/// stalk and diamond. A bot, its ring and a diamond grow to their screen floor, which `dpr`
-/// turns from CSS px into device px. A stalk keeps its plan size.
+/// The instances of the marks now: every bot, the ring round each waiting bot, each bot that is
+/// leaving, and each pin's stalk and diamond. A bot, its ring and a diamond grow to their screen
+/// floor, which `dpr` turns from CSS px into device px. A stalk keeps its plan size.
 #[must_use]
 pub fn mark_instances(motion: &Motion, marks: &Marks, kinds: MarkKinds, dpr: f32) -> Vec<Instance> {
     let bot = [BOT_MIN_PX * dpr, BOT_HEIGHT];
@@ -513,6 +749,14 @@ pub fn mark_instances(motion: &Motion, marks: &Marks, kinds: MarkKinds, dpr: f32
             });
         }
     }
+    for leaving in motion.leaving_now() {
+        out.push(Instance {
+            offset: leaving.at,
+            kind: kinds.body,
+            tint: leaving.tint,
+            grow: bot,
+        });
+    }
     for (foot, head) in motion.pins_now() {
         out.push(Instance {
             offset: foot,
@@ -533,7 +777,8 @@ pub fn mark_instances(motion: &Motion, marks: &Marks, kinds: MarkKinds, dpr: f32
 /// Where a flag anchors on screen, in CSS px, given its point `at` in world units and how the
 /// camera projects a world point to the screen. A bot's flag anchors at the bot's crown, and the
 /// page stacks the flags of one machine above it with a leader. A clash flag anchors to the right
-/// of its diamond. Other flags anchor at their own point.
+/// of its diamond, and a landed dot to the right of its machine's point, clear of the order flag
+/// above the same machine. Other flags anchor at their own point.
 #[must_use]
 pub fn flag_anchor(flag: &Flag, at: [f32; 3], project: impl Fn([f32; 3]) -> [f32; 2]) -> [f32; 2] {
     match flag.kind {
@@ -547,6 +792,10 @@ pub fn flag_anchor(flag: &Flag, at: [f32; 3], project: impl Fn([f32; 3]) -> [f32
                 foot[0] + height * DIAMOND_HALF_WIDTH + FLAG_GAP_PX,
                 foot[1] - height * 0.5,
             ]
+        }
+        FlagKind::Landed => {
+            let [x, y] = project(at);
+            [x + FLAG_GAP_PX, y]
         }
         FlagKind::Order | FlagKind::Question => project(at),
     }
@@ -643,6 +892,10 @@ fn place(
         let spot = seat(spots, centre, seats);
         seats.push(spot);
         let id = agent.id.to_string();
+        let check = agent
+            .task
+            .and_then(|task| view.tasks.iter().find(|candidate| candidate.id == task))
+            .and_then(|candidate| candidate.check.clone());
         bodies.push(Body {
             slot: slots.slot(&id),
             waiting: waiting.contains(&id),
@@ -650,6 +903,7 @@ fn place(
             machine,
             at: [spot[0], spot[1], PLINTH_TOP],
             activity: agent.activity,
+            check,
         });
     }
     (bodies, pins(view, plan, stands))
@@ -710,11 +964,14 @@ fn flags(view: &View, plan: &Plan, stands: &[Stand], bodies: &[Body], pins: &[Pi
             hue: Some(hue_css(body.slot)),
             waiting: body.waiting,
             clash: None,
+            check: body.check.clone(),
+            leaving: false,
             machine: Some(body.machine),
             at: body.at,
             follow: Follow::Body(body.agent.clone()),
         });
     }
+    out.extend(landed_flags(view, plan, stands));
     // One flag for the order in progress, the same one the page's order strip names.
     let active = view
         .orders
@@ -736,6 +993,8 @@ fn flags(view: &View, plan: &Plan, stands: &[Stand], bodies: &[Body], pins: &[Pi
             hue: None,
             waiting: false,
             clash: None,
+            check: None,
+            leaving: false,
             machine: None,
             at: [centre[0], centre[1], top + ORDER_LIFT],
             follow: Follow::Still,
@@ -748,6 +1007,8 @@ fn flags(view: &View, plan: &Plan, stands: &[Stand], bodies: &[Body], pins: &[Pi
             hue: None,
             waiting: false,
             clash: Some(pin.clash),
+            check: None,
+            leaving: false,
             machine: None,
             at: [pin.at[0], pin.at[1], pin.at[2] + STALK_HEIGHT],
             follow: Follow::Pin(pin.id.clone()),
@@ -763,12 +1024,49 @@ fn flags(view: &View, plan: &Plan, stands: &[Stand], bodies: &[Body], pins: &[Pi
             hue: None,
             waiting: true,
             clash: None,
+            check: None,
+            leaving: false,
             machine: None,
             at: [at[0], at[1], PLINTH_TOP + ORDER_LIFT],
             follow: Follow::Still,
         });
     }
     out
+}
+
+/// One landed dot per machine that has a landed task. Its text is `landed` and the change word of
+/// the last task that landed there. The page keeps the word for [`LANDED_HOLD_MS`], then the dot
+/// goes quiet with no text.
+fn landed_flags(view: &View, plan: &Plan, stands: &[Stand]) -> Vec<Flag> {
+    let mut per_machine: BTreeMap<usize, (usize, String)> = BTreeMap::new();
+    for task in view.tasks.iter().filter(|task| task.state == "landed") {
+        let Some(machine) = task.machine.as_deref().and_then(|name| plan.index_of(name)) else {
+            continue;
+        };
+        let word = task.change.clone().unwrap_or_else(|| task.title.clone());
+        let entry = per_machine.entry(machine).or_insert((0, String::new()));
+        entry.0 += 1;
+        entry.1 = word;
+    }
+    per_machine
+        .into_iter()
+        .map(|(machine, (count, word))| {
+            let centre = plan.machines[machine].center();
+            let top = stands.get(machine).map_or(PLINTH_TOP, |stand| stand.top);
+            Flag {
+                kind: FlagKind::Landed,
+                text: format!("landed · {word}"),
+                hue: None,
+                waiting: false,
+                clash: None,
+                check: None,
+                leaving: false,
+                machine: None,
+                at: [centre[0], centre[1], top + LANDED_LIFT],
+                follow: Follow::Landed { machine, count },
+            }
+        })
+        .collect()
 }
 
 fn declaration(view: &View, task: TaskId, slots: &AgentSlots) -> CardRow {
@@ -809,8 +1107,8 @@ mod tests {
     use std::str::FromStr;
 
     use acan_core::{
-        Belt, CodeIndex, CodeRev, Command, Ctx, FilePath, HumanCmd, IndexedFile, IndexedSymbol,
-        MachineKey, MemberId, Origin, Stamped, Timestamp, WorldId, WorldRef,
+        Belt, CodeIndex, CodeRev, Command, Ctx, Event, FilePath, HumanCmd, IndexedFile,
+        IndexedSymbol, MachineKey, MemberId, Origin, Stamped, Timestamp, WorldId, WorldRef,
     };
     use serde_json::json;
 
@@ -932,10 +1230,199 @@ mod tests {
             hue: None,
             waiting: false,
             clash: None,
+            check: None,
+            leaving: false,
             machine: None,
             at: [0.0; 3],
             follow: Follow::Still,
         }
+    }
+
+    /// The scripted clash followed by the rest of the demo: both tasks build, pass and land.
+    fn landed() -> (Mirror, CodeIndex) {
+        let (mut origin, mut log, index) = scripted();
+        let now = Timestamp::from_millis(4_000);
+        let rest = scenario::land_script(&mut origin, &index, &founder(), now)
+            .expect("the land script runs");
+        log.extend(rest);
+        (Mirror::from_log(log).expect("the log replays"), index)
+    }
+
+    fn landed_text(motion: &Motion, marks: &Marks) -> Vec<String> {
+        motion
+            .flags_now(&marks.flags)
+            .into_iter()
+            .filter(|flag| flag.kind == FlagKind::Landed)
+            .map(|flag| flag.text)
+            .collect()
+    }
+
+    #[test]
+    fn a_landed_dot_keeps_its_word_for_the_hold_then_goes_quiet() {
+        let plan = plan();
+        let (mirror, _index) = landed();
+        let view = mirror.view(&plan);
+        let marks = Marks::build(&view, &plan, &stands(&plan), &slots_for(&view));
+        let mut motion = Motion::default();
+        motion.sync(&marks);
+
+        assert_eq!(
+            landed_text(&motion, &marks),
+            vec!["landed · login".to_owned()],
+            "the machine's dot names the change while it holds"
+        );
+        assert!(motion.advance(LANDED_HOLD_MS - 1.0), "the hold still runs");
+        assert_eq!(
+            landed_text(&motion, &marks),
+            vec!["landed · login".to_owned()]
+        );
+        motion.advance(1.0);
+        assert_eq!(
+            landed_text(&motion, &marks),
+            vec![String::new()],
+            "after the hold the dot is quiet"
+        );
+        assert!(
+            motion.take_flags_changed(),
+            "the page is told the dot went quiet"
+        );
+        assert!(!motion.advance(LEAVE_MS), "nothing else is moving");
+    }
+
+    #[test]
+    fn a_still_bot_stands_at_its_place_and_its_flag_has_a_finite_anchor() {
+        let plan = plan();
+        let (_origin, log, _index) = scripted();
+        let view = Mirror::from_log(log).expect("the log replays").view(&plan);
+        let marks = Marks::build(&view, &plan, &stands(&plan), &slots_for(&view));
+        let mut motion = Motion::new(true);
+        motion.sync(&marks);
+        assert!(!marks.bodies.is_empty(), "the scripted view has bots");
+        for body in &marks.bodies {
+            assert_eq!(motion.body_at(&body.agent), Some(body.at), "{}", body.agent);
+        }
+        for flag in &marks.flags {
+            assert!(
+                motion.flag_at(flag).iter().all(|v| v.is_finite()),
+                "a flag anchor is finite: {}",
+                flag.text
+            );
+        }
+    }
+
+    #[test]
+    fn a_still_motion_keeps_the_landed_word_and_never_moves() {
+        let plan = plan();
+        let (mirror, _index) = landed();
+        let view = mirror.view(&plan);
+        let marks = Marks::build(&view, &plan, &stands(&plan), &slots_for(&view));
+        let mut motion = Motion::new(true);
+        motion.sync(&marks);
+        assert!(
+            !motion.advance(LANDED_HOLD_MS * 2.0),
+            "a still page does not ease"
+        );
+        assert_eq!(
+            landed_text(&motion, &marks),
+            vec!["landed · login".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_landed_bot_sinks_into_its_plinth_then_leaves_and_the_order_flag_fades() {
+        let plan = plan();
+        let stands = stands(&plan);
+        let before = mirror_before_land().view(&plan);
+        let before_marks = Marks::build(&before, &plan, &stands, &slots_for(&before));
+        let mut motion = Motion::default();
+        motion.sync(&before_marks);
+        motion.advance(ARRIVE_MS);
+        assert!(
+            motion.leaving_now().is_empty(),
+            "the bots stand on their machines"
+        );
+
+        let (after, _index) = landed();
+        let after_view = after.view(&plan);
+        let after_marks = Marks::build(&after_view, &plan, &stands, &slots_for(&after_view));
+        motion.sync(&after_marks);
+        assert_eq!(
+            motion.leaving_now().len(),
+            2,
+            "both bots leave once their tasks land"
+        );
+
+        motion.advance(LEAVE_MS / 2.0);
+        assert!(
+            motion
+                .leaving_now()
+                .iter()
+                .all(|bot| bot.at[2] < PLINTH_TOP),
+            "a leaving bot sinks into its plinth"
+        );
+        let fading = |flags: &[Flag]| {
+            flags
+                .iter()
+                .any(|flag| flag.kind == FlagKind::Order && flag.leaving)
+        };
+        assert!(
+            fading(&motion.flags_now(&after_marks.flags)),
+            "the order flag fades out"
+        );
+
+        motion.advance(LEAVE_MS);
+        assert!(
+            motion.leaving_now().is_empty(),
+            "the bots are gone after the ease"
+        );
+        assert!(
+            !fading(&motion.flags_now(&after_marks.flags)),
+            "the order flag is gone"
+        );
+    }
+
+    /// The demo after the clash settles and the first task has built and passed its gate, but
+    /// before either task lands.
+    fn mirror_before_land() -> Mirror {
+        let (mut origin, mut log, index) = scripted();
+        let rest = scenario::land_script(
+            &mut origin,
+            &index,
+            &founder(),
+            Timestamp::from_millis(4_000),
+        )
+        .expect("the land script runs");
+        let cut = rest
+            .iter()
+            .position(|stamped| matches!(stamped.event, Event::Landed { .. }))
+            .expect("the script lands a task");
+        log.extend(rest.into_iter().take(cut));
+        Mirror::from_log(log).expect("the log replays")
+    }
+
+    #[test]
+    fn a_bot_is_drawn_at_least_its_screen_floor_tall() {
+        let plan = plan();
+        let (_origin, log, _index) = scripted();
+        let view = Mirror::from_log(log).expect("the log replays").view(&plan);
+        let marks = Marks::build(&view, &plan, &stands(&plan), &slots_for(&view));
+        let mut motion = Motion::default();
+        motion.sync(&marks);
+        motion.advance(ARRIVE_MS);
+        let kinds = MarkKinds {
+            body: 40,
+            ring: 41,
+            pin: 42,
+            stalk: 43,
+        };
+        for dpr in [1.0_f32, 2.0] {
+            let bot = mark_instances(&motion, &marks, kinds, dpr)
+                .into_iter()
+                .find(|instance| instance.kind == kinds.body)
+                .expect("a bot is drawn");
+            assert_eq!(bot.grow[0], BOT_MIN_PX * dpr, "the floor is in device px");
+        }
+        assert_eq!(BOT_MIN_PX, 20.0, "a bot reads at fit zoom only from 20 px");
     }
 
     #[test]
@@ -1190,6 +1677,20 @@ mod tests {
         let clash = flag(FlagKind::Clash);
         let label = flag_anchor(&clash, foot, project);
         assert!(label[0] > foot[0], "the label starts right of the diamond");
+    }
+
+    #[test]
+    fn a_landed_dot_sits_beside_its_machine_point_clear_of_the_order_flag() {
+        let project = |p: [f32; 3]| [p[0], -p[2]];
+        let at = [10.0, 5.0, PLINTH_TOP];
+        let landed = flag_anchor(&flag(FlagKind::Landed), at, project);
+        let order = flag_anchor(&flag(FlagKind::Order), at, project);
+        assert_eq!(landed, [10.0 + FLAG_GAP_PX, -PLINTH_TOP]);
+        assert_eq!(
+            order,
+            [10.0, -PLINTH_TOP],
+            "the order flag stays over the point"
+        );
     }
 
     #[test]

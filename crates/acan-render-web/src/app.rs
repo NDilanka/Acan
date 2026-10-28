@@ -52,6 +52,8 @@ pub struct App {
     slots: AgentSlots,
     /// Whether the marks' eases were moving on the last frame.
     moving: bool,
+    /// Whether the marks hold still, as `?freeze=1` asks. Set once before a plant loads.
+    still: bool,
     /// The index of the clash whose card is open, if any.
     card_clash: Option<usize>,
     view_json: String,
@@ -139,6 +141,7 @@ impl App {
             motion: Motion::default(),
             slots: AgentSlots::default(),
             moving: false,
+            still: false,
             card_clash: None,
             view_json: String::new(),
             view_version: 0,
@@ -166,6 +169,20 @@ impl App {
     pub fn set_plant(&mut self, json: &str) -> Result<u32, JsError> {
         let plant = from_scan_json(json).map_err(js_err)?;
         Ok(self.load(plant))
+    }
+
+    /// Holds the marks still, as `?freeze=1` asks. Call it before the plant loads: every ease then
+    /// lands at once, a leaving bot is gone, no flag fades, and a landed dot keeps its word.
+    pub fn set_still(&mut self, still: bool) {
+        self.still = still;
+        self.motion = Motion::new(still);
+        self.dirty = true;
+    }
+
+    /// Whether a flag listing changed while time passed, such as a landed dot going quiet or a
+    /// fade ending. The page redraws its flags when it does.
+    pub fn take_flags_changed(&mut self) -> bool {
+        self.motion.take_flags_changed()
     }
 
     /// Loads a generated plant of `machines` machines for the benchmark. It has no log, so the
@@ -438,8 +455,8 @@ impl App {
     /// puts index `i`.
     pub fn marks_json(&self) -> String {
         #[derive(serde::Serialize)]
-        struct Out<'a> {
-            flags: &'a [marks::Flag],
+        struct Out {
+            flags: Vec<marks::Flag>,
             card: Option<marks::Card>,
         }
         let card = self.card_clash.and_then(|index| {
@@ -448,7 +465,7 @@ impl App {
             marks::card(view, mirror.world(), index, &self.slots)
         });
         serde_json::to_string(&Out {
-            flags: &self.marks.flags,
+            flags: self.motion.flags_now(&self.marks.flags),
             card,
         })
         .expect("marks serialize as JSON")
@@ -459,8 +476,8 @@ impl App {
     /// and -1 is a flag that stands alone. The anchors follow the bodies and diamonds while they
     /// move.
     pub fn flag_layout(&self) -> Vec<f32> {
-        self.marks
-            .flags
+        self.motion
+            .flags_now(&self.marks.flags)
             .iter()
             .enumerate()
             .flat_map(|(index, flag)| {
@@ -598,7 +615,7 @@ impl App {
         self.plan = Some(plan);
         self.view = None;
         self.marks = Marks::default();
-        self.motion = Motion::default();
+        self.motion = Motion::new(self.still);
         self.card_clash = None;
         self.dirty = true;
         self.plant = Some(Loaded {

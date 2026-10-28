@@ -6,18 +6,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use acan_core::{
-    AgentId, Clash, ClashId, ClashState, Declaration, DeclarationInput, Event, FilePath, Locus,
-    OrderId, OrderPhase, OverlapKind, Question, QuestionId, ReplayError, Replica, Seq, Settlement,
-    Stage, Stamped, Task, TaskId, TaskState, World,
+    AgentId, Clash, ClashId, ClashState, Declaration, DeclarationInput, Event, FilePath, GateRunId,
+    GateVerdict, Locus, OrderId, OrderPhase, OverlapKind, Question, QuestionId, ReplayError,
+    Replica, Seq, Settlement, Stage, Stamped, Step, Task, TaskId, TaskState, Witness,
+    WitnessOutcome, World,
 };
 use serde::Serialize;
 
 use crate::plan::Plan;
-
-/// Agent body colors, as `#rrggbb`. The first agent gets the first color.
-pub const PALETTE: [&str; 6] = [
-    "#2f6fed", "#e0662b", "#1f9d6b", "#8a4fd6", "#d6336c", "#0f8ea3",
-];
 
 /// Where the first agent's body sits inside its machine, in world units from the corner.
 const BODY_OFFSET: [f32; 2] = [14.0, 44.0];
@@ -34,6 +30,10 @@ pub struct Mirror {
     agents: Vec<AgentId>,
     /// The agent holding each task's lease, from the last grant.
     holders: BTreeMap<TaskId, AgentId>,
+    /// The gate run each task last reported, so its check reads after the lease has ended.
+    runs: BTreeMap<TaskId, GateRunId>,
+    /// The word a task's change shows: the first symbol its last declaration named.
+    changes: BTreeMap<TaskId, String>,
 }
 
 impl Mirror {
@@ -48,6 +48,8 @@ impl Mirror {
             replica,
             agents: Vec::new(),
             holders: BTreeMap::new(),
+            runs: BTreeMap::new(),
+            changes: BTreeMap::new(),
         };
         for stamped in &log {
             mirror.note(stamped);
@@ -89,6 +91,14 @@ impl Mirror {
             Event::AgentRegistered { agent } => self.agents.push(agent.id.clone()),
             Event::LeaseGranted { task, lease, .. } => {
                 self.holders.insert(*task, lease.holder.clone());
+            }
+            Event::BuildReported { task, run, .. } => {
+                self.runs.insert(*task, *run);
+            }
+            Event::Declared { decl } => {
+                if let Some(word) = change_word(&decl.footprint) {
+                    self.changes.insert(decl.task, word);
+                }
             }
             _ => {}
         }
@@ -148,6 +158,9 @@ impl Mirror {
                     TaskState::Open | TaskState::Dropped => None,
                     _ => self.holders.get(&task.id).cloned(),
                 },
+                machine: task_machine(world, plan, task).map(|m| plan.machines[m].name.clone()),
+                change: self.changes.get(&task.id).cloned(),
+                check: self.check_view(world, task),
             })
             .collect();
 
@@ -172,15 +185,62 @@ impl Mirror {
             agents,
             questions,
             clashes,
+            usage: usage_rows(world),
         }
+    }
+
+    /// The check a task answers to. Its gate's witnesses once it has reported a build, else its
+    /// readback's verdict, else the order's first gated witness, which it has yet to pass. `None`
+    /// when the order has neither a gated witness nor the task has a readback.
+    fn check_view(&self, world: &World, task: &Task) -> Option<CheckView> {
+        let order = world.order(task.order)?;
+        if let Some(gate) = self.runs.get(&task.id).and_then(|run| world.gate(*run))
+            && let Some(&first) = gate.witnesses.first()
+        {
+            let failed = gate
+                .results
+                .iter()
+                .find(|(_, outcome)| !matches!(outcome, WitnessOutcome::Pass))
+                .map(|(witness, _)| *witness);
+            let (witness, state) = match (failed, gate.verdict()) {
+                (Some(witness), _) => (witness, "failed"),
+                (None, GateVerdict::Passed) => (first, "passed"),
+                (None, GateVerdict::Failed { .. }) => (first, "failed"),
+                (None, GateVerdict::Running) => (first, "pending"),
+            };
+            return Some(CheckView {
+                name: witness.to_string(),
+                state,
+            });
+        }
+        if let Some(readback) = world.readbacks_of(task.id).last() {
+            let state = match &readback.verdict {
+                None => "pending",
+                Some(verdict) if verdict.rev != order.rev => "pending",
+                Some(verdict) if verdict.matches(order) => "passed",
+                Some(_) => "failed",
+            };
+            return Some(CheckView {
+                name: "readback".to_owned(),
+                state,
+            });
+        }
+        let first = order
+            .witnesses
+            .iter()
+            .copied()
+            .find(|&witness| world.witness(witness).is_some_and(Witness::gated))?;
+        Some(CheckView {
+            name: first.to_string(),
+            state: "pending",
+        })
     }
 
     fn agent_views(&self, plan: &Plan, world: &World, tasks: &[&Task]) -> Vec<AgentView> {
         let mut seats: BTreeMap<usize, usize> = BTreeMap::new();
         self.agents
             .iter()
-            .enumerate()
-            .map(|(i, agent)| {
+            .map(|agent| {
                 let focus = self.focus(world, tasks, agent);
                 let machine = focus.and_then(|(task, _)| task_machine(world, plan, task));
                 let body = machine.map(|m| {
@@ -194,7 +254,6 @@ impl Mirror {
                 });
                 AgentView {
                     id: agent.clone(),
-                    color: PALETTE[i % PALETTE.len()],
                     task: focus.map(|(task, _)| task.id),
                     activity: focus.map_or("idle", |(_, activity)| activity),
                     machine: machine.map(|m| plan.machines[m].name.clone()),
@@ -213,7 +272,10 @@ impl Mirror {
     ) -> Option<(&'a Task, &'static str)> {
         let held = tasks.iter().copied().find(|task| {
             self.holders.get(&task.id) == Some(agent)
-                && !matches!(task.state, TaskState::Open | TaskState::Dropped)
+                && !matches!(
+                    task.state,
+                    TaskState::Open | TaskState::Dropped | TaskState::Landed { .. }
+                )
         });
         if let Some(task) = held {
             return Some((task, task_state_key(world, task)));
@@ -247,6 +309,33 @@ pub struct View {
     pub questions: Vec<QuestionView>,
     /// Every clash the origin recorded, including resolved ones.
     pub clashes: Vec<ClashView>,
+    /// Model calls so far, one row per model and step. Empty until the first call.
+    pub usage: Vec<UsageRow>,
+}
+
+/// One model's calls for one step of the loop.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct UsageRow {
+    /// The loop step that made the calls, in snake case: `split`, `review`, `explain` or
+    /// `screenshot`.
+    pub role: &'static str,
+    /// The model name the calls went to.
+    pub model: String,
+    /// How many calls.
+    pub calls: u32,
+    /// Prompt tokens, summed over the calls.
+    pub input: u64,
+    /// Completion tokens, summed over the calls.
+    pub output: u64,
+}
+
+/// The check a task answers to, and where it stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CheckView {
+    /// The witness the check is for, such as `w-3`, or `readback` when a readback is the check.
+    pub name: String,
+    /// `pending`, `passed` or `failed`.
+    pub state: &'static str,
 }
 
 /// A machine footprint and whether a clash stands on it.
@@ -292,6 +381,12 @@ pub struct TaskView {
     pub state: &'static str,
     /// The agent holding the task's lease, if any.
     pub agent: Option<AgentId>,
+    /// The machine the task works on, by name.
+    pub machine: Option<String>,
+    /// The word the task's change shows once it lands: the first symbol it declared.
+    pub change: Option<String>,
+    /// The check the task answers to, if the order has one or the task has a readback.
+    pub check: Option<CheckView>,
 }
 
 /// A registered agent, with its body on the plan when it has a task.
@@ -299,8 +394,6 @@ pub struct TaskView {
 pub struct AgentView {
     /// The agent id.
     pub id: AgentId,
-    /// The body color, as `#rrggbb`.
-    pub color: &'static str,
     /// The task the agent is on.
     pub task: Option<TaskId>,
     /// What the agent is doing. `idle` when it has no task.
@@ -523,14 +616,56 @@ fn footprint_paths(footprint: &DeclarationInput) -> impl Iterator<Item = &FilePa
         .chain(footprint.interfaces.iter().map(|symbol| &symbol.file))
 }
 
+/// The word a change shows: the first symbol its declaration names, else the file it touches.
+fn change_word(footprint: &DeclarationInput) -> Option<String> {
+    footprint
+        .symbols
+        .first()
+        .map(|symbol| symbol.name.clone())
+        .or_else(|| {
+            footprint
+                .files
+                .first()
+                .and_then(|path| path.as_str().rsplit('/').next())
+                .map(str::to_owned)
+        })
+}
+
+fn usage_rows(world: &World) -> Vec<UsageRow> {
+    world
+        .usage()
+        .totals
+        .iter()
+        .flat_map(|(model, steps)| {
+            steps.iter().map(move |(step, count)| UsageRow {
+                role: step_key(*step),
+                model: model.clone(),
+                calls: count.calls,
+                input: count.input,
+                output: count.output,
+            })
+        })
+        .collect()
+}
+
+fn step_key(step: Step) -> &'static str {
+    match step {
+        Step::Split => "split",
+        Step::Review => "review",
+        Step::Explain => "explain",
+        Step::Screenshot => "screenshot",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
     use std::str::FromStr;
 
     use acan_core::{
-        Belt, CodeIndex, CodeRev, Command, Ctx, FilePath, HumanCmd, IndexedFile, IndexedSymbol,
-        MachineKey, MemberId, Origin, Seq, Timestamp, WorldId, WorldRef,
+        AgentCmd, Belt, CodeIndex, CodeRev, Command, CommitId, Ctx, FilePath, HumanCmd,
+        IndexedFile, IndexedSymbol, MachineKey, MemberId, Origin, Seq, SystemCmd, Timestamp,
+        WorldId, WorldRef,
     };
     use serde_json::json;
 
@@ -667,8 +802,6 @@ mod tests {
         let [first, second] = view.agents.as_slice() else {
             panic!("the script registers two agents");
         };
-        assert_eq!(first.color, PALETTE[0]);
-        assert_eq!(second.color, PALETTE[1]);
         for agent in [first, second] {
             assert_eq!(agent.machine.as_deref(), Some("src/api"));
             assert_eq!(agent.activity, "declared");
@@ -761,5 +894,183 @@ mod tests {
             Err(ReplayError::SeqGap { .. })
         ));
         assert_eq!(mirror.next_seq(), next);
+    }
+
+    /// Runs one command as `actor` at a fixed time, and returns the events it appended.
+    fn accepted(origin: &mut Origin, index: &CodeIndex, command: Command) -> Vec<Stamped> {
+        let ctx = Ctx {
+            now: Timestamp::from_millis(3_000),
+            index,
+        };
+        origin
+            .execute(&ctx, command)
+            .expect("the command is accepted")
+    }
+
+    /// The scripted clash settled so that the first task goes first, and the first task's
+    /// build reported, so its gate is running. Returns the first task's id.
+    fn first_build_reported() -> (Origin, Vec<Stamped>, CodeIndex, TaskId) {
+        let (mut origin, mut log, index) = scripted();
+        let order = origin.world().orders().next().expect("an order").id;
+        let tasks: Vec<TaskId> = origin.world().tasks_of(order).map(|t| t.id).collect();
+        let first = tasks[0];
+        let clash = origin.world().clashes().next().expect("a clash").clone();
+        let choice = clash
+            .menu()
+            .into_iter()
+            .find(|choice| matches!(choice, Settlement::Serialize { first: f, .. } if *f == first))
+            .expect("the clash offers the first task going first");
+        log.extend(accepted(
+            &mut origin,
+            &index,
+            Command::Human {
+                member: founder(),
+                cmd: HumanCmd::SettleClash {
+                    clash: clash.id,
+                    choice,
+                },
+            },
+        ));
+        let claim = match &origin.world().task(first).expect("the task").state {
+            TaskState::Claimed { claim, .. } => claim.clone(),
+            other => panic!("the first task is claimed, not {other:?}"),
+        };
+        log.extend(accepted(
+            &mut origin,
+            &index,
+            Command::Agent {
+                agent: AgentId::from_str(scenario::AGENTS[0]).expect("an agent id"),
+                cmd: AgentCmd::ReportBuilt {
+                    fence: claim.fence(first),
+                    head: CommitId::from_str("3f9c2e1").expect("a commit id"),
+                },
+            },
+        ));
+        (origin, log, index, first)
+    }
+
+    fn check_of(view: &View, task: TaskId) -> CheckView {
+        view.tasks
+            .iter()
+            .find(|candidate| candidate.id == task)
+            .and_then(|candidate| candidate.check.clone())
+            .expect("the task has a check")
+    }
+
+    #[test]
+    fn a_matched_readback_is_the_check_before_any_build() {
+        let plan = plan();
+        let (_origin, log, _index) = scripted();
+        let view = Mirror::from_log(log).expect("the log replays").view(&plan);
+
+        assert!(!view.tasks.is_empty());
+        for task in &view.tasks {
+            let check = task.check.clone().expect("each task was read back");
+            assert_eq!(check.name, "readback");
+            assert_eq!(check.state, "passed", "the readback matched the witnesses");
+        }
+    }
+
+    #[test]
+    fn a_running_gate_shows_its_witness_as_pending_and_a_failed_one_as_failed() {
+        let plan = plan();
+        let (mut origin, log, index, first) = first_build_reported();
+        let mut mirror = Mirror::from_log(log.clone()).expect("the log replays");
+        let view = mirror.view(&plan);
+        let pending = check_of(&view, first);
+        assert_eq!(pending.state, "pending");
+        assert!(pending.name.starts_with('w'), "the check names a witness");
+
+        let gate = origin
+            .world()
+            .task(first)
+            .and_then(|task| match &task.state {
+                TaskState::Claimed {
+                    stage: Stage::Gating { run, .. },
+                    ..
+                } => Some(*run),
+                _ => None,
+            })
+            .expect("the first build is gating");
+        let witness = origin
+            .world()
+            .gate(gate)
+            .expect("the gate run exists")
+            .witnesses[0];
+        let failing = accepted(
+            &mut origin,
+            &index,
+            Command::System(SystemCmd::WitnessResult {
+                run: gate,
+                witness,
+                outcome: WitnessOutcome::Fail {
+                    detail: "npm test exited 1".to_owned(),
+                },
+            }),
+        );
+        for stamped in &failing {
+            mirror
+                .ingest(stamped)
+                .expect("a live event applies in order");
+        }
+        let failed = check_of(&mirror.view(&plan), first);
+        assert_eq!(failed.state, "failed");
+        assert_eq!(failed.name, witness.to_string());
+    }
+
+    #[test]
+    fn a_landed_task_keeps_its_passed_check_and_its_change_word() {
+        let plan = plan();
+        let (mut origin, mut log, index) = scripted();
+        let events = scenario::land_script(
+            &mut origin,
+            &index,
+            &founder(),
+            Timestamp::from_millis(2_000),
+        )
+        .expect("the story runs");
+        log.extend(events);
+        let view = Mirror::from_log(log).expect("the log replays").view(&plan);
+
+        assert_eq!(view.orders[0].phase, "landed");
+        for task in &view.tasks {
+            assert_eq!(task.state, "landed");
+            assert_eq!(task.change.as_deref(), Some("login"));
+            assert_eq!(task.machine.as_deref(), Some("src/api"));
+            let check = task.check.clone().expect("the gate ran");
+            assert_eq!(check.state, "passed");
+            assert!(check.name.starts_with('w'));
+        }
+        for agent in &view.agents {
+            assert_eq!(agent.task, None, "a landed task releases its agent");
+            assert!(agent.body.is_none(), "the landed bot leaves the plant");
+        }
+    }
+
+    #[test]
+    fn usage_is_empty_until_a_model_call_is_recorded() {
+        let plan = plan();
+        let (mut origin, mut log, index) = scripted();
+        let before = Mirror::from_log(log.clone())
+            .expect("the log replays")
+            .view(&plan);
+        assert!(before.usage.is_empty(), "no call, no usage rows");
+
+        let events = scenario::land_script(
+            &mut origin,
+            &index,
+            &founder(),
+            Timestamp::from_millis(2_000),
+        )
+        .expect("the story runs");
+        log.extend(events);
+        let after = Mirror::from_log(log).expect("the log replays").view(&plan);
+        let [row] = after.usage.as_slice() else {
+            panic!("the offline explain call is one row");
+        };
+        assert_eq!(row.role, "explain");
+        assert_eq!(row.model, scenario::OFFLINE_MODEL);
+        assert_eq!(row.calls, 1);
+        assert!(row.input > 0 && row.output > 0);
     }
 }

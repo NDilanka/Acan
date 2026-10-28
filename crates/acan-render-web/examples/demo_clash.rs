@@ -1,4 +1,6 @@
-//! Writes the demo clash into a repository's world log, so the product screen has one to show.
+//! Writes the offline demo story into a repository's world log: an order, an overlapping
+//! declaration that clashes, the settlement, both builds passing their gate, and both tasks
+//! landing. The product screen then has every stage to show.
 //!
 //! The server has no agent route on this branch, so the script runs while the server is stopped.
 //! Start `acan serve` once to create `.acan/world.db`, stop it, run this example, and serve again.
@@ -46,12 +48,18 @@ async fn run() -> Result<()> {
     let target = Target::first_symbol(&scanned.index, SENTENCE)
         .context("the repository has no symbol to clash on")?;
     let now = Timestamp::from_millis(unix_millis()?);
-    let events = scenario::clash_script(&mut origin, &scanned.index, &founder, &target, now)
+    let mut events = scenario::clash_script(&mut origin, &scanned.index, &founder, &target, now)
         .map_err(|rejection| anyhow::anyhow!("the origin refused the script: {rejection:?}"))?;
-    store.append(&events).await?;
     let clash = scenario::clash_id(&origin).context("the script left no clash")?;
+    events.extend(
+        scenario::land_script(&mut origin, &scanned.index, &founder, now)
+            .map_err(|rejection| anyhow::anyhow!("the origin refused the land: {rejection:?}"))?,
+    );
+    store.append(&events).await?;
+    let order = scenario::order_id(&origin).context("the script left no order")?;
+    let phase = origin.world().phase(order);
     println!(
-        "appended {} events: order on {}, clash {clash}",
+        "appended {} events: order {order} on {} is {phase:?}, clash {clash} settled",
         events.len(),
         target.machine
     );
