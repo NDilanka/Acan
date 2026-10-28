@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use reqwest::header::HeaderMap;
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -11,10 +12,15 @@ use crate::config::{ConfigError, LlmConfig, ProviderConfig, StructuredOutput};
 use crate::error::LlmError;
 use crate::key::{ApiKey, ApiKeys};
 use crate::role::Role;
+use crate::trace::{RequestId, RequestIdSource, Traced};
 use crate::usage::{CallRecord, Usage, UsageLedger};
 
 /// Most bytes of a provider error body kept in an error, counted after credentials are redacted.
 const ERROR_BODY_LIMIT: usize = 512;
+
+/// Response headers that may carry the provider's request id, in the order they are checked.
+/// Baseten sends its id only under its own header name.
+const REQUEST_ID_HEADERS: &[&str] = &["x-request-id", "x-baseten-request-id"];
 
 /// Retries for 429 and 5xx replies. Waits `base_delay`, doubling it before each retry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,12 +83,106 @@ impl OpenAiCompatible {
         &self.ledger
     }
 
+    /// Runs one chat completion and also returns the provider's request id and echoed model.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`ModelClient::chat`].
+    pub async fn chat_traced(
+        &self,
+        role: Role,
+        request: ChatRequest,
+    ) -> Result<Traced<ChatResponse>, LlmError> {
+        let route = self.config.resolve(role)?;
+        let provider = route.provider;
+        let key = self
+            .keys
+            .get(&provider.name)
+            .ok_or_else(|| LlmError::MissingKey {
+                provider: provider.name.clone(),
+                env_var: provider.api_key_env.clone(),
+            })?;
+
+        let body = wire_request(route.model, &request, provider.structured_output);
+        let started = Instant::now();
+        let Posted {
+            completion,
+            request_id,
+        } = self.post_with_retries(provider, key, &body).await?;
+        let latency = started.elapsed();
+
+        let reply_model = completion.model;
+        let usage = completion.usage.unwrap_or_else(|| {
+            tracing::warn!(
+                provider = %provider.name,
+                model = route.model,
+                "reply carried no usage, recording zero tokens"
+            );
+            Usage::default()
+        });
+        let call = CallRecord {
+            role,
+            provider: provider.name.clone(),
+            model: route.model.to_owned(),
+            usage,
+            latency,
+        };
+        self.ledger.record(call.clone());
+
+        let choice =
+            completion
+                .choices
+                .into_iter()
+                .next()
+                .ok_or_else(|| LlmError::MalformedResponse {
+                    provider: provider.name.clone(),
+                    detail: "reply has no choices".to_owned(),
+                })?;
+        Ok(Traced {
+            value: ChatResponse {
+                content: choice.message.content,
+                tool_calls: choice.message.tool_calls.unwrap_or_default(),
+                finish_reason: choice.finish_reason,
+                call,
+            },
+            request_id,
+            reply_model,
+        })
+    }
+
+    /// Runs a completion whose reply must parse as `T`, and also returns the trace fields.
+    ///
+    /// # Errors
+    ///
+    /// Returns the errors of [`ModelClient::chat_json`]. A reply that does not parse as `T`
+    /// is a [`LlmError::SchemaValidation`], which carries no trace fields.
+    pub async fn chat_json_traced<T>(
+        &self,
+        role: Role,
+        request: ChatRequest,
+    ) -> Result<Traced<Structured<T>>, LlmError>
+    where
+        T: DeserializeOwned + JsonSchema,
+    {
+        let Traced {
+            value,
+            request_id,
+            reply_model,
+        } = self.chat_traced(role, with_schema::<T>(request)).await?;
+        let structured = parse_structured(value, |text| self.keys.redact(text))?;
+        Ok(Traced {
+            value: structured,
+            request_id,
+            reply_model,
+        })
+    }
+
     async fn post_with_retries(
         &self,
         provider: &ProviderConfig,
         key: &ApiKey,
         body: &WireRequest<'_>,
-    ) -> Result<WireCompletion, LlmError> {
+    ) -> Result<Posted, LlmError> {
         let url = format!(
             "{}/chat/completions",
             provider.base_url.trim_end_matches('/')
@@ -102,13 +202,20 @@ impl OpenAiCompatible {
             let status = response.status();
 
             if status.is_success() {
+                let header_id = header_request_id(response.headers());
                 let text = response
                     .text()
                     .await
                     .map_err(|err| transport_error(&provider.name, err))?;
-                return serde_json::from_str(&text).map_err(|err| LlmError::MalformedResponse {
-                    provider: provider.name.clone(),
-                    detail: self.keys.redact(&err.to_string()),
+                let completion: WireCompletion =
+                    serde_json::from_str(&text).map_err(|err| LlmError::MalformedResponse {
+                        provider: provider.name.clone(),
+                        detail: self.keys.redact(&err.to_string()),
+                    })?;
+                let request_id = header_id.or_else(|| body_request_id(completion.id.as_deref()));
+                return Ok(Posted {
+                    completion,
+                    request_id,
                 });
             }
 
@@ -184,53 +291,9 @@ impl OpenAiCompatible {
 
 impl ModelClient for OpenAiCompatible {
     async fn chat(&self, role: Role, request: ChatRequest) -> Result<ChatResponse, LlmError> {
-        let route = self.config.resolve(role)?;
-        let provider = route.provider;
-        let key = self
-            .keys
-            .get(&provider.name)
-            .ok_or_else(|| LlmError::MissingKey {
-                provider: provider.name.clone(),
-                env_var: provider.api_key_env.clone(),
-            })?;
-
-        let body = wire_request(route.model, &request, provider.structured_output);
-        let started = Instant::now();
-        let completion = self.post_with_retries(provider, key, &body).await?;
-        let latency = started.elapsed();
-
-        let usage = completion.usage.unwrap_or_else(|| {
-            tracing::warn!(
-                provider = %provider.name,
-                model = route.model,
-                "reply carried no usage, recording zero tokens"
-            );
-            Usage::default()
-        });
-        let call = CallRecord {
-            role,
-            provider: provider.name.clone(),
-            model: route.model.to_owned(),
-            usage,
-            latency,
-        };
-        self.ledger.record(call.clone());
-
-        let choice =
-            completion
-                .choices
-                .into_iter()
-                .next()
-                .ok_or_else(|| LlmError::MalformedResponse {
-                    provider: provider.name.clone(),
-                    detail: "reply has no choices".to_owned(),
-                })?;
-        Ok(ChatResponse {
-            content: choice.message.content,
-            tool_calls: choice.message.tool_calls.unwrap_or_default(),
-            finish_reason: choice.finish_reason,
-            call,
-        })
+        self.chat_traced(role, request)
+            .await
+            .map(|traced| traced.value)
     }
 
     async fn chat_json<T>(
@@ -241,9 +304,34 @@ impl ModelClient for OpenAiCompatible {
     where
         T: DeserializeOwned + JsonSchema,
     {
-        let response = self.chat(role, with_schema::<T>(request)).await?;
-        parse_structured(response, |text| self.keys.redact(text))
+        self.chat_json_traced(role, request)
+            .await
+            .map(|traced| traced.value)
     }
+}
+
+/// A successful reply body and the request id read from its headers or body.
+struct Posted {
+    completion: WireCompletion,
+    request_id: Option<RequestId>,
+}
+
+/// The first configured request-id header with a non-empty value.
+fn header_request_id(headers: &HeaderMap) -> Option<RequestId> {
+    REQUEST_ID_HEADERS.iter().find_map(|name| {
+        let value = headers.get(*name)?.to_str().ok()?.trim();
+        (!value.is_empty()).then(|| RequestId {
+            value: value.to_owned(),
+            source: RequestIdSource::Header((*name).to_owned()),
+        })
+    })
+}
+
+fn body_request_id(id: Option<&str>) -> Option<RequestId> {
+    id.filter(|id| !id.is_empty()).map(|id| RequestId {
+        value: id.to_owned(),
+        source: RequestIdSource::Body,
+    })
 }
 
 fn transport_error(provider: &str, err: reqwest::Error) -> LlmError {
@@ -358,6 +446,8 @@ struct WireJsonSchema<'a> {
 
 #[derive(Deserialize)]
 struct WireCompletion {
+    id: Option<String>,
+    model: Option<String>,
     choices: Vec<WireChoice>,
     usage: Option<Usage>,
 }

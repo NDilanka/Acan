@@ -1,27 +1,42 @@
-//! Calls the provider configured for one role and prints the reply and usage.
+//! Calls the provider configured for one role and prints the reply, usage, and request id.
 //!
-//! Run with `cargo run -p acan-llm --example smoke -- --role foreman`. With `--json` the call
-//! goes through `chat_json` with a small schema, which is the path the server's jobs take.
-//! Keys come from the environment or `crates/acan-llm/.env`.
+//! Run with `cargo run -p acan-llm --example smoke -- --role foreman`. The modes are:
+//! - plain: free text, the default.
+//! - `--json`: `chat_json` with a small schema, the path the server's jobs take.
+//! - `--tool`: one function tool with a required argument. It passes only when the reply holds
+//!   a `tool_calls` entry whose arguments parse against the tool's schema.
+//!
+//! `--provider <name>` routes the role to that provider for this run. Keys come from the
+//! environment or `crates/acan-llm/.env`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use acan_llm::{
-    ApiKeys, CallRecord, ChatRequest, LlmConfig, Message, ModelClient, OpenAiCompatible, Role,
-    UnknownRole,
+    ApiKeys, CallRecord, ChatRequest, ChatResponse, JsonSchemaFormat, LlmConfig, Message,
+    OpenAiCompatible, RequestId, Role, Structured, ToolSpec, Traced, UnknownRole,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
 
 const DEFAULT_PROMPT: &str = "Reply with the single word OK.";
 const JSON_PROMPT: &str = "Answer with the single word yes as answer, and the number 5 as count.";
+const TOOL_NAME: &str = "get_route_status";
+const TOOL_PROMPT: &str = "Use the get_route_status tool to check the status of route worker-7.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Plain,
+    Json,
+    Tool,
+}
 
 struct Args {
     role: Role,
+    provider: Option<String>,
     config: PathBuf,
     prompt: Option<String>,
-    json: bool,
+    mode: Mode,
 }
 
 /// The typed reply `--json` asks for.
@@ -33,16 +48,28 @@ struct Probe {
     count: u32,
 }
 
+/// The arguments `get_route_status` takes. Unknown fields fail the schema.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RouteStatusArgs {
+    /// The route to look up, for example worker-7.
+    route: String,
+}
+
 fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut parsed = Args {
         role: Role::Foreman,
+        provider: None,
         config: Path::new(env!("CARGO_MANIFEST_DIR")).join("llm.toml"),
         prompt: None,
-        json: false,
+        mode: Mode::Plain,
     };
     while let Some(flag) = args.next() {
-        if flag == "--json" {
-            parsed.json = true;
+        if let Some(mode) = mode_flag(&flag) {
+            if parsed.mode != Mode::Plain {
+                return Err("pass --json or --tool, not both".to_owned());
+            }
+            parsed.mode = mode;
             continue;
         }
         let value = args.next().ok_or_else(|| format!("{flag} needs a value"))?;
@@ -50,12 +77,21 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--role" => {
                 parsed.role = value.parse().map_err(|err: UnknownRole| err.to_string())?;
             }
+            "--provider" => parsed.provider = Some(value),
             "--config" => parsed.config = PathBuf::from(value),
             "--prompt" => parsed.prompt = Some(value),
             other => return Err(format!("unknown flag {other}")),
         }
     }
     Ok(parsed)
+}
+
+fn mode_flag(flag: &str) -> Option<Mode> {
+    match flag {
+        "--json" => Some(Mode::Json),
+        "--tool" => Some(Mode::Tool),
+        _ => None,
+    }
 }
 
 #[tokio::main]
@@ -82,11 +118,16 @@ fn describe(err: &dyn std::error::Error) -> String {
     text
 }
 
-fn print_call(call: &CallRecord) {
+fn print_call(call: &CallRecord, request_id: Option<&RequestId>, reply_model: Option<&str>) {
     println!(
         "role {} provider {} model {}",
         call.role, call.provider, call.model
     );
+    println!("reply model {}", reply_model.unwrap_or("none"));
+    match request_id {
+        Some(id) => println!("request id {} source {}", id.value, id.source),
+        None => println!("request id none"),
+    }
     println!(
         "latency {} ms, prompt tokens {}, completion tokens {}",
         call.latency.as_millis(),
@@ -97,40 +138,116 @@ fn print_call(call: &CallRecord) {
 
 async fn run() -> Result<(), String> {
     let args = parse_args(std::env::args().skip(1))?;
-    let config = LlmConfig::load(&args.config)
+    let mut config = LlmConfig::load(&args.config)
         .map_err(|err| format!("{err}, copy llm.example.toml to llm.toml or pass --config"))?;
+    if let Some(provider) = &args.provider {
+        config
+            .route_to(args.role, provider)
+            .map_err(|err| describe(&err))?;
+    }
     let keys = ApiKeys::from_env(&config);
     let client = OpenAiCompatible::new(config, keys).map_err(|err| err.to_string())?;
 
-    let prompt = args.prompt.unwrap_or_else(|| {
-        if args.json {
-            JSON_PROMPT
-        } else {
-            DEFAULT_PROMPT
-        }
-        .to_owned()
-    });
+    match args.mode {
+        Mode::Plain => plain(&client, args.role, args.prompt).await,
+        Mode::Json => json(&client, args.role, args.prompt).await,
+        Mode::Tool => tool(&client, args.role, args.prompt).await,
+    }
+}
+
+async fn plain(
+    client: &OpenAiCompatible,
+    role: Role,
+    prompt: Option<String>,
+) -> Result<(), String> {
     let request = ChatRequest {
-        messages: vec![Message::user(prompt)],
+        messages: vec![Message::user(
+            prompt.unwrap_or_else(|| DEFAULT_PROMPT.to_owned()),
+        )],
         ..Default::default()
     };
-
-    if args.json {
-        let reply = client
-            .chat_json::<Probe>(args.role, request)
-            .await
-            .map_err(|err| describe(&err))?;
-        print_call(&reply.call);
-        println!("answer {} count {}", reply.value.answer, reply.value.count);
-        return Ok(());
-    }
-
-    let response = client
-        .chat(args.role, request)
+    let traced = client
+        .chat_traced(role, request)
         .await
         .map_err(|err| describe(&err))?;
-    print_call(&response.call);
+    let Traced {
+        value: response,
+        request_id,
+        reply_model,
+    } = traced;
+    print_call(&response.call, request_id.as_ref(), reply_model.as_deref());
     println!("reply:");
     println!("{}", response.content.unwrap_or_default());
     Ok(())
+}
+
+async fn json(client: &OpenAiCompatible, role: Role, prompt: Option<String>) -> Result<(), String> {
+    let request = ChatRequest {
+        messages: vec![Message::user(
+            prompt.unwrap_or_else(|| JSON_PROMPT.to_owned()),
+        )],
+        ..Default::default()
+    };
+    let traced = client
+        .chat_json_traced::<Probe>(role, request)
+        .await
+        .map_err(|err| describe(&err))?;
+    let Traced {
+        value: Structured { value: probe, call },
+        request_id,
+        reply_model,
+    } = traced;
+    print_call(&call, request_id.as_ref(), reply_model.as_deref());
+    println!("result answer {} count {}", probe.answer, probe.count);
+    println!("pass");
+    Ok(())
+}
+
+async fn tool(client: &OpenAiCompatible, role: Role, prompt: Option<String>) -> Result<(), String> {
+    let schema = JsonSchemaFormat::for_type::<RouteStatusArgs>();
+    let request = ChatRequest {
+        messages: vec![Message::user(
+            prompt.unwrap_or_else(|| TOOL_PROMPT.to_owned()),
+        )],
+        tools: vec![ToolSpec {
+            name: TOOL_NAME.to_owned(),
+            description: "Return the status of one route.".to_owned(),
+            parameters: schema.schema,
+        }],
+        ..Default::default()
+    };
+    let traced = client
+        .chat_traced(role, request)
+        .await
+        .map_err(|err| describe(&err))?;
+    let Traced {
+        value: response,
+        request_id,
+        reply_model,
+    } = traced;
+    print_call(&response.call, request_id.as_ref(), reply_model.as_deref());
+    let (raw, args) = route_status_call(&response)?;
+    println!(
+        "result tool call {TOOL_NAME} route {} arguments {raw}",
+        args.route
+    );
+    println!("pass");
+    Ok(())
+}
+
+/// Finds the `get_route_status` call and parses its arguments against the tool schema.
+fn route_status_call(response: &ChatResponse) -> Result<(String, RouteStatusArgs), String> {
+    let call = response
+        .tool_calls
+        .iter()
+        .find(|call| call.function.name == TOOL_NAME)
+        .ok_or_else(|| {
+            format!(
+                "reply has no {TOOL_NAME} tool call, finish reason {:?}",
+                response.finish_reason
+            )
+        })?;
+    let args = serde_json::from_str::<RouteStatusArgs>(&call.function.arguments)
+        .map_err(|err| format!("{TOOL_NAME} arguments do not match the schema: {err}"))?;
+    Ok((call.function.arguments.clone(), args))
 }

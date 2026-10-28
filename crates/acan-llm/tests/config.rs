@@ -1,4 +1,4 @@
-use acan_llm::{ApiKey, ApiKeys, ConfigError, LlmConfig, OpenAiCompatible};
+use acan_llm::{ApiKey, ApiKeys, ConfigError, LlmConfig, OpenAiCompatible, Role};
 
 const CANARY: &str = "sk-canary-must-never-print";
 
@@ -36,6 +36,26 @@ fn route_to_unknown_provider_fails_at_load() {
         ConfigError::UnknownProvider { provider, .. } => assert_eq!(provider, "fireworks"),
         other => panic!("expected UnknownProvider, got {other}"),
     }
+}
+
+#[test]
+fn route_to_an_undefined_provider_is_rejected_and_leaves_the_route_alone() {
+    let mut config = LlmConfig::from_toml_str(CONFIG).expect("config is valid");
+
+    match config
+        .route_to(Role::Foreman, "fireworks")
+        .expect_err("fireworks is not defined")
+    {
+        ConfigError::UnknownProvider { role, provider } => {
+            assert_eq!(role, Role::Foreman);
+            assert_eq!(provider, "fireworks");
+        }
+        other => panic!("expected UnknownProvider, got {other}"),
+    }
+    assert!(
+        format!("{config:?}").contains("provider: \"meta\""),
+        "foreman route changed after a rejected route_to"
+    );
 }
 
 #[test]

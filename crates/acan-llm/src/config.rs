@@ -63,6 +63,14 @@ impl Routing {
             Role::Fast => &self.fast,
         }
     }
+
+    fn route_mut(&mut self, role: Role) -> &mut Route {
+        match role {
+            Role::Foreman => &mut self.foreman,
+            Role::Worker => &mut self.worker,
+            Role::Fast => &mut self.fast,
+        }
+    }
 }
 
 /// Providers plus routing, as loaded from a TOML file. Holds no secrets.
@@ -109,6 +117,26 @@ impl LlmConfig {
 
     pub fn providers(&self) -> &[ProviderConfig] {
         &self.providers
+    }
+
+    /// Points `role` at `provider`, using that provider's default model.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ConfigError::UnknownProvider`] when no provider has that name. The config is
+    /// unchanged in that case.
+    pub fn route_to(&mut self, role: Role, provider: &str) -> Result<(), ConfigError> {
+        if !self.providers.iter().any(|known| known.name == provider) {
+            return Err(ConfigError::UnknownProvider {
+                role,
+                provider: provider.to_owned(),
+            });
+        }
+        *self.routing.route_mut(role) = Route {
+            provider: provider.to_owned(),
+            model: None,
+        };
+        Ok(())
     }
 
     pub(crate) fn resolve(&self, role: Role) -> Result<ResolvedRoute<'_>, ConfigError> {

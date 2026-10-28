@@ -12,6 +12,7 @@ mod key;
 mod openai;
 mod role;
 mod stub;
+mod trace;
 mod usage;
 
 pub use chat::{
@@ -25,4 +26,5 @@ pub use key::{ApiKey, ApiKeys};
 pub use openai::{OpenAiCompatible, RetryPolicy};
 pub use role::Role;
 pub use stub::{Reply, Stub};
+pub use trace::{RequestId, RequestIdSource, Traced};
 pub use usage::{CallRecord, Usage, UsageLedger, UsageTotals};
