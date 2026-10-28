@@ -1,6 +1,6 @@
 {
   "version": "plant-view/1",
-  "receipt_hash": "sha256:0e51428756f57f2901ed79c47b6ee2883116373a535b11d1b50f13410c20e0b1",
+  "receipt_hash": "sha256:512d502e43eae8a619c716130e566dc9bfac3c3b87939774f6912edd2de816c5",
   "base_sha": "178c1b07097a9f510882d139061ed50b4b44b1d4",
   "merged_sha": "a27a5f30da19543ee34362516e29bf7561214156",
   "gate_state": "blocked",
@@ -33,7 +33,14 @@
       "routes": [
         "/dashboard"
       ],
-      "rulings": []
+      "rulings": [
+        {
+          "ruling_id": "r-3",
+          "enforced": true,
+          "state": "active",
+          "label": "Dashboard keeps answering 200"
+        }
+      ]
     },
     {
       "machine_id": "errors",
@@ -158,8 +165,14 @@
         "provenance": "user",
         "example": {
           "kind": "target",
-          "before": 401,
-          "after": 429
+          "before": {
+            "state": "present",
+            "value": 401
+          },
+          "after": {
+            "state": "present",
+            "value": 429
+          }
         }
       },
       {
@@ -174,7 +187,10 @@
         "provenance": "model",
         "example": {
           "kind": "target",
-          "after": "60"
+          "after": {
+            "state": "present",
+            "value": "60"
+          }
         }
       },
       {
@@ -190,8 +206,14 @@
         "provenance": "open",
         "example": {
           "kind": "target",
-          "before": "invalid credentials",
-          "after": "too many attempts"
+          "before": {
+            "state": "present",
+            "value": "invalid credentials"
+          },
+          "after": {
+            "state": "present",
+            "value": "too many attempts"
+          }
         }
       }
     ],
@@ -315,8 +337,12 @@
           "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
           "step": "s6",
           "field": "status",
-          "value": 401,
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": 401
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:593f5e1e25b38795d44208574161c9b22d191340a38d8ebbc9c2e6206a8b28cd"
         },
         {
           "slot": "base_b",
@@ -324,8 +350,12 @@
           "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
           "step": "s6",
           "field": "status",
-          "value": 401,
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": 401
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:a9a325389879c4f83e9632651bd6c9cbbadd10388d147a18e85261b5c7d402fb"
         },
         {
           "slot": "candidate",
@@ -333,21 +363,31 @@
           "commit": "a27a5f30da19543ee34362516e29bf7561214156",
           "step": "s6",
           "field": "status",
-          "value": 429,
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": 429
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:442efc8c55e82a971ed67e3ae431c6a3c39211c6869bce9a69aa42b369692258"
         },
         {
           "slot": "target",
           "step": "s6",
           "field": "status",
-          "value": 429,
+          "value": {
+            "state": "present",
+            "value": 429
+          },
           "provenance": "human_spec"
         },
         {
           "slot": "prediction",
           "step": "s6",
           "field": "status",
-          "value": 429,
+          "value": {
+            "state": "present",
+            "value": 429
+          },
           "provenance": "model_proposal"
         }
       ]
@@ -436,14 +476,20 @@
           "commit": "a27a5f30da19543ee34362516e29bf7561214156",
           "step": "s6",
           "field": "header.retry-after",
-          "value": null,
-          "provenance": "observed"
+          "value": {
+            "state": "missing"
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:442efc8c55e82a971ed67e3ae431c6a3c39211c6869bce9a69aa42b369692258"
         },
         {
           "slot": "target",
           "step": "s6",
           "field": "header.retry-after",
-          "value": "60",
+          "value": {
+            "state": "present",
+            "value": "60"
+          },
           "provenance": "human_spec"
         }
       ]
@@ -479,8 +525,12 @@
           "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
           "step": "s1",
           "field": "status",
-          "value": 200,
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": 200
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:9fc3267c0fa56c5513c430af483a0460533cc40a338fcb272e5f6d3268b6c644"
         },
         {
           "slot": "base_b",
@@ -488,8 +538,12 @@
           "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
           "step": "s1",
           "field": "status",
-          "value": 200,
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": 200
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:a35e30788a0880751444cc10cd6b1020ce56e8ebcc126c5d4dc8b3388194b6a1"
         },
         {
           "slot": "candidate",
@@ -497,8 +551,12 @@
           "commit": "a27a5f30da19543ee34362516e29bf7561214156",
           "step": "s1",
           "field": "status",
-          "value": 200,
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": 200
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:9eca723664f68d09d9296a0b6060e0f70823e7ab13a7c4abc3e34133500871ae"
         }
       ]
     },
@@ -586,8 +644,12 @@
           "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
           "step": "s6",
           "field": "body.error",
-          "value": "invalid credentials",
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": "invalid credentials"
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:593f5e1e25b38795d44208574161c9b22d191340a38d8ebbc9c2e6206a8b28cd"
         },
         {
           "slot": "base_b",
@@ -595,8 +657,12 @@
           "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
           "step": "s6",
           "field": "body.error",
-          "value": "invalid credentials",
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": "invalid credentials"
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:a9a325389879c4f83e9632651bd6c9cbbadd10388d147a18e85261b5c7d402fb"
         },
         {
           "slot": "candidate",
@@ -604,14 +670,21 @@
           "commit": "a27a5f30da19543ee34362516e29bf7561214156",
           "step": "s6",
           "field": "body.error",
-          "value": "too many attempts",
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": "too many attempts"
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:442efc8c55e82a971ed67e3ae431c6a3c39211c6869bce9a69aa42b369692258"
         },
         {
           "slot": "target",
           "step": "s6",
           "field": "body.error",
-          "value": "too many attempts",
+          "value": {
+            "state": "present",
+            "value": "too many attempts"
+          },
           "provenance": "human_spec"
         }
       ]
@@ -677,8 +750,12 @@
           "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
           "step": "s4",
           "field": "body.links[0].clicks",
-          "value": 0,
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": 0
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:589829241e2fabd7153e5b9abe873679710093b90c91eaf246f8b2fe81f6f22d"
         },
         {
           "slot": "base_b",
@@ -686,8 +763,12 @@
           "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
           "step": "s4",
           "field": "body.links[0].clicks",
-          "value": 0,
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": 0
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:be2a9972672d72d869c76bc50a5d91b4fe05a2c8d66a3c340c1c0a1c31d3aa37"
         },
         {
           "slot": "candidate",
@@ -695,8 +776,11 @@
           "commit": "a27a5f30da19543ee34362516e29bf7561214156",
           "step": "s4",
           "field": "body.links[0].clicks",
-          "value": null,
-          "provenance": "observed"
+          "value": {
+            "state": "missing"
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:954da543343a343b8917a3d370510b4f2476109fe4919534834ab74b9e303295"
         }
       ]
     },
@@ -762,8 +846,12 @@
           "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
           "step": "s4",
           "field": "body.links[0].code",
-          "value": "b2",
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": "b2"
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:589829241e2fabd7153e5b9abe873679710093b90c91eaf246f8b2fe81f6f22d"
         },
         {
           "slot": "base_b",
@@ -771,8 +859,12 @@
           "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
           "step": "s4",
           "field": "body.links[0].code",
-          "value": "b2",
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": "b2"
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:be2a9972672d72d869c76bc50a5d91b4fe05a2c8d66a3c340c1c0a1c31d3aa37"
         },
         {
           "slot": "candidate",
@@ -780,8 +872,12 @@
           "commit": "a27a5f30da19543ee34362516e29bf7561214156",
           "step": "s4",
           "field": "body.links[0].code",
-          "value": "a1",
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": "a1"
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:954da543343a343b8917a3d370510b4f2476109fe4919534834ab74b9e303295"
         }
       ]
     },
@@ -820,8 +916,12 @@
           "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
           "step": "s1",
           "field": "status",
-          "value": 200,
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": 200
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:a3eef6e0d9c409cb54205a6f936aebbd4555793576d4c8cd7828d612493a314e"
         },
         {
           "slot": "base_b",
@@ -829,8 +929,12 @@
           "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
           "step": "s1",
           "field": "status",
-          "value": 500,
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": 500
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:e44940d1793a175eca991f33d3d29e2f709e5af2648d5aa26c7597c6842e5105"
         },
         {
           "slot": "candidate",
@@ -838,8 +942,12 @@
           "commit": "a27a5f30da19543ee34362516e29bf7561214156",
           "step": "s1",
           "field": "status",
-          "value": 200,
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": 200
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:4e8809e9664091d6de9698ef448eb346791935bfd4e31b2e2ef9dc59705ab6f3"
         }
       ]
     },
@@ -894,8 +1002,12 @@
           "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
           "step": "s3",
           "field": "status",
-          "value": 404,
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": 404
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:edb15bdfddd59e35465e9c6c182442a7320def834ec3bd37520ba1072f9db114"
         },
         {
           "slot": "base_b",
@@ -903,8 +1015,12 @@
           "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
           "step": "s3",
           "field": "status",
-          "value": 404,
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": 404
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:05bbd74d79800137beda8adae4d738774d4b2e12a70c2c42eecade9507745df1"
         }
       ]
     },
@@ -950,8 +1066,12 @@
           "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
           "step": "s1",
           "field": "status",
-          "value": 201,
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": 201
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:5f9844e3f7a60f48e5ad350b7e262c47f8f51d38db81809aec2ae24c31972e19"
         },
         {
           "slot": "candidate",
@@ -959,8 +1079,12 @@
           "commit": "a27a5f30da19543ee34362516e29bf7561214156",
           "step": "s1",
           "field": "status",
-          "value": 201,
-          "provenance": "observed"
+          "value": {
+            "state": "present",
+            "value": 201
+          },
+          "provenance": "observed",
+          "observation_hash": "sha256:acd06dcefa5e15b30bfe4d0629ac71aa6dc716ea09ce20e099f5763a2ccd8314"
         }
       ]
     }
@@ -981,6 +1105,13 @@
     "probes_total": 6,
     "routes_covered": 7,
     "routes_total": 9,
-    "masks_applied": 2
-  }
+    "masks_applied": 2,
+    "behavior": {
+      "obligations_total": 7,
+      "passed": 4,
+      "failed": 2,
+      "unknown": 1
+    }
+  },
+  "catalog_version": "captions-1"
 }

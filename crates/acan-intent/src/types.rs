@@ -180,6 +180,8 @@ text_id! {
     SlotName, "slot name";
     /// Version of the trusted view catalog.
     CatalogVersion, "catalog version";
+    /// The runner build, such as `acan-witness/0.1.0`, bound into the runner hash.
+    RunnerBuild, "runner build";
 }
 
 /// A git commit: 40 (SHA-1) or 64 (SHA-256) lowercase hex digits.
@@ -203,29 +205,48 @@ string_newtype!(
     }
 );
 
-/// A repo-relative file path with forward slashes and no `..` segment.
+/// A repo-relative file path in a portable grammar: segments joined by `/`, never a root, a
+/// drive or UNC prefix, a `.` or `..` segment, a colon (drive letters and NTFS alternate data
+/// streams), a backslash, a character Windows refuses in names, a segment ending in a dot or a
+/// space, or a reserved device name such as `NUL` or `com1.txt`.
+///
+/// The grammar alone does not prove containment: the tool boundary still resolves the joined
+/// path and checks it stays inside the worktree without following a symlink out.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct RepoPath(String);
+
+/// Device names Windows reserves in every directory, with or without an extension.
+const RESERVED_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+fn portable_segment(segment: &str) -> bool {
+    let refused_char =
+        |c: char| c.is_control() || matches!(c, '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|');
+    let stem = segment.split('.').next().unwrap_or(segment);
+    !segment.is_empty()
+        && segment != "."
+        && segment != ".."
+        && !segment.ends_with(['.', ' '])
+        && !segment.chars().any(refused_char)
+        && !RESERVED_NAMES
+            .iter()
+            .any(|name| stem.trim_end().eq_ignore_ascii_case(name))
+}
 
 string_newtype!(
     RepoPath,
     "repo-relative path",
-    "^[^/\\\\][^\\\\]*$",
+    "^[^/\\\\:*?\"<>|\\u0000-\\u001f]+(/[^/\\\\:*?\"<>|\\u0000-\\u001f]+)*$",
     |raw| {
-        let bad = raw.is_empty()
-            || raw.starts_with('/')
-            || raw.contains('\\')
-            || raw.chars().any(char::is_control)
-            || raw
-                .split('/')
-                .any(|seg| seg.is_empty() || seg == "." || seg == "..");
-        if bad {
+        if raw.split('/').all(portable_segment) {
+            Ok(())
+        } else {
             Err(InvalidValue::Malformed {
                 what: "repo-relative path",
                 raw: raw.to_owned(),
             })
-        } else {
-            Ok(())
         }
     }
 );
@@ -619,9 +640,9 @@ pub struct UnixMillis(pub u64);
 #[serde(transparent)]
 pub struct ScopeRev(pub u32);
 
-/// A JSON scalar as observed or specified: null, a boolean, a number, or a string.
+/// A JSON scalar a human or a model wrote as a literal: null, a boolean, a number, or a string.
 ///
-/// Arrays and objects are addressed field by field with [`ObservationPath`]s.
+/// Observed values keep their structure as [`Evidence`]; a scalar is only ever a literal.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
 pub enum Scalar {
@@ -635,13 +656,86 @@ pub enum Scalar {
     Text(String),
 }
 
-/// Decodes a present field as `Some`, so JSON `null` stays [`Scalar::Null`] and only a
-/// missing field (with `#[serde(default)]`) is `None`.
-pub(crate) fn present_scalar<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<Scalar>, D::Error> {
-    Scalar::deserialize(deserializer).map(Some)
+/// What one path held in one observation, target or prediction: a present JSON value, which may
+/// be `null`, an empty object or an empty array, or nothing at all.
+///
+/// A missing header and a header observed as `null` are different evidence, and so are a body
+/// with `"links": []` and a body with no `links` key.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Evidence {
+    /// The path held this value.
+    Present {
+        /// The value, with its structure.
+        value: serde_json::Value,
+    },
+    /// The path held nothing: no such header, cookie, key or element.
+    Missing {},
 }
+
+/// Decodes a present field as `Some`, so JSON `null` stays a value and only a missing field
+/// (with `#[serde(default)]`) is `None`.
+pub(crate) fn present_json<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(deserializer).map(Some)
+}
+
+/// Defines an integer newtype bounded at decode time.
+macro_rules! bounded {
+    ($(#[$meta:meta])* $name:ident($inner:ty), $min:literal ..= $max:literal, $what:literal) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, serde::Serialize)]
+        #[serde(transparent)]
+        pub struct $name($inner);
+
+        impl $name {
+            /// The smallest accepted value.
+            pub const MIN: $inner = $min;
+            /// The largest accepted value.
+            pub const MAX: $inner = $max;
+
+            /// The value.
+            #[must_use]
+            pub fn get(self) -> $inner {
+                self.0
+            }
+        }
+
+        impl TryFrom<$inner> for $name {
+            type Error = $crate::types::InvalidValue;
+
+            fn try_from(value: $inner) -> Result<Self, Self::Error> {
+                if (Self::MIN..=Self::MAX).contains(&value) {
+                    Ok(Self(value))
+                } else {
+                    Err($crate::types::InvalidValue::Malformed {
+                        what: $what,
+                        raw: value.to_string(),
+                    })
+                }
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                Self::try_from(<$inner as serde::Deserialize>::deserialize(deserializer)?).map_err(serde::de::Error::custom)
+            }
+        }
+
+        impl schemars::JsonSchema for $name {
+            fn schema_name() -> std::borrow::Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+                schemars::json_schema!({ "type": "integer", "minimum": $min, "maximum": $max })
+            }
+        }
+    };
+}
+
+pub(crate) use bounded;
 
 /// An HTTP method a probe step sends.
 #[derive(
@@ -703,4 +797,53 @@ pub enum Surface {
     Page,
     /// A test command.
     TestCmd,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn repo_paths_refuse_windows_prefixes_on_every_host() {
+        for raw in [
+            "C:/outside",
+            "C:outside",
+            "c:\\outside",
+            "\\\\server\\share\\file",
+            "//server/share",
+            "/etc/passwd",
+            "\\rooted",
+            "src/../../outside",
+            "./src/main.rs",
+            "src/./main.rs",
+            "file.txt:stream",
+            "file.txt::$DATA",
+            "src\\main.rs",
+            "NUL",
+            "src/com1.txt",
+            "lpt9",
+            "con .txt",
+            "trailing.",
+            "trailing ",
+            "a//b",
+            "",
+            "a/",
+            "what?",
+            "pipe|name",
+            "tab\tname",
+        ] {
+            assert!(raw.parse::<RepoPath>().is_err(), "{raw:?} was accepted");
+        }
+        for raw in [
+            "src/main.rs",
+            ".acan/probes/login.json",
+            "bun.lock",
+            "console.ts",
+            "a/b/c.d.e",
+            "com10.txt",
+            ".gitignore",
+        ] {
+            assert!(raw.parse::<RepoPath>().is_ok(), "{raw:?} was refused");
+        }
+    }
 }

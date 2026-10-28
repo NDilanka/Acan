@@ -14,9 +14,9 @@ use crate::expr::Predicate;
 use crate::hash::{CanonicalError, ContentHash, ExampleHash, ScopeHash, SelectorHash};
 use crate::provenance::ModelProposal;
 use crate::types::{
-    ActorName, Channel, ChoiceId, CommitSha, FieldPattern, HumanRef, InvalidValue, ItemId,
-    MachineId, MethodSelector, MustKeepId, NonEmpty, ObligationId, ObservationPath, OptionKey,
-    OrderRef, RouteTemplate, RulingId, Scalar, ScopeRev, StepId, Surface, UnixMillis,
+    ActorName, Channel, ChoiceId, CommitSha, Evidence, FieldPattern, HumanRef, InvalidValue,
+    ItemId, MachineId, MethodSelector, MustKeepId, NonEmpty, ObligationId, ObservationPath,
+    OptionKey, OrderRef, RouteTemplate, RulingId, ScopeRev, StepId, Surface, UnixMillis, bounded,
 };
 use crate::version::{ScopeConfirmationV1, ScopeDraftV1, ScopeV1};
 
@@ -150,7 +150,8 @@ impl Selector {
     #[must_use]
     pub fn is_broad(&self) -> bool {
         self.method == MethodSelector::Any
-            || self.step_context == StepContext::Any {} && self.principal == Principal::Any {}
+            || self.step_context == StepContext::Any {}
+            || self.principal == Principal::Any {}
             || self.channel == Channel::Any
     }
 }
@@ -229,15 +230,12 @@ pub struct TargetExample {
     pub step_id: StepId,
     /// The field.
     pub path: ObservationPath,
-    /// The base value the human expects today, if they gave one. JSON `null` is a value.
-    #[serde(
-        default,
-        deserialize_with = "crate::types::present_scalar",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub before: Option<Scalar>,
-    /// The value the human wants after the change.
-    pub after: Scalar,
+    /// What the human expects at the field today, if they said: a value with its structure, or
+    /// [`Evidence::Missing`] for a field that should not exist yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Evidence>,
+    /// What the human wants there after the change, or [`Evidence::Missing`] for a removal.
+    pub after: Evidence,
 }
 
 impl TargetExample {
@@ -412,12 +410,21 @@ pub struct BroadGrantAck {
     pub at: UnixMillis,
 }
 
+bounded!(
+    /// Repair rounds one order may use: at most two in v1.
+    RepairRounds(u32), 0 ..= 2, "repair rounds per order"
+);
+
 /// The repair budget of one order, fixed before the first run.
+///
+/// Rounds are counted per order, never per episode: see [`crate::RepairRound`]. Retries,
+/// new commits, new workers and new episodes never replenish a counter.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct RepairBudget {
-    /// Repair rounds per episode. Two in v1.
-    pub repair_rounds: u32,
+    /// Batched repair rounds for the whole order. Each round bounces every open episode at once
+    /// and is answered by one candidate and one full-corpus run.
+    pub repair_rounds: RepairRounds,
     /// Wall time cap for the whole order.
     pub wall_time_ms: u64,
     /// Model cost cap for the whole order, in millionths of a US dollar.
@@ -460,4 +467,73 @@ pub struct ScopeConfirmation {
     pub by: HumanRef,
     /// When.
     pub at: UnixMillis,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn selector(method: &str, step: serde_json::Value, principal: &str, channel: &str) -> Selector {
+        let mut value = json!({
+            "surface": "http", "method": method, "route_template": "/api/login",
+            "step_context": step, "principal": { "kind": principal }, "channel": channel
+        });
+        if channel == "body" {
+            value["field_path"] = json!("error");
+        }
+        serde_json::from_value(value).expect("a selector")
+    }
+
+    #[test]
+    fn each_wildcard_alone_makes_a_selector_broad() {
+        let one_step = json!({ "kind": "step", "step_id": "s1" });
+        let any_step = json!({ "kind": "any" });
+        let table = [
+            (
+                selector("POST", one_step.clone(), "anonymous", "body"),
+                false,
+            ),
+            (selector("ANY", one_step.clone(), "anonymous", "body"), true),
+            (
+                selector("POST", any_step.clone(), "anonymous", "body"),
+                true,
+            ),
+            (selector("POST", one_step.clone(), "any", "body"), true),
+            (selector("POST", one_step, "anonymous", "any"), true),
+            (selector("ANY", any_step, "any", "any"), true),
+        ];
+        for (index, (selector, broad)) in table.iter().enumerate() {
+            assert_eq!(selector.is_broad(), *broad, "row {index}");
+        }
+    }
+
+    #[test]
+    fn an_order_has_at_most_two_repair_rounds() {
+        let budget = |rounds: u32| {
+            serde_json::from_value::<RepairBudget>(json!({
+                "repair_rounds": rounds, "wall_time_ms": 1, "model_cost_micros": 1,
+                "max_episodes": 1
+            }))
+        };
+        assert!(budget(2).is_ok());
+        assert!(budget(3).is_err());
+    }
+
+    #[test]
+    fn a_target_keeps_missing_null_and_empty_apart() {
+        let target = |after: serde_json::Value| {
+            serde_json::from_value::<TargetExample>(json!({
+                "kind": "target", "step_id": "s1", "path": "body.links", "after": after
+            }))
+            .expect("a target")
+        };
+        let removed = target(json!({ "state": "missing" }));
+        let null = target(json!({ "state": "present", "value": null }));
+        let empty = target(json!({ "state": "present", "value": [] }));
+        assert_ne!(removed.after, null.after);
+        assert_ne!(null.after, empty.after);
+        assert!(removed.before.is_none());
+    }
 }

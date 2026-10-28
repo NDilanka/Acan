@@ -12,11 +12,16 @@
     "client": "client-a",
     "sent_at_ms": 5000
   },
-  "fields": {
+  "raw_ref": "sha256:84f0e02286696758fac47139e88e02483025d34bc3d23bcd11d0ea989cfe77f9",
+  "commit": "a27a5f30da19543ee34362516e29bf7561214156",
+  "channels": {
     "status": 429,
-    "body.status": "limited",
-    "body.error": "too many attempts",
-    "header.content-type": "application/json"
-  },
-  "raw_ref": "sha256:84f0e02286696758fac47139e88e02483025d34bc3d23bcd11d0ea989cfe77f9"
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "status": "limited",
+      "error": "too many attempts"
+    }
+  }
 }

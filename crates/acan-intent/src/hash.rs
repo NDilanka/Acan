@@ -156,8 +156,11 @@ macro_rules! digest {
 digest! {
     /// A probe's identity: the hash of its [`crate::ProbeSpec`].
     ProbeHash;
-    /// The hash of a probe corpus's probe identities, sorted.
+    /// The hash of a [`crate::ProbeSetManifest`]: every effective probe whole, normalization
+    /// plan included.
     ProbeSetHash;
+    /// The hash of one [`crate::NormalizationPlan`], bound into masks and decisions.
+    NormalizationHash;
     /// A confirmed scope's identity: the hash of its [`crate::Scope`].
     ScopeHash;
     /// The hash of one [`crate::Selector`].
@@ -166,6 +169,8 @@ digest! {
     ExampleHash;
     /// The hash of one [`crate::Observation`].
     ObservationHash;
+    /// The hash of one retained [`crate::ContrastExample`] a ruling was checked against.
+    ContrastExampleHash;
     /// The hash of a raw evidence blob kept in the local store: a response body, a header set,
     /// a captured value, or a sink dump.
     EvidenceHash;
@@ -175,18 +180,25 @@ digest! {
     PredicateHash;
     /// The hash of a [`crate::Fixture`].
     FixtureHash;
-    /// The hash of the runner build and its [`crate::AppContract`].
+    /// The hash of a [`crate::FixtureSetManifest`]: every fixture of the corpus, by id.
+    FixtureSetHash;
+    /// The hash of a [`crate::RunnerManifest`]: the runner build and the app contract.
     RunnerHash;
     /// The hash of one file of the tested artifact, such as a lockfile.
     ArtifactHash;
     /// The hash of the ledger up to and including one event.
     LedgerHash;
-    /// The hash of the protected overlay materialized onto the prepared commit.
+    /// The hash of an [`crate::OverlayManifest`]: the protected files materialized onto the
+    /// prepared commit.
     OverlayHash;
-    /// The hash of the controlled environment: variables, clock, and seed.
+    /// The hash of an [`crate::EnvManifest`]: variables, clock, and seed.
     EnvHash;
-    /// The hash of the container policy a run used.
+    /// The hash of a [`crate::SandboxPolicy`].
     SandboxPolicyHash;
     /// A discrepancy episode's identity: the hash of its [`crate::EpisodeKey`].
     EpisodeId;
+    /// A repair round's identity: the hash of its [`crate::RoundKey`].
+    RoundId;
+    /// A round result's identity: the hash of its [`crate::ResultKey`].
+    ResultId;
 }

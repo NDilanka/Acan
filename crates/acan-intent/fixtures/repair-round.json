@@ -1,0 +1,22 @@
+{
+  "version": "acan-repair-round/1",
+  "round_id": "sha256:61b637ca35c719d9f506a24dc093b89edb387099a9a48bd4efb28aaee89e631e",
+  "key": {
+    "order": "o-3",
+    "round": 1
+  },
+  "episodes": [
+    "sha256:1acc401ccb3ea61be044f545a3612c535b8aebe6d8333b3d55cc56773f59e736",
+    "sha256:03612417db992b26214f1f58962bbf4ad9937acb6f82746e00fb39c99f876f28"
+  ],
+  "opened_at": 1793259800000,
+  "result": {
+    "result_id": "sha256:ef92c9bd0671549422bf57a637b9db68f55ecfd40e79dacffebc2f3835a6b097",
+    "key": {
+      "round_id": "sha256:61b637ca35c719d9f506a24dc093b89edb387099a9a48bd4efb28aaee89e631e",
+      "merged_commit": "a27a5f30da19543ee34362516e29bf7561214156",
+      "receipt_hash": "sha256:512d502e43eae8a619c716130e566dc9bfac3c3b87939774f6912edd2de816c5"
+    },
+    "recorded_at": 1793260000000
+  }
+}

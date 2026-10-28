@@ -218,19 +218,31 @@
           {
             "kind": "equal",
             "paths": [
-              "cookie.session"
+              {
+                "step_id": "f2",
+                "path": "cookie.session"
+              }
             ]
           },
           {
             "kind": "unique",
             "paths": [
-              "body.links[*].code"
+              {
+                "step_id": "s8",
+                "path": "body.links[*].code"
+              }
             ]
           },
           {
             "kind": "references",
-            "from": "body.code",
-            "to": "body.links[*].code"
+            "from": {
+              "step_id": "s1",
+              "path": "body.code"
+            },
+            "to": {
+              "step_id": "s8",
+              "path": "body.links[*].code"
+            }
           }
         ],
         "maskable_paths": [
@@ -344,19 +356,31 @@
           {
             "kind": "equal",
             "paths": [
-              "cookie.session"
+              {
+                "step_id": "f2",
+                "path": "cookie.session"
+              }
             ]
           },
           {
             "kind": "unique",
             "paths": [
-              "body.links[*].code"
+              {
+                "step_id": "s4",
+                "path": "body.links[*].code"
+              }
             ]
           },
           {
             "kind": "references",
-            "from": "body.code",
-            "to": "body.links[*].code"
+            "from": {
+              "step_id": "s1",
+              "path": "body.code"
+            },
+            "to": {
+              "step_id": "s4",
+              "path": "body.links[*].code"
+            }
           }
         ],
         "maskable_paths": [
@@ -441,19 +465,31 @@
           {
             "kind": "equal",
             "paths": [
-              "cookie.session"
+              {
+                "step_id": "s1",
+                "path": "cookie.session"
+              }
             ]
           },
           {
             "kind": "unique",
             "paths": [
-              "body.links[*].code"
+              {
+                "step_id": "s2",
+                "path": "body.links[*].code"
+              }
             ]
           },
           {
             "kind": "references",
-            "from": "body.code",
-            "to": "body.links[*].code"
+            "from": {
+              "step_id": "s1",
+              "path": "body.code"
+            },
+            "to": {
+              "step_id": "s2",
+              "path": "body.links[*].code"
+            }
           }
         ],
         "maskable_paths": [

@@ -3,7 +3,8 @@
 //! An episode is one failure the repair loop is working on. Its identity, the [`EpisodeId`], is
 //! the hash of its [`EpisodeKey`]: the order, the difference's selector, and the obligation. The
 //! key never includes a probe hash, a step id, a commit, a worker or a run, so a new probe
-//! spelling, a new commit or a new worker continues the same episode and its two-repair budget.
+//! spelling, a new commit or a new worker continues the same episode. The repair budget is the
+//! order's, not the episode's: see [`crate::RepairRound`].
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -13,8 +14,8 @@ use crate::hash::{
 };
 use crate::scope::{Change, Selector};
 use crate::types::{
-    AgentRef, CommitSha, ContestId, ObligationId, ObservationPath, OrderRef, Scalar, ScopeRev,
-    StepId, TaskRef, UnixMillis,
+    AgentRef, CommitSha, ContestId, Evidence, ObligationId, ObservationPath, OrderRef, Scalar,
+    ScopeRev, StepId, TaskRef, UnixMillis,
 };
 use crate::verdict::ItemClass;
 use crate::version::{ContestV1, EpisodeV1};
@@ -146,7 +147,8 @@ pub struct DiscrepancyEpisode {
     pub evidence_revisions: Vec<EvidenceRevision>,
     /// Every candidate offered, oldest first.
     pub candidate_attempts: Vec<CandidateAttempt>,
-    /// How many times it was sent back. The order's repair budget caps it.
+    /// How many of the order's repair rounds included it. Subordinate to the order's round
+    /// count: it never exceeds the rounds the order has opened, and never adds one.
     pub bounce_count: u32,
     /// Where it stands.
     pub state: EpisodeState,
@@ -238,8 +240,8 @@ pub enum Predicted {
         step_id: StepId,
         /// The field.
         path: ObservationPath,
-        /// The value.
-        value: Scalar,
+        /// The value with its structure, or [`Evidence::Missing`] for a field that will not exist.
+        value: Evidence,
     },
 }
 

@@ -106,3 +106,23 @@ literal_tag!(
     /// Version of every MCP request, response and error envelope.
     McpV1 = "acan-mcp/1", "version"
 );
+literal_tag!(
+    /// Version of [`crate::ContrastExample`], a retained ruling example.
+    ContrastExampleV1 = "acan-contrast-example/1", "version"
+);
+literal_tag!(
+    /// Version of [`crate::RepairRound`].
+    RepairRoundV1 = "acan-repair-round/1", "version"
+);
+literal_tag!(
+    /// Version of every twin-probe request, response and error envelope.
+    TwinV1 = "acan-twin/1", "version"
+);
+literal_tag!(
+    /// Version of [`crate::Card`] and [`crate::CardRequest`].
+    CardV1 = "acan-card/1", "version"
+);
+literal_tag!(
+    /// Version of [`crate::CaptionCatalog`].
+    CaptionCatalogV1 = "acan-caption-catalog/1", "version"
+);

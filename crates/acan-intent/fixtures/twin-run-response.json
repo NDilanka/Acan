@@ -1,0 +1,233 @@
+{
+  "version": "acan-twin/1",
+  "receipt_hash": "sha256:512d502e43eae8a619c716130e566dc9bfac3c3b87939774f6912edd2de816c5",
+  "source": "sha256:762703905cfc5ffa376dfb1b89d53c9ce693dc5f3e1628b39b06935364f62b45",
+  "probe_hash": "sha256:d02a4e94840e5f2c04dafd74f2677ad60285b947a338b0503336f29b3114d6c9",
+  "steps": [
+    {
+      "step": "http",
+      "id": "s1",
+      "client": "client-a",
+      "request": {
+        "method": "POST",
+        "path": "/api/login",
+        "body": {
+          "email": "alice@example.test",
+          "password": "wrong"
+        }
+      },
+      "redirect": "manual",
+      "deadline_ms": 2000
+    },
+    {
+      "step": "http",
+      "id": "s2",
+      "client": "client-a",
+      "request": {
+        "method": "POST",
+        "path": "/api/login",
+        "body": {
+          "email": "alice@example.test",
+          "password": "wrong"
+        }
+      },
+      "redirect": "manual",
+      "deadline_ms": 2000
+    },
+    {
+      "step": "http",
+      "id": "s3",
+      "client": "client-a",
+      "request": {
+        "method": "POST",
+        "path": "/api/login",
+        "body": {
+          "email": "alice@example.test",
+          "password": "wrong"
+        }
+      },
+      "redirect": "manual",
+      "deadline_ms": 2000
+    },
+    {
+      "step": "http",
+      "id": "s4",
+      "client": "client-a",
+      "request": {
+        "method": "POST",
+        "path": "/api/login",
+        "body": {
+          "email": "alice@example.test",
+          "password": "wrong"
+        }
+      },
+      "redirect": "manual",
+      "deadline_ms": 2000
+    },
+    {
+      "step": "http",
+      "id": "s5",
+      "client": "client-a",
+      "request": {
+        "method": "POST",
+        "path": "/api/login",
+        "body": {
+          "email": "alice@example.test",
+          "password": "wrong"
+        }
+      },
+      "redirect": "manual",
+      "deadline_ms": 2000
+    },
+    {
+      "step": "http",
+      "id": "s6",
+      "client": "client-a",
+      "request": {
+        "method": "POST",
+        "path": "/api/login",
+        "body": {
+          "email": "alice@example.test",
+          "password": "still-wrong"
+        }
+      },
+      "redirect": "manual",
+      "deadline_ms": 2000
+    },
+    {
+      "step": "advance_time",
+      "id": "s7",
+      "by_ms": 61000
+    },
+    {
+      "step": "http",
+      "id": "s8",
+      "client": "client-a",
+      "request": {
+        "method": "POST",
+        "path": "/api/login",
+        "body": {
+          "email": "alice@example.test",
+          "password": "alice-pass-1"
+        }
+      },
+      "redirect": "manual",
+      "deadline_ms": 2000
+    }
+  ],
+  "caps": {
+    "max_steps": 32,
+    "max_requests": 64,
+    "max_wall_ms": 30000,
+    "max_output_bytes": 65536,
+    "max_body_bytes": 16384
+  },
+  "base": {
+    "run": {
+      "version": "acan-run/1",
+      "id": "twin-base-1",
+      "probe": "sha256:d02a4e94840e5f2c04dafd74f2677ad60285b947a338b0503336f29b3114d6c9",
+      "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+      "role": "base_a",
+      "env": {
+        "lockfile_hash": "sha256:5dd3909fd7cc889f9d3635f02a8b1eb462eaf95a85f550fad2aae6ef409f7b54",
+        "fixture_hash": "sha256:a32e44af54d64701f8173369d7ba2d302324dd128c7f59be739da635a5afd636",
+        "runtime": "bun-1.4.4"
+      },
+      "runner": "sha256:02b428f772fbef62ede2b5c9d022c4e49f7e17dbed2e7a396f402aad28a24b47",
+      "outcome": {
+        "outcome": "completed"
+      },
+      "captures": [
+        {
+          "outcome": "captured",
+          "binding": "alice_session",
+          "step_id": "f3",
+          "value_hash": "sha256:904db40d945148a0683c56f6738fcd6d98ff31517f52ed71f7759bb8130d6014"
+        }
+      ],
+      "started_at": 1793260400000,
+      "finished_at": 1793260403000
+    },
+    "observations": [
+      {
+        "version": "acan-observation/1",
+        "run_id": "twin-base-1",
+        "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+        "probe": "sha256:d02a4e94840e5f2c04dafd74f2677ad60285b947a338b0503336f29b3114d6c9",
+        "step_id": "s6",
+        "completeness": {
+          "state": "complete"
+        },
+        "request": {
+          "method": "POST",
+          "route_template": "/api/login",
+          "client": "client-a",
+          "sent_at_ms": 5000
+        },
+        "channels": {
+          "status": 401,
+          "body": {
+            "error": "invalid credentials"
+          }
+        }
+      }
+    ]
+  },
+  "candidate": {
+    "run": {
+      "version": "acan-run/1",
+      "id": "twin-candidate-1",
+      "probe": "sha256:d02a4e94840e5f2c04dafd74f2677ad60285b947a338b0503336f29b3114d6c9",
+      "commit": "a27a5f30da19543ee34362516e29bf7561214156",
+      "role": "candidate",
+      "env": {
+        "lockfile_hash": "sha256:5dd3909fd7cc889f9d3635f02a8b1eb462eaf95a85f550fad2aae6ef409f7b54",
+        "fixture_hash": "sha256:a32e44af54d64701f8173369d7ba2d302324dd128c7f59be739da635a5afd636",
+        "runtime": "bun-1.4.4"
+      },
+      "runner": "sha256:02b428f772fbef62ede2b5c9d022c4e49f7e17dbed2e7a396f402aad28a24b47",
+      "outcome": {
+        "outcome": "completed"
+      },
+      "captures": [
+        {
+          "outcome": "captured",
+          "binding": "alice_session",
+          "step_id": "f3",
+          "value_hash": "sha256:d5da48f838af05e4fa66b5e955b5984eeb78e3aee5c0a6ecccec59715180baa9"
+        }
+      ],
+      "started_at": 1793260400000,
+      "finished_at": 1793260403000
+    },
+    "observations": [
+      {
+        "version": "acan-observation/1",
+        "run_id": "twin-candidate-1",
+        "commit": "a27a5f30da19543ee34362516e29bf7561214156",
+        "probe": "sha256:d02a4e94840e5f2c04dafd74f2677ad60285b947a338b0503336f29b3114d6c9",
+        "step_id": "s6",
+        "completeness": {
+          "state": "complete"
+        },
+        "request": {
+          "method": "POST",
+          "route_template": "/api/login",
+          "client": "client-a",
+          "sent_at_ms": 5000
+        },
+        "channels": {
+          "status": 429,
+          "headers": {
+            "content-type": "application/json"
+          },
+          "body": {
+            "status": "limited",
+            "error": "too many attempts"
+          }
+        }
+      }
+    ]
+  }
+}

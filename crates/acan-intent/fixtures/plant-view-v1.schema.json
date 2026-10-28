@@ -8,6 +8,10 @@
       "description": "The order's base commit.",
       "$ref": "#/$defs/CommitSha"
     },
+    "catalog_version": {
+      "description": "The caption catalog tours are checked against.",
+      "$ref": "#/$defs/CatalogVersion"
+    },
     "counts": {
       "description": "The counts.",
       "$ref": "#/$defs/PlantCounts"
@@ -73,9 +77,47 @@
     "machines",
     "scope",
     "items",
-    "counts"
+    "counts",
+    "catalog_version"
   ],
   "$defs": {
+    "BehaviorCounts": {
+      "description": "The behavioral denominator: obligations, not route hits.",
+      "type": "object",
+      "properties": {
+        "failed": {
+          "description": "Those that failed.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "obligations_total": {
+          "description": "Acceptance, must-keep and ruling obligations that apply.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "passed": {
+          "description": "Those that passed.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "unknown": {
+          "description": "Those with no answer. Never a pass.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "obligations_total",
+        "passed",
+        "failed",
+        "unknown"
+      ]
+    },
     "Camera": {
       "description": "Where the camera goes for one tour step.",
       "type": "object",
@@ -120,6 +162,11 @@
         "slots"
       ]
     },
+    "CatalogVersion": {
+      "description": "catalog version",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/@-]{1,128}$"
+    },
     "ChoiceId": {
       "description": "choice id",
       "type": "string",
@@ -145,7 +192,7 @@
       ]
     },
     "ClassCounts": {
-      "description": "Items per class. Core-derived: the fields are private to this crate and no public\nconstructor exists, so a count can only come from the core's classification.",
+      "description": "Items per class. Core-derived: the fields are private to this crate and no public\nconstructor exists, so a count can only come from the core's classification. A decoded\ncopy is display data until [`Receipt::check_counts`] or [`crate::PlantView::check_counts`]\nhas matched it against the items.",
       "type": "object",
       "properties": {
         "authorized_but_unspecified": {
@@ -240,6 +287,43 @@
       "description": "A discrepancy episode's identity: the hash of its [`crate::EpisodeKey`].",
       "$ref": "#/$defs/ContentHash"
     },
+    "Evidence": {
+      "description": "What one path held in one observation, target or prediction: a present JSON value, which may\nbe `null`, an empty object or an empty array, or nothing at all.\n\nA missing header and a header observed as `null` are different evidence, and so are a body\nwith `\"links\": []` and a body with no `links` key.",
+      "oneOf": [
+        {
+          "description": "The path held this value.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "present"
+            },
+            "value": {
+              "description": "The value, with its structure."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "value"
+          ]
+        },
+        {
+          "description": "The path held nothing: no such header, cookie, key or element.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "missing"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "state"
+          ]
+        }
+      ]
+    },
     "EvidenceRef": {
       "description": "A reference to one evidence row of one item in the snapshot.",
       "type": "object",
@@ -286,6 +370,17 @@
         "field": {
           "$ref": "#/$defs/ObservationPath"
         },
+        "observation_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservationHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "provenance": {
           "$ref": "#/$defs/Provenance"
         },
@@ -307,7 +402,7 @@
           "$ref": "#/$defs/StepId"
         },
         "value": {
-          "$ref": "#/$defs/Scalar"
+          "$ref": "#/$defs/Evidence"
         }
       },
       "additionalProperties": false,
@@ -354,14 +449,14 @@
       "type": "object",
       "properties": {
         "after": {
-          "description": "The desired value.",
-          "$ref": "#/$defs/Scalar"
+          "description": "What the human wants, or [`Evidence::Missing`] for a removal.",
+          "$ref": "#/$defs/Evidence"
         },
         "before": {
-          "description": "The expected base value, if the human gave one. JSON `null` is a value.",
+          "description": "What the human expects today, if they said.",
           "anyOf": [
             {
-              "$ref": "#/$defs/Scalar"
+              "$ref": "#/$defs/Evidence"
             },
             {
               "type": "null"
@@ -811,6 +906,10 @@
       "type": "string",
       "pattern": "^[A-Za-z0-9._:/@-]{1,128}$"
     },
+    "ObservationHash": {
+      "description": "The hash of one [`crate::Observation`].",
+      "$ref": "#/$defs/ContentHash"
+    },
     "ObservationPath": {
       "description": "observation path",
       "type": "string",
@@ -859,6 +958,10 @@
       "description": "The plant's counts. Each has its denominator beside it.",
       "type": "object",
       "properties": {
+        "behavior": {
+          "description": "Obligations, the behavioral denominator. Drawn beside the route hits, never merged.",
+          "$ref": "#/$defs/BehaviorCounts"
+        },
         "by_class": {
           "description": "Items per class; their total is the item denominator.",
           "$ref": "#/$defs/ClassCounts"
@@ -901,7 +1004,8 @@
         "probes_total",
         "routes_covered",
         "routes_total",
-        "masks_applied"
+        "masks_applied",
+        "behavior"
       ]
     },
     "PlantItem": {
@@ -1224,27 +1328,6 @@
           "description": "The candidate, on the prepared merged commit.",
           "type": "string",
           "const": "candidate"
-        }
-      ]
-    },
-    "Scalar": {
-      "description": "A JSON scalar as observed or specified: null, a boolean, a number, or a string.\n\nArrays and objects are addressed field by field with [`ObservationPath`]s.",
-      "anyOf": [
-        {
-          "description": "JSON `null`.",
-          "type": "null"
-        },
-        {
-          "description": "A boolean.",
-          "type": "boolean"
-        },
-        {
-          "description": "A number, kept exactly as serde_json parsed it.",
-          "type": "number"
-        },
-        {
-          "description": "A string.",
-          "type": "string"
         }
       ]
     },

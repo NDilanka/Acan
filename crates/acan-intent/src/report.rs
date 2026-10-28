@@ -10,20 +10,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::episode::Contest;
 use crate::gate::PreparedCommit;
-use crate::hash::{CanonicalError, ContentHash, EpisodeId, ProbeHash, ReceiptHash, ScopeHash};
+use crate::hash::{
+    CanonicalError, ContentHash, EpisodeId, ObservationHash, ProbeHash, ReceiptHash, ScopeHash,
+};
 use crate::ledger::NotEnforcedReason;
 use crate::observation::Mask;
 use crate::probe::{RoutePath, RunRole};
-use crate::provenance::Provenance;
+use crate::provenance::{EvidenceAddress, Provenance};
 use crate::types::{
-    CommitSha, HttpMethod, InvalidValue, ItemId, MachineId, NonEmpty, ObservationPath, OrderRef,
-    RouteTemplate, RulingId, RunId, Scalar, ScopeRev, StepId,
+    CommitSha, Evidence, HttpMethod, InvalidValue, ItemId, MachineId, NonEmpty, ObservationPath,
+    OrderRef, RouteTemplate, RulingId, RunId, ScopeRev, StepId,
 };
-use crate::verdict::{Evaluation, ItemClass, ItemState};
+use crate::verdict::{Evaluation, ItemClass, ItemState, UnknownReason};
 use crate::version::ReceiptV1;
 
 /// Items per class. Core-derived: the fields are private to this crate and no public
-/// constructor exists, so a count can only come from the core's classification.
+/// constructor exists, so a count can only come from the core's classification. A decoded
+/// copy is display data until [`Receipt::check_counts`] or [`crate::PlantView::check_counts`]
+/// has matched it against the items.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ClassCounts {
@@ -55,10 +59,37 @@ impl ClassCounts {
         }
     }
 
-    /// How many items there are: the denominator of every class count.
+    /// How many items there are: the denominator of every class count. Summed in `u64`, so
+    /// decoded counts near `u32::MAX` neither panic nor wrap.
     #[must_use]
-    pub fn total(&self) -> u32 {
-        ItemClass::ALL.iter().map(|class| self.get(*class)).sum()
+    pub fn total(&self) -> u64 {
+        ItemClass::ALL
+            .iter()
+            .map(|class| u64::from(self.get(*class)))
+            .sum()
+    }
+
+    /// Whether these counts are exactly the classes of `classes`, one per item.
+    #[must_use]
+    pub fn matches(&self, classes: impl IntoIterator<Item = ItemClass>) -> bool {
+        let mut tally = [0_u64; ItemClass::ALL.len()];
+        for class in classes {
+            if let Some(slot) = ItemClass::ALL.iter().position(|c| *c == class) {
+                tally[slot] += 1;
+            }
+        }
+        ItemClass::ALL
+            .iter()
+            .zip(tally)
+            .all(|(class, count)| u64::from(self.get(*class)) == count)
+    }
+}
+
+/// The error a reader gets when stored counts do not match the stored items.
+pub(crate) fn mismatched_counts(counts: &ClassCounts, items: usize) -> InvalidValue {
+    InvalidValue::Malformed {
+        what: "class counts",
+        raw: format!("{} counted for {items} items", counts.total()),
     }
 }
 
@@ -114,10 +145,12 @@ impl EvidenceSlot {
     }
 }
 
-/// One value on the card, with the slot it belongs to and who authored it.
+/// One value on the card, with the slot it belongs to, who authored it, and for an observed
+/// value its full [`EvidenceAddress`]: run, commit, step, field and stored observation.
 ///
-/// Decoding refuses a slot and provenance that do not fit ([`EvidenceSlot::admits`]) and an
-/// observed value without its run and commit.
+/// The value keeps its structure, and a field the observation lacks is
+/// [`Evidence::Missing`], never `null`. Decoding refuses a slot and provenance that do not fit
+/// ([`EvidenceSlot::admits`]) and an observed value without its run, commit or observation hash.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 #[serde(try_from = "EvidenceRowWire")]
 pub struct EvidenceRow {
@@ -129,14 +162,32 @@ pub struct EvidenceRow {
     /// The commit the run tested, for observed values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<CommitSha>,
+    /// The stored observation the value was read from, for observed values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation_hash: Option<ObservationHash>,
     /// The step.
     pub step: StepId,
     /// The field.
     pub field: ObservationPath,
-    /// The value.
-    pub value: Scalar,
+    /// The value, or its absence.
+    pub value: Evidence,
     /// Who authored it.
     pub provenance: Provenance,
+}
+
+impl EvidenceRow {
+    /// Where an observed value was recorded. `None` for targets, predictions and core-derived
+    /// values that name no single observation.
+    #[must_use]
+    pub fn address(&self) -> Option<EvidenceAddress> {
+        Some(EvidenceAddress {
+            run_id: self.run_id.clone()?,
+            commit: self.commit.clone()?,
+            step_id: self.step.clone(),
+            path: self.field.clone(),
+            observation_hash: self.observation_hash?,
+        })
+    }
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -148,9 +199,11 @@ struct EvidenceRowWire {
     run_id: Option<RunId>,
     #[serde(default)]
     commit: Option<CommitSha>,
+    #[serde(default)]
+    observation_hash: Option<ObservationHash>,
     step: StepId,
     field: ObservationPath,
-    value: Scalar,
+    value: Evidence,
     provenance: Provenance,
 }
 
@@ -159,7 +212,7 @@ impl TryFrom<EvidenceRowWire> for EvidenceRow {
 
     fn try_from(wire: EvidenceRowWire) -> Result<Self, Self::Error> {
         let unanchored = wire.provenance == Provenance::Observed
-            && (wire.run_id.is_none() || wire.commit.is_none());
+            && (wire.run_id.is_none() || wire.commit.is_none() || wire.observation_hash.is_none());
         if !wire.slot.admits(wire.provenance) || unanchored {
             return Err(InvalidValue::Malformed {
                 what: "evidence row",
@@ -170,6 +223,7 @@ impl TryFrom<EvidenceRowWire> for EvidenceRow {
             slot: wire.slot,
             run_id: wire.run_id,
             commit: wire.commit,
+            observation_hash: wire.observation_hash,
             step: wire.step,
             field: wire.field,
             value: wire.value,
@@ -320,11 +374,33 @@ pub enum RulingStatus {
     NotReached {},
     /// Its evidence or normalization version no longer matches. Never a pass.
     Stale {},
+    /// Reached and current, but it could not be evaluated: evidence was incomplete or the
+    /// evaluator failed. Never a pass, and a required ruling in this state blocks land.
+    Unknown {
+        /// Why.
+        reason: UnknownReason,
+    },
     /// A note. Never counted as a check.
     NotEnforced {
         /// Why.
         reason: NotEnforcedReason,
     },
+}
+
+impl RulingStatus {
+    /// Whether the ruling held. Only [`RulingStatus::Held`] does; every other status blocks a
+    /// required check.
+    #[must_use]
+    pub fn held(&self) -> bool {
+        match self {
+            Self::Held {} => true,
+            Self::Violated { .. }
+            | Self::NotReached {}
+            | Self::Stale {}
+            | Self::Unknown { .. }
+            | Self::NotEnforced { .. } => false,
+        }
+    }
 }
 
 /// One ruling's line on the receipt.
@@ -398,5 +474,106 @@ impl Receipt {
     #[must_use]
     pub fn base_commit(&self) -> &CommitSha {
         &self.prepared.base_commit
+    }
+
+    /// Checks that `counts` are exactly the classes of `items`. Every reader of a stored receipt
+    /// calls this before trusting a count or a total.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidValue`] when they differ.
+    pub fn check_counts(&self) -> Result<(), InvalidValue> {
+        if self
+            .counts
+            .matches(self.items.iter().map(|item| item.class))
+        {
+            Ok(())
+        } else {
+            Err(mismatched_counts(&self.counts, self.items.len()))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    fn receipt() -> Value {
+        serde_json::from_str(include_str!("../fixtures/receipt.json")).expect("the fixture")
+    }
+
+    #[test]
+    fn decoded_counts_near_the_limit_neither_panic_nor_pass() {
+        let mut value = receipt();
+        for class in ["preserved", "error", "out_of_scope"] {
+            value["counts"][class] = json!(u32::MAX);
+        }
+        let tampered: Receipt = serde_json::from_value(value).expect("decoding");
+        assert!(tampered.counts.total() > u64::from(u32::MAX));
+        assert!(tampered.check_counts().is_err());
+        let honest: Receipt = serde_json::from_value(receipt()).expect("decoding");
+        assert_eq!(honest.check_counts(), Ok(()));
+    }
+
+    #[test]
+    fn counts_must_match_the_items_not_just_the_total() {
+        let mut value = receipt();
+        let preserved = value["counts"]["preserved"].as_u64().expect("a count");
+        let error = value["counts"]["error"].as_u64().expect("a count");
+        value["counts"]["preserved"] = json!(preserved + 1);
+        value["counts"]["error"] = json!(error - 1);
+        let shifted: Receipt = serde_json::from_value(value).expect("decoding");
+        assert!(shifted.check_counts().is_err());
+    }
+
+    #[test]
+    fn only_a_held_ruling_holds() {
+        let statuses: Vec<RulingStatus> = [
+            json!({ "status": "held" }),
+            json!({ "status": "violated", "item_ids": ["i-1"] }),
+            json!({ "status": "not_reached" }),
+            json!({ "status": "stale" }),
+            json!({ "status": "unknown", "reason": { "reason": "incomplete" } }),
+            json!({ "status": "not_enforced", "reason": { "kind": "deferred" } }),
+        ]
+        .into_iter()
+        .map(|value| serde_json::from_value(value).expect("a status"))
+        .collect();
+        let held: Vec<bool> = statuses.iter().map(RulingStatus::held).collect();
+        assert_eq!(held, [true, false, false, false, false, false]);
+    }
+
+    #[test]
+    fn the_receipt_fixture_has_an_unknown_ruling() {
+        let receipt: Receipt = serde_json::from_value(receipt()).expect("decoding");
+        assert!(
+            receipt
+                .rulings
+                .iter()
+                .any(|check| matches!(check.status, RulingStatus::Unknown { .. }))
+        );
+    }
+
+    #[test]
+    fn evidence_rows_keep_missing_apart_from_null() {
+        let row = |value: Value| {
+            serde_json::from_value::<EvidenceRow>(json!({
+                "slot": "candidate", "run_id": "run-1",
+                "commit": "0123456789abcdef0123456789abcdef01234567",
+                "observation_hash": ContentHash::of_bytes(b"o").to_string(),
+                "step": "s1", "field": "header.retry-after", "value": value,
+                "provenance": "observed"
+            }))
+            .expect("a row")
+        };
+        let missing = row(json!({ "state": "missing" }));
+        let null = row(json!({ "state": "present", "value": null }));
+        let empty = row(json!({ "state": "present", "value": [] }));
+        assert_eq!(missing.value, Evidence::Missing {});
+        assert_ne!(missing.value, null.value);
+        assert_eq!(empty.value, Evidence::Present { value: json!([]) });
+        assert!(missing.address().is_some());
     }
 }

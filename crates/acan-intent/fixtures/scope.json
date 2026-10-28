@@ -82,8 +82,14 @@
           "kind": "target",
           "step_id": "s6",
           "path": "status",
-          "before": 401,
-          "after": 429
+          "before": {
+            "state": "present",
+            "value": 401
+          },
+          "after": {
+            "state": "present",
+            "value": 429
+          }
         },
         "machine_ids": [
           "ratelimit",
@@ -126,7 +132,10 @@
           "kind": "target",
           "step_id": "s6",
           "path": "header.retry-after",
-          "after": "60"
+          "after": {
+            "state": "present",
+            "value": "60"
+          }
         },
         "machine_ids": [
           "ratelimit"
@@ -171,8 +180,14 @@
           "kind": "target",
           "step_id": "s6",
           "path": "body.error",
-          "before": "invalid credentials",
-          "after": "too many attempts"
+          "before": {
+            "state": "present",
+            "value": "invalid credentials"
+          },
+          "after": {
+            "state": "present",
+            "value": "too many attempts"
+          }
         },
         "machine_ids": [
           "auth",
@@ -282,7 +297,10 @@
             "predicate": {
               "predicate": "equals_base",
               "step_id": "s4",
-              "path": "body.links[*].code"
+              "path": "body.links[*].code",
+              "anchor": {
+                "kind": "fresh"
+              }
             },
             "text": "The links list keeps its order"
           }

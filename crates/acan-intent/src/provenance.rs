@@ -1,38 +1,44 @@
 //! Who authored a value: an observation, the core, a human, or a model.
 //!
-//! The four provenances are distinct types. A model may propose scope drafts, probe inputs,
-//! predictions, predicates and tours, and nothing else: [`ModelProposal`] only wraps a
-//! [`Proposable`] payload, and that trait is sealed. Observations, item classes, counts and masks
-//! are not proposable, and no public constructor turns a proposal into one of them.
+//! Decoded data and admitted authority are different types. Raw storage and wire records
+//! ([`crate::Observation`], [`crate::Run`], [`crate::Mask`], [`crate::Receipt`] and the rest)
+//! decode freely and carry no authority. Evidence and core results are [`Observed`],
+//! [`crate::ObservedRun`] and [`CoreDerived`]: their fields are private, they have no public
+//! constructor and no `Deserialize`, and only [`crate::admit`] and this crate's pure functions
+//! make them. Gate and evaluator APIs take only those.
 //!
-//! ```compile_fail
+//! A model may propose scope drafts, probe inputs, predictions, predicates and tours, and
+//! nothing else: [`ModelProposal`] only wraps a [`Proposable`] payload, and that trait is sealed.
+//! Model-facing surfaces decode proposal types only.
+//!
+//! ```compile_fail,E0277
 //! # use acan_intent::{ModelProposal, Observation};
 //! // An observation cannot even be wrapped as a model proposal.
 //! fn launder(_: ModelProposal<Observation>) {}
 //! ```
 //!
-//! ```compile_fail
+//! ```compile_fail,E0277
 //! # use acan_intent::{ItemClass, ModelProposal};
 //! fn launder(_: ModelProposal<ItemClass>) {}
 //! ```
 //!
-//! ```compile_fail
+//! ```compile_fail,E0277
 //! # use acan_intent::{ClassCounts, ModelProposal};
 //! fn launder(_: ModelProposal<ClassCounts>) {}
 //! ```
 //!
-//! ```compile_fail
+//! ```compile_fail,E0277
 //! # use acan_intent::{Mask, ModelProposal};
 //! fn launder(_: ModelProposal<Mask>) {}
 //! ```
 //!
-//! ```compile_fail
+//! ```compile_fail,E0277
 //! # use acan_intent::{ModelProposal, Observation, Prediction};
 //! // No conversion from a proposal to an observation exists.
 //! fn launder(p: ModelProposal<Prediction>) -> Observation { p.into() }
 //! ```
 //!
-//! ```compile_fail
+//! ```compile_fail,E0599
 //! # use acan_intent::{ModelProposal, Prediction};
 //! // A proposal is read by reference only; it has no by-value accessor.
 //! fn launder(p: ModelProposal<Prediction>) -> Prediction { p.into_inner() }
@@ -44,19 +50,77 @@
 //! let counts = ClassCounts { preserved: 3 };
 //! ```
 //!
-//! Reading a proposal is fine:
+//! ```compile_fail,E0277
+//! # use acan_intent::Observed;
+//! // Decoding JSON never yields evidence.
+//! let forged: Observed = serde_json::from_str("{}").unwrap();
+//! ```
+//!
+//! ```compile_fail,E0277
+//! # use acan_intent::ObservedRun;
+//! // Nor a whole admitted run.
+//! let forged: ObservedRun = serde_json::from_str("{}").unwrap();
+//! ```
+//!
+//! ```compile_fail,E0277
+//! # use acan_intent::{CoreDerived, Mask};
+//! // Nor a core-derived mask.
+//! let forged: CoreDerived<Mask> = serde_json::from_str("{}").unwrap();
+//! ```
+//!
+//! ```compile_fail,E0277
+//! # use acan_intent::{HumanRef, HumanSpec, Scope};
+//! // Nor a human spec: a human value is built only after the human is authenticated.
+//! let forged: HumanSpec<Scope> = serde_json::from_str("{}").unwrap();
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use acan_intent::{Evidence, EvidenceAddress, ModelProposal, Observed, ProposedValue};
+//! // A proposed scalar cannot be relabelled as observed.
+//! fn launder(p: &ModelProposal<ProposedValue>, at: EvidenceAddress) -> Observed {
+//!     let value = serde_json::to_value(&p.proposal().value).unwrap();
+//!     Observed::new(Evidence::Present { value }, at)
+//! }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use acan_intent::{ObservedRun, Run};
+//! // A run record cannot be admitted without the admission check.
+//! fn launder(run: Run) -> ObservedRun { ObservedRun::admitted(run, Vec::new()) }
+//! ```
+//!
+//! ```compile_fail,E0624
+//! # use acan_intent::{CoreDerived, Mask};
+//! // A decoded mask cannot be promoted to a core-derived one.
+//! fn launder(mask: Mask) -> CoreDerived<Mask> { CoreDerived::derived(mask) }
+//! ```
+//!
+//! ```compile_fail,E0308
+//! # use acan_intent::compare::{self, Contrast};
+//! # use acan_intent::Mask;
+//! // Comparison takes core-derived masks only, never decoded ones.
+//! fn launder(contrast: &Contrast<'_>, masks: &[Mask]) {
+//!     let _ = compare::compare(contrast, masks);
+//! }
+//! ```
+//!
+//! Reading a proposal, and passing core-derived masks to comparison, is fine:
 //!
 //! ```
-//! # use acan_intent::{ModelProposal, Prediction};
+//! # use acan_intent::compare::{self, Contrast};
+//! # use acan_intent::{CoreDerived, Mask, ModelProposal, Prediction};
 //! fn read(p: &ModelProposal<Prediction>) -> &Prediction { p.proposal() }
+//! fn compare_with(contrast: &Contrast<'_>, masks: &[CoreDerived<Mask>]) {
+//!     let _ = compare::compare(contrast, masks);
+//! }
 //! ```
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::hash::EvidenceHash;
+use crate::hash::ObservationHash;
 use crate::types::{
-    CommitSha, HumanRef, ModelRef, ObservationPath, RunId, Scalar, StepId, UnixMillis,
+    CommitSha, Evidence, HumanRef, ModelRef, ObservationPath, RunId, StepId, UnixMillis,
 };
 use crate::version::literal_tag;
 
@@ -150,8 +214,10 @@ impl<T: Proposable> ModelProposal<T> {
 }
 
 /// A value a human wrote or confirmed.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+///
+/// It serializes for display and storage but never decodes: trusted server code builds one
+/// only after authenticating the human member, so no request or model reply can carry one in.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 pub struct HumanSpec<T> {
     provenance: HumanSpecTag,
     by: HumanRef,
@@ -160,7 +226,7 @@ pub struct HumanSpec<T> {
 }
 
 impl<T> HumanSpec<T> {
-    /// A value the human `by` wrote at `at`.
+    /// A value the authenticated human `by` wrote at `at`.
     pub fn new(value: T, by: HumanRef, at: UnixMillis) -> Self {
         Self {
             provenance: HumanSpecTag,
@@ -194,36 +260,51 @@ impl<T> HumanSpec<T> {
     }
 }
 
-/// A value computed by the core. Only this crate's pure functions construct one.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+/// A value computed by the core. Only this crate's pure functions construct one, and it never
+/// decodes: a stored or transmitted copy of the inner value is plain data.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 pub struct CoreDerived<T> {
-    pub(crate) provenance: CoreDerivedTag,
-    pub(crate) value: T,
+    provenance: CoreDerivedTag,
+    value: T,
 }
 
 impl<T> CoreDerived<T> {
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "P01's pure functions derive values")
+    )]
+    pub(crate) fn derived(value: T) -> Self {
+        Self {
+            provenance: CoreDerivedTag,
+            value,
+        }
+    }
+
     /// The value.
     pub fn value(&self) -> &T {
         &self.value
     }
 }
 
-/// One observed scalar with the address of the evidence it came from.
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+/// One observed value, with its structure or its absence, and the address it was read from.
+///
+/// Only [`crate::ObservedRun::observed`] makes one, from an admitted run. It serializes for the
+/// card and never decodes.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 pub struct Observed {
     provenance: ObservedTag,
-    value: Scalar,
+    value: Evidence,
     run_id: RunId,
     commit: CommitSha,
     step_id: StepId,
     path: ObservationPath,
-    evidence_hash: EvidenceHash,
+    observation_hash: ObservationHash,
 }
 
-/// Where an observed value was recorded.
-#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+/// Where an observed value was recorded: the run, the commit it tested, the step, the field,
+/// and the stored observation it was read from.
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct EvidenceAddress {
     /// The run.
     pub run_id: RunId,
@@ -233,14 +314,12 @@ pub struct EvidenceAddress {
     pub step_id: StepId,
     /// The field.
     pub path: ObservationPath,
-    /// The raw evidence it was read from.
-    pub evidence_hash: EvidenceHash,
+    /// The stored observation.
+    pub observation_hash: ObservationHash,
 }
 
 impl Observed {
-    /// An observed value at `address`.
-    #[must_use]
-    pub fn new(value: Scalar, address: EvidenceAddress) -> Self {
+    pub(crate) fn new(value: Evidence, address: EvidenceAddress) -> Self {
         Self {
             provenance: ObservedTag,
             value,
@@ -248,13 +327,13 @@ impl Observed {
             commit: address.commit,
             step_id: address.step_id,
             path: address.path,
-            evidence_hash: address.evidence_hash,
+            observation_hash: address.observation_hash,
         }
     }
 
-    /// The value.
+    /// The value, or [`Evidence::Missing`].
     #[must_use]
-    pub fn value(&self) -> &Scalar {
+    pub fn value(&self) -> &Evidence {
         &self.value
     }
 
@@ -266,7 +345,7 @@ impl Observed {
             commit: self.commit.clone(),
             step_id: self.step_id.clone(),
             path: self.path.clone(),
-            evidence_hash: self.evidence_hash,
+            observation_hash: self.observation_hash,
         }
     }
 }

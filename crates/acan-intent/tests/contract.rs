@@ -1,20 +1,19 @@
 //! Contract tests: every fixture round-trips, unknown fields and versions are refused, the pass
-//! rule holds over every class, and every stub fails closed.
+//! rule holds over every class, and the fixtures bind each other. The fail-closed tests of the
+//! pure stubs live beside the stubs, in the modules their owners edit.
 
 use std::path::{Path, PathBuf};
 
-use acan_intent::compare::{self, CompareError, Contrast, RunEvidence};
-use acan_intent::fold::{self, FoldError};
-use acan_intent::predicate::{self, PredicateError};
-use acan_intent::receipt::{self, ProbeResult, ReceiptError, ReceiptInputs};
 use acan_intent::{
-    AppContract, Comparison, Contest, ContestRequest, ContestResponse, Coverage,
-    DiscrepancyEpisode, EvidenceRow, FieldPattern, FoldedLedger, GateState, GetReceiptRequest,
-    GetReceiptResponse, GetRulingsRequest, GetRulingsResponse, GetScopeRequest, GetScopeResponse,
-    ItemClass, ItemState, LedgerEvent, MaskablePath, McpError, McpErrorCode, Observation,
-    ObservationPath, PlantView, PostReadbackRequest, PostReadbackResponse, ProbeCorpus, Receipt,
-    RouteSource, Run, Scope, ScopeConfirmation, ScopeDraft, ScopeItem, Selector, TourView,
-    Unsupported, WindowMs,
+    AppContract, CaptionCatalog, Card, CardRequest, Contest, ContestRequest, ContestResponse,
+    ContrastExample, Coverage, DiscrepancyEpisode, Evidence, EvidenceRef, EvidenceRow,
+    EvidenceSlot, FieldPattern, GateState, GetReceiptRequest, GetReceiptResponse,
+    GetRulingsRequest, GetRulingsResponse, GetScopeRequest, GetScopeResponse, ItemClass, ItemState,
+    LedgerEvent, MaskablePath, McpError, McpErrorCode, Observation, ObservationPath, PlantView,
+    PostReadbackRequest, PostReadbackResponse, ProbeCorpus, Receipt, RepairRound, RouteSource, Run,
+    Scope, ScopeConfirmation, ScopeDraft, ScopeItem, Selector, SlotSpec, TourView, TwinError,
+    TwinRunRequest, TwinRunResponse, TwinSaveRequest, TwinSaveResponse, Unsupported, ValueType,
+    WindowMs,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -70,15 +69,20 @@ fn first_difference(left: &Value, right: &Value, pointer: String) -> Option<Stri
 }
 
 /// Objects whose keys are data, not field names.
-const MAP_KEYS: [&str; 5] = [
-    "fields",
+const MAP_KEYS: [&str; 9] = [
     "slots",
+    "typed_slot_bindings",
     "env",
+    "vars",
     "headers",
+    "cookies",
+    "side_effects",
+    "files",
     "effective_artifact_hashes",
 ];
 
-/// Every JSON pointer to an object that is a struct, not a map or free JSON.
+/// Every JSON pointer to an object that is a struct, not a map or free JSON. Free JSON is a
+/// body, a sink snapshot, or the value of present evidence.
 fn struct_pointers(
     value: &Value,
     pointer: String,
@@ -87,15 +91,17 @@ fn struct_pointers(
 ) {
     match value {
         Value::Object(map) => {
-            let is_map = parent_key.is_some_and(|key| MAP_KEYS.contains(&key));
-            let is_free_json = parent_key == Some("body") && pointer.ends_with("/request/body");
-            if is_free_json {
-                return;
-            }
-            if !is_map {
+            if !parent_key.is_some_and(|key| MAP_KEYS.contains(&key)) {
                 out.push(pointer.clone());
             }
+            let present = map.get("state") == Some(&json!("present"));
             for (key, child) in map {
+                let free = key == "body"
+                    || (key == "value" && present)
+                    || parent_key == Some("side_effects");
+                if free {
+                    continue;
+                }
                 let escaped = key.replace('~', "~0").replace('/', "~1");
                 struct_pointers(child, format!("{pointer}/{escaped}"), Some(key), out);
             }
@@ -208,6 +214,16 @@ envelopes! {
     mcp_error_forbidden: McpError = "mcp-error-forbidden.json";
     mcp_error_unsupported: McpError = "mcp-error-unsupported.json";
     mcp_error_scope_not_confirmed: McpError = "mcp-error-scope-not-confirmed.json";
+    contrast_example: ContrastExample = "contrast-example.json";
+    repair_round: RepairRound = "repair-round.json";
+    twin_run_request: TwinRunRequest = "twin-run-request.json";
+    twin_run_response: TwinRunResponse = "twin-run-response.json";
+    twin_save_request: TwinSaveRequest = "twin-save-request.json";
+    twin_save_response: TwinSaveResponse = "twin-save-response.json";
+    twin_error_cap_exceeded: TwinError = "twin-error-cap-exceeded.json";
+    card_request: CardRequest = "card-request.json";
+    card: Card = "card.json";
+    caption_catalog: CaptionCatalog = "caption-catalog.json";
 }
 
 #[test]
@@ -271,7 +287,11 @@ fn plant_view_fixture_shows_every_mark() {
         );
         assert_eq!(view.counts.by_class.get(class), 1);
     }
-    assert_eq!(view.counts.by_class.total() as usize, view.items.len());
+    assert_eq!(
+        usize::try_from(view.counts.by_class.total()).ok(),
+        Some(view.items.len())
+    );
+    assert_eq!(view.check_counts(), Ok(()));
     for state in [
         ItemState::Open,
         ItemState::Bounced,
@@ -369,10 +389,143 @@ fn plant_view_schema_is_current() {
     let committed = std::fs::read_to_string(&path)
         .unwrap_or_default()
         .replace("\r\n", "\n");
-    assert_eq!(
-        committed, generated,
-        "plant-view-v1.schema.json is stale; rerun with ACAN_BLESS=1"
+    let first_stale = committed
+        .lines()
+        .zip(generated.lines())
+        .position(|(old, new)| old != new)
+        .or_else(|| (committed.lines().count() != generated.lines().count()).then_some(0));
+    assert!(
+        first_stale.is_none(),
+        "plant-view-v1.schema.json is stale from line {}; rerun with ACAN_BLESS=1",
+        first_stale.map_or(0, |line| line + 1)
     );
+}
+
+#[test]
+fn every_mandatory_item_is_reachable_in_the_directed_tour() {
+    let view: PlantView = load("plant-view-v1.json");
+    let Some(TourView::Directed { tour, .. }) = &view.tour else {
+        panic!("the fixture has a directed tour");
+    };
+    let mandatory: Vec<&str> = view
+        .mandatory_items()
+        .map(|item| item.item_id.as_str())
+        .collect();
+    for id in ["d-links-clicks", "chk-links-delete", "chk-signup-store"] {
+        assert!(mandatory.contains(&id), "{id} is not mandatory");
+    }
+    for item in view.mandatory_items() {
+        assert!(
+            tour.reaches(&item.item_id),
+            "{} is unreachable",
+            item.item_id
+        );
+    }
+}
+
+#[test]
+fn every_caption_slot_resolves_to_a_row_its_template_accepts() {
+    let view: PlantView = load("plant-view-v1.json");
+    let catalog: CaptionCatalog = load("caption-catalog.json");
+    assert_eq!(catalog.catalog_version, view.catalog_version);
+    let Some(TourView::Directed { tour, .. }) = &view.tour else {
+        panic!("the fixture has a directed tour");
+    };
+    for step in &tour.steps {
+        let template = catalog
+            .template(&step.caption.template_id)
+            .unwrap_or_else(|| panic!("no template {}", step.caption.template_id));
+        let bound: Vec<_> = step.caption.slots.keys().collect();
+        let declared: Vec<_> = template.slots.keys().collect();
+        assert_eq!(bound, declared, "{}", step.caption.template_id);
+        for (slot, reference) in &step.caption.slots {
+            let row = view
+                .resolve(reference)
+                .unwrap_or_else(|| panic!("{slot} does not resolve"));
+            assert!(template.slots[slot].accepts(row), "{slot} is not accepted");
+        }
+        for reference in &step.evidence_refs {
+            assert!(
+                view.resolve(reference).is_some(),
+                "an evidence ref does not resolve"
+            );
+        }
+    }
+}
+
+#[test]
+fn stale_swapped_and_hypothetical_bindings_are_refused() {
+    let view: PlantView = load("plant-view-v1.json");
+    let item = view
+        .items
+        .iter()
+        .find(|item| {
+            item.evidence
+                .iter()
+                .any(|row| row.slot == EvidenceSlot::BaseA)
+        })
+        .expect("an item with base evidence");
+    let base = item
+        .evidence
+        .iter()
+        .find(|row| row.slot == EvidenceSlot::BaseA)
+        .expect("a base row");
+    let reference = EvidenceRef {
+        item_id: item.item_id.clone(),
+        slot: base.slot,
+        step: base.step.clone(),
+        field: base.field.clone(),
+    };
+    assert_eq!(view.resolve(&reference), Some(base));
+    let stale = EvidenceRef {
+        item_id: "i-gone".parse().expect("an id"),
+        ..reference.clone()
+    };
+    assert!(view.resolve(&stale).is_none());
+    let candidate = SlotSpec {
+        column: EvidenceSlot::Candidate,
+        value_type: ValueType::Status,
+        unit: None,
+    };
+    assert!(
+        !candidate.accepts(base),
+        "a base row filled a candidate slot"
+    );
+    let target = SlotSpec {
+        column: EvidenceSlot::Target,
+        value_type: ValueType::Status,
+        unit: None,
+    };
+    let observed_target = EvidenceRow {
+        slot: EvidenceSlot::Target,
+        ..base.clone()
+    };
+    assert!(
+        !target.accepts(&observed_target),
+        "an observation filled a target slot"
+    );
+}
+
+#[test]
+fn the_card_is_the_receipt_s_own_item_and_context() {
+    let receipt: Receipt = load("receipt.json");
+    let card: Card = load("card.json");
+    let request: CardRequest = load("card-request.json");
+    let hash = receipt.receipt_hash().expect("hashing the receipt");
+    assert_eq!(card.receipt_hash, hash);
+    assert_eq!(request.receipt_hash, hash);
+    assert_eq!(request.item_id, card.item.item_id);
+    let item = receipt
+        .items
+        .iter()
+        .find(|item| item.item_id == card.item.item_id)
+        .expect("the card's item is on the receipt");
+    assert_eq!(&card.item, item);
+    assert_eq!(card.prepared, receipt.prepared);
+    assert_eq!(card.behavior, receipt.behavior);
+    assert_eq!(card.counts, receipt.counts);
+    let view: PlantView = load("plant-view-v1.json");
+    assert_eq!(view.counts.behavior, receipt.behavior);
 }
 
 #[test]
@@ -393,8 +546,16 @@ fn status_is_a_channel_not_a_body_field() {
     assert!("status".parse::<MaskablePath>().is_err());
     assert!("body.links[*].code".parse::<MaskablePath>().is_ok());
     let observation: Observation = load("observation.json");
-    assert!(observation.fields.contains_key(&status));
-    assert!(observation.fields.contains_key(&body_status));
+    assert_eq!(
+        observation.lookup(&status),
+        Evidence::Present { value: json!(429) }
+    );
+    assert_eq!(
+        observation.lookup(&body_status),
+        Evidence::Present {
+            value: json!("limited")
+        }
+    );
 }
 
 #[test]
@@ -432,10 +593,12 @@ fn a_scope_item_without_acceptance_is_refused() {
 
 #[test]
 fn evidence_rows_keep_hypotheticals_out_of_run_columns() {
+    let observation = "sha256:84f0e02286696758fac47139e88e02483025d34bc3d23bcd11d0ea989cfe77f9";
     let row = |slot: &str, provenance: &str| {
         serde_json::from_value::<EvidenceRow>(json!({
             "slot": slot, "run_id": "run-1", "commit": "0123456789abcdef0123456789abcdef01234567",
-            "step": "s1", "field": "status", "value": 200, "provenance": provenance
+            "observation_hash": observation, "step": "s1", "field": "status",
+            "value": { "state": "present", "value": 200 }, "provenance": provenance
         }))
     };
     assert!(row("candidate", "observed").is_ok());
@@ -444,10 +607,16 @@ fn evidence_rows_keep_hypotheticals_out_of_run_columns() {
     assert!(row("prediction", "observed").is_err());
     assert!(row("target", "human_spec").is_ok());
     let unanchored = json!({
-        "slot": "candidate", "step": "s1", "field": "status", "value": 200,
-        "provenance": "observed"
+        "slot": "candidate", "step": "s1", "field": "status",
+        "value": { "state": "present", "value": 200 }, "provenance": "observed"
     });
-    assert!(serde_json::from_value::<EvidenceRow>(unanchored).is_err());
+    assert!(serde_json::from_value::<EvidenceRow>(unanchored.clone()).is_err());
+    let mut no_observation = unanchored.clone();
+    no_observation["run_id"] = json!("run-1");
+    no_observation["commit"] = json!("0123456789abcdef0123456789abcdef01234567");
+    assert!(serde_json::from_value::<EvidenceRow>(no_observation.clone()).is_err());
+    no_observation["observation_hash"] = json!(observation);
+    assert!(serde_json::from_value::<EvidenceRow>(no_observation).is_ok());
 }
 
 #[test]
@@ -496,100 +665,4 @@ fn the_unsupported_mcp_error_names_the_operation() {
     let fixture: McpError = load("mcp-error-unsupported.json");
     assert_eq!(built, fixture);
     assert!(matches!(fixture.error, McpErrorCode::Unsupported { .. }));
-}
-
-fn comparison() -> Comparison {
-    serde_json::from_value(json!({
-        "probe_hash": raw("run.json")["probe"],
-        "base_a": [], "base_b": [], "candidate": [],
-        "outcome": { "kind": "unchanged" }
-    }))
-    .expect("decoding a comparison")
-}
-
-#[test]
-fn every_p01_stub_fails_closed() {
-    let corpus: ProbeCorpus = load("probe-corpus.json");
-    let run: Run = load("run.json");
-    let observations = vec![load::<Observation>("observation.json")];
-    let evidence = RunEvidence {
-        run: &run,
-        observations: &observations,
-    };
-    let contrast = Contrast {
-        probe: &corpus.probes[0],
-        base_a: evidence,
-        base_b: evidence,
-        candidate: evidence,
-    };
-    let plan = &corpus.probes[0].normalization;
-    let comparison = comparison();
-    let scope: Scope = load("scope.json");
-    let predicate = &scope.body.may[0].acceptance.first().predicate;
-
-    let unsupported = |op: &str| Unsupported(Box::leak(op.to_owned().into_boxed_str()));
-    let compare_failed = |result: Result<(), CompareError>, op: &str| {
-        assert_eq!(result, Err(CompareError::Unsupported(unsupported(op))));
-    };
-    compare_failed(
-        compare::canonicalize(&observations[0], plan).map(drop),
-        "P01: canonicalize",
-    );
-    compare_failed(
-        compare::derive_masks(&contrast).map(drop),
-        "P01: derive_masks",
-    );
-    compare_failed(compare::compare(&contrast, &[]).map(drop), "P01: compare");
-
-    assert_eq!(
-        predicate::evaluate(predicate, &contrast, &comparison),
-        Err(PredicateError::Unsupported(unsupported("P01: evaluate")))
-    );
-    assert_eq!(
-        predicate::check_examples(predicate, &[(contrast, &comparison)], &[]),
-        Err(PredicateError::Unsupported(unsupported(
-            "P01: check_examples"
-        )))
-    );
-
-    let events: Vec<LedgerEvent> = [
-        "ledger-decision.json",
-        "ledger-note.json",
-        "ledger-decision-supersede.json",
-        "ledger-probe-retired.json",
-    ]
-    .into_iter()
-    .map(load)
-    .collect();
-    assert_eq!(
-        fold::fold(&events),
-        Err(FoldError::Unsupported(unsupported("P01: fold")))
-    );
-
-    let receipt_fixture: Receipt = load("receipt.json");
-    let confirmation: ScopeConfirmation = load("scope-confirmation.json");
-    let ledger: FoldedLedger = serde_json::from_value(json!({
-        "head": { "event_seq": 0 }, "expectations": [], "notes": [], "retired_probes": []
-    }))
-    .expect("decoding a folded ledger");
-    let results = [ProbeResult {
-        contrast,
-        masks: &[],
-        comparison: &comparison,
-    }];
-    let inputs = ReceiptInputs {
-        scope: &scope,
-        confirmation: &confirmation,
-        prepared: &receipt_fixture.prepared,
-        ledger: &ledger,
-        corpus: &corpus,
-        results: &results,
-        episodes: &[],
-        contests: &[],
-        gate_state: GateState::Running,
-    };
-    assert_eq!(
-        receipt::build_receipt(&inputs),
-        Err(ReceiptError::Unsupported(unsupported("P01: build_receipt")))
-    );
 }

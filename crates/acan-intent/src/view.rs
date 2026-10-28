@@ -11,24 +11,54 @@
 //! `bounced attempts/budget` chip, `state: residue` the amber card, `class: violates_ruling` the
 //! flashing tag of `ruling_id`, enforced rulings brass tags, not-enforced rulings hollow tags,
 //! unknown classes a grey mark, and `gate_state` with `merged_sha` the order plate.
+//!
+//! Ownership: R01 builds the plant view and every [`Card`] deterministically from one receipt;
+//! API01 serves them; T01 admits tours; the UI only decodes. Transport, frozen here:
+//! `GET /api/orders/{order}/plant-view` answers the order's latest [`PlantView`], and
+//! `GET /api/receipts/{receipt_hash}/cards/{item_id}` answers one [`Card`] ([`CardRequest`] names
+//! the same two keys). A card is addressed by the receipt hash, so it never changes after the
+//! view that links to it; an unknown receipt or item fails as `not_found` in the
+//! [`crate::McpError`] envelope, never as an empty card.
+//!
+//! The view carries what the plant draws and the totals and denominators no layout may drop.
+//! The card carries the rest of the receipt for one item: its evaluation and reasons, every
+//! denominator, the applied masks, every ruling with its predicate and examples, the contests,
+//! and the full gate context.
+//!
+//! Tour admission (T01), binding: a proposed tour is admitted only when its receipt hash is the
+//! view's, every step's item, camera machine and staged mark exist in the view, every caption
+//! names a template of the view's catalog and binds exactly its slots, every slot's
+//! [`EvidenceRef`] resolves through [`PlantView::resolve`], the resolved row is in the column the
+//! template's [`SlotSpec`] declares and has a provenance that column admits
+//! ([`SlotSpec::accepts`]), and every mandatory item ([`PlantItem::is_mandatory`]) is reachable
+//! ([`Tour::reaches`]). An invalid, stale, swapped or hypothetical binding rejects the whole tour,
+//! and the UI falls back to the deterministic tour and the plain card. Admitted slots become a
+//! [`BoundItemView`] whose values are copies of the resolved rows, never the model's text.
 
 use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::hash::{EpisodeId, EvidenceHash, ProbeHash, ReceiptHash};
+use crate::episode::Contest;
+use crate::expr::Predicate;
+use crate::gate::PreparedCommit;
+use crate::hash::{ContrastExampleHash, EpisodeId, NormalizationHash, ProbeHash, ReceiptHash};
+use crate::ledger::Applicability;
+use crate::observation::Mask;
 use crate::probe::RoutePath;
-use crate::provenance::Provenance;
-use crate::report::{ClassCounts, EvidenceRow, EvidenceSlot, GateState, SequenceStep};
-use crate::scope::{ChoiceOption, ItemProvenance, TargetKind};
+use crate::report::{
+    BehaviorCounts, ClassCounts, EvidenceRow, EvidenceSlot, GateState, ProbeCounts, ReceiptItem,
+    RouteCounts, RulingCheck, SequenceStep, mismatched_counts,
+};
+use crate::scope::{ChoiceOption, ItemProvenance, Selector, TargetKind};
 use crate::types::{
-    CatalogVersion, ChoiceId, CommitSha, ItemId, MachineId, ModelRef, MustKeepId, NonEmpty,
-    ObligationId, ObservationPath, OrderRef, RouteTemplate, RulingId, RunId, Scalar, ScopeRev,
-    SlotName, StepId, TemplateId, UnixMillis,
+    CatalogVersion, ChoiceId, CommitSha, Evidence, InvalidValue, ItemId, MachineId, ModelRef,
+    MustKeepId, NonEmpty, ObligationId, ObservationPath, OrderRef, RouteTemplate, RulingId,
+    ScopeRev, SlotName, StepId, TemplateId, UnixMillis,
 };
 use crate::verdict::{ItemClass, ItemState};
-use crate::version::PlantViewV1;
+use crate::version::{CaptionCatalogV1, CardV1, PlantViewV1};
 
 /// The order on the plate.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
@@ -109,15 +139,11 @@ pub struct PlantMachine {
 pub struct ExampleView {
     /// Always `target`.
     pub kind: TargetKind,
-    /// The expected base value, if the human gave one. JSON `null` is a value.
-    #[serde(
-        default,
-        deserialize_with = "crate::types::present_scalar",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub before: Option<Scalar>,
-    /// The desired value.
-    pub after: Scalar,
+    /// What the human expects today, if they said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Evidence>,
+    /// What the human wants, or [`Evidence::Missing`] for a removal.
+    pub after: Evidence,
 }
 
 /// A may-change item's footprint.
@@ -213,6 +239,19 @@ pub struct PlantItem {
     pub evidence: Vec<EvidenceRow>,
 }
 
+impl PlantItem {
+    /// Whether every tour must reach this item: a class that does not pass, or a bounced,
+    /// residue or stopped item.
+    #[must_use]
+    pub fn is_mandatory(&self) -> bool {
+        !self.class.counts_toward_pass()
+            || matches!(
+                self.state,
+                ItemState::Bounced | ItemState::Residue | ItemState::Stopped
+            )
+    }
+}
+
 /// The plant's counts. Each has its denominator beside it.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -229,6 +268,8 @@ pub struct PlantCounts {
     pub routes_total: u32,
     /// Masks applied.
     pub masks_applied: u32,
+    /// Obligations, the behavioral denominator. Drawn beside the route hits, never merged.
+    pub behavior: BehaviorCounts,
 }
 
 /// The view of one receipt snapshot.
@@ -255,9 +296,49 @@ pub struct PlantView {
     pub items: Vec<PlantItem>,
     /// The counts.
     pub counts: PlantCounts,
+    /// The caption catalog tours are checked against.
+    pub catalog_version: CatalogVersion,
     /// The tour, if one was made and validated. Absent means the plain card.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tour: Option<TourView>,
+}
+
+impl PlantView {
+    /// The evidence row `reference` names: the row of item `item_id` with the same slot, step
+    /// and field. `None` when there is none, which rejects the tour that used it.
+    #[must_use]
+    pub fn resolve(&self, reference: &EvidenceRef) -> Option<&EvidenceRow> {
+        self.items
+            .iter()
+            .find(|item| item.item_id == reference.item_id)?
+            .evidence
+            .iter()
+            .find(|row| {
+                row.slot == reference.slot
+                    && row.step == reference.step
+                    && row.field == reference.field
+            })
+    }
+
+    /// The items every tour must reach, in view order.
+    pub fn mandatory_items(&self) -> impl Iterator<Item = &PlantItem> {
+        self.items.iter().filter(|item| item.is_mandatory())
+    }
+
+    /// Checks that the class counts are exactly the classes of the items. The UI calls this
+    /// before drawing a count.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidValue`] when they differ.
+    pub fn check_counts(&self) -> Result<(), InvalidValue> {
+        let counts = &self.counts.by_class;
+        if counts.matches(self.items.iter().map(|item| item.class)) {
+            Ok(())
+        } else {
+            Err(mismatched_counts(counts, self.items.len()))
+        }
+    }
 }
 
 /// A zoom level of the camera catalog.
@@ -396,6 +477,14 @@ pub struct Tour {
     pub steps: NonEmpty<TourStep>,
 }
 
+impl Tour {
+    /// Whether a step of the tour is about `item_id`.
+    #[must_use]
+    pub fn reaches(&self, item_id: &ItemId) -> bool {
+        self.steps.iter().any(|step| &step.item_id == item_id)
+    }
+}
+
 /// A validated tour and who ordered it. The UI shows a `directed` or `plain` toggle.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "mode", rename_all = "snake_case", deny_unknown_fields)]
@@ -452,33 +541,82 @@ pub enum ValueUnit {
     Bytes,
 }
 
-/// A value trusted code resolved from a snapshot for a caption slot, with its provenance.
-/// Model layout cannot substitute a proposal for an observation or swap base and candidate:
-/// the binding carries the provenance and run of the value it names.
+/// A value trusted code resolved from a snapshot for a caption slot: a copy of the evidence
+/// row the slot's reference named, with the row's provenance, column and full address. Model
+/// layout cannot substitute a proposal for an observation or swap base and candidate, because
+/// the row decodes only with a provenance its column admits and an observed row only with its
+/// run, commit and observation hash.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BindableValue {
-    /// What kind of value.
+    /// What kind of value, from the template's slot.
     pub value_type: ValueType,
-    /// Who authored it.
-    pub provenance: Provenance,
-    /// Its unit.
+    /// Its unit, from the template's slot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<ValueUnit>,
     /// The snapshot.
     pub receipt_hash: ReceiptHash,
     /// The receipt item.
     pub item_id: ItemId,
-    /// The run, for observed values.
+    /// The resolved row.
+    pub row: EvidenceRow,
+}
+
+/// What one slot of a caption template takes.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SlotSpec {
+    /// The card column the bound row must come from.
+    pub column: EvidenceSlot,
+    /// What kind of value.
+    pub value_type: ValueType,
+    /// Its unit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<RunId>,
-    /// The step.
-    pub step_id: StepId,
-    /// The raw evidence, for observed values.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub evidence_hash: Option<EvidenceHash>,
-    /// The value.
-    pub value: Scalar,
+    pub unit: Option<ValueUnit>,
+}
+
+impl SlotSpec {
+    /// Whether `row` may fill this slot: it is in the declared column, and its provenance is
+    /// one that column admits. A row from another column is a swap; a target or prediction in
+    /// a run column is a hypothetical.
+    #[must_use]
+    pub fn accepts(&self, row: &EvidenceRow) -> bool {
+        row.slot == self.column && self.column.admits(row.provenance)
+    }
+}
+
+/// One caption template of the trusted catalog.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CaptionTemplate {
+    /// The template.
+    pub template_id: TemplateId,
+    /// The text, with `{slot}` placeholders the trusted card fills.
+    pub text: String,
+    /// Every slot, each of which a caption must bind.
+    pub slots: BTreeMap<SlotName, SlotSpec>,
+}
+
+/// The trusted caption catalog, shipped with the server and the UI.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CaptionCatalog {
+    /// Always `acan-caption-catalog/1`.
+    pub version: CaptionCatalogV1,
+    /// The catalog's version, which a plant view names.
+    pub catalog_version: CatalogVersion,
+    /// The templates.
+    pub templates: Vec<CaptionTemplate>,
+}
+
+impl CaptionCatalog {
+    /// The template `template_id` names.
+    #[must_use]
+    pub fn template(&self, template_id: &TemplateId) -> Option<&CaptionTemplate> {
+        self.templates
+            .iter()
+            .find(|template| &template.template_id == template_id)
+    }
 }
 
 /// One item's caption slots bound by trusted code. Rendered by the trusted card; any invalid
@@ -494,4 +632,76 @@ pub struct BoundItemView {
     pub typed_slot_bindings: BTreeMap<SlotName, BindableValue>,
     /// The template catalog version.
     pub catalog_version: CatalogVersion,
+}
+
+/// `GET /api/receipts/{receipt_hash}/cards/{item_id}`: one item's card.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CardRequest {
+    /// Always `acan-card/1`.
+    pub version: CardV1,
+    /// The snapshot.
+    pub receipt_hash: ReceiptHash,
+    /// The receipt item.
+    pub item_id: ItemId,
+}
+
+/// An executable decision as the card shows it.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionDetail {
+    /// Where it applies.
+    pub selector: Selector,
+    /// What must hold.
+    pub predicate: Predicate,
+    /// The examples it accepts.
+    pub accepts: Vec<ContrastExampleHash>,
+    /// The examples it rejects.
+    pub rejects: Vec<ContrastExampleHash>,
+    /// The example it was ruled on.
+    pub ruled_on: ContrastExampleHash,
+    /// How far it reaches.
+    pub applicability: Applicability,
+    /// The normalization plan it was confirmed under.
+    pub normalization_hash: NormalizationHash,
+}
+
+/// One ruling on a card: how it fared and, for an executable one, what it is.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RulingDetail {
+    /// The receipt's line for it.
+    pub check: RulingCheck,
+    /// The decision in force. Absent for a note, whose reason is in `check`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<DecisionDetail>,
+}
+
+/// Everything the card shows for one receipt item. Built by R01 from the receipt and the folded
+/// log alone; every value is the receipt's own, never recomputed.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Card {
+    /// Always `acan-card/1`.
+    pub version: CardV1,
+    /// The snapshot.
+    pub receipt_hash: ReceiptHash,
+    /// The receipt's item, with its evaluation, reasons, sequence and evidence.
+    pub item: ReceiptItem,
+    /// Items per class.
+    pub counts: ClassCounts,
+    /// The probe denominator.
+    pub probes: ProbeCounts,
+    /// The route denominator.
+    pub routes: RouteCounts,
+    /// The behavioral denominator.
+    pub behavior: BehaviorCounts,
+    /// The masks applied to the item's probe.
+    pub masks: Vec<Mask>,
+    /// The rulings the item violates or relies on, and every ruling on its machine.
+    pub rulings: Vec<RulingDetail>,
+    /// The contests filed against the item's episode.
+    pub contests: Vec<Contest>,
+    /// The base, overlay and full tested context.
+    pub prepared: PreparedCommit,
 }

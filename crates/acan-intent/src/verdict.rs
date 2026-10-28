@@ -7,8 +7,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::hash::{EpisodeId, ProbeHash};
-use crate::observation::CanonicalObservation;
-use crate::types::{ItemId, MustKeepId, ObligationId, ObservationPath, RulingId, Scalar, StepId};
+use crate::observation::CanonicalRun;
+use crate::types::{Evidence, ItemId, MustKeepId, ObligationId, ObservationPath, RulingId, StepId};
 
 /// The one class the core assigns to each receipt item.
 #[derive(
@@ -203,39 +203,52 @@ pub struct Difference {
     pub step_id: StepId,
     /// The field.
     pub path: ObservationPath,
-    /// Base's value, absent if base had no such field. JSON `null` is an observed value.
-    #[serde(
-        default,
-        deserialize_with = "crate::types::present_scalar",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub base: Option<Scalar>,
-    /// The candidate's value, absent if it had no such field.
-    #[serde(
-        default,
-        deserialize_with = "crate::types::present_scalar",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub candidate: Option<Scalar>,
+    /// Base's value with its structure, or [`Evidence::Missing`]. JSON `null` is present.
+    pub base: Evidence,
+    /// The candidate's value with its structure, or [`Evidence::Missing`].
+    pub candidate: Evidence,
     /// The episode this difference belongs to, once the core has matched it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub episode_id: Option<EpisodeId>,
 }
 
-/// The comparison of one probe's base and candidate runs. Derived; never built outside this
-/// crate.
+/// The comparison of one probe's base and candidate runs. Evaluation reads only the
+/// [`crate::CoreDerived`] copy [`crate::compare::compare`] returns.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[non_exhaustive]
 pub struct Comparison {
     /// The probe.
     pub probe_hash: ProbeHash,
-    /// Base A, normalized.
-    pub base_a: Vec<CanonicalObservation>,
-    /// Base B, normalized.
-    pub base_b: Vec<CanonicalObservation>,
-    /// The candidate, normalized.
-    pub candidate: Vec<CanonicalObservation>,
+    /// Base A, normalized run-wide.
+    pub base_a: CanonicalRun,
+    /// Base B, normalized run-wide.
+    pub base_b: CanonicalRun,
+    /// The candidate, normalized run-wide.
+    pub candidate: CanonicalRun,
     /// The overall outcome.
     pub outcome: Outcome,
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::probe::ProbeCorpus;
+
+    /// An unchanged comparison of the corpus's first probe, for the stub tests.
+    pub(crate) fn unchanged(corpus: &ProbeCorpus) -> Comparison {
+        let probe = &corpus.probes[0];
+        let run = |id: &str| CanonicalRun {
+            run_id: id.parse().expect("a run id"),
+            normalization_hash: probe.normalization.normalization_hash().expect("hashing"),
+            observations: Vec::new(),
+        };
+        Comparison {
+            probe_hash: probe.spec.probe_hash().expect("hashing"),
+            base_a: run("run-a"),
+            base_b: run("run-b"),
+            candidate: run("run-c"),
+            outcome: Outcome::Unchanged {},
+        }
+    }
 }

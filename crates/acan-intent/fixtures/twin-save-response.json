@@ -1,0 +1,198 @@
+{
+  "version": "acan-twin/1",
+  "probe_hash": "sha256:d02a4e94840e5f2c04dafd74f2677ad60285b947a338b0503336f29b3114d6c9",
+  "probe": {
+    "label": "login-rate-limit-still-wrong",
+    "spec": {
+      "surface": "http",
+      "fixture": "f-alice",
+      "steps": [
+        {
+          "step": "http",
+          "id": "s1",
+          "client": "client-a",
+          "request": {
+            "method": "POST",
+            "path": "/api/login",
+            "body": {
+              "email": "alice@example.test",
+              "password": "wrong"
+            }
+          },
+          "redirect": "manual",
+          "deadline_ms": 2000
+        },
+        {
+          "step": "http",
+          "id": "s2",
+          "client": "client-a",
+          "request": {
+            "method": "POST",
+            "path": "/api/login",
+            "body": {
+              "email": "alice@example.test",
+              "password": "wrong"
+            }
+          },
+          "redirect": "manual",
+          "deadline_ms": 2000
+        },
+        {
+          "step": "http",
+          "id": "s3",
+          "client": "client-a",
+          "request": {
+            "method": "POST",
+            "path": "/api/login",
+            "body": {
+              "email": "alice@example.test",
+              "password": "wrong"
+            }
+          },
+          "redirect": "manual",
+          "deadline_ms": 2000
+        },
+        {
+          "step": "http",
+          "id": "s4",
+          "client": "client-a",
+          "request": {
+            "method": "POST",
+            "path": "/api/login",
+            "body": {
+              "email": "alice@example.test",
+              "password": "wrong"
+            }
+          },
+          "redirect": "manual",
+          "deadline_ms": 2000
+        },
+        {
+          "step": "http",
+          "id": "s5",
+          "client": "client-a",
+          "request": {
+            "method": "POST",
+            "path": "/api/login",
+            "body": {
+              "email": "alice@example.test",
+              "password": "wrong"
+            }
+          },
+          "redirect": "manual",
+          "deadline_ms": 2000
+        },
+        {
+          "step": "http",
+          "id": "s6",
+          "client": "client-a",
+          "request": {
+            "method": "POST",
+            "path": "/api/login",
+            "body": {
+              "email": "alice@example.test",
+              "password": "still-wrong"
+            }
+          },
+          "redirect": "manual",
+          "deadline_ms": 2000
+        },
+        {
+          "step": "advance_time",
+          "id": "s7",
+          "by_ms": 61000
+        },
+        {
+          "step": "http",
+          "id": "s8",
+          "client": "client-a",
+          "request": {
+            "method": "POST",
+            "path": "/api/login",
+            "body": {
+              "email": "alice@example.test",
+              "password": "alice-pass-1"
+            }
+          },
+          "redirect": "manual",
+          "deadline_ms": 2000
+        }
+      ]
+    },
+    "origin": "human",
+    "route_path": {
+      "machines": [
+        "server",
+        "middleware",
+        "ratelimit",
+        "auth",
+        "errors"
+      ],
+      "source": "static"
+    },
+    "normalization": {
+      "version": "norm/1",
+      "typed_captures": [
+        {
+          "binding": "alice_session",
+          "kind": "session"
+        },
+        {
+          "binding": "link_code",
+          "kind": "identifier"
+        }
+      ],
+      "projections": [
+        {
+          "path": "cookie.session",
+          "kind": {
+            "kind": "canonical_identity",
+            "binding": "alice_session"
+          }
+        },
+        {
+          "path": "body.token",
+          "kind": {
+            "kind": "redact_secret"
+          }
+        }
+      ],
+      "relations": [
+        {
+          "kind": "equal",
+          "paths": [
+            {
+              "step_id": "f2",
+              "path": "cookie.session"
+            }
+          ]
+        },
+        {
+          "kind": "unique",
+          "paths": [
+            {
+              "step_id": "s8",
+              "path": "body.links[*].code"
+            }
+          ]
+        },
+        {
+          "kind": "references",
+          "from": {
+            "step_id": "s1",
+            "path": "body.code"
+          },
+          "to": {
+            "step_id": "s8",
+            "path": "body.links[*].code"
+          }
+        }
+      ],
+      "maskable_paths": [
+        "cookie.session",
+        "body.links[*].code",
+        "side_effect.store.users[*].created_at"
+      ]
+    }
+  }
+}

@@ -22,7 +22,10 @@
         "kind": "value",
         "step_id": "s6",
         "path": "status",
-        "value": 429
+        "value": {
+          "state": "present",
+          "value": 429
+        }
       }
     },
     {

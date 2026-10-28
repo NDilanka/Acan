@@ -27,18 +27,23 @@
   "predicate_ast": {
     "predicate": "equals_base",
     "step_id": "s4",
-    "path": "body.links[*].code"
+    "path": "body.links[*].code",
+    "anchor": {
+      "kind": "fresh"
+    }
   },
-  "accepts_hashes": [
-    "sha256:83403a25049fdcc71fef2bc4a86d076f189c86cf80e17f4d4e1991e9f8b5709b"
-  ],
-  "rejects_hashes": [
-    "sha256:645c9f12006a3d6dbf306f4ee9e73262fac5c357174f42001ee88d67e7c93265"
-  ],
   "normalization_version": "norm/1",
   "applicability": "standing_predicate_approval",
   "label": "Links list stays newest first",
   "machine_ids": [
     "links"
-  ]
+  ],
+  "accepts": [
+    "sha256:83403a25049fdcc71fef2bc4a86d076f189c86cf80e17f4d4e1991e9f8b5709b"
+  ],
+  "rejects": [
+    "sha256:f6195c6423ad92aea991cc2b429eb439e1d84f6ca04583118bed4b5850707a37"
+  ],
+  "ruled_on": "sha256:f6195c6423ad92aea991cc2b429eb439e1d84f6ca04583118bed4b5850707a37",
+  "normalization_hash": "sha256:68055ed85b59fb375d723c22bcaf638aaaede6b7568fe25930de1194c42574a8"
 }

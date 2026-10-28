@@ -5,71 +5,15 @@
 //! literals. A behavior that no predicate can express is not enforced, and an unexpressible
 //! required behavior blocks automatic land.
 
-use std::borrow::Cow;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
-use serde::{Deserialize, Deserializer, Serialize};
-
-use crate::hash::{CanonicalError, ContentHash, PredicateHash};
+use crate::hash::{CanonicalError, ContentHash, ContrastExampleHash, PredicateHash};
 use crate::scope::Principal;
 use crate::types::{
-    CaptureName, ClientName, InvalidValue, MethodSelector, NonEmpty, ObservationPath, PathPattern,
-    RouteTemplate, Scalar, StepId, TrustedSink,
+    CaptureName, ClientName, MethodSelector, NonEmpty, ObservationPath, PathPattern, RouteTemplate,
+    Scalar, StepId, TrustedSink, bounded,
 };
-
-/// Defines an integer newtype bounded at decode time.
-macro_rules! bounded {
-    ($(#[$meta:meta])* $name:ident($inner:ty), $min:literal ..= $max:literal, $what:literal) => {
-        $(#[$meta])*
-        #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize)]
-        #[serde(transparent)]
-        pub struct $name($inner);
-
-        impl $name {
-            /// The smallest accepted value.
-            pub const MIN: $inner = $min;
-            /// The largest accepted value.
-            pub const MAX: $inner = $max;
-
-            /// The value.
-            #[must_use]
-            pub fn get(self) -> $inner {
-                self.0
-            }
-        }
-
-        impl TryFrom<$inner> for $name {
-            type Error = InvalidValue;
-
-            fn try_from(value: $inner) -> Result<Self, Self::Error> {
-                if (Self::MIN..=Self::MAX).contains(&value) {
-                    Ok(Self(value))
-                } else {
-                    Err(InvalidValue::Malformed {
-                        what: $what,
-                        raw: value.to_string(),
-                    })
-                }
-            }
-        }
-
-        impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-                Self::try_from(<$inner>::deserialize(deserializer)?).map_err(serde::de::Error::custom)
-            }
-        }
-
-        impl JsonSchema for $name {
-            fn schema_name() -> Cow<'static, str> {
-                stringify!($name).into()
-            }
-
-            fn json_schema(_: &mut SchemaGenerator) -> Schema {
-                json_schema!({ "type": "integer", "minimum": $min, "maximum": $max })
-            }
-        }
-    };
-}
 
 bounded!(
     /// A window length in milliseconds of the controlled clock: 1 ms to one day.
@@ -320,16 +264,36 @@ pub struct WindowPolicy {
     pub rejected_attempts: RejectedAttempts,
 }
 
+/// Which base an `equals_base` compares the candidate with.
+///
+/// The anchor is always written out, so replay never guesses. A fixed anchor never rolls
+/// forward to a newer base on its own: a new base needs a new human decision.
+#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum BaseAnchor {
+    /// The base runs of the contrast being evaluated: base A and base B on the order's base.
+    Fresh {},
+    /// The base runs of one retained example. The decision that holds the predicate must list
+    /// the example among its accepted or rejected examples.
+    Fixed {
+        /// The retained example.
+        example: ContrastExampleHash,
+    },
+}
+
 /// A predicate over the observations of one contrast.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "predicate", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Predicate {
-    /// The candidate equals base at these fields, after normalization and masks.
+    /// The candidate equals base at these fields, after normalization and masks. A field missing
+    /// on one side and present on the other is a difference.
     EqualsBase {
         /// The step.
         step_id: StepId,
         /// The fields.
         path: PathPattern,
+        /// Which base.
+        anchor: BaseAnchor,
     },
     /// A value equals a literal.
     Equals {
@@ -345,7 +309,7 @@ pub enum Predicate {
         /// The allowed statuses.
         statuses: NonEmpty<u16>,
     },
-    /// A value is present.
+    /// A value is present. JSON `null` is present.
     Present {
         /// The value.
         at: ValueRef,
@@ -409,6 +373,33 @@ impl Predicate {
     /// Returns [`CanonicalError`] only if serialization fails.
     pub fn predicate_hash(&self) -> Result<PredicateHash, CanonicalError> {
         ContentHash::of(self).map(PredicateHash::from)
+    }
+
+    /// Every retained example a fixed `equals_base` anchor in this predicate names.
+    #[must_use]
+    pub fn fixed_anchors(&self) -> Vec<ContrastExampleHash> {
+        let mut anchors = Vec::new();
+        let mut pending = vec![self];
+        while let Some(predicate) = pending.pop() {
+            match predicate {
+                Self::EqualsBase {
+                    anchor: BaseAnchor::Fixed { example },
+                    ..
+                } => anchors.push(*example),
+                Self::AfterNWithin { then, .. } => pending.push(then),
+                Self::All { of } => pending.extend(of.iter()),
+                Self::EqualsBase { .. }
+                | Self::Equals { .. }
+                | Self::StatusIn { .. }
+                | Self::Present { .. }
+                | Self::Absent { .. }
+                | Self::MatchesSchema { .. }
+                | Self::Compare { .. }
+                | Self::Count { .. }
+                | Self::Window { .. } => {}
+            }
+        }
+        anchors
     }
 }
 
