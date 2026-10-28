@@ -12,6 +12,7 @@ struct Camera {
     // stroke in device px.
     view: vec4<f32>,
     // x: near plane. y: far plane (orthographic only). z: focal length in device px (perspective).
+    // w: how far the view axis sits above the viewport's middle, in NDC (perspective).
     depth: vec4<f32>,
     // x, y: fog starts and ends, in plan units from the eye. z, w: the angle fade, as the absolute
     // sine of a ray's elevation, from and to.
@@ -72,8 +73,9 @@ fn to_clip(p: vec3<f32>) -> vec4<f32> {
     }
     let rel = p - camera.eye.xyz;
     let x = 2.0 * camera.depth.z * dot(rel, camera.right.xyz) / camera.view.x;
-    let y = 2.0 * camera.depth.z * dot(rel, camera.up.xyz) / camera.view.y;
-    return vec4<f32>(x, y, camera.depth.x, depth_of(p));
+    let w = depth_of(p);
+    let y = 2.0 * camera.depth.z * dot(rel, camera.up.xyz) / camera.view.y + camera.depth.w * w;
+    return vec4<f32>(x, y, camera.depth.x, w);
 }
 
 // Fog from the eye: nothing fades nearer than the fog start, and the far end is page white.
@@ -183,7 +185,8 @@ struct Ground {
 // The ground point under a device pixel, and whether the pixel sees the ground at all.
 fn ground_ray(frag: vec2<f32>) -> Ground {
     let sx = frag.x - camera.view.x * 0.5;
-    let sy = camera.view.y * 0.5 - frag.y;
+    // The orthographic axis is always mid-screen, and its depth.w is 0.
+    let sy = camera.view.y * 0.5 * (1.0 - camera.depth.w) - frag.y;
     if (is_ortho()) {
         let ox = sx / camera.view.z;
         let oy = sy / camera.view.z;

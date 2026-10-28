@@ -19,6 +19,9 @@ pub const MIN_ELEVATION_ORTHOGRAPHIC: f32 = 15.0;
 pub const MAX_ELEVATION: f32 = 89.0;
 pub const MIN_ZOOM: f32 = 1e-3;
 pub const MAX_ZOOM: f32 = 200.0;
+/// In a low perspective view the horizon sits no lower than this fraction of the viewport
+/// from the top, so empty sky never takes more of the frame than that.
+pub const HORIZON_FROM_TOP: f32 = 0.2;
 /// The near plane, as a fraction of the eye distance.
 pub const NEAR_FRACTION: f32 = 0.01;
 /// The orthographic far plane, as a multiple of the eye distance. Every visible ground point at
@@ -168,6 +171,40 @@ impl Camera {
         ]
     }
 
+    /// The device-pixel row the view axis, and so the pivot, projects to. It is the middle of
+    /// the viewport, except in a low perspective view, where it rises just enough to lift the
+    /// horizon to `HORIZON_FROM_TOP`. The focal length does not change with zoom, so neither
+    /// does this.
+    pub fn axis_y(&self) -> f32 {
+        let vh = self.viewport[1];
+        let middle = vh * 0.5;
+        if self.projection == Projection::Orthographic {
+            return middle;
+        }
+        let horizon = middle - self.focal() * self.elevation.to_radians().tan();
+        middle - (horizon - HORIZON_FROM_TOP * vh).max(0.0)
+    }
+
+    /// The world point on the view ray through device pixel `px` at `depth` plan units in
+    /// front of the eye.
+    pub fn ray_point(&self, px: [f32; 2], depth: f32) -> [f32; 3] {
+        let b = self.basis();
+        let eye = self.eye();
+        let sx = px[0] - self.viewport[0] * 0.5;
+        let (side, rise) = match self.projection {
+            Projection::Perspective => {
+                let scale = depth / self.focal();
+                (sx * scale, (self.axis_y() - px[1]) * scale)
+            }
+            Projection::Orthographic => {
+                (sx / self.zoom, (self.viewport[1] * 0.5 - px[1]) / self.zoom)
+            }
+        };
+        std::array::from_fn(|axis| {
+            eye[axis] - depth * b.toward[axis] + side * b.right[axis] + rise * b.up[axis]
+        })
+    }
+
     /// Focal length in device pixels: the pivot's scale times the eye distance.
     pub fn focal(&self) -> f32 {
         self.zoom * self.eye_distance()
@@ -185,7 +222,7 @@ impl Camera {
                 let f = self.focal() / depth;
                 [
                     vw * 0.5 + f * dot(rel, b.right),
-                    vh * 0.5 - f * dot(rel, b.up),
+                    self.axis_y() - f * dot(rel, b.up),
                 ]
             }
             Projection::Orthographic => {
@@ -204,7 +241,10 @@ impl Camera {
         let b = self.basis();
         let [vw, vh] = self.viewport;
         let sx = px[0] - vw * 0.5;
-        let sy = vh * 0.5 - px[1];
+        let sy = match self.projection {
+            Projection::Perspective => self.axis_y() - px[1],
+            Projection::Orthographic => vh * 0.5 - px[1],
+        };
         match self.projection {
             Projection::Perspective => {
                 let eye = self.eye();
@@ -683,6 +723,38 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_low_view_lifts_the_horizon_and_keeps_screen_and_ground_in_step() {
+        let mut cam = Camera::new([1440.0, 900.0]);
+        cam.set_angles(DEFAULT_AZIMUTH, 6.0);
+        cam.fit(&block(), 24.0);
+        let b = cam.basis();
+        let far = 1e6;
+        let horizon = cam.world_to_screen([
+            cam.eye()[0] - far * b.toward[0] / b.toward[0].hypot(b.toward[1]),
+            cam.eye()[1] - far * b.toward[1] / b.toward[0].hypot(b.toward[1]),
+            cam.eye()[2],
+        ]);
+        assert!(
+            (horizon[1] - HORIZON_FROM_TOP * 900.0).abs() < 2.0,
+            "horizon at {}",
+            horizon[1]
+        );
+        let p = [30.0, -20.0, 0.0];
+        let s = cam.world_to_screen(p);
+        let back = cam.ground_at(s).expect("ground");
+        assert!(close(back, [p[0], p[1]]), "{back:?}");
+        let depth = -dot(sub(p, cam.eye()), b.toward);
+        let on_ray = cam.ray_point(s, depth);
+        assert!(distance(on_ray, p) < 1e-2, "{on_ray:?}");
+        cam.set_angles(DEFAULT_AZIMUTH, DEFAULT_ELEVATION);
+        assert_eq!(
+            cam.axis_y(),
+            450.0,
+            "a normal view keeps the axis mid-screen"
+        );
     }
 
     #[test]

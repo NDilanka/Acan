@@ -553,7 +553,12 @@ impl Renderer {
             eye: [eye[0], eye[1], eye[2], ortho],
             pivot: [pivot[0], pivot[1], d, 0.0],
             view: [vw, vh, camera.zoom(), MIN_STROKE_PX],
-            depth: [NEAR_FRACTION * d, ORTHO_FAR * d, camera.focal(), 0.0],
+            depth: [
+                NEAR_FRACTION * d,
+                ORTHO_FAR * d,
+                camera.focal(),
+                1.0 - 2.0 * camera.axis_y() / vh,
+            ],
             fog: [fog_near, fog_far, angle_lo, angle_hi],
         }
     }

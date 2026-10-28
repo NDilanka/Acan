@@ -50,8 +50,8 @@ struct Loaded {
     occluders: Vec<(usize, Aabb)>,
     /// Each machine's label half width in CSS pixels, estimated from its name.
     label_half_px: Vec<f32>,
-    /// Machines that carry a name at rest.
-    rest: Vec<usize>,
+    /// Whether each machine carries a name at rest once it is large enough on screen.
+    rest: Vec<bool>,
 }
 
 #[wasm_bindgen]
@@ -249,43 +249,50 @@ impl App {
 
     /// Label candidates as flat `[machine index, css x, css y, opacity]` quads, most important
     /// first: the machines largest on screen lead, so the page keeps the larger or nearer one
-    /// when two labels collide. Each label hangs under its plate's front edge, fades with the
-    /// plant's fog, and is left out when another machine hides its spot or its machine is too
-    /// small on screen to name. `all` considers every machine, and otherwise only the ones
-    /// named at rest.
+    /// when two labels collide. Each label hangs under its plate's front edge, or above its
+    /// machine when a nearer one hides that spot, and fades with the plant's fog. `all` names
+    /// every machine large enough on screen. Otherwise the machines named at rest are, plus the
+    /// largest few on screen, so a far plant still shows some names.
     pub fn label_layout(&self, all: bool) -> Vec<f32> {
         let Some(loaded) = &self.plant else {
             return Vec::new();
         };
-        let candidates: Vec<usize> = if all {
-            (0..loaded.machines.len()).collect()
+        let named: Vec<bool> = if all {
+            vec![true; loaded.machines.len()]
         } else {
             loaded.rest.clone()
         };
-        let min_px = if all {
-            labels::ALL_MIN_CSS_PX
+        let dpr = self.dpr;
+        let rules = if all {
+            labels::Rules {
+                min_px: labels::ALL_MIN_CSS_PX * dpr,
+                floor_px: labels::ALL_MIN_CSS_PX * dpr,
+                budget: 0,
+                drop_px: labels::LABEL_DROP_CSS_PX * dpr,
+                lift_px: labels::LABEL_LIFT_CSS_PX * dpr,
+            }
         } else {
-            labels::REST_MIN_CSS_PX
-        } * self.dpr;
+            labels::Rules {
+                min_px: labels::REST_MIN_CSS_PX * dpr,
+                floor_px: labels::BUDGET_FLOOR_CSS_PX * dpr,
+                budget: labels::REST_BUDGET,
+                drop_px: labels::LABEL_DROP_CSS_PX * dpr,
+                lift_px: labels::LABEL_LIFT_CSS_PX * dpr,
+            }
+        };
         let footprints: Vec<[f32; 4]> = loaded
             .layout
             .machines
             .iter()
             .map(|m| m.footprint())
             .collect();
-        let spots: Vec<LabelSpot> = labels::place(
-            &self.camera,
-            &footprints,
-            &loaded.occluders,
-            &loaded
-                .label_half_px
-                .iter()
-                .map(|w| w * self.dpr)
-                .collect::<Vec<f32>>(),
-            &candidates,
-            min_px,
-            labels::LABEL_DROP_CSS_PX * self.dpr,
-        );
+        let half_widths: Vec<f32> = loaded.label_half_px.iter().map(|w| w * dpr).collect();
+        let machines = labels::Machines {
+            footprints: &footprints,
+            occluders: &loaded.occluders,
+            half_widths: &half_widths,
+        };
+        let spots: Vec<LabelSpot> = labels::place(&self.camera, &machines, &named, &rules);
         spots
             .iter()
             .flat_map(|spot| {
@@ -344,7 +351,13 @@ impl App {
             .collect();
         self.plant = Some(Loaded {
             repo: plant.repo,
-            rest: rest_labels(&plant.machines),
+            rest: {
+                let mut named = vec![false; plant.machines.len()];
+                for index in rest_labels(&plant.machines) {
+                    named[index] = true;
+                }
+                named
+            },
             label_half_px: plant
                 .machines
                 .iter()

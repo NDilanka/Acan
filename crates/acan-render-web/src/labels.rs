@@ -1,7 +1,8 @@
-//! Where machine names go on screen. A label hangs under its plate's front edge, fades with the
-//! plant's fog, and is left out when its machine is too small on screen to name or when a
-//! nearer machine hides the spot. The page then drops any label that collides with one placed
-//! before it, so the order here is the priority: larger on screen first.
+//! Where machine names go on screen. A label hangs under its plate's front edge, or above the
+//! machine when a nearer one covers that spot, fades with the plant's fog, and is left out when
+//! its machine is too small on screen to name or when other machines cover both spots. The
+//! page then drops any label that collides with one placed before it, so the order here is
+//! the priority: larger on screen first.
 
 use acan_render::camera::Projection;
 use acan_render::{Aabb, Camera};
@@ -18,6 +19,13 @@ pub const CHAR_CSS_PX: f32 = 6.5;
 pub const LABEL_DROP_CSS_PX: f32 = 13.0;
 /// The label's bottom edge sits this many `LABEL_DROP_CSS_PX` below the plate's front edge.
 const LABEL_BOTTOM_DROPS: f32 = 1.6;
+/// Below the size to name, this many of the largest machines are still named, down to
+/// `BUDGET_FLOOR_CSS_PX` of plate width.
+pub const REST_BUDGET: usize = 12;
+pub const BUDGET_FLOOR_CSS_PX: f32 = 6.0;
+/// From a machine's highest point on screen up to the anchor of a label above it, in CSS
+/// pixels: a small gap plus the label's offset and height.
+pub const LABEL_LIFT_CSS_PX: f32 = 24.0;
 /// Labels fainter than this are left out.
 const MIN_OPACITY: f32 = 0.05;
 /// A label may sit this far outside the viewport, in device pixels, and still be placed.
@@ -27,110 +35,230 @@ const VIEW_MARGIN_PX: f32 = 40.0;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LabelSpot {
     pub index: usize,
-    /// The plate's front edge, under the plate's centre.
+    /// The point the label hangs from: the plate's front edge under the plate's centre, or a
+    /// spot above the machine.
     pub screen: [f32; 2],
     pub opacity: f32,
     /// The plate's width on screen.
     pub size_px: f32,
 }
 
-/// The labels of `candidates` that may show, most important first. `footprints` holds each
-/// machine's plan rectangle `[min x, min y, max x, max y]`. `occluders` are world boxes, each
-/// with the machine it belongs to, that can hide another machine's label.
-/// `half_widths` is each machine's label half width and `drop_px` the distance from the front
-/// edge to the label's middle, both in device pixels.
+/// The machines labels are placed among. `footprints` holds each machine's plan rectangle
+/// `[min x, min y, max x, max y]`, `occluders` the world boxes of each machine's solid parts
+/// with the machine they belong to, and `half_widths` each label's half width in device px.
+pub struct Machines<'a> {
+    pub footprints: &'a [[f32; 4]],
+    pub occluders: &'a [(usize, Aabb)],
+    pub half_widths: &'a [f32],
+}
+
+/// How many labels to place, in device pixels. A machine whose plate is at least `min_px`
+/// wide on screen is named. Below that, the largest machines down to `floor_px` are named
+/// until `budget` labels are placed, so even a far plant shows a few names. `drop_px` is the
+/// distance from an anchor to the label's middle, and `lift_px` the distance from a machine's
+/// highest point up to the anchor of a label above it.
+pub struct Rules {
+    pub min_px: f32,
+    pub floor_px: f32,
+    pub budget: usize,
+    pub drop_px: f32,
+    pub lift_px: f32,
+}
+
+/// The labels that may show, most important first. Every machine whose plate is at least
+/// `rules.floor_px` wide on screen is considered, largest first. One marked in `named` is
+/// placed once it reaches `rules.min_px`, and any other only while fewer than `rules.budget`
+/// labels are placed. A label hangs under its plate's front edge. When a nearer machine covers
+/// that spot it moves above its machine's highest point instead, and it is left out when
+/// another machine covers that spot too.
 pub fn place(
     camera: &Camera,
-    footprints: &[[f32; 4]],
-    occluders: &[(usize, Aabb)],
-    half_widths: &[f32],
-    candidates: &[usize],
-    min_px: f32,
-    drop_px: f32,
+    machines: &Machines,
+    named: &[bool],
+    rules: &Rules,
 ) -> Vec<LabelSpot> {
-    let rects: Vec<Option<[f32; 4]>> = occluders
+    let placer = Placer {
+        camera,
+        occluders: machines.occluders,
+        rects: machines
+            .occluders
+            .iter()
+            .map(|(_, b)| screen_rect(camera, b))
+            .collect(),
+        rules,
+    };
+    let mut plates: Vec<Plate> = machines
+        .footprints
         .iter()
-        .map(|(_, b)| screen_rect(camera, b))
+        .enumerate()
+        .filter_map(|(index, &f)| placer.plate(index, f))
         .collect();
-    let [vw, vh] = camera.viewport();
-    let mut spots: Vec<LabelSpot> = candidates
-        .iter()
-        .filter_map(|&index| {
-            let f = *footprints.get(index)?;
-            let corners =
-                [[f[0], f[1]], [f[2], f[1]], [f[2], f[3]], [f[0], f[3]]].map(|[x, y]| [x, y, 0.0]);
-            if !corners.iter().all(|&c| camera.in_front(c)) {
-                return None;
+    plates.sort_by(|a, b| b.size_px.total_cmp(&a.size_px).then(a.index.cmp(&b.index)));
+    let mut spots = Vec::new();
+    for plate in &plates {
+        let big = plate.size_px >= rules.min_px;
+        let is_named = big && named.get(plate.index).copied().unwrap_or(false);
+        if !is_named && spots.len() >= rules.budget {
+            // Plates come largest first, so past the size to name nothing more qualifies.
+            if !big {
+                break;
             }
-            let screen = corners.map(|c| camera.world_to_screen(c));
-            let xs = screen.map(|s| s[0]);
-            let size_px = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max)
-                - xs.iter().copied().fold(f32::INFINITY, f32::min);
-            if size_px < min_px {
-                return None;
-            }
-            let front = (0..4).max_by(|&a, &b| screen[a][1].total_cmp(&screen[b][1]))?;
-            let centre = [(f[0] + f[2]) * 0.5, (f[1] + f[3]) * 0.5, 0.0];
-            let anchor = [camera.world_to_screen(centre)[0], screen[front][1]];
-            let inside = |v: f32, hi: f32| v >= -VIEW_MARGIN_PX && v <= hi + VIEW_MARGIN_PX;
-            if !inside(anchor[0], vw) || !inside(anchor[1], vh) {
-                return None;
-            }
-            let opacity = 1.0 - camera.fog_at(corners[front]);
-            if opacity < MIN_OPACITY {
-                return None;
-            }
-            let out = unit2([corners[front][0] - centre[0], corners[front][1] - centre[1]]);
-            let edge = [corners[front][0] + out[0], corners[front][1] + out[1], 0.5];
-            // The ground under the label's middle row and its bottom, at five points across, so a nearer machine that covers any part of the text hides it.
-            let half = half_widths.get(index).copied().unwrap_or(0.0);
-            let under = [drop_px, drop_px * LABEL_BOTTOM_DROPS]
-                .into_iter()
-                .flat_map(|drop| {
-                    [-1.0, -0.5, 0.0, 0.5, 1.0].map(|t| [anchor[0] + t * half, anchor[1] + drop])
-                })
-                .filter_map(|px| camera.ground_at(px))
-                .map(|[x, y]| [x, y, 0.2]);
-            let hidden = std::iter::once(edge)
-                .chain(under)
-                .any(|p| hidden_by_other(camera, p, index, occluders, &rects));
-            (!hidden).then_some(LabelSpot {
-                index,
+            continue;
+        }
+        let half = machines
+            .half_widths
+            .get(plate.index)
+            .copied()
+            .unwrap_or(0.0);
+        if let Some(anchor) = placer.anchor(plate, half) {
+            spots.push(LabelSpot {
+                index: plate.index,
                 screen: anchor,
-                opacity,
-                size_px,
-            })
-        })
-        .collect();
-    spots.sort_by(|a, b| b.size_px.total_cmp(&a.size_px).then(a.index.cmp(&b.index)));
+                opacity: plate.opacity,
+                size_px: plate.size_px,
+            });
+        }
+    }
     spots
 }
 
-/// Whether a box of a machine other than `own` lies between the eye and `p`.
-fn hidden_by_other(
-    camera: &Camera,
-    p: [f32; 3],
-    own: usize,
-    occluders: &[(usize, Aabb)],
-    rects: &[Option<[f32; 4]>],
-) -> bool {
-    let s = camera.world_to_screen(p);
-    let origin = match camera.projection() {
-        Projection::Perspective => camera.eye(),
-        Projection::Orthographic => {
-            let t = camera.basis().toward;
-            let reach = 4.0 * camera.eye_distance();
-            std::array::from_fn(|axis| p[axis] + t[axis] * reach)
+/// A machine's plate as seen on screen.
+struct Plate {
+    index: usize,
+    centre: [f32; 3],
+    front: [f32; 3],
+    /// The front corner's screen row.
+    front_y: f32,
+    size_px: f32,
+    opacity: f32,
+}
+
+struct Placer<'a> {
+    camera: &'a Camera,
+    occluders: &'a [(usize, Aabb)],
+    rects: Vec<Option<[f32; 4]>>,
+    rules: &'a Rules,
+}
+
+impl Placer<'_> {
+    /// The plate of the machine at `index`, or `None` when it is behind the eye, too small to
+    /// name or lost in the fog.
+    fn plate(&self, index: usize, f: [f32; 4]) -> Option<Plate> {
+        let camera = self.camera;
+        let corners =
+            [[f[0], f[1]], [f[2], f[1]], [f[2], f[3]], [f[0], f[3]]].map(|[x, y]| [x, y, 0.0]);
+        if !corners.iter().all(|&c| camera.in_front(c)) {
+            return None;
         }
-    };
-    occluders.iter().zip(rects).any(|(&(owner, ref b), rect)| {
-        if owner == own {
-            return false;
+        let screen = corners.map(|c| camera.world_to_screen(c));
+        let xs = screen.map(|s| s[0]);
+        let size_px = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max)
+            - xs.iter().copied().fold(f32::INFINITY, f32::min);
+        if size_px < self.rules.floor_px {
+            return None;
         }
-        let maybe =
-            rect.is_none_or(|r| s[0] >= r[0] && s[0] <= r[2] && s[1] >= r[1] && s[1] <= r[3]);
-        maybe && segment_hits(origin, p, b)
-    })
+        let front = (0..4).max_by(|&a, &b| screen[a][1].total_cmp(&screen[b][1]))?;
+        let opacity = 1.0 - camera.fog_at(corners[front]);
+        if opacity < MIN_OPACITY {
+            return None;
+        }
+        Some(Plate {
+            index,
+            centre: [(f[0] + f[2]) * 0.5, (f[1] + f[3]) * 0.5, 0.0],
+            front: corners[front],
+            front_y: screen[front][1],
+            size_px,
+            opacity,
+        })
+    }
+
+    /// Where the label of `plate` hangs from, or `None` when no spot for it is clear.
+    /// `half` is the label's half width.
+    fn anchor(&self, plate: &Plate, half: f32) -> Option<[f32; 2]> {
+        let (camera, rules) = (self.camera, self.rules);
+        let across = |anchor: [f32; 2], rows: [f32; 2]| {
+            rows.into_iter().flat_map(move |drop| {
+                [-1.0, -0.5, 0.0, 0.5, 1.0].map(|t| [anchor[0] + t * half, anchor[1] + drop])
+            })
+        };
+
+        // Under the plate: hidden when a nearer machine stands on the ground under any part
+        // of the text, or in front of the plate's front corner.
+        let below = [camera.world_to_screen(plate.centre)[0], plate.front_y];
+        let (centre, front) = (plate.centre, plate.front);
+        let out = unit2([front[0] - centre[0], front[1] - centre[1]]);
+        let edge = [front[0] + out[0], front[1] + out[1], 0.5];
+        let mut ground = across(below, [rules.drop_px, rules.drop_px * LABEL_BOTTOM_DROPS])
+            .filter_map(|px| camera.ground_at(px))
+            .map(|[x, y]| [x, y, 0.2]);
+        let below_clear = self.inside(below)
+            && !std::iter::once(edge)
+                .chain(&mut ground)
+                .any(|p| self.nearer_box_hides(p, plate.index));
+        if below_clear {
+            return Some(below);
+        }
+
+        // Above the machine: hidden when any other machine lies on the ray through any part of
+        // the text, nearer or farther, so the label never sits on one.
+        let top = self
+            .occluders
+            .iter()
+            .filter(|(owner, _)| *owner == plate.index)
+            .flat_map(|(_, b)| b.corners())
+            .map(|c| camera.world_to_screen(c)[1])
+            .fold(f32::INFINITY, f32::min);
+        if !top.is_finite() {
+            return None;
+        }
+        let above = [below[0], top - rules.lift_px];
+        let rows = [rules.drop_px * 0.75, rules.drop_px * 1.25];
+        let far = camera.fog_range().1;
+        let covered = across(above, rows).any(|px| {
+            let (from, to) = (camera.ray_point(px, 0.0), camera.ray_point(px, far));
+            self.occluders
+                .iter()
+                .zip(&self.rects)
+                .any(|(&(owner, ref b), rect)| {
+                    owner != plate.index && rect_holds(*rect, px) && segment_hits(from, to, b)
+                })
+        });
+        (!covered && self.inside(above)).then_some(above)
+    }
+
+    /// Whether `p` is on screen, or close enough to it for a label.
+    fn inside(&self, p: [f32; 2]) -> bool {
+        let [vw, vh] = self.camera.viewport();
+        p[0] >= -VIEW_MARGIN_PX
+            && p[0] <= vw + VIEW_MARGIN_PX
+            && p[1] >= -VIEW_MARGIN_PX
+            && p[1] <= vh + VIEW_MARGIN_PX
+    }
+
+    /// Whether a box of a machine other than `own` lies between the eye and `p`.
+    fn nearer_box_hides(&self, p: [f32; 3], own: usize) -> bool {
+        let camera = self.camera;
+        let s = camera.world_to_screen(p);
+        let origin = match camera.projection() {
+            Projection::Perspective => camera.eye(),
+            Projection::Orthographic => {
+                let t = camera.basis().toward;
+                let reach = 4.0 * camera.eye_distance();
+                std::array::from_fn(|axis| p[axis] + t[axis] * reach)
+            }
+        };
+        self.occluders
+            .iter()
+            .zip(&self.rects)
+            .any(|(&(owner, ref b), rect)| {
+                owner != own && rect_holds(*rect, s) && segment_hits(origin, p, b)
+            })
+    }
+}
+
+/// Whether a box's screen rectangle may hold `s`. A box partly behind the eye always may.
+fn rect_holds(rect: Option<[f32; 4]>, s: [f32; 2]) -> bool {
+    rect.is_none_or(|r| s[0] >= r[0] && s[0] <= r[2] && s[1] >= r[1] && s[1] <= r[3])
 }
 
 /// The screen rectangle around a box's corners, or `None` when part of it is behind the eye.
@@ -193,14 +321,18 @@ mod tests {
     const D: f32 = 86.0;
     const H: f32 = 40.0;
 
-    fn machine(x: f32, y: f32) -> ([f32; 4], Aabb) {
+    fn tall(x: f32, y: f32, h: f32) -> ([f32; 4], Aabb) {
         (
             [x, y, x + W, y + D],
             Aabb {
                 min: [x, y, 0.0],
-                max: [x + W, y + D, H],
+                max: [x + W, y + D, h],
             },
         )
+    }
+
+    fn machine(x: f32, y: f32) -> ([f32; 4], Aabb) {
+        tall(x, y, H)
     }
 
     fn camera_on(machines: &[([f32; 4], Aabb)], azimuth: f32, elevation: f32) -> Camera {
@@ -212,74 +344,109 @@ mod tests {
         let mut camera = Camera::new([1440.0, 900.0]);
         camera.set_angles(azimuth, elevation);
         camera.fit(&bounds, 24.0);
+        camera.set_fog_bounds(bounds);
         camera
     }
 
-    fn split(machines: &[([f32; 4], Aabb)]) -> (Vec<[f32; 4]>, Vec<(usize, Aabb)>) {
-        let footprints = machines.iter().map(|(f, _)| *f).collect();
-        let occluders = machines.iter().map(|(_, b)| *b).enumerate().collect();
-        (footprints, occluders)
+    fn rules(min_px: f32) -> Rules {
+        Rules {
+            min_px,
+            floor_px: 0.0,
+            budget: 0,
+            drop_px: LABEL_DROP_CSS_PX,
+            lift_px: LABEL_LIFT_CSS_PX,
+        }
+    }
+
+    /// The spots of every machine, each labelled `half` device pixels to either side.
+    fn spots(
+        machines: &[([f32; 4], Aabb)],
+        camera: &Camera,
+        half: f32,
+        rules: &Rules,
+    ) -> Vec<LabelSpot> {
+        let footprints: Vec<[f32; 4]> = machines.iter().map(|(f, _)| *f).collect();
+        let occluders: Vec<(usize, Aabb)> = machines.iter().map(|(_, b)| *b).enumerate().collect();
+        let half_widths = vec![half; machines.len()];
+        let named = vec![true; machines.len()];
+        let all = Machines {
+            footprints: &footprints,
+            occluders: &occluders,
+            half_widths: &half_widths,
+        };
+        place(camera, &all, &named, rules)
     }
 
     fn placed(machines: &[([f32; 4], Aabb)], camera: &Camera) -> Vec<usize> {
-        let (footprints, occluders) = split(machines);
-        let all: Vec<usize> = (0..machines.len()).collect();
-        place(
-            camera,
-            &footprints,
-            &occluders,
-            &[],
-            &all,
-            10.0,
-            LABEL_DROP_CSS_PX,
-        )
-        .into_iter()
-        .map(|s| s.index)
-        .collect()
+        spots(machines, camera, 0.0, &rules(10.0))
+            .into_iter()
+            .map(|s| s.index)
+            .collect()
+    }
+
+    /// The highest screen row of a machine's box.
+    fn top_of(camera: &Camera, b: &Aabb) -> f32 {
+        b.corners()
+            .iter()
+            .map(|&c| camera.world_to_screen(c)[1])
+            .fold(f32::INFINITY, f32::min)
     }
 
     #[test]
-    fn a_label_behind_a_nearer_machine_at_low_tilt_is_hidden() {
+    fn a_label_behind_a_nearer_machine_at_low_tilt_moves_above_its_machine() {
         // The camera looks along -x at azimuth 0, so the machine at larger x is in front.
         let machines = [machine(0.0, 0.0), machine(130.0, 0.0)];
         let camera = camera_on(&machines, 0.0, 8.0);
-        assert_eq!(
-            placed(&machines, &camera),
-            vec![1],
-            "only the front machine is named"
+        let shown = spots(&machines, &camera, 0.0, &rules(10.0));
+        let back = shown
+            .iter()
+            .find(|s| s.index == 0)
+            .expect("the far machine is named");
+        assert!(
+            back.screen[1] < top_of(&camera, &machines[0].1),
+            "its label sits above it"
         );
+        let front = shown
+            .iter()
+            .find(|s| s.index == 1)
+            .expect("the near machine is named");
+        assert!(front.screen[1] > top_of(&camera, &machines[1].1));
     }
 
     #[test]
-    fn a_label_whose_end_runs_onto_a_nearer_machine_is_hidden() {
+    fn a_label_covered_below_and_above_is_hidden() {
+        // A tower in front hides both the far machine's front edge and the sky above it.
+        let machines = [machine(0.0, 0.0), tall(130.0, 0.0, 400.0)];
+        let camera = camera_on(&machines, 0.0, 8.0);
+        assert_eq!(placed(&machines, &camera), vec![1]);
+    }
+
+    #[test]
+    fn a_label_whose_end_runs_onto_a_nearer_machine_moves_above() {
         // Machine 1 stands in front of machine 0 and off to one side, so only a wide label
         // reaches it.
         let machines = [machine(0.0, 0.0), machine(130.0, 110.0)];
         let camera = camera_on(&machines, 0.0, 8.0);
-        let (footprints, occluders) = split(&machines);
-        let shown = |half: f32| {
-            place(
-                &camera,
-                &footprints,
-                &occluders,
-                &[half, half],
-                &[0],
-                10.0,
-                LABEL_DROP_CSS_PX,
-            )
-            .len()
-        };
         let centre_x = |f: [f32; 4]| {
             let c = [(f[0] + f[2]) * 0.5, (f[1] + f[3]) * 0.5, 0.0];
             camera.world_to_screen(c)[0]
         };
-        let reach = (centre_x(footprints[1]) - centre_x(footprints[0])).abs();
-        assert_eq!(
-            shown(0.0),
-            1,
-            "a point label beside the nearer machine shows"
+        let reach = (centre_x(machines[1].0) - centre_x(machines[0].0)).abs();
+        let top = top_of(&camera, &machines[0].1);
+        let row = |half: f32| {
+            spots(&machines, &camera, half, &rules(10.0))
+                .iter()
+                .find(|s| s.index == 0)
+                .map(|s| s.screen[1])
+        };
+        assert!(
+            row(0.0).is_some_and(|y| y > top),
+            "a point label stays under its plate"
         );
-        assert_eq!(shown(reach), 0, "a label wide enough to reach it is hidden");
+        assert!(
+            row(reach).is_some_and(|y| y < top),
+            "a wide one moves above"
+        );
     }
 
     #[test]
@@ -307,34 +474,30 @@ mod tests {
     fn a_machine_too_small_on_screen_is_not_named() {
         let machines = [machine(0.0, 0.0)];
         let camera = camera_on(&machines, 45.0, 30.0);
-        let (footprints, occluders) = split(&machines);
-        let spots = place(
-            &camera,
-            &footprints,
-            &occluders,
-            &[],
-            &[0],
-            1e6,
-            LABEL_DROP_CSS_PX,
-        );
-        assert!(spots.is_empty());
+        assert!(spots(&machines, &camera, 0.0, &rules(1e6)).is_empty());
+    }
+
+    #[test]
+    fn the_budget_names_the_largest_machines_below_the_size_to_name() {
+        let machines = [machine(0.0, 0.0), machine(0.0, 200.0), machine(400.0, 0.0)];
+        let camera = camera_on(&machines, 0.0, 30.0);
+        let budget = Rules {
+            budget: 1,
+            ..rules(1e6)
+        };
+        let shown: Vec<usize> = spots(&machines, &camera, 0.0, &budget)
+            .iter()
+            .map(|s| s.index)
+            .collect();
+        assert_eq!(shown, vec![2], "only the nearest is named");
     }
 
     #[test]
     fn the_anchor_is_the_front_edge_of_the_plate() {
         let machines = [machine(0.0, 0.0)];
         let camera = camera_on(&machines, 45.0, 30.0);
-        let (footprints, occluders) = split(&machines);
-        let spot = place(
-            &camera,
-            &footprints,
-            &occluders,
-            &[],
-            &[0],
-            1.0,
-            LABEL_DROP_CSS_PX,
-        )[0];
-        let f = footprints[0];
+        let spot = spots(&machines, &camera, 0.0, &rules(1.0))[0];
+        let f = machines[0].0;
         let lowest = [[f[0], f[1]], [f[2], f[1]], [f[2], f[3]], [f[0], f[3]]]
             .map(|[x, y]| camera.world_to_screen([x, y, 0.0])[1])
             .into_iter()
