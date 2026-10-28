@@ -4,7 +4,7 @@
 //! page then drops any label that collides with one placed before it, so the order here is
 //! the priority: larger on screen first.
 
-use acan_render::camera::Projection;
+use acan_render::camera::{Projection, Projector};
 use acan_render::{Aabb, Camera};
 
 /// A machine named at rest needs at least this many CSS pixels of plate width on screen.
@@ -23,6 +23,11 @@ const LABEL_BOTTOM_DROPS: f32 = 1.6;
 /// `BUDGET_FLOOR_CSS_PX` of plate width.
 pub const REST_BUDGET: usize = 12;
 pub const BUDGET_FLOOR_CSS_PX: f32 = 6.0;
+/// The budget tries at most this many machines per label, so a dense plant where most
+/// labels are covered does not test every machine on every frame.
+const BUDGET_TRIES: usize = 16;
+/// Side of a cell of the screen grid that finds the occluders near a label, in device pixels.
+const GRID_CELL_PX: f32 = 64.0;
 /// From a machine's highest point on screen up to the anchor of a label above it, in CSS
 /// pixels: a small gap plus the label's offset and height.
 pub const LABEL_LIFT_CSS_PX: f32 = 24.0;
@@ -45,7 +50,7 @@ pub struct LabelSpot {
 
 /// The machines labels are placed among. `footprints` holds each machine's plan rectangle
 /// `[min x, min y, max x, max y]`, `occluders` the world boxes of each machine's solid parts
-/// with the machine they belong to, and `half_widths` each label's half width in device px.
+/// with the machine they belong to, in machine order, and `half_widths` each label's half width in device px.
 pub struct Machines<'a> {
     pub footprints: &'a [[f32; 4]],
     pub occluders: &'a [(usize, Aabb)],
@@ -77,14 +82,18 @@ pub fn place(
     named: &[bool],
     rules: &Rules,
 ) -> Vec<LabelSpot> {
+    let view = camera.projector();
+    let rects: Vec<Option<[f32; 4]>> = machines
+        .occluders
+        .iter()
+        .map(|(_, b)| screen_rect(&view, b))
+        .collect();
     let placer = Placer {
         camera,
+        view,
         occluders: machines.occluders,
-        rects: machines
-            .occluders
-            .iter()
-            .map(|(_, b)| screen_rect(camera, b))
-            .collect(),
+        grid: Grid::new(camera.viewport(), &rects),
+        rects,
         rules,
     };
     let mut plates: Vec<Plate> = machines
@@ -95,15 +104,19 @@ pub fn place(
         .collect();
     plates.sort_by(|a, b| b.size_px.total_cmp(&a.size_px).then(a.index.cmp(&b.index)));
     let mut spots = Vec::new();
+    let mut tries = rules.budget * BUDGET_TRIES;
     for plate in &plates {
         let big = plate.size_px >= rules.min_px;
         let is_named = big && named.get(plate.index).copied().unwrap_or(false);
-        if !is_named && spots.len() >= rules.budget {
-            // Plates come largest first, so past the size to name nothing more qualifies.
-            if !big {
-                break;
+        if !is_named {
+            if spots.len() >= rules.budget || tries == 0 {
+                // Plates come largest first, so past the size to name nothing more qualifies.
+                if !big {
+                    break;
+                }
+                continue;
             }
-            continue;
+            tries -= 1;
         }
         let half = machines
             .half_widths
@@ -135,9 +148,76 @@ struct Plate {
 
 struct Placer<'a> {
     camera: &'a Camera,
+    view: Projector,
     occluders: &'a [(usize, Aabb)],
     rects: Vec<Option<[f32; 4]>>,
+    grid: Grid,
     rules: &'a Rules,
+}
+
+/// The occluders whose screen rectangles reach each cell of a grid over the viewport and its
+/// margin. A rectangle past the grid's edge is kept in the edge cells, and one partly behind
+/// the eye in every cell, so a lookup never misses an occluder.
+struct Grid {
+    origin: f32,
+    cols: usize,
+    rows: usize,
+    cells: Vec<Vec<usize>>,
+    everywhere: Vec<usize>,
+}
+
+impl Grid {
+    fn new([vw, vh]: [f32; 2], rects: &[Option<[f32; 4]>]) -> Self {
+        let origin = -VIEW_MARGIN_PX;
+        let span = |v: f32| ((v + 2.0 * VIEW_MARGIN_PX) / GRID_CELL_PX).ceil().max(1.0) as usize;
+        let (cols, rows) = (span(vw), span(vh));
+        let mut grid = Grid {
+            origin,
+            cols,
+            rows,
+            cells: vec![Vec::new(); cols * rows],
+            everywhere: Vec::new(),
+        };
+        for (o, rect) in rects.iter().enumerate() {
+            match rect {
+                Some(r) => {
+                    let ([c0, r0], [c1, r1]) = grid.cells_of(*r);
+                    for row in r0..=r1 {
+                        for col in c0..=c1 {
+                            grid.cells[row * cols + col].push(o);
+                        }
+                    }
+                }
+                None => grid.everywhere.push(o),
+            }
+        }
+        grid
+    }
+
+    /// The first and last cell, as `[col, row]`, that the screen box `r` touches.
+    fn cells_of(&self, r: [f32; 4]) -> ([usize; 2], [usize; 2]) {
+        let cell = |v: f32, count: usize| {
+            (((v - self.origin) / GRID_CELL_PX).floor().max(0.0) as usize).min(count - 1)
+        };
+        (
+            [cell(r[0], self.cols), cell(r[1], self.rows)],
+            [cell(r[2], self.cols), cell(r[3], self.rows)],
+        )
+    }
+
+    /// The occluders that may reach the screen box `r`, each once.
+    fn near(&self, r: [f32; 4]) -> Vec<usize> {
+        let ([c0, r0], [c1, r1]) = self.cells_of(r);
+        let mut found = self.everywhere.clone();
+        for row in r0..=r1 {
+            for col in c0..=c1 {
+                found.extend_from_slice(&self.cells[row * self.cols + col]);
+            }
+        }
+        found.sort_unstable();
+        found.dedup();
+        found
+    }
 }
 
 impl Placer<'_> {
@@ -147,10 +227,10 @@ impl Placer<'_> {
         let camera = self.camera;
         let corners =
             [[f[0], f[1]], [f[2], f[1]], [f[2], f[3]], [f[0], f[3]]].map(|[x, y]| [x, y, 0.0]);
-        if !corners.iter().all(|&c| camera.in_front(c)) {
+        if !corners.iter().all(|&c| self.view.in_front(c)) {
             return None;
         }
-        let screen = corners.map(|c| camera.world_to_screen(c));
+        let screen = corners.map(|c| self.view.world_to_screen(c));
         let xs = screen.map(|s| s[0]);
         let size_px = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max)
             - xs.iter().copied().fold(f32::INFINITY, f32::min);
@@ -184,46 +264,81 @@ impl Placer<'_> {
 
         // Under the plate: hidden when a nearer machine stands on the ground under any part
         // of the text, or in front of the plate's front corner.
-        let below = [camera.world_to_screen(plate.centre)[0], plate.front_y];
+        let below = [self.view.world_to_screen(plate.centre)[0], plate.front_y];
         let (centre, front) = (plate.centre, plate.front);
         let out = unit2([front[0] - centre[0], front[1] - centre[1]]);
         let edge = [front[0] + out[0], front[1] + out[1], 0.5];
-        let mut ground = across(below, [rules.drop_px, rules.drop_px * LABEL_BOTTOM_DROPS])
-            .filter_map(|px| camera.ground_at(px))
-            .map(|[x, y]| [x, y, 0.2]);
-        let below_clear = self.inside(below)
-            && !std::iter::once(edge)
+        let rows = [rules.drop_px, rules.drop_px * LABEL_BOTTOM_DROPS];
+        let below_clear = self.inside(below) && {
+            let spots = across(below, rows).chain([self.view.world_to_screen(edge)]);
+            let near = self.near(spots, plate.index);
+            let mut ground = across(below, rows)
+                .filter_map(|px| camera.ground_at(px))
+                .map(|[x, y]| [x, y, 0.2]);
+            !std::iter::once(edge)
                 .chain(&mut ground)
-                .any(|p| self.nearer_box_hides(p, plate.index));
+                .any(|p| self.nearer_box_hides(p, &near))
+        };
         if below_clear {
             return Some(below);
         }
 
         // Above the machine: hidden when any other machine lies on the ray through any part of
         // the text, nearer or farther, so the label never sits on one.
-        let top = self
+        let first = self
             .occluders
+            .partition_point(|(owner, _)| *owner < plate.index);
+        let end = self
+            .occluders
+            .partition_point(|(owner, _)| *owner <= plate.index);
+        let top = self.occluders[first..end]
             .iter()
-            .filter(|(owner, _)| *owner == plate.index)
             .flat_map(|(_, b)| b.corners())
-            .map(|c| camera.world_to_screen(c)[1])
+            .map(|c| self.view.world_to_screen(c)[1])
             .fold(f32::INFINITY, f32::min);
         if !top.is_finite() {
             return None;
         }
         let above = [below[0], top - rules.lift_px];
         let rows = [rules.drop_px * 0.75, rules.drop_px * 1.25];
+        if !self.inside(above) {
+            return None;
+        }
         let far = camera.fog_range().1;
+        let near = self.near(across(above, rows), plate.index);
         let covered = across(above, rows).any(|px| {
             let (from, to) = (camera.ray_point(px, 0.0), camera.ray_point(px, far));
-            self.occluders
-                .iter()
-                .zip(&self.rects)
-                .any(|(&(owner, ref b), rect)| {
-                    owner != plate.index && rect_holds(*rect, px) && segment_hits(from, to, b)
-                })
+            near.iter().any(|&o| {
+                rect_holds(self.rects[o], px) && segment_hits(from, to, &self.occluders[o].1)
+            })
         });
-        (!covered && self.inside(above)).then_some(above)
+        (!covered).then_some(above)
+    }
+
+    /// The occluders of machines other than `own` whose screen rectangles may reach the box
+    /// around `spots`.
+    fn near(&self, spots: impl Iterator<Item = [f32; 2]>, own: usize) -> Vec<usize> {
+        let mut b = [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ];
+        for s in spots {
+            b = [
+                b[0].min(s[0]),
+                b[1].min(s[1]),
+                b[2].max(s[0]),
+                b[3].max(s[1]),
+            ];
+        }
+        let mut near = self.grid.near(b);
+        near.retain(|&o| {
+            self.occluders[o].0 != own
+                && self.rects[o]
+                    .is_none_or(|r| r[0] <= b[2] && r[2] >= b[0] && r[1] <= b[3] && r[3] >= b[1])
+        });
+        near
     }
 
     /// Whether `p` is on screen, or close enough to it for a label.
@@ -235,10 +350,10 @@ impl Placer<'_> {
             && p[1] <= vh + VIEW_MARGIN_PX
     }
 
-    /// Whether a box of a machine other than `own` lies between the eye and `p`.
-    fn nearer_box_hides(&self, p: [f32; 3], own: usize) -> bool {
+    /// Whether one of the occluders `near` lies between the eye and `p`.
+    fn nearer_box_hides(&self, p: [f32; 3], near: &[usize]) -> bool {
         let camera = self.camera;
-        let s = camera.world_to_screen(p);
+        let s = self.view.world_to_screen(p);
         let origin = match camera.projection() {
             Projection::Perspective => camera.eye(),
             Projection::Orthographic => {
@@ -247,12 +362,8 @@ impl Placer<'_> {
                 std::array::from_fn(|axis| p[axis] + t[axis] * reach)
             }
         };
-        self.occluders
-            .iter()
-            .zip(&self.rects)
-            .any(|(&(owner, ref b), rect)| {
-                owner != own && rect_holds(*rect, s) && segment_hits(origin, p, b)
-            })
+        near.iter()
+            .any(|&o| rect_holds(self.rects[o], s) && segment_hits(origin, p, &self.occluders[o].1))
     }
 }
 
@@ -262,7 +373,7 @@ fn rect_holds(rect: Option<[f32; 4]>, s: [f32; 2]) -> bool {
 }
 
 /// The screen rectangle around a box's corners, or `None` when part of it is behind the eye.
-fn screen_rect(camera: &Camera, b: &Aabb) -> Option<[f32; 4]> {
+fn screen_rect(view: &Projector, b: &Aabb) -> Option<[f32; 4]> {
     let mut r: [f32; 4] = [
         f32::INFINITY,
         f32::INFINITY,
@@ -270,10 +381,10 @@ fn screen_rect(camera: &Camera, b: &Aabb) -> Option<[f32; 4]> {
         f32::NEG_INFINITY,
     ];
     for c in b.corners() {
-        if !camera.in_front(c) {
+        if !view.in_front(c) {
             return None;
         }
-        let s = camera.world_to_screen(c);
+        let s = view.world_to_screen(c);
         r = [
             r[0].min(s[0]),
             r[1].min(s[1]),

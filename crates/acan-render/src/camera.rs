@@ -213,25 +213,21 @@ impl Camera {
     /// Device pixel (y down) of a world point. Points behind the eye land on garbage, so
     /// callers project only points in front of the camera.
     pub fn world_to_screen(&self, p: [f32; 3]) -> [f32; 2] {
-        let b = self.basis();
-        let [vw, vh] = self.viewport;
-        match self.projection {
-            Projection::Perspective => {
-                let rel = sub(p, self.eye());
-                let depth = -dot(rel, b.toward);
-                let f = self.focal() / depth;
-                [
-                    vw * 0.5 + f * dot(rel, b.right),
-                    self.axis_y() - f * dot(rel, b.up),
-                ]
-            }
-            Projection::Orthographic => {
-                let d = [p[0] - self.pivot[0], p[1] - self.pivot[1], p[2]];
-                [
-                    vw * 0.5 + self.zoom * dot(d, b.right),
-                    vh * 0.5 - self.zoom * dot(d, b.up),
-                ]
-            }
+        self.projector().world_to_screen(p)
+    }
+
+    /// The camera's projection worked out once, for projecting many points.
+    pub fn projector(&self) -> Projector {
+        Projector {
+            basis: self.basis(),
+            eye: self.eye(),
+            pivot: self.pivot,
+            projection: self.projection,
+            zoom: self.zoom,
+            focal: self.focal(),
+            centre: [self.viewport[0] * 0.5, self.viewport[1] * 0.5],
+            axis_y: self.axis_y(),
+            near: NEAR_FRACTION * self.eye_distance(),
         }
     }
 
@@ -436,8 +432,53 @@ impl Camera {
 
     /// Whether a world point lies beyond the near plane, so it projects to a real screen spot.
     pub fn in_front(&self, p: [f32; 3]) -> bool {
-        let depth = -dot(sub(p, self.eye()), self.basis().toward);
-        depth > NEAR_FRACTION * self.eye_distance()
+        self.projector().in_front(p)
+    }
+}
+
+/// A snapshot of a camera's projection. It goes stale when the camera moves.
+#[derive(Clone, Copy, Debug)]
+pub struct Projector {
+    basis: Basis,
+    eye: [f32; 3],
+    pivot: [f32; 2],
+    projection: Projection,
+    zoom: f32,
+    focal: f32,
+    /// The viewport's middle, in device pixels.
+    centre: [f32; 2],
+    axis_y: f32,
+    /// The near plane's distance from the eye.
+    near: f32,
+}
+
+impl Projector {
+    /// See `Camera::world_to_screen`.
+    pub fn world_to_screen(&self, p: [f32; 3]) -> [f32; 2] {
+        let b = &self.basis;
+        match self.projection {
+            Projection::Perspective => {
+                let rel = sub(p, self.eye);
+                let depth = -dot(rel, b.toward);
+                let f = self.focal / depth;
+                [
+                    self.centre[0] + f * dot(rel, b.right),
+                    self.axis_y - f * dot(rel, b.up),
+                ]
+            }
+            Projection::Orthographic => {
+                let d = [p[0] - self.pivot[0], p[1] - self.pivot[1], p[2]];
+                [
+                    self.centre[0] + self.zoom * dot(d, b.right),
+                    self.centre[1] - self.zoom * dot(d, b.up),
+                ]
+            }
+        }
+    }
+
+    /// See `Camera::in_front`.
+    pub fn in_front(&self, p: [f32; 3]) -> bool {
+        -dot(sub(p, self.eye), self.basis.toward) > self.near
     }
 }
 
