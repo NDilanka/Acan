@@ -2,11 +2,12 @@
 //! report. The origin decides every rule. This module sequences the calls, renews the lease, and
 //! keeps the worker's own writes behind the origin's build clearance and its fence.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use acan_core::{ClashState, Locus, Settlement};
 use acan_llm::{ChatRequest, Message, ModelClient, Role, ToolCall, ToolSpec};
 use anyhow::{Context, bail};
 use schemars::JsonSchema;
@@ -97,6 +98,14 @@ pub enum Exit {
         /// Why the loop ended.
         reason: String,
     },
+    /// A Narrow settlement took files the task needs, and the task cannot carry on without
+    /// them. The worker released the task.
+    Narrowed {
+        /// The task.
+        task: String,
+        /// Why the work cannot go on without the files it gave up.
+        reason: String,
+    },
     /// A call was refused or a dependency failed.
     Failed {
         /// What failed.
@@ -121,6 +130,12 @@ impl fmt::Display for Exit {
             }
             Self::Lost { task, reason } => write!(f, "lost {task}: {reason}"),
             Self::NoCommit { task, reason } => write!(f, "{task} was not committed: {reason}"),
+            Self::Narrowed { task, reason } => {
+                write!(
+                    f,
+                    "{task} could not carry on after a narrow settlement: {reason}"
+                )
+            }
             Self::Failed { reason } => write!(f, "failed: {reason}"),
         }
     }
@@ -170,18 +185,29 @@ struct Planned {
 }
 
 /// A claimed task and the generation the origin granted. `files` is the footprint as declared,
-/// already in the origin's normalized form.
+/// already in the origin's normalized form. `gave_up` is every place a Narrow settlement took from
+/// this claim, in the order taken. No later plan of the claim may declare one of them again.
 #[derive(Debug, Clone)]
 struct Claim {
     task: String,
     generation: u64,
     files: Vec<String>,
+    gave_up: Vec<Given>,
 }
 
 /// What one attempt at a task produced.
 enum Attempt {
     Claimed(Claim),
     Skipped(String),
+}
+
+/// A place a Narrow settlement took from the claim, and why. The place is the clash's locus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Given {
+    /// The place the claim gave up.
+    at: Locus,
+    /// The clash, the task that keeps the place, and the settlement, for the re-plan and the log.
+    why: String,
 }
 
 /// Where the origin stands on clearing a claim to build.
@@ -193,6 +219,9 @@ enum Clearance {
     Waiting(String),
     /// The claim is no longer this worker's at this generation. The text says why.
     Lost(String),
+    /// A Narrow settlement sent the claim back to declaring and took these places. The worker
+    /// must declare the files it keeps.
+    Narrowed(Vec<Given>),
 }
 
 /// The end of the edit loop.
@@ -201,6 +230,7 @@ enum Edit {
     Stopped(String),
     NotCleared(String),
     Lost(String),
+    Narrowed(String),
 }
 
 /// What one tool call produced.
@@ -209,6 +239,46 @@ enum ToolStep {
     Committed(String),
     NotCleared(String),
     Lost(String),
+    Narrowed(Vec<Given>),
+}
+
+/// How many calls one tool got in an edit, and how many of them were answered with a failure.
+#[derive(Debug, Default)]
+struct Count {
+    calls: usize,
+    failed: usize,
+}
+
+/// The tool calls one edit made, by name.
+#[derive(Debug, Default)]
+struct Tally(BTreeMap<String, Count>);
+
+impl Tally {
+    fn record(&mut self, name: &str, failed: bool) {
+        let count = self.0.entry(name.to_owned()).or_default();
+        count.calls += 1;
+        if failed {
+            count.failed += 1;
+        }
+    }
+
+    /// The counts in name order, such as `read_file 9, run_tests 4 (4 failed)`.
+    fn summary(&self) -> String {
+        if self.0.is_empty() {
+            return "no tool calls".to_owned();
+        }
+        self.0
+            .iter()
+            .map(|(name, count)| {
+                if count.failed == 0 {
+                    format!("{name} {}", count.calls)
+                } else {
+                    format!("{name} {} ({} failed)", count.calls, count.failed)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 async fn drive<C: ModelClient>(
@@ -230,7 +300,7 @@ async fn drive<C: ModelClient>(
     // the origin refuses a renewal, the claim is no longer ours and the work stops at once.
     let mut renewals = tokio::spawn(heartbeat(mcp.clone(), claim.clone(), config.heartbeat));
     let finished = tokio::select! {
-        result = work(config, model, &mcp, &claim, steps) => result,
+        result = work(config, model, &mcp, claim.clone(), steps) => result,
         refused = &mut renewals => {
             let reason = refused.context("the heartbeat task stopped unexpectedly")?;
             return Ok(Exit::Lost { task: claim.task.clone(), reason });
@@ -316,7 +386,7 @@ async fn try_claim<C: ModelClient>(
     // matched readback describes. A readback left from an earlier run is not reused.
     let task = string_field(row, "task");
     let repo = RepoFiles::load(&config.repo).await?;
-    let planned = match plan_work(model, &repo, row, steps).await {
+    let planned = match plan_work(model, &repo, row, &[], steps).await {
         Ok(planned) => planned,
         Err(reasons) => {
             return Ok(Attempt::Skipped(format!(
@@ -357,6 +427,7 @@ async fn try_claim<C: ModelClient>(
                 task,
                 generation,
                 files: planned.footprint,
+                gave_up: Vec::new(),
             }))
         }
     }
@@ -388,7 +459,7 @@ async fn work<C: ModelClient>(
     config: &WorkerConfig,
     model: &C,
     mcp: &McpClient,
-    claim: &Claim,
+    mut claim: Claim,
     steps: &mut Vec<String>,
 ) -> anyhow::Result<Exit> {
     let declared = mcp
@@ -418,19 +489,31 @@ async fn work<C: ModelClient>(
             claim.task
         ),
     );
-    match wait_for_build(config, mcp, claim, steps).await? {
-        Clearance::Cleared => {}
-        Clearance::Waiting(stage) => {
-            return Ok(Exit::NotCleared {
-                task: claim.task.clone(),
-                stage,
-            });
-        }
-        Clearance::Lost(reason) => {
-            return Ok(Exit::Lost {
-                task: claim.task.clone(),
-                reason,
-            });
+    loop {
+        match wait_for_build(config, mcp, &claim, steps).await? {
+            Clearance::Cleared => break,
+            Clearance::Waiting(stage) => {
+                return Ok(Exit::NotCleared {
+                    task: claim.task.clone(),
+                    stage,
+                });
+            }
+            Clearance::Lost(reason) => {
+                return Ok(Exit::Lost {
+                    task: claim.task.clone(),
+                    reason,
+                });
+            }
+            Clearance::Narrowed(given) => {
+                if let Err(reason) =
+                    redeclare(config, model, mcp, &mut claim, &given, steps).await?
+                {
+                    return Ok(Exit::Narrowed {
+                        task: claim.task.clone(),
+                        reason,
+                    });
+                }
+            }
         }
     }
     let path = match mcp
@@ -455,8 +538,8 @@ async fn work<C: ModelClient>(
         claim.task,
         claim.files.join(", ")
     );
-    match edit(config, model, mcp, claim, &mut tools, brief, steps).await? {
-        Edit::Committed(head) => report(mcp, claim, head, steps).await,
+    match edit(config, model, mcp, &mut claim, &mut tools, brief, steps).await? {
+        Edit::Committed(head) => report(mcp, &claim, head, steps).await,
         Edit::Stopped(reason) => Ok(Exit::NoCommit {
             task: claim.task.clone(),
             reason,
@@ -469,13 +552,17 @@ async fn work<C: ModelClient>(
             task: claim.task.clone(),
             reason,
         }),
+        Edit::Narrowed(reason) => Ok(Exit::Narrowed {
+            task: claim.task.clone(),
+            reason,
+        }),
     }
 }
 
 /// Reads the task's own view and says whether this worker may write. The origin's `you_hold` and
 /// `generation` are the fence: a write is allowed only while this worker holds the generation it
 /// was granted, and the task is building.
-fn clearance(detail: &Value, claim: &Claim) -> Clearance {
+fn clearance(detail: &Value, claim: &Claim) -> anyhow::Result<Clearance> {
     let state = string_field(detail, "state");
     let generation = detail["generation"].as_u64();
     let holds = detail["you_hold"].as_bool() == Some(true) && generation == Some(claim.generation);
@@ -484,17 +571,92 @@ fn clearance(detail: &Value, claim: &Claim) -> Clearance {
             Some(generation) => generation.to_string(),
             None => "none".to_owned(),
         };
-        return Clearance::Lost(format!(
+        return Ok(Clearance::Lost(format!(
             "{} is {state} at generation {now}; this worker holds generation {}",
             claim.task, claim.generation
-        ));
+        )));
     }
     let stage = string_field(detail, "stage");
     if stage == "building" {
-        Clearance::Cleared
-    } else {
-        Clearance::Waiting(stage)
+        return Ok(Clearance::Cleared);
     }
+    // A Narrow settlement sends the claim back to declaring. Its clash names the places it gave up.
+    if stage == "declaring" {
+        let given = narrowed(detail, claim)?;
+        if !given.is_empty() {
+            return Ok(Clearance::Narrowed(given));
+        }
+    }
+    Ok(Clearance::Waiting(stage))
+}
+
+/// The places a Narrow settlement took from `claim`: every settled clash that names the claim's
+/// task as the one that narrows, at a place the claim still declares. A clash at a place that is
+/// not a file is kept, so the re-plan can name it as the reason the work cannot go on.
+///
+/// # Errors
+///
+/// Returns the reason when a clash's state or place does not read as the origin's types.
+fn narrowed(detail: &Value, claim: &Claim) -> anyhow::Result<Vec<Given>> {
+    let mut given = Vec::new();
+    for clash in detail["clashes"].as_array().into_iter().flatten() {
+        let id = clash["clash"].as_str().unwrap_or_default();
+        let state: ClashState = serde_json::from_value(clash["state"].clone())
+            .with_context(|| format!("clash {id} has a state the worker does not read"))?;
+        let ClashState::Settled {
+            choice: Settlement::Narrow { task },
+            ..
+        } = state
+        else {
+            continue;
+        };
+        if task.to_string() != claim.task {
+            continue;
+        }
+        let at: Locus = serde_json::from_value(clash["at"].clone())
+            .with_context(|| format!("clash {id} has a place the worker does not read"))?;
+        if file_of(&at).is_some_and(|file| !claim.files.contains(&file)) {
+            continue;
+        }
+        let other = if clash["a"].as_str() == Some(claim.task.as_str()) {
+            clash["b"].as_str()
+        } else {
+            clash["a"].as_str()
+        };
+        let why = format!(
+            "clash {id} with {} was settled as narrow, so {} gives up its place",
+            other.unwrap_or("another task"),
+            claim.task
+        );
+        given.push(Given { at, why });
+    }
+    Ok(given)
+}
+
+/// The file a place lies in, for a file or a symbol. A machine or a belt lies in no file.
+fn file_of(at: &Locus) -> Option<String> {
+    match at {
+        Locus::File { file } | Locus::Symbol { file, .. } => Some(file.to_string()),
+        Locus::Machine { .. } | Locus::Belt { .. } => None,
+    }
+}
+
+/// The distinct files the narrowing took. A place that is not a file cannot be re-planned around,
+/// so the error names the clash that took it.
+fn given_files(given: &[Given]) -> Result<Vec<String>, String> {
+    let mut files: Vec<String> = Vec::new();
+    for taken in given {
+        let file = file_of(&taken.at).ok_or_else(|| {
+            format!(
+                "{}: the place is not a file, so the work cannot be re-planned around it",
+                taken.why
+            )
+        })?;
+        if !files.contains(&file) {
+            files.push(file);
+        }
+    }
+    Ok(files)
 }
 
 /// Polls until the origin clears the claim to build, the claim is lost, or the wait ends.
@@ -508,7 +670,7 @@ async fn wait_for_build(
     let mut last = String::new();
     loop {
         let detail = get_task(mcp, &claim.task).await?;
-        let stage = match clearance(&detail, claim) {
+        let stage = match clearance(&detail, claim)? {
             Clearance::Waiting(stage) => stage,
             decided => return Ok(decided),
         };
@@ -535,7 +697,7 @@ async fn edit<C: ModelClient>(
     config: &WorkerConfig,
     model: &C,
     mcp: &McpClient,
-    claim: &Claim,
+    claim: &mut Claim,
     tools: &mut Worktree,
     brief: String,
     steps: &mut Vec<String>,
@@ -543,6 +705,7 @@ async fn edit<C: ModelClient>(
     let mut messages = vec![Message::system(EDIT_PROMPT), Message::user(brief)];
     let mut specs = Worktree::specs();
     specs.push(get_task_spec());
+    let mut tally = Tally::default();
     for _ in 0..config.max_steps {
         let request = ChatRequest {
             messages: messages.clone(),
@@ -564,20 +727,157 @@ async fn edit<C: ModelClient>(
             return Ok(Edit::Stopped(reason));
         }
         for call in response.tool_calls {
+            let name = call.function.name.clone();
             match run_tool(config, mcp, claim, tools, &call, steps).await? {
-                ToolStep::Answer(text) => messages.push(Message::Tool {
-                    tool_call_id: call.id,
-                    content: text,
-                }),
+                ToolStep::Answer(text) => {
+                    // A failing test run is an answer too, so it counts as a failed call.
+                    let failed = text.starts_with("error:") || text.starts_with("fail:");
+                    tally.record(&name, failed);
+                    messages.push(Message::Tool {
+                        tool_call_id: call.id,
+                        content: text,
+                    });
+                }
                 ToolStep::Committed(head) => return Ok(Edit::Committed(head)),
                 ToolStep::NotCleared(stage) => return Ok(Edit::NotCleared(stage)),
                 ToolStep::Lost(reason) => return Ok(Edit::Lost(reason)),
+                ToolStep::Narrowed(given) => {
+                    // The write or commit that met the narrowing did not run. The task keeps
+                    // going on the files it still declares, so the model is told what changed.
+                    tally.record(&name, true);
+                    match narrow_in_edit(config, model, mcp, claim, tools, &given, steps).await? {
+                        Ok(text) => messages.push(Message::Tool {
+                            tool_call_id: call.id,
+                            content: text,
+                        }),
+                        Err(reason) => return Ok(Edit::Narrowed(reason)),
+                    }
+                }
             }
         }
     }
-    Ok(Edit::Stopped(
-        "the step limit ran out before a commit".to_owned(),
-    ))
+    Ok(Edit::Stopped(format!(
+        "the step limit ran out before a commit after {} model calls: {}",
+        config.max_steps,
+        tally.summary()
+    )))
+}
+
+/// Gives up the files a narrowing took while the task was building or waiting to build. Restores
+/// them, re-plans and declares the files that remain, and returns the answer for the call that met
+/// the narrowing. The error is the reason the work cannot go on.
+async fn narrow_in_edit<C: ModelClient>(
+    config: &WorkerConfig,
+    model: &C,
+    mcp: &McpClient,
+    claim: &mut Claim,
+    tools: &mut Worktree,
+    given: &[Given],
+    steps: &mut Vec<String>,
+) -> anyhow::Result<Result<String, String>> {
+    let lost = match given_files(given) {
+        Ok(lost) => lost,
+        Err(reason) => return Ok(Err(reason)),
+    };
+    if let Err(reason) = tools.restore(&lost).await {
+        return Ok(Err(format!(
+            "could not restore {} after the narrowing: {reason}",
+            lost.join(", ")
+        )));
+    }
+    if let Err(reason) = redeclare(config, model, mcp, claim, given, steps).await? {
+        return Ok(Err(reason));
+    }
+    tools.declare(&claim.files);
+    Ok(Ok(format!(
+        "The declaration changed. {} is no longer yours and was restored, so your writes to it are refused now. You may write only: {}. The write or commit that met the change did not run; continue with the files you may write.",
+        lost.join(", "),
+        claim.files.join(", ")
+    )))
+}
+
+/// Re-plans a claim that a Narrow settlement cut, and declares the files it keeps. The re-plan may
+/// not name a place the claim gave up, in this narrowing or an earlier one, and it is told which
+/// places it lost and why. The error is the reason the work cannot go on: no plan keeps to the
+/// places that remain, the plan keeps no file, or the origin refuses the declaration. Every such
+/// reason releases the claim.
+async fn redeclare<C: ModelClient>(
+    config: &WorkerConfig,
+    model: &C,
+    mcp: &McpClient,
+    claim: &mut Claim,
+    given: &[Given],
+    steps: &mut Vec<String>,
+) -> anyhow::Result<Result<(), String>> {
+    remember(&mut claim.gave_up, given);
+    let lost = match given_files(&claim.gave_up) {
+        Ok(lost) => lost,
+        Err(reason) => return Ok(Err(reason)),
+    };
+    let row = get_task(mcp, &claim.task).await?;
+    let repo = RepoFiles::load(&config.repo).await?;
+    let started = Instant::now();
+    let planned = match plan_work(model, &repo, &row, &claim.gave_up, steps).await {
+        Ok(planned) => planned,
+        Err(reasons) => {
+            return Ok(Err(format!(
+                "no plan without {} was accepted: {reasons}",
+                lost.join(", ")
+            )));
+        }
+    };
+    for fix in &planned.fixes {
+        log(steps, format!("plan fix on {}: {fix}", claim.task));
+    }
+    if planned.footprint.is_empty() {
+        return Ok(Err(format!(
+            "the work cannot be done without {}: {}",
+            lost.join(", "),
+            planned.summary
+        )));
+    }
+    let declared = mcp
+        .call(
+            "declare_changes",
+            json!({
+                "task": claim.task,
+                "generation": claim.generation,
+                "files": planned.footprint,
+            }),
+        )
+        .await?;
+    let view = match declared {
+        Reply::Done(view) => view,
+        Reply::Refused(reason) => {
+            return Ok(Err(format!(
+                "declare_changes refused on {}: {reason}",
+                claim.task
+            )));
+        }
+    };
+    let clashes = view["clashes_found"].as_array().map_or(0, Vec::len);
+    log(
+        steps,
+        format!(
+            "narrowed {}: gave up {}; declared {} file(s) without them; {clashes} new clash(es); re-planned in {:.1}s",
+            claim.task,
+            lost.join(", "),
+            planned.footprint.len(),
+            started.elapsed().as_secs_f64()
+        ),
+    );
+    claim.files = planned.footprint;
+    Ok(Ok(()))
+}
+
+/// Adds the places a narrowing took to the places the claim already gave up. A place is listed
+/// once, in the order it was first taken.
+fn remember(gave_up: &mut Vec<Given>, taken: &[Given]) {
+    for place in taken {
+        if !gave_up.iter().any(|known| known.at == place.at) {
+            gave_up.push(place.clone());
+        }
+    }
 }
 
 /// Waits for build clearance before a write or a commit. The error carries the step that ends
@@ -592,6 +892,7 @@ async fn cleared(
         Clearance::Cleared => Ok(()),
         Clearance::Waiting(stage) => Err(ToolStep::NotCleared(stage)),
         Clearance::Lost(reason) => Err(ToolStep::Lost(reason)),
+        Clearance::Narrowed(given) => Err(ToolStep::Narrowed(given)),
     })
 }
 
@@ -722,14 +1023,23 @@ const PLAN_ATTEMPTS: usize = 3;
 
 /// Plans one task and checks the plan against the repository. A refused plan is sent back with
 /// the reasons and the file list. The error is the reasons of the last refusal.
+///
+/// `given` holds the places a Narrow settlement took from the task. A plan may not name them. A
+/// narrowed task whose plan keeps no file at all gets that plan back with its summary, so the
+/// caller can release the claim with the reason.
 async fn plan_work<C: ModelClient>(
     model: &C,
     repo: &RepoFiles,
     row: &Value,
+    given: &[Given],
     steps: &mut Vec<String>,
 ) -> Result<Planned, String> {
     let task = string_field(row, "task");
-    let brief = planning_brief(repo, row).await;
+    let brief = planning_brief(repo, row, given).await;
+    let lost: Vec<String> = given
+        .iter()
+        .filter_map(|taken| file_of(&taken.at))
+        .collect();
     let mut refusal: Vec<String> = Vec::new();
     for attempt in 1..=PLAN_ATTEMPTS {
         let mut messages = vec![Message::system(PLAN_PROMPT), Message::user(brief.clone())];
@@ -746,13 +1056,36 @@ async fn plan_work<C: ModelClient>(
         refusal = match model.chat_json::<Plan>(Role::Worker, request).await {
             Ok(structured) => {
                 let plan = structured.value;
+                if !given.is_empty() && plan.files.is_empty() && plan.new_files.is_empty() {
+                    return Ok(Planned {
+                        summary: plan.summary,
+                        footprint: Vec::new(),
+                        fixes: Vec::new(),
+                    });
+                }
                 match repo.check(&plan.files, &plan.new_files) {
                     Ok(checked) => {
-                        return Ok(Planned {
-                            summary: plan.summary,
-                            footprint: checked.footprint,
-                            fixes: checked.fixes,
-                        });
+                        let taken: Vec<String> = checked
+                            .footprint
+                            .iter()
+                            .filter(|file| lost.contains(file))
+                            .cloned()
+                            .collect();
+                        if taken.is_empty() {
+                            return Ok(Planned {
+                                summary: plan.summary,
+                                footprint: checked.footprint,
+                                fixes: checked.fixes,
+                            });
+                        }
+                        taken
+                            .iter()
+                            .map(|file| {
+                                format!(
+                                    "{file} was given up under a narrow settlement, so it may not be declared again"
+                                )
+                            })
+                            .collect()
                     }
                     Err(reasons) => reasons,
                 }
@@ -773,21 +1106,36 @@ async fn plan_work<C: ModelClient>(
 }
 
 /// The planning message for one task: its title, brief and scope, the repository's tracked files,
-/// and the full text of the files its scope machines hold.
-async fn planning_brief(repo: &RepoFiles, row: &Value) -> String {
+/// and the full text of the files its scope machines hold. A narrowed task also gets the places it
+/// gave up and why.
+async fn planning_brief(repo: &RepoFiles, row: &Value, given: &[Given]) -> String {
     let scope: Vec<String> = row["scope"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|machine| machine.as_str().map(str::to_owned))
         .collect();
-    format!(
+    let brief = format!(
         "Task: {}\nBrief: {}\nScope machines: {}\n\nRepository files (tracked; use these paths exactly):\n{}\n\nFull text of the files in the scope machines:\n{}",
         string_field(row, "title"),
         string_field(row, "brief"),
         scope.join(", "),
         repo.listing(),
         repo.scope_text(&scope).await,
+    );
+    if given.is_empty() {
+        return brief;
+    }
+    let gave_up: Vec<String> = given
+        .iter()
+        .map(|taken| {
+            let place = file_of(&taken.at).unwrap_or_else(|| format!("{:?}", taken.at));
+            format!("- {place}: {}", taken.why)
+        })
+        .collect();
+    format!(
+        "{brief}\n\nYour declaration was narrowed, so you gave up these places, and you may not declare them again:\n{}\nPlan the change without them. List only the files the change still needs. If the change cannot be done without them, reply with an empty files list and say why in summary.",
+        gave_up.join("\n")
     )
 }
 
@@ -882,7 +1230,7 @@ mod tests {
                 Reply::text(r#"{"summary":"write the file","files":["src/a.ts"]}"#),
             );
         let row = json!({ "title": "t", "brief": "b", "scope": ["src"], "task": "t-1" });
-        let planned = plan_work(&model, &repo(), &row, &mut Vec::new())
+        let planned = plan_work(&model, &repo(), &row, &[], &mut Vec::new())
             .await
             .expect("the second reply is a plan");
         assert_eq!(planned.footprint, vec!["src/a.ts".to_owned()]);
@@ -908,7 +1256,7 @@ mod tests {
             );
         let row = json!({ "title": "t", "brief": "b", "scope": ["src"], "task": "t-1" });
         let mut steps = Vec::new();
-        let planned = plan_work(&model, &repo(), &row, &mut steps)
+        let planned = plan_work(&model, &repo(), &row, &[], &mut steps)
             .await
             .expect("the corrected plan passes");
         assert_eq!(planned.footprint, vec!["src/a.ts".to_owned()]);
@@ -929,7 +1277,7 @@ mod tests {
         );
         let row = json!({ "title": "t", "brief": "b", "scope": ["src"], "task": "t-1" });
         let mut steps = Vec::new();
-        let reasons = plan_work(&model, &repo(), &row, &mut steps)
+        let reasons = plan_work(&model, &repo(), &row, &[], &mut steps)
             .await
             .expect_err("no attempt names a tracked file");
         assert!(
@@ -948,38 +1296,195 @@ mod tests {
             task: "t-1".to_owned(),
             generation: 3,
             files: vec!["model/store.ts".to_owned()],
+            gave_up: Vec::new(),
         }
+    }
+
+    fn taken(file: &str, why: &str) -> Given {
+        Given {
+            at: Locus::File {
+                file: file.parse().expect("a file path"),
+            },
+            why: why.to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_places_a_claim_gave_up_accumulate_across_narrowings() {
+        let mut gave_up = Vec::new();
+        remember(&mut gave_up, &[taken("src/a.ts", "first")]);
+        remember(&mut gave_up, &[taken("src/b.ts", "second")]);
+        // A place taken again is listed once, with the reason it was first taken for.
+        remember(&mut gave_up, &[taken("src/a.ts", "third")]);
+        let files = given_files(&gave_up).expect("both places are files");
+        assert_eq!(files, vec!["src/a.ts".to_owned(), "src/b.ts".to_owned()]);
+        assert_eq!(gave_up[0].why, "first");
     }
 
     fn view(state: &str, stage: Value, holder: bool, generation: Value) -> Value {
         json!({ "state": state, "stage": stage, "you_hold": holder, "generation": generation })
     }
 
+    fn decide(detail: &Value, claim: &Claim) -> Clearance {
+        clearance(detail, claim).expect("the view reads")
+    }
+
+    /// A clash row as `get_task` reports it. The state is the origin's `ClashState` in JSON.
+    fn clash_row(id: &str, a: &str, b: &str, at: Value, state: Value) -> Value {
+        json!({ "clash": id, "a": a, "b": b, "at": at, "state": state })
+    }
+
+    /// A clash that a settlement narrowed onto task `task`, by its number.
+    fn narrowed_onto(task: u64) -> Value {
+        json!({
+            "state": "settled",
+            "choice": { "choice": "narrow", "task": task },
+            "by": "owner",
+        })
+    }
+
+    fn two_file_repo() -> RepoFiles {
+        RepoFiles::from_paths("unused", vec!["src/a.ts".to_owned(), "src/b.ts".to_owned()])
+    }
+
+    /// The place `t-1` gave up in a narrowing: `src/a.ts`.
+    fn gave_up_a() -> Vec<Given> {
+        vec![Given {
+            at: Locus::File {
+                file: "src/a.ts".parse().expect("a file path"),
+            },
+            why: "clash c-1 with t-2 was settled as narrow, so t-1 gives up its place".to_owned(),
+        }]
+    }
+
     #[test]
     fn only_the_holder_at_its_generation_may_write_and_only_once_building() {
         let claim = claim();
         assert_eq!(
-            clearance(&view("claimed", json!("building"), true, json!(3)), &claim),
+            decide(&view("claimed", json!("building"), true, json!(3)), &claim),
             Clearance::Cleared
         );
         assert_eq!(
-            clearance(&view("claimed", json!("declared"), true, json!(3)), &claim),
+            decide(&view("claimed", json!("declared"), true, json!(3)), &claim),
             Clearance::Waiting("declared".to_owned())
         );
         // A replacement holds a newer generation.
         assert!(matches!(
-            clearance(&view("claimed", json!("building"), false, json!(4)), &claim),
+            decide(&view("claimed", json!("building"), false, json!(4)), &claim),
             Clearance::Lost(_)
         ));
         // The same generation with another holder is still not this worker's.
         assert!(matches!(
-            clearance(&view("claimed", json!("building"), false, json!(3)), &claim),
+            decide(&view("claimed", json!("building"), false, json!(3)), &claim),
             Clearance::Lost(_)
         ));
         // A released task is open again, with no holder.
         assert!(matches!(
-            clearance(&view("open", Value::Null, false, Value::Null), &claim),
+            decide(&view("open", Value::Null, false, Value::Null), &claim),
             Clearance::Lost(_)
         ));
+    }
+
+    #[test]
+    fn a_narrowing_of_this_claim_names_the_place_it_gave_up() {
+        let claim = claim();
+        let detail = json!({
+            "state": "claimed",
+            "stage": "declaring",
+            "you_hold": true,
+            "generation": 3,
+            "clashes": [
+                clash_row("c-1", "t-1", "t-2", json!({ "at": "file", "file": "model/store.ts" }), narrowed_onto(1)),
+                // Narrowed onto the other task, so this claim keeps its place.
+                clash_row("c-2", "t-1", "t-2", json!({ "at": "file", "file": "model/store.ts" }), narrowed_onto(2)),
+                // A place the claim does not declare is not one it gave up.
+                clash_row("c-3", "t-1", "t-2", json!({ "at": "file", "file": "model/other.ts" }), narrowed_onto(1)),
+                // An open clash narrows nothing yet.
+                clash_row("c-4", "t-1", "t-2", json!({ "at": "file", "file": "model/store.ts" }), json!({ "state": "open" })),
+            ],
+        });
+        let Clearance::Narrowed(given) = clearance(&detail, &claim).expect("the view reads") else {
+            panic!("a narrowing of this claim is reported");
+        };
+        assert_eq!(given.len(), 1, "{given:?}");
+        assert_eq!(
+            given[0].at,
+            Locus::File {
+                file: "model/store.ts".parse().expect("a file path"),
+            }
+        );
+        assert!(given[0].why.contains("c-1"), "{}", given[0].why);
+    }
+
+    #[test]
+    fn a_place_that_is_not_a_file_cannot_be_planned_around() {
+        let machine = Given {
+            at: Locus::Machine {
+                machine: "model".parse().expect("a machine key"),
+            },
+            why: "clash c-1 with t-2 was settled as narrow, so t-1 gives up its place".to_owned(),
+        };
+        let reason = given_files(&[machine]).expect_err("a machine is not a file");
+        assert!(reason.contains("not a file"), "{reason}");
+    }
+
+    #[test]
+    fn the_tally_counts_each_tool_by_name_and_its_failures() {
+        let mut tally = Tally::default();
+        assert_eq!(tally.summary(), "no tool calls");
+        tally.record("run_tests", true);
+        tally.record("read_file", false);
+        tally.record("run_tests", false);
+        assert_eq!(tally.summary(), "read_file 1, run_tests 2 (1 failed)");
+    }
+
+    #[tokio::test]
+    async fn a_replan_that_names_a_given_up_file_is_sent_back_without_it() {
+        // The first reply names the file the narrowing took. The second call carries that refusal,
+        // and its reply declares the other file.
+        let model = Stub::default()
+            .when(
+                Role::Worker,
+                |request| !text_of(request).contains("was given up under a narrow settlement"),
+                Reply::text(r#"{"summary":"s","files":["src/a.ts"]}"#),
+            )
+            .when(
+                Role::Worker,
+                |_| true,
+                Reply::text(r#"{"summary":"s","files":["src/b.ts"]}"#),
+            );
+        let row = json!({ "title": "t", "brief": "b", "scope": ["src"], "task": "t-1" });
+        let mut steps = Vec::new();
+        let planned = plan_work(&model, &two_file_repo(), &row, &gave_up_a(), &mut steps)
+            .await
+            .expect("the second plan passes");
+        assert_eq!(planned.footprint, vec!["src/b.ts".to_owned()]);
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.starts_with("plan refused on t-1 (attempt 1 of 3)")),
+            "{steps:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_replan_that_keeps_no_file_returns_its_summary_for_the_release() {
+        let model = Stub::default().when(
+            Role::Worker,
+            |_| true,
+            Reply::text(r#"{"summary":"the loader needs src/a.ts","files":[]}"#),
+        );
+        let row = json!({ "title": "t", "brief": "b", "scope": ["src"], "task": "t-1" });
+        let planned = plan_work(
+            &model,
+            &two_file_repo(),
+            &row,
+            &gave_up_a(),
+            &mut Vec::new(),
+        )
+        .await
+        .expect("an empty re-plan is returned, not refused");
+        assert!(planned.footprint.is_empty(), "{:?}", planned.footprint);
+        assert_eq!(planned.summary, "the loader needs src/a.ts");
     }
 }

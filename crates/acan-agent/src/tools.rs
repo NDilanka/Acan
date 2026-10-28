@@ -212,6 +212,47 @@ impl Worktree {
             .to_owned())
     }
 
+    /// Sets the files the task declares now. Writes to any other file are refused from here on.
+    pub fn declare(&mut self, declared: &[String]) {
+        self.declared = declared
+            .iter()
+            .filter_map(|path| normalize_path(path).ok())
+            .collect();
+    }
+
+    /// Restores files a narrowing took from the declaration. A tracked file goes back to its
+    /// committed version. A file the task never committed is removed, so a later commit cannot
+    /// carry the change.
+    ///
+    /// # Errors
+    ///
+    /// Returns the reason when git cannot restore a file or a file cannot be removed.
+    pub async fn restore(&self, files: &[String]) -> Result<(), String> {
+        for relative in files {
+            let path = self.inside(relative)?;
+            // `ls-files` prints the path when git tracks it and nothing when it does not. A git
+            // failure is returned as an error, so a file is never removed on a guess.
+            let listed = git(
+                &self.root,
+                &["--literal-pathspecs", "ls-files", "--", relative],
+            )
+            .await?;
+            if listed.trim().is_empty() {
+                if path.exists() {
+                    std::fs::remove_file(&path)
+                        .map_err(|err| format!("cannot remove {relative}: {err}"))?;
+                }
+            } else {
+                git(
+                    &self.root,
+                    &["--literal-pathspecs", "checkout", "-q", "--", relative],
+                )
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
     /// The path inside the worktree. Every existing link on the way is resolved, so a symlink
     /// that points outside the worktree is refused, and so is a link that cannot be resolved.
     fn inside(&self, relative: &str) -> Result<PathBuf, String> {
