@@ -189,14 +189,14 @@
   },
   "context": {
     "protected_head": "178c1b07097a9f510882d139061ed50b4b44b1d4",
-    "merged_commit": "a27a5f30da19543ee34362516e29bf7561214156",
+    "merged_commit": "6f1c2a9e4b7d3058c1e2f9a0b4d6c8e1f3a5b7c9",
     "effective_artifact_hashes": {
       "bun.lock": "sha256:5dd3909fd7cc889f9d3635f02a8b1eb462eaf95a85f550fad2aae6ef409f7b54"
     },
     "ledger_head": {
       "event_seq": 0
     },
-    "scope_hash": "sha256:eaab9bc0a3a9320938e24f5d50332cf9802ed3cf10b4c26497f8c518642bd415",
+    "scope_hash": "sha256:ab2d2883c994bc3d9c7555b4eeba14752aa8af8fd473544361960cfea13a03ba",
     "probe_set_hash": "sha256:08cbc55fe91e0a7d35d66a97b619a7931d518dccb0a3268d75ab7b9eac74af03",
     "runner_hash": "sha256:02b428f772fbef62ede2b5c9d022c4e49f7e17dbed2e7a396f402aad28a24b47",
     "evaluator_version": "acan-intent/0.1.0",
@@ -293,7 +293,7 @@
       "version": "acan-run/1",
       "id": "run-candidate-links",
       "probe": "sha256:df9a3ba0fdfbb74fd01b2fdab14f4ab0df0824efbe6bf228f0c0eb65f78ec89c",
-      "commit": "a27a5f30da19543ee34362516e29bf7561214156",
+      "commit": "6f1c2a9e4b7d3058c1e2f9a0b4d6c8e1f3a5b7c9",
       "role": "candidate",
       "env": {
         "lockfile_hash": "sha256:5dd3909fd7cc889f9d3635f02a8b1eb462eaf95a85f550fad2aae6ef409f7b54",

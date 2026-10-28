@@ -1311,6 +1311,34 @@ fn a_stopped_run_holds_records_only_up_to_its_stop() {
 }
 
 #[test]
+fn a_decision_rules_only_on_examples_of_its_own_order() {
+    let example: ContrastExample = load("contrast-example.json");
+    let hash = example
+        .contrast_example_hash()
+        .expect("hashing the example");
+    let context = &example.context;
+    assert_eq!(example.candidate.run.commit, context.merged_commit);
+    for base in [&example.base_a.run, &example.base_b.run] {
+        assert_eq!(base.commit, context.protected_head);
+    }
+    let mut ruled = 0;
+    for name in LEDGER {
+        let LedgerEvent::DecisionConfirmed(decision) = load(name) else {
+            continue;
+        };
+        if decision.accepts.contains(&hash) || decision.rejects.contains(&hash) {
+            ruled += 1;
+            assert_eq!(
+                context.scope_hash, decision.scope_hash,
+                "{name} of order {} rules on an example of another order's scope",
+                decision.order
+            );
+        }
+    }
+    assert!(ruled > 0, "no decision lists the example fixture");
+}
+
+#[test]
 fn a_decision_rules_only_on_examples_retained_before_it() {
     let example: ContrastExample = load("contrast-example.json");
     let hash = example
