@@ -13,8 +13,8 @@ struct Camera {
     view: vec4<f32>,
     // x: near plane. y: far plane (orthographic only). z: focal length in device px (perspective).
     depth: vec4<f32>,
-    // x, y: fog starts and ends, in eye distances. z, w: the angle fade, as the absolute sine of a
-    // ray's elevation, from and to.
+    // x, y: fog starts and ends, in plan units from the eye. z, w: the angle fade, as the absolute
+    // sine of a ray's elevation, from and to.
     fog: vec4<f32>,
 }
 
@@ -77,10 +77,9 @@ fn to_clip(p: vec3<f32>) -> vec4<f32> {
 }
 
 // Fog from the eye: nothing fades nearer than the fog start, and the far end is page white.
-// Distances are in eye distances from the pivot, so the look holds at every zoom.
+// Mirrors `Camera::fog_at`.
 fn fog_at(p: vec3<f32>) -> f32 {
-    let d = camera.pivot.z;
-    return smoothstep(camera.fog.x * d, camera.fog.y * d, distance(p, camera.eye.xyz));
+    return smoothstep(camera.fog.x, camera.fog.y, distance(p, camera.eye.xyz));
 }
 
 // The paper grey of a face, from its normal. The light is fixed to the camera's left, so a face
@@ -249,7 +248,8 @@ fn fs_grid(@builtin(position) frag: vec4<f32>) -> GridOut {
 
 // Belts: flat opaque ribbons on the ground. The side and end lines are drawn in the fill, from the
 // distance to the ribbon's border in device pixels, so they never break up at a distance. They
-// fade as the ribbon narrows on screen.
+// fade as the ribbon narrows on screen, measured across the belt and not along it, down to a
+// floor so a belt never vanishes.
 
 struct RibbonIn {
     @location(0) position: vec2<f32>,
@@ -282,13 +282,15 @@ fn vs_ribbon(v: RibbonIn) -> RibbonOut {
 
 @fragment
 fn fs_ribbon(v: RibbonOut) -> FragOut {
-    let per_px_across = max(fwidth(v.across), 1e-6);
-    let per_px_along = max(fwidth(v.along), 1e-6);
+    // Plan units per device pixel along each axis's screen gradient. The gradient length, unlike
+    // fwidth, is the true screen distance across the belt, so a slanted belt reads its real width.
+    let per_px_across = max(length(vec2<f32>(dpdx(v.across), dpdy(v.across))), 1e-6);
+    let per_px_along = max(length(vec2<f32>(dpdx(v.along), dpdy(v.along))), 1e-6);
     let side_px = (v.size.y - abs(v.across)) / per_px_across;
     let end_px = min(v.along, v.size.x - v.along) / per_px_along;
     let line = clamp(BELT_EDGE_PX + 0.5 - min(side_px, end_px), 0.0, 1.0);
     let width_px = 2.0 * v.size.y / per_px_across;
-    let shown = smoothstep(BELT_EDGE_FADE_PX[0], BELT_EDGE_FADE_PX[1], width_px);
+    let shown = mix(BELT_EDGE_FLOOR, 1.0, smoothstep(BELT_EDGE_FADE_PX[0], BELT_EDGE_FADE_PX[1], width_px));
     let edge = theme.palette[SLOT_BELT_EDGE];
     let fill = theme.palette[SLOT_BELT].rgb;
     let colour = mix(fill, edge.rgb, edge.a * line * shown);
@@ -529,7 +531,14 @@ fn fs_edge(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     if (cover <= 0.0) {
         discard;
     }
-    let outline = theme.palette[SLOT_OUTLINE];
+    // The object's scale at this pixel, from its reverse depth: near over distance, so the focal
+    // length times the depth over the near plane is device px per plan unit.
+    var px_per_unit = camera.view.z;
+    if (!is_ortho()) {
+        px_per_unit = camera.depth.z * centre.depth / camera.depth.x;
+    }
+    let near = smoothstep(LOD_FADE_PX[0], LOD_FADE_PX[1], px_per_unit * LOD_REFERENCE);
+    let outline = mix(theme.palette[SLOT_OUTLINE_FAR], theme.palette[SLOT_OUTLINE], near);
     let page = theme.palette[SLOT_PAGE].rgb;
     return vec4<f32>(mix(outline.rgb, page, centre.fog), outline.a * cover);
 }

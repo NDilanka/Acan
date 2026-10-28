@@ -1,7 +1,8 @@
 //! Plant layout on the ground plan. Machines are layered by import direction (longest path),
 //! ordered inside each layer by the barycentre of their neighbours, and stacked on a grid.
-//! A belt that spans several layers crosses each one in a lane of its own, so every belt
-//! runs through a gap between columns or through a lane, never through a footprint. The
+//! A belt that spans several layers crosses each one in the channel between the two machines
+//! its place in the row order falls between, so every belt runs through a gap between columns
+//! or a channel between machines, never through a footprint. The
 //! result depends only on the input, so the same plant always lays out the same way.
 
 use std::collections::VecDeque;
@@ -14,16 +15,15 @@ pub const GRID: f32 = 8.0;
 pub const COLUMN_GAP: f32 = 72.0;
 /// Clear height between items stacked in one column.
 pub const ROW_GAP: f32 = 40.0;
-/// Height of the band a belt crosses a column in when it passes that column without a machine.
-pub const LANE: f32 = 16.0;
-/// Horizontal step between belts that share a gap: the widest belt plus a clear gap.
+/// Step between belts that share a gap or a channel: the widest belt plus a clear gap.
 const BELT_STEP: f32 = 8.0;
-/// Belts in one gap cycle through this many offsets, which keeps every lane clear of the
-/// columns on either side.
-const BELT_SLOTS: usize = 7;
+/// Belts keep this far from the machines on either side of the gap or channel they run in.
+const LANE_MARGIN: f32 = 8.0;
+/// A column at least this full of the tallest column's height is spread to its full height,
+/// so the plant's edges line up. A shorter column is centred.
+const JUSTIFY_FILL: f32 = 0.8;
 /// Barycentre sweeps. Each sweep moves down or up one layer at a time.
 const SWEEPS: usize = 8;
-
 /// A directed import between two machines, by index. `from` imports `to`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Edge {
@@ -75,13 +75,7 @@ pub fn layout(kinds: &[Kind], edges: &[Edge]) -> Layout {
     let graph = Graph::build(&layer, edges, &accepted);
     let rows = order_rows(&graph);
 
-    let node_height = |node: usize| -> f32 {
-        if node < machines {
-            snap_up(kinds[node].footprint().1)
-        } else {
-            LANE
-        }
-    };
+    let heights: Vec<f32> = kinds.iter().map(|k| snap_up(k.footprint().1)).collect();
     let widths: Vec<f32> = rows
         .iter()
         .map(|row| {
@@ -101,69 +95,220 @@ pub fn layout(kinds: &[Kind], edges: &[Edge]) -> Layout {
     let stacks: Vec<f32> = rows
         .iter()
         .map(|row| {
-            let items: f32 = row.iter().map(|&node| node_height(node)).sum();
-            items + ROW_GAP * row.len().saturating_sub(1) as f32
+            let (count, items) = row
+                .iter()
+                .filter(|&&node| node < machines)
+                .fold((0_usize, 0.0_f32), |(c, sum), &node| {
+                    (c + 1, sum + heights[node])
+                });
+            items + ROW_GAP * count.saturating_sub(1) as f32
         })
         .collect();
     let tallest = stacks.iter().copied().fold(0.0, f32::max);
-    let mut top = vec![0.0_f32; graph.layer.len()];
-    for (l, row) in rows.iter().enumerate() {
-        let mut y = snap((tallest - stacks[l]) / 2.0);
-        for &node in row {
-            top[node] = y;
-            y += node_height(node) + ROW_GAP;
+
+    let mut source_of = vec![usize::MAX; graph.layer.len()];
+    let mut target_of = vec![usize::MAX; graph.layer.len()];
+    for chain in &graph.chains {
+        for &node in &chain[1..chain.len() - 1] {
+            source_of[node] = chain[0];
+            target_of[node] = chain[chain.len() - 1];
         }
     }
 
+    // Machines first: lanes take no room in a column, so the machines settle on their own.
+    let mut node_y = vec![0.0_f32; graph.layer.len()];
+    let mut spans: Vec<Vec<(f32, f32)>> = Vec::with_capacity(rows.len());
+    for (l, row) in rows.iter().enumerate() {
+        let count = row.iter().filter(|&&node| node < machines).count();
+        let spare = tallest - stacks[l];
+        let justify = count > 1 && stacks[l] >= JUSTIFY_FILL * tallest;
+        let (mut y, extra) = if justify {
+            (0.0, spare / (count - 1) as f32)
+        } else {
+            (spare / 2.0, 0.0)
+        };
+        let mut column = Vec::with_capacity(count);
+        for &node in row.iter().filter(|&&node| node < machines) {
+            let top = snap(y);
+            node_y[node] = top;
+            column.push((top, top + heights[node]));
+            y += heights[node] + ROW_GAP + extra;
+        }
+        spans.push(column);
+    }
+    let centre_y = |m: usize, node_y: &[f32]| node_y[m] + kinds[m].footprint().1 / 2.0;
+
+    // A lane crosses its column in the channel, between two machines or past either end,
+    // that lies nearest the straight run from where it comes from to its target. Lanes of one
+    // source in one channel merge, and the rest keep a belt's step apart.
+    for (l, row) in rows.iter().enumerate() {
+        let column = &spans[l];
+        let channels: Vec<(f32, f32)> = (0..=column.len())
+            .map(|c| {
+                let lo = c
+                    .checked_sub(1)
+                    .map_or(f32::NEG_INFINITY, |p| column[p].1 + LANE_MARGIN);
+                let hi = column.get(c).map_or(f32::INFINITY, |s| s.0 - LANE_MARGIN);
+                (lo, hi)
+            })
+            .collect();
+        let mut wanted: Vec<LaneWish> = Vec::new();
+        for &node in row.iter().filter(|&&node| node >= machines) {
+            let pred = graph.up[node][0];
+            let from = if pred < machines {
+                centre_y(pred, &node_y)
+            } else {
+                node_y[pred]
+            };
+            let goal = centre_y(target_of[node], &node_y);
+            let (channel, y) = channels
+                .iter()
+                .map(|&(lo, hi)| from.clamp(lo, hi.max(lo)))
+                .enumerate()
+                .min_by(|a, b| {
+                    let cost = |y: f32| ((y - from).abs() + (y - goal).abs(), (y - from).abs());
+                    let (ca, cb) = (cost(a.1), cost(b.1));
+                    ca.0.total_cmp(&cb.0).then(ca.1.total_cmp(&cb.1))
+                })
+                .unwrap_or((0, from));
+            wanted.push(LaneWish {
+                channel,
+                source: source_of[node],
+                y,
+                node,
+            });
+        }
+        wanted.sort_by_key(|w| (w.channel, w.source, w.node));
+        for channel in wanted.chunk_by(|a, b| a.channel == b.channel) {
+            let mut groups: Vec<(f32, &[LaneWish])> = channel
+                .chunk_by(|a, b| a.source == b.source)
+                .map(|g| (g.iter().map(|w| w.y).sum::<f32>() / g.len() as f32, g))
+                .collect();
+            groups.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1[0].source.cmp(&b.1[0].source)));
+            let (lo, hi) = channels[channel[0].channel];
+            let desired: Vec<f32> = groups.iter().map(|g| g.0).collect();
+            for (y, (_, members)) in pack(&desired, lo, hi, BELT_STEP).into_iter().zip(&groups) {
+                for member in *members {
+                    node_y[member.node] = y;
+                }
+            }
+        }
+    }
     let mut placed = Vec::with_capacity(machines);
     for (node, &kind) in kinds.iter().enumerate() {
         let l = graph.layer[node];
         let (w, _) = kind.footprint();
         placed.push(Placed {
             x: column_x[l] + snap((widths[l] - w) / 2.0),
-            y: top[node],
+            y: node_y[node],
             kind,
         });
     }
+    let exit_y = |m: usize| placed[m].y + placed[m].kind.footprint().1 / 2.0;
 
-    let mut out_total = vec![0_usize; machines];
-    let mut in_total = vec![0_usize; machines];
-    for chain in &graph.chains {
-        out_total[chain[0]] += 1;
-        in_total[chain[chain.len() - 1]] += 1;
+    // Belts enter a target in the order they arrive from top to bottom, so they never cross
+    // in the last gap, and as level with where they arrive as the plinth allows.
+    let arrival = |chain: &Vec<usize>| match chain.len() {
+        0..=2 => exit_y(chain[0]),
+        n => node_y[chain[n - 2]],
+    };
+    let mut incoming: Vec<Vec<usize>> = vec![Vec::new(); machines];
+    for (k, chain) in graph.chains.iter().enumerate() {
+        incoming[chain[chain.len() - 1]].push(k);
     }
-    let mut out_seen = vec![0_usize; machines];
-    let mut in_seen = vec![0_usize; machines];
-    let mut exit_y = Vec::with_capacity(graph.chains.len());
-    let mut entry_y = Vec::with_capacity(graph.chains.len());
-    for chain in &graph.chains {
-        let (from, to) = (chain[0], chain[chain.len() - 1]);
-        let j = out_seen[from];
-        out_seen[from] += 1;
-        exit_y.push(spread(placed[from], j, out_total[from]));
-        let j = in_seen[to];
-        in_seen[to] += 1;
-        entry_y.push(spread(placed[to], j, in_total[to]));
+    let mut entry_y = vec![0.0_f32; graph.chains.len()];
+    for (to, ks) in incoming.iter_mut().enumerate() {
+        ks.sort_by(|&a, &b| {
+            arrival(&graph.chains[a])
+                .total_cmp(&arrival(&graph.chains[b]))
+                .then(a.cmp(&b))
+        });
+        let top = placed[to].y + LANE_MARGIN;
+        let bottom = placed[to].y + placed[to].kind.footprint().1 - LANE_MARGIN;
+        let desired: Vec<f32> = ks
+            .iter()
+            .map(|&k| arrival(&graph.chains[k]).clamp(top, bottom))
+            .collect();
+        for (&k, y) in ks.iter().zip(pack(&desired, top, bottom, BELT_STEP)) {
+            entry_y[k] = y;
+        }
     }
 
-    let mut gap_count = vec![0_usize; rows.len()];
+    // Every belt from one source turns at the same x in a gap, so a source's belts leave as one
+    // trunk and part only where they turn toward their own targets. In a gap, trunks that run
+    // down sit left of those that run up. Among those that run down, the one that starts lower
+    // sits further left, and among those that run up, the one that starts higher does, which
+    // keeps two staggered trunks from crossing twice.
+    let y_of = |node: usize| {
+        if node < machines {
+            exit_y(node)
+        } else {
+            node_y[node]
+        }
+    };
+    let mut gap_x: Vec<Vec<(usize, f32)>> = vec![Vec::new(); rows.len()];
+    for (l, slots) in gap_x.iter_mut().enumerate() {
+        // Per source: the sum of start ys, the sum of end ys and the count.
+        let mut runs: Vec<(usize, f32, f32, f32)> = Vec::new();
+        for (k, chain) in graph.chains.iter().enumerate() {
+            let Some(i) = (1..chain.len()).find(|&i| graph.layer[chain[i]] == l) else {
+                continue;
+            };
+            let start = y_of(chain[i - 1]);
+            let end = if chain[i] < machines {
+                entry_y[k]
+            } else {
+                node_y[chain[i]]
+            };
+            match runs.iter_mut().find(|r| r.0 == chain[0]) {
+                Some(r) => {
+                    r.1 += start;
+                    r.2 += end;
+                    r.3 += 1.0;
+                }
+                None => runs.push((chain[0], start, end, 1.0)),
+            }
+        }
+        let mut keyed: Vec<(bool, f32, usize)> = runs
+            .iter()
+            .map(|&(source, starts, ends, n)| {
+                let (start, end) = (starts / n, ends / n);
+                let up = end < start;
+                (up, if up { start } else { -start }, source)
+            })
+            .collect();
+        keyed.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
+        let centre = column_x[l] - COLUMN_GAP / 2.0;
+        let n = keyed.len();
+        *slots = keyed
+            .iter()
+            .enumerate()
+            .map(|(j, &(_, _, s))| {
+                (
+                    s,
+                    centre + lane_offset(j, n, COLUMN_GAP - 2.0 * LANE_MARGIN),
+                )
+            })
+            .collect();
+    }
     let mut belts = Vec::with_capacity(graph.chains.len());
     for (k, chain) in graph.chains.iter().enumerate() {
-        let from = placed[chain[0]];
+        let source = chain[0];
+        let from = placed[source];
         let to = placed[chain[chain.len() - 1]];
-        let mut y = exit_y[k];
+        let mut y = exit_y(source);
         let mut path = vec![[from.x + from.kind.footprint().0, y]];
         for &node in &chain[1..] {
             let l = graph.layer[node];
-            let slot = gap_count[l];
-            gap_count[l] += 1;
-            let offset = (slot % BELT_SLOTS) as f32 - (BELT_SLOTS / 2) as f32;
-            let jog_x = column_x[l] - COLUMN_GAP / 2.0 + offset * BELT_STEP;
+            let jog_x = gap_x[l]
+                .iter()
+                .find(|&&(s, _)| s == source)
+                .map_or(column_x[l] - COLUMN_GAP / 2.0, |&(_, x)| x);
             path.push([jog_x, y]);
             y = if node < machines {
                 entry_y[k]
             } else {
-                top[node] + LANE / 2.0
+                node_y[node]
             };
             path.push([jog_x, y]);
         }
@@ -177,7 +322,6 @@ pub fn layout(kinds: &[Kind], edges: &[Edge]) -> Layout {
             path,
         });
     }
-
     let bounds = placed
         .iter()
         .map(Placed::footprint)
@@ -195,6 +339,15 @@ pub fn layout(kinds: &[Kind], edges: &[Edge]) -> Layout {
         belts,
         bounds: bounds.unwrap_or([0.0; 4]),
     }
+}
+
+/// Where one lane would like to cross its column: the channel, the machine its belt leaves,
+/// the y nearest its straight run, and its node.
+struct LaneWish {
+    channel: usize,
+    source: usize,
+    y: f32,
+    node: usize,
 }
 
 /// Indices of the edges that keep the import graph acyclic, in input order. A self import, an
@@ -343,11 +496,37 @@ fn set_positions(row: &[usize], pos: &mut [usize]) {
     }
 }
 
-/// The point on a plinth's right or left edge where belt `index` of `count` leaves or
-/// enters. Belts spread evenly over the edge's depth.
-fn spread(machine: Placed, index: usize, count: usize) -> f32 {
-    let (_, d) = machine.kind.footprint();
-    machine.y + d * (index + 1) as f32 / (count + 1) as f32
+/// Positions near `desired`, which is sorted, kept at least `step` apart inside `[lo, hi]`.
+/// The step shrinks when the range is too short for all of them.
+fn pack(desired: &[f32], lo: f32, hi: f32, step: f32) -> Vec<f32> {
+    let n = desired.len();
+    let span = (hi - lo).max(0.0);
+    let step = if n > 1 && span.is_finite() {
+        step.min(span / (n - 1) as f32)
+    } else {
+        step
+    };
+    let mut out: Vec<f32> = Vec::with_capacity(n);
+    for &d in desired {
+        let floor = out.last().map_or(lo, |&p| p + step);
+        out.push(d.max(floor));
+    }
+    let mut ceiling = hi;
+    for p in out.iter_mut().rev() {
+        *p = p.min(ceiling);
+        ceiling = *p - step;
+    }
+    out
+}
+
+/// Offset from a gap's centre line of belt `index` of `count`. Belts sit `BELT_STEP` apart,
+/// closer when `room` is too narrow for that.
+fn lane_offset(index: usize, count: usize, room: f32) -> f32 {
+    if count <= 1 {
+        return 0.0;
+    }
+    let step = BELT_STEP.min(room.max(0.0) / (count - 1) as f32);
+    (index as f32 - (count - 1) as f32 / 2.0) * step
 }
 
 fn snap(value: f32) -> f32 {
@@ -596,6 +775,23 @@ mod tests {
     #[test]
     fn a_large_generated_plant_meets_every_invariant() {
         check_plant(&stress(400));
+    }
+
+    #[test]
+    fn belts_from_one_source_leave_as_one_trunk() {
+        let plant = from_scan_json(FIXTURE).expect("fixture parses");
+        let (kinds, edges) = plant.layout_input();
+        let laid = layout(&kinds, &edges);
+        for a in &laid.belts {
+            for b in laid.belts.iter().filter(|b| b.from == a.from) {
+                assert_eq!(
+                    a.path[..2],
+                    b.path[..2],
+                    "belts of {} part at the plinth",
+                    a.from
+                );
+            }
+        }
     }
 
     #[test]

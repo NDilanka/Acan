@@ -544,7 +544,7 @@ impl Renderer {
             Projection::Perspective => 0.0,
             Projection::Orthographic => 1.0,
         };
-        let (fog_near, fog_far) = (theme::FOG_NEAR, theme::FOG_FAR);
+        let (fog_near, fog_far) = camera.fog_range();
         let (angle_lo, angle_hi) = theme::ANGLE_FADE;
         CameraUniform {
             right: [b.right[0], b.right[1], b.right[2], 0.0],

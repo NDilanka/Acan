@@ -12,8 +12,13 @@
     touch-action: none; cursor: grab; }
   canvas.dragging { cursor: grabbing; }
   #labels { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
+  /* A paper halo round the text, so no belt or grid line crosses a word. */
   .label { position: absolute; left: 0; top: 0; white-space: nowrap;
-    font: 12px system-ui, sans-serif; color: #57575a; }
+    font: 12px system-ui, sans-serif; color: #57575a;
+    text-shadow: 1.5px 0 0 #fff, -1.5px 0 0 #fff, 0 1.5px 0 #fff, 0 -1.5px 0 #fff,
+      1px 1px 0 #fff, -1px 1px 0 #fff, 1px -1px 0 #fff, -1px -1px 0 #fff, 0 0 3px #fff; }
+  #labels.alt .label { background: rgba(255, 255, 255, 0.92); border-radius: 4px; padding: 0 5px;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.05); }
   .label .count { display: none; margin-left: 6px; color: #8a8a8f; }
   #labels.alt .count { display: inline; }
   .island { position: fixed; background: #ffffff; border: 1px solid #e5e5e2; border-radius: 10px;

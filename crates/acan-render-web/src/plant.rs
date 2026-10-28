@@ -165,7 +165,9 @@ pub fn stress(count: usize) -> Plant {
     let mut layer_of = Vec::with_capacity(count);
     let mut members: Vec<Vec<usize>> = vec![Vec::new(); layers];
     for i in 0..count {
-        let layer = rng.below(layers);
+        // Layers take turns, so every column holds the same number of machines and the
+        // footprint comes out a clean rectangle.
+        let layer = i % layers;
         layer_of.push(layer);
         members[layer].push(i);
         let base = NAMES[i % NAMES.len()];

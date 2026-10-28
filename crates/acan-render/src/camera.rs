@@ -74,6 +74,8 @@ pub struct Camera {
     zoom: f32,
     viewport: [f32; 2],
     projection: Projection,
+    /// The box the fog keeps clear. Empty until a scene is set.
+    fog_bounds: Aabb,
 }
 
 impl Camera {
@@ -86,6 +88,7 @@ impl Camera {
             zoom: 1.0,
             viewport,
             projection: Projection::Perspective,
+            fog_bounds: Aabb::EMPTY,
         }
     }
 
@@ -364,10 +367,31 @@ impl Camera {
         lo
     }
 
-    /// Fog factor of a world point: 0 near the pivot's distance and 1 far past the horizon's
-    /// start. See [`fog`].
+    /// Keeps the fog clear of `bounds`, so it starts past the scene's far corner.
+    pub fn set_fog_bounds(&mut self, bounds: Aabb) {
+        self.fog_bounds = bounds;
+    }
+
+    /// Where the fog starts and ends, in plan units from the eye. See `theme::FOG_NEAR`.
+    pub fn fog_range(&self) -> (f32, f32) {
+        let eye = self.eye();
+        let b = self.fog_bounds;
+        let far_corner = if b.min[0] <= b.max[0] {
+            b.corners()
+                .iter()
+                .map(|&c| distance(c, eye))
+                .fold(0.0, f32::max)
+        } else {
+            0.0
+        };
+        let start = (theme::FOG_NEAR * self.eye_distance()).max(far_corner);
+        (start, start * theme::FOG_SPAN)
+    }
+
+    /// Fog factor of a world point: 0 before the fog starts and 1 past its end.
     pub fn fog_at(&self, p: [f32; 3]) -> f32 {
-        fog(distance(p, self.eye()), self.eye_distance())
+        let (start, end) = self.fog_range();
+        smoothstep(start, end, distance(p, self.eye()))
     }
 
     /// Whether a world point lies beyond the near plane, so it projects to a real screen spot.
@@ -375,17 +399,6 @@ impl Camera {
         let depth = -dot(sub(p, self.eye()), self.basis().toward);
         depth > NEAR_FRACTION * self.eye_distance()
     }
-}
-
-/// Distance fog from the eye. `distance` is the eye distance of a point and `eye_distance` is
-/// the eye distance of the pivot. Nothing fades within `FOG_NEAR` eye distances, and everything
-/// is gone past `FOG_FAR`. Mirrors `fog` in `plant.wgsl`.
-pub fn fog(distance: f32, eye_distance: f32) -> f32 {
-    smoothstep(
-        theme::FOG_NEAR * eye_distance,
-        theme::FOG_FAR * eye_distance,
-        distance,
-    )
 }
 
 fn half_fov_tan() -> f32 {
@@ -681,19 +694,44 @@ mod tests {
         assert!((cam.elevation() - DEFAULT_ELEVATION).abs() < 1e-4);
     }
 
+    /// A ground point `k` eye distances from the eye, straight down the view.
+    fn along_view(cam: &Camera, k: f32) -> [f32; 3] {
+        let (b, d, eye) = (cam.basis(), cam.eye_distance(), cam.eye());
+        std::array::from_fn(|axis| eye[axis] - k * d * b.toward[axis])
+    }
+
     #[test]
-    fn fog_is_zero_at_the_pivot_and_one_past_its_end() {
-        let d = 500.0;
-        assert_eq!(fog(d, d), 0.0, "nothing fades at the pivot");
-        assert_eq!(fog(theme::FOG_FAR * d, d), 1.0);
-        assert_eq!(fog(10.0 * d, d), 1.0);
+    fn fog_rises_from_zero_to_one_along_the_view() {
+        let mut cam = Camera::new([1440.0, 900.0]);
+        cam.set_zoom(1.0);
+        assert_eq!(
+            cam.fog_at(along_view(&cam, 1.0)),
+            0.0,
+            "nothing fades at the pivot"
+        );
+        let end = theme::FOG_NEAR * theme::FOG_SPAN;
+        assert_eq!(cam.fog_at(along_view(&cam, end)), 1.0);
         let mut last = 0.0;
         for step in 0..=200 {
-            let value = fog(d * step as f32 * 0.05, d);
+            let value = cam.fog_at(along_view(&cam, step as f32 * 0.05));
             assert!((0.0..=1.0).contains(&value), "fog {value} at step {step}");
             assert!(value >= last - 1e-6, "fog fell at step {step}");
             last = value;
         }
+    }
+
+    #[test]
+    fn the_fog_starts_past_the_far_corner_of_the_plant_at_low_tilt() {
+        let mut cam = Camera::new([1440.0, 900.0]);
+        cam.set_fog_bounds(block());
+        cam.set_angles(DEFAULT_AZIMUTH, 8.0);
+        cam.fit(&block(), 24.0);
+        for corner in block().corners() {
+            assert_eq!(cam.fog_at(corner), 0.0, "corner {corner:?} is fogged");
+        }
+        let (start, end) = cam.fog_range();
+        assert!(start > theme::FOG_NEAR * cam.eye_distance() * 0.99);
+        assert!((end / start - theme::FOG_SPAN).abs() < 1e-4);
     }
 
     #[test]
@@ -702,17 +740,10 @@ mod tests {
         cam.set_zoom(1.0);
         let pivot = cam.pivot();
         assert_eq!(cam.fog_at([pivot[0], pivot[1], 0.0]), 0.0);
-        let b = cam.basis();
-        let d = cam.eye_distance();
-        let eye = cam.eye();
-        let far_point = [
-            eye[0] - theme::FOG_FAR * d * b.toward[0],
-            eye[1] - theme::FOG_FAR * d * b.toward[1],
-            eye[2] - theme::FOG_FAR * d * b.toward[2],
-        ];
+        let far_point = along_view(&cam, theme::FOG_NEAR * theme::FOG_SPAN);
         assert!(
             cam.fog_at(far_point) > 0.999,
-            "a point FOG_FAR eye distances away is white"
+            "a point past the fog's end is white"
         );
     }
 

@@ -5,7 +5,7 @@
 use crate::model::{Ink, Surface};
 
 /// Palette slots on the GPU.
-pub const PALETTE_LEN: usize = 21;
+pub const PALETTE_LEN: usize = 22;
 /// Tint slots. Slot 0 is the identity; instances pick a slot to tint a machine.
 pub const TINT_LEN: usize = 8;
 
@@ -32,6 +32,10 @@ pub const SLOT_BELT_EDGE: u32 = 18;
 pub const SLOT_OUTLINE: u32 = 19;
 /// The inner feature edges of a model, drawn as thin lines.
 pub const SLOT_EDGE: u32 = 20;
+/// The outer outline of a machine that is small on screen. The outline eases from this to
+/// `SLOT_OUTLINE` over `LOD_FADE_PX`, like the inner lines, so a dense field reads as light
+/// blocks and not as dark speckle.
+pub const SLOT_OUTLINE_FAR: u32 = 21;
 
 /// Paper shading, as darkness below white. The light is fixed to the camera, from its left,
 /// so a face keeps its tone at every azimuth. A top is nearly white, a side facing the light
@@ -41,14 +45,15 @@ pub const PAPER_TOP: f32 = 0.015;
 pub const PAPER_LIT: f32 = 0.056;
 pub const PAPER_DARK: f32 = 0.154;
 
-/// Distance fog, in eye distances from the camera to the pivot. Nothing fades nearer than
-/// `FOG_NEAR` times the pivot's eye distance, and everything is gone past `FOG_FAR`. Fog mixes
-/// toward the page colour, so the scene recedes into white.
+/// Distance fog from the eye. It starts past the plant's farthest corner, and never nearer
+/// than `FOG_NEAR` times the pivot's eye distance, so the plant and the ground under it stay
+/// clear. It ends `FOG_SPAN` times as far as it starts, which leaves the grid room to
+/// converge toward a soft horizon. Fog mixes toward the page colour.
 pub const FOG_NEAR: f32 = 1.5;
-pub const FOG_FAR: f32 = 6.0;
+pub const FOG_SPAN: f32 = 8.0;
 /// Lines fade as the view grazes the ground, from `ANGLE_FADE.0` to `ANGLE_FADE.1` of the
 /// absolute sine of the ray's elevation. This kills moire near the horizon, as Blender does.
-pub const ANGLE_FADE: (f32, f32) = (0.02, 0.25);
+pub const ANGLE_FADE: (f32, f32) = (0.004, 0.05);
 /// Grid levels, each `GRID_STEP` times the spacing of the one before, starting at `GRID_BASE`
 /// plan units.
 pub const GRID_LEVELS: u32 = 4;
@@ -68,11 +73,13 @@ pub const GRID_MAJOR_ALPHA: f32 = 0.11;
 pub const SHADOW_REACH: f32 = 7.0;
 pub const SHADOW_SHIFT: f32 = 2.0;
 
-/// The belt's side and end lines are this wide, in device pixels. They fade out as the belt
-/// narrows on screen from `BELT_EDGE_FADE_PX.1` to `BELT_EDGE_FADE_PX.0` device pixels, so a
-/// far belt is a quiet strip and never a dotted line.
+/// The belt's side and end lines are this wide, in device pixels. They fade as the belt's
+/// width across it on screen narrows from `BELT_EDGE_FADE_PX.1` to `BELT_EDGE_FADE_PX.0`
+/// device pixels, but never below `BELT_EDGE_FLOOR`, so a far belt stays a quiet strip and
+/// never vanishes or dots.
 pub const BELT_EDGE_PX: f32 = 1.0;
 pub const BELT_EDGE_FADE_PX: (f32, f32) = (3.0, 9.0);
+pub const BELT_EDGE_FLOOR: f32 = 0.35;
 
 /// Inner lines (feature edges and painted detail) fade out as a machine shrinks on screen.
 /// The size is the screen length of `LOD_REFERENCE` plan units at the machine. Below
@@ -108,10 +115,11 @@ const PALETTE: [[f32; 4]; PALETTE_LEN] = [
     rgb(0xf76b15, 1.0),  // agent 1 (placeholder)
     rgb(0x12a594, 1.0),  // agent 2 (placeholder)
     rgb(0xab6400, 1.0),  // agent 3 (placeholder)
-    rgb(0xefefef, 1.0),  // belt
-    rgb(0xa6a6a6, 0.85), // belt edge
+    rgb(0xe9e9e9, 1.0),  // belt
+    rgb(0xb8b8b8, 1.0),  // belt edge
     rgb(0x6b6b6b, 0.9),  // outline
     rgb(0x9a9a9a, 0.6),  // feature edge
+    rgb(0x8a8a8a, 0.85), // outline of a far machine
 ];
 
 /// Palette slot of an ink used by a line.
@@ -177,6 +185,7 @@ pub fn wgsl_consts() -> String {
         u("SLOT_BELT", SLOT_BELT),
         u("SLOT_BELT_EDGE", SLOT_BELT_EDGE),
         u("SLOT_OUTLINE", SLOT_OUTLINE),
+        u("SLOT_OUTLINE_FAR", SLOT_OUTLINE_FAR),
         f("PAPER_TOP", PAPER_TOP),
         f("PAPER_LIT", PAPER_LIT),
         f("PAPER_DARK", PAPER_DARK),
@@ -190,6 +199,7 @@ pub fn wgsl_consts() -> String {
         f("SHADOW_SHIFT", SHADOW_SHIFT),
         f("BELT_EDGE_PX", BELT_EDGE_PX),
         pair("BELT_EDGE_FADE_PX", BELT_EDGE_FADE_PX),
+        f("BELT_EDGE_FLOOR", BELT_EDGE_FLOOR),
         f("LOD_REFERENCE", LOD_REFERENCE),
         pair("LOD_FADE_PX", LOD_FADE_PX),
     ]
@@ -259,7 +269,7 @@ mod tests {
     fn the_grid_stays_under_the_line_art() {
         let grid = PALETTE[SLOT_GRID as usize];
         assert_eq!(&grid[..3], &[0.0, 0.0, 0.0]);
-        let faintest_line = [SLOT_EDGE, SLOT_OUTLINE, SLOT_BELT_EDGE]
+        let faintest_line = [SLOT_EDGE, SLOT_OUTLINE, SLOT_OUTLINE_FAR, SLOT_BELT_EDGE]
             .map(|slot| ink(PALETTE[slot as usize]))
             .into_iter()
             .fold(f32::INFINITY, f32::min);
@@ -275,6 +285,19 @@ mod tests {
         let edge = PALETTE[SLOT_EDGE as usize];
         assert!(ink(outline) > ink(edge));
         assert!(ink(outline) < 0.7, "the outline is grey, not black");
+        let far = PALETTE[SLOT_OUTLINE_FAR as usize];
+        assert!(ink(far) < ink(outline), "a far outline is lighter");
+        assert!(ink(far) > ink(edge));
+    }
+
+    #[test]
+    fn a_belt_is_a_step_darker_than_a_plate_top() {
+        let belt = ink(PALETTE[SLOT_BELT as usize]);
+        assert!(
+            belt > PAPER_TOP && belt < PAPER_LIT * 2.0,
+            "belt ink {belt}"
+        );
+        assert!(ink(PALETTE[SLOT_BELT_EDGE as usize]) > belt);
     }
 
     #[test]

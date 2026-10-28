@@ -48,6 +48,8 @@ struct Loaded {
     bounds: Aabb,
     /// The solid parts of every machine, each with its machine index, for label occlusion.
     occluders: Vec<(usize, Aabb)>,
+    /// Each machine's label half width in CSS pixels, estimated from its name.
+    label_half_px: Vec<f32>,
     /// Machines that carry a name at rest.
     rest: Vec<usize>,
 }
@@ -275,6 +277,11 @@ impl App {
             &self.camera,
             &footprints,
             &loaded.occluders,
+            &loaded
+                .label_half_px
+                .iter()
+                .map(|w| w * self.dpr)
+                .collect::<Vec<f32>>(),
             &candidates,
             min_px,
             labels::LABEL_DROP_CSS_PX * self.dpr,
@@ -319,6 +326,7 @@ impl App {
         let laid = layout(&kinds, &edges);
         let scene = stand_in::scene(&laid, &self.models);
         self.renderer.set_scene(&scene);
+        self.camera.set_fog_bounds(scene.bounds);
         let count = plant.machines.len() as u32;
         let occluders = scene
             .instances
@@ -337,6 +345,11 @@ impl App {
         self.plant = Some(Loaded {
             repo: plant.repo,
             rest: rest_labels(&plant.machines),
+            label_half_px: plant
+                .machines
+                .iter()
+                .map(|m| m.name.chars().count() as f32 * labels::CHAR_CSS_PX * 0.5)
+                .collect(),
             machines: plant.machines,
             layout: laid,
             bounds: scene.bounds,

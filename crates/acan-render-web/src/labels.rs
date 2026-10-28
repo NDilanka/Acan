@@ -10,6 +10,9 @@ use acan_render::{Aabb, Camera};
 pub const REST_MIN_CSS_PX: f32 = 18.0;
 /// With Alt held every machine may be named, but only once its plate is this wide on screen.
 pub const ALL_MIN_CSS_PX: f32 = 34.0;
+/// The average advance of one character of a label, in CSS pixels, for its width before the
+/// page measures it.
+pub const CHAR_CSS_PX: f32 = 6.5;
 /// From the plate's front edge down to the middle of the label, in CSS pixels. Matches the
 /// label's offset and line height in `index.html`.
 pub const LABEL_DROP_CSS_PX: f32 = 13.0;
@@ -34,11 +37,13 @@ pub struct LabelSpot {
 /// The labels of `candidates` that may show, most important first. `footprints` holds each
 /// machine's plan rectangle `[min x, min y, max x, max y]`. `occluders` are world boxes, each
 /// with the machine it belongs to, that can hide another machine's label.
-/// `drop_px` is the distance from the front edge to the label's middle, in device pixels.
+/// `half_widths` is each machine's label half width and `drop_px` the distance from the front
+/// edge to the label's middle, both in device pixels.
 pub fn place(
     camera: &Camera,
     footprints: &[[f32; 4]],
     occluders: &[(usize, Aabb)],
+    half_widths: &[f32],
     candidates: &[usize],
     min_px: f32,
     drop_px: f32,
@@ -77,15 +82,17 @@ pub fn place(
             }
             let out = unit2([corners[front][0] - centre[0], corners[front][1] - centre[1]]);
             let edge = [corners[front][0] + out[0], corners[front][1] + out[1], 0.5];
-            // The ground under the label's middle and under its bottom, so a nearer machine
-            // that only the lower half of the text would cover still hides it.
-            let under = [drop_px, drop_px * LABEL_BOTTOM_DROPS].map(|drop| {
-                camera
-                    .ground_at([anchor[0], anchor[1] + drop])
-                    .map(|[x, y]| [x, y, 0.2])
-            });
+            // The ground under the label's middle row and its bottom, at five points across, so a nearer machine that covers any part of the text hides it.
+            let half = half_widths.get(index).copied().unwrap_or(0.0);
+            let under = [drop_px, drop_px * LABEL_BOTTOM_DROPS]
+                .into_iter()
+                .flat_map(|drop| {
+                    [-1.0, -0.5, 0.0, 0.5, 1.0].map(|t| [anchor[0] + t * half, anchor[1] + drop])
+                })
+                .filter_map(|px| camera.ground_at(px))
+                .map(|[x, y]| [x, y, 0.2]);
             let hidden = std::iter::once(edge)
-                .chain(under.into_iter().flatten())
+                .chain(under)
                 .any(|p| hidden_by_other(camera, p, index, occluders, &rects));
             (!hidden).then_some(LabelSpot {
                 index,
@@ -221,6 +228,7 @@ mod tests {
             camera,
             &footprints,
             &occluders,
+            &[],
             &all,
             10.0,
             LABEL_DROP_CSS_PX,
@@ -240,6 +248,38 @@ mod tests {
             vec![1],
             "only the front machine is named"
         );
+    }
+
+    #[test]
+    fn a_label_whose_end_runs_onto_a_nearer_machine_is_hidden() {
+        // Machine 1 stands in front of machine 0 and off to one side, so only a wide label
+        // reaches it.
+        let machines = [machine(0.0, 0.0), machine(130.0, 110.0)];
+        let camera = camera_on(&machines, 0.0, 8.0);
+        let (footprints, occluders) = split(&machines);
+        let shown = |half: f32| {
+            place(
+                &camera,
+                &footprints,
+                &occluders,
+                &[half, half],
+                &[0],
+                10.0,
+                LABEL_DROP_CSS_PX,
+            )
+            .len()
+        };
+        let centre_x = |f: [f32; 4]| {
+            let c = [(f[0] + f[2]) * 0.5, (f[1] + f[3]) * 0.5, 0.0];
+            camera.world_to_screen(c)[0]
+        };
+        let reach = (centre_x(footprints[1]) - centre_x(footprints[0])).abs();
+        assert_eq!(
+            shown(0.0),
+            1,
+            "a point label beside the nearer machine shows"
+        );
+        assert_eq!(shown(reach), 0, "a label wide enough to reach it is hidden");
     }
 
     #[test]
@@ -272,6 +312,7 @@ mod tests {
             &camera,
             &footprints,
             &occluders,
+            &[],
             &[0],
             1e6,
             LABEL_DROP_CSS_PX,
@@ -288,6 +329,7 @@ mod tests {
             &camera,
             &footprints,
             &occluders,
+            &[],
             &[0],
             1.0,
             LABEL_DROP_CSS_PX,
