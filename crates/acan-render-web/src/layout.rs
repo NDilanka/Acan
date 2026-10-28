@@ -1,380 +1,808 @@
-//! Places the plant's machines on a plan view and routes their belts.
-//!
-//! Machines are placed in a grid, in the order a walk over the belts reaches them, so machines
-//! that import each other sit next to each other and their belts stay short. Positions are world
-//! units; the camera turns them into pixels.
+//! Plant layout on the ground plan. Machines are layered by import direction (longest path),
+//! ordered inside each layer by the barycentre of their neighbours, and stacked on a grid.
+//! A belt that spans several layers crosses each one in the channel between the two machines
+//! its place in the row order falls between, so every belt runs through a gap between columns
+//! or a channel between machines, never through a footprint. The
+//! result depends only on the input, so the same plant always lays out the same way.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 
-use acan_core::Locus;
-use serde::Deserialize;
+use crate::kind::{Kind, PlanFootprint};
 
-/// Width of a machine footprint, in world units.
-const MACHINE_W: f32 = 176.0;
-/// Height of a machine footprint, in world units.
-const MACHINE_H: f32 = 88.0;
-/// Space between footprints in a row. Belts run through it.
-const GAP_X: f32 = 120.0;
-/// Space between footprints in a column.
-const GAP_Y: f32 = 110.0;
-/// Columns per square root of the machine count. Above 1 gives a wider than tall plan.
-const COLUMNS_PER_SQRT: f32 = 1.5;
-
-/// The plant as `GET /api/plant` returns it. Only the fields the plan reads are named.
-#[derive(Debug, Clone, Deserialize)]
-pub struct PlantJson {
-    /// Machines with their files.
-    pub machines: Vec<MachineJson>,
-    /// Import edges between machines.
-    pub belts: Vec<BeltJson>,
-    /// Every scanned file, with the id the machines refer to it by.
-    pub files: Vec<FileJson>,
+/// Positions snap to this grid, in plan units.
+pub const GRID: f32 = 8.0;
+/// Clear width between columns. Belts run through it.
+pub const COLUMN_GAP: f32 = 72.0;
+/// Clear height between items stacked in one column.
+pub const ROW_GAP: f32 = 40.0;
+/// Step between belts that share a gap or a channel: the widest belt plus a clear gap.
+const BELT_STEP: f32 = 8.0;
+/// Belts keep this far from the machines on either side of the gap or channel they run in.
+const LANE_MARGIN: f32 = 8.0;
+/// A column at least this full of the tallest column's height is spread to its full height,
+/// so the plant's edges line up. A shorter column is centred.
+const JUSTIFY_FILL: f32 = 0.8;
+/// Barycentre sweeps. Each sweep moves down or up one layer at a time.
+const SWEEPS: usize = 8;
+/// A directed import between two machines, by index. `from` imports `to`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Edge {
+    pub from: usize,
+    pub to: usize,
+    pub imports: u32,
 }
 
-/// One machine of the plant.
-#[derive(Debug, Clone, Deserialize)]
-pub struct MachineJson {
-    /// The machine id the belts refer to.
-    pub id: u32,
-    /// The machine name, which is also its machine key in the origin.
-    pub name: String,
-    /// The files the machine groups.
-    pub files: Vec<u32>,
+/// A machine on the plan. Its footprint is `kind.footprint()`, with the top left at `(x, y)`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placed {
+    pub x: f32,
+    pub y: f32,
+    pub kind: Kind,
 }
 
-/// An import edge between two machines.
-#[derive(Debug, Clone, Deserialize)]
-pub struct BeltJson {
-    /// The importing machine id.
-    pub from: u32,
-    /// The imported machine id.
-    pub to: u32,
-}
-
-/// A scanned file.
-#[derive(Debug, Clone, Deserialize)]
-pub struct FileJson {
-    /// The file id the machines refer to it by.
-    pub id: u32,
-    /// The repo-relative path, which is also its file path in the origin.
-    pub path: String,
-}
-
-/// One machine's footprint on the plan.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PlanMachine {
-    /// The machine name.
-    pub name: String,
-    /// The top-left corner, in world units.
-    pub min: [f32; 2],
-    /// The width and height, in world units.
-    pub size: [f32; 2],
-}
-
-impl PlanMachine {
-    /// The middle of the footprint.
-    #[must_use]
-    pub fn center(&self) -> [f32; 2] {
-        [
-            self.min[0] + self.size[0] * 0.5,
-            self.min[1] + self.size[1] * 0.5,
-        ]
+impl Placed {
+    /// `[min x, min y, max x, max y]` of the footprint.
+    pub fn footprint(&self) -> [f32; 4] {
+        let (w, d) = self.kind.footprint();
+        [self.x, self.y, self.x + w, self.y + d]
     }
 }
 
-/// A belt drawn as a polyline through the centers of its two footprints.
-#[derive(Debug, Clone, PartialEq)]
-pub struct PlanBelt {
-    /// Index of the importing machine in [`Plan::machines`].
+/// An orthogonal belt, from the edge of one plinth to the edge of another. `path` is the
+/// centre line before its corners are rounded.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Belt {
     pub from: usize,
-    /// Index of the imported machine in [`Plan::machines`].
     pub to: usize,
-    /// The corners of the route, in world units.
-    pub points: Vec<[f32; 2]>,
+    pub imports: u32,
+    pub path: Vec<[f32; 2]>,
 }
 
-/// The plan view of one plant: where each machine and belt is drawn.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct Plan {
-    /// Machines, sorted by name.
-    pub machines: Vec<PlanMachine>,
-    /// Belts between them.
-    pub belts: Vec<PlanBelt>,
-    by_name: BTreeMap<String, usize>,
-    by_path: BTreeMap<String, usize>,
+#[derive(Clone, Debug, PartialEq)]
+pub struct Layout {
+    /// One entry per input machine, in input order.
+    pub machines: Vec<Placed>,
+    /// One entry per routed edge, in input order. Edges that closed a cycle are not routed.
+    pub belts: Vec<Belt>,
+    /// `[min x, min y, max x, max y]` of all footprints.
+    pub bounds: [f32; 4],
 }
 
-impl Plan {
-    /// Lays out `plant`. The same plant always gives the same plan.
-    #[must_use]
-    pub fn new(plant: &PlantJson) -> Self {
-        let mut sorted: Vec<&MachineJson> = plant.machines.iter().collect();
-        sorted.sort_by(|a, b| a.name.cmp(&b.name));
+pub fn layout(kinds: &[Kind], edges: &[Edge]) -> Layout {
+    let machines = kinds.len();
+    let accepted = acyclic_edges(machines, edges);
+    let layer = longest_path_layers(machines, edges, &accepted);
+    let graph = Graph::build(&layer, edges, &accepted);
+    let rows = order_rows(&graph);
 
-        let index_of_id: BTreeMap<u32, usize> =
-            sorted.iter().enumerate().map(|(i, m)| (m.id, i)).collect();
-        let path_of_id: BTreeMap<u32, &str> = plant
-            .files
-            .iter()
-            .map(|f| (f.id, f.path.as_str()))
+    let heights: Vec<f32> = kinds.iter().map(|k| snap_up(k.footprint().1)).collect();
+    let widths: Vec<f32> = rows
+        .iter()
+        .map(|row| {
+            row.iter()
+                .filter(|&&node| node < machines)
+                .map(|&node| snap_up(kinds[node].footprint().0))
+                .fold(0.0, f32::max)
+        })
+        .collect();
+    let mut column_x = Vec::with_capacity(rows.len());
+    let mut x = 0.0;
+    for width in &widths {
+        column_x.push(x);
+        x += width + COLUMN_GAP;
+    }
+
+    let stacks: Vec<f32> = rows
+        .iter()
+        .map(|row| {
+            let (count, items) = row
+                .iter()
+                .filter(|&&node| node < machines)
+                .fold((0_usize, 0.0_f32), |(c, sum), &node| {
+                    (c + 1, sum + heights[node])
+                });
+            items + ROW_GAP * count.saturating_sub(1) as f32
+        })
+        .collect();
+    let tallest = stacks.iter().copied().fold(0.0, f32::max);
+
+    let mut source_of = vec![usize::MAX; graph.layer.len()];
+    let mut target_of = vec![usize::MAX; graph.layer.len()];
+    for chain in &graph.chains {
+        for &node in &chain[1..chain.len() - 1] {
+            source_of[node] = chain[0];
+            target_of[node] = chain[chain.len() - 1];
+        }
+    }
+
+    // Machines first: lanes take no room in a column, so the machines settle on their own.
+    let mut node_y = vec![0.0_f32; graph.layer.len()];
+    let mut spans: Vec<Vec<(f32, f32)>> = Vec::with_capacity(rows.len());
+    for (l, row) in rows.iter().enumerate() {
+        let count = row.iter().filter(|&&node| node < machines).count();
+        let spare = tallest - stacks[l];
+        let justify = count > 1 && stacks[l] >= JUSTIFY_FILL * tallest;
+        let (mut y, extra) = if justify {
+            (0.0, spare / (count - 1) as f32)
+        } else {
+            (spare / 2.0, 0.0)
+        };
+        let mut column = Vec::with_capacity(count);
+        for &node in row.iter().filter(|&&node| node < machines) {
+            let top = snap(y);
+            node_y[node] = top;
+            column.push((top, top + heights[node]));
+            y += heights[node] + ROW_GAP + extra;
+        }
+        spans.push(column);
+    }
+    let centre_y = |m: usize, node_y: &[f32]| node_y[m] + kinds[m].footprint().1 / 2.0;
+
+    // A lane crosses its column in the channel, between two machines or past either end,
+    // that lies nearest the straight run from where it comes from to its target. Lanes of one
+    // source in one channel merge, and the rest keep a belt's step apart.
+    for (l, row) in rows.iter().enumerate() {
+        let column = &spans[l];
+        let channels: Vec<(f32, f32)> = (0..=column.len())
+            .map(|c| {
+                let lo = c
+                    .checked_sub(1)
+                    .map_or(f32::NEG_INFINITY, |p| column[p].1 + LANE_MARGIN);
+                let hi = column.get(c).map_or(f32::INFINITY, |s| s.0 - LANE_MARGIN);
+                (lo, hi)
+            })
             .collect();
-        let mut by_path = BTreeMap::new();
-        for (i, machine) in sorted.iter().enumerate() {
-            for file in &machine.files {
-                if let Some(path) = path_of_id.get(file) {
-                    by_path.insert((*path).to_owned(), i);
+        let mut wanted: Vec<LaneWish> = Vec::new();
+        for &node in row.iter().filter(|&&node| node >= machines) {
+            let pred = graph.up[node][0];
+            let from = if pred < machines {
+                centre_y(pred, &node_y)
+            } else {
+                node_y[pred]
+            };
+            let goal = centre_y(target_of[node], &node_y);
+            let (channel, y) = channels
+                .iter()
+                .map(|&(lo, hi)| from.clamp(lo, hi.max(lo)))
+                .enumerate()
+                .min_by(|a, b| {
+                    let cost = |y: f32| ((y - from).abs() + (y - goal).abs(), (y - from).abs());
+                    let (ca, cb) = (cost(a.1), cost(b.1));
+                    ca.0.total_cmp(&cb.0).then(ca.1.total_cmp(&cb.1))
+                })
+                .unwrap_or((0, from));
+            wanted.push(LaneWish {
+                channel,
+                source: source_of[node],
+                y,
+                node,
+            });
+        }
+        wanted.sort_by_key(|w| (w.channel, w.source, w.node));
+        for channel in wanted.chunk_by(|a, b| a.channel == b.channel) {
+            let mut groups: Vec<(f32, &[LaneWish])> = channel
+                .chunk_by(|a, b| a.source == b.source)
+                .map(|g| (g.iter().map(|w| w.y).sum::<f32>() / g.len() as f32, g))
+                .collect();
+            groups.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1[0].source.cmp(&b.1[0].source)));
+            let (lo, hi) = channels[channel[0].channel];
+            let desired: Vec<f32> = groups.iter().map(|g| g.0).collect();
+            for (y, (_, members)) in pack(&desired, lo, hi, BELT_STEP).into_iter().zip(&groups) {
+                for member in *members {
+                    node_y[member.node] = y;
                 }
             }
         }
+    }
+    let mut placed = Vec::with_capacity(machines);
+    for (node, &kind) in kinds.iter().enumerate() {
+        let l = graph.layer[node];
+        let (w, _) = kind.footprint();
+        placed.push(Placed {
+            x: column_x[l] + snap((widths[l] - w) / 2.0),
+            y: node_y[node],
+            kind,
+        });
+    }
+    let exit_y = |m: usize| placed[m].y + placed[m].kind.footprint().1 / 2.0;
 
-        let links: Vec<(usize, usize)> = plant
-            .belts
+    // Belts enter a target in the order they arrive from top to bottom, so they never cross
+    // in the last gap, and as level with where they arrive as the plinth allows.
+    let arrival = |chain: &Vec<usize>| match chain.len() {
+        0..=2 => exit_y(chain[0]),
+        n => node_y[chain[n - 2]],
+    };
+    let mut incoming: Vec<Vec<usize>> = vec![Vec::new(); machines];
+    for (k, chain) in graph.chains.iter().enumerate() {
+        incoming[chain[chain.len() - 1]].push(k);
+    }
+    let mut entry_y = vec![0.0_f32; graph.chains.len()];
+    for (to, ks) in incoming.iter_mut().enumerate() {
+        ks.sort_by(|&a, &b| {
+            arrival(&graph.chains[a])
+                .total_cmp(&arrival(&graph.chains[b]))
+                .then(a.cmp(&b))
+        });
+        let top = placed[to].y + LANE_MARGIN;
+        let bottom = placed[to].y + placed[to].kind.footprint().1 - LANE_MARGIN;
+        let desired: Vec<f32> = ks
             .iter()
-            .filter_map(|belt| {
-                let from = *index_of_id.get(&belt.from)?;
-                let to = *index_of_id.get(&belt.to)?;
-                (from != to).then_some((from, to))
-            })
+            .map(|&k| arrival(&graph.chains[k]).clamp(top, bottom))
             .collect();
-        let order = placement_order(sorted.len(), &links);
-
-        let columns = columns_for(sorted.len());
-        let mut machines: Vec<PlanMachine> = sorted
-            .iter()
-            .map(|m| PlanMachine {
-                name: m.name.clone(),
-                min: [0.0, 0.0],
-                size: [MACHINE_W, MACHINE_H],
-            })
-            .collect();
-        for (slot, &i) in order.iter().enumerate() {
-            let (col, row) = (slot % columns, slot / columns);
-            machines[i].min = [
-                col as f32 * (MACHINE_W + GAP_X),
-                row as f32 * (MACHINE_H + GAP_Y),
-            ];
+        for (&k, y) in ks.iter().zip(pack(&desired, top, bottom, BELT_STEP)) {
+            entry_y[k] = y;
         }
+    }
 
-        let belts = links
-            .iter()
-            .map(|&(from, to)| {
-                let (a, b) = (machines[from].center(), machines[to].center());
-                PlanBelt {
-                    from,
-                    to,
-                    points: vec![a, [b[0], a[1]], b],
+    // Every belt from one source turns at the same x in a gap, so a source's belts leave as one
+    // trunk and part only where they turn toward their own targets. In a gap, trunks that run
+    // down sit left of those that run up. Among those that run down, the one that starts lower
+    // sits further left, and among those that run up, the one that starts higher does, which
+    // keeps two staggered trunks from crossing twice.
+    let y_of = |node: usize| {
+        if node < machines {
+            exit_y(node)
+        } else {
+            node_y[node]
+        }
+    };
+    let mut gap_x: Vec<Vec<(usize, f32)>> = vec![Vec::new(); rows.len()];
+    for (l, slots) in gap_x.iter_mut().enumerate() {
+        // Per source: the sum of start ys, the sum of end ys and the count.
+        let mut runs: Vec<(usize, f32, f32, f32)> = Vec::new();
+        for (k, chain) in graph.chains.iter().enumerate() {
+            let Some(i) = (1..chain.len()).find(|&i| graph.layer[chain[i]] == l) else {
+                continue;
+            };
+            let start = y_of(chain[i - 1]);
+            let end = if chain[i] < machines {
+                entry_y[k]
+            } else {
+                node_y[chain[i]]
+            };
+            match runs.iter_mut().find(|r| r.0 == chain[0]) {
+                Some(r) => {
+                    r.1 += start;
+                    r.2 += end;
+                    r.3 += 1.0;
                 }
+                None => runs.push((chain[0], start, end, 1.0)),
+            }
+        }
+        let mut keyed: Vec<(bool, f32, usize)> = runs
+            .iter()
+            .map(|&(source, starts, ends, n)| {
+                let (start, end) = (starts / n, ends / n);
+                let up = end < start;
+                (up, if up { start } else { -start }, source)
             })
             .collect();
-        let by_name = machines
+        keyed.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)).then(a.2.cmp(&b.2)));
+        let centre = column_x[l] - COLUMN_GAP / 2.0;
+        let n = keyed.len();
+        *slots = keyed
             .iter()
             .enumerate()
-            .map(|(i, m)| (m.name.clone(), i))
-            .collect();
-
-        Self {
-            machines,
-            belts,
-            by_name,
-            by_path,
-        }
-    }
-
-    /// The index of the machine called `name`.
-    #[must_use]
-    pub fn index_of(&self, name: &str) -> Option<usize> {
-        self.by_name.get(name).copied()
-    }
-
-    /// The index of the machine that groups the file at `path`.
-    #[must_use]
-    pub fn machine_of_path(&self, path: &str) -> Option<usize> {
-        self.by_path.get(path).copied()
-    }
-
-    /// The machines a place on the plant touches. A belt touches both of its ends.
-    #[must_use]
-    pub fn machines_at(&self, locus: &Locus) -> Vec<usize> {
-        match locus {
-            Locus::Machine { machine } => self.index_of(machine.as_str()).into_iter().collect(),
-            Locus::Belt { from, to } => [from.as_str(), to.as_str()]
-                .into_iter()
-                .filter_map(|name| self.index_of(name))
-                .collect(),
-            Locus::File { file } | Locus::Symbol { file, .. } => {
-                self.machine_of_path(file.as_str()).into_iter().collect()
-            }
-        }
-    }
-
-    /// The point a place is drawn at: the middle of the machines it touches.
-    #[must_use]
-    pub fn point_at(&self, locus: &Locus) -> Option<[f32; 2]> {
-        let centers: Vec<[f32; 2]> = self
-            .machines_at(locus)
-            .into_iter()
-            .map(|i| self.machines[i].center())
-            .collect();
-        if centers.is_empty() {
-            return None;
-        }
-        let n = centers.len() as f32;
-        let sum = centers
-            .iter()
-            .fold([0.0, 0.0], |acc, c| [acc[0] + c[0], acc[1] + c[1]]);
-        Some([sum[0] / n, sum[1] / n])
-    }
-
-    /// The box holding every footprint, as `(min, max)`, or `None` for an empty plant.
-    #[must_use]
-    pub fn bounds(&self) -> Option<([f32; 2], [f32; 2])> {
-        self.machines.iter().fold(None, |acc, m| {
-            let max = [m.min[0] + m.size[0], m.min[1] + m.size[1]];
-            Some(match acc {
-                None => (m.min, max),
-                Some((lo, hi)) => (
-                    [lo[0].min(m.min[0]), lo[1].min(m.min[1])],
-                    [hi[0].max(max[0]), hi[1].max(max[1])],
-                ),
+            .map(|(j, &(_, _, s))| {
+                (
+                    s,
+                    centre + lane_offset(j, n, COLUMN_GAP - 2.0 * LANE_MARGIN),
+                )
             })
-        })
+            .collect();
+    }
+    let mut belts = Vec::with_capacity(graph.chains.len());
+    for (k, chain) in graph.chains.iter().enumerate() {
+        let source = chain[0];
+        let from = placed[source];
+        let to = placed[chain[chain.len() - 1]];
+        let mut y = exit_y(source);
+        let mut path = vec![[from.x + from.kind.footprint().0, y]];
+        for &node in &chain[1..] {
+            let l = graph.layer[node];
+            let jog_x = gap_x[l]
+                .iter()
+                .find(|&&(s, _)| s == source)
+                .map_or(column_x[l] - COLUMN_GAP / 2.0, |&(_, x)| x);
+            path.push([jog_x, y]);
+            y = if node < machines {
+                entry_y[k]
+            } else {
+                node_y[node]
+            };
+            path.push([jog_x, y]);
+        }
+        path.push([to.x, y]);
+        path.dedup();
+        let edge = edges[accepted[k]];
+        belts.push(Belt {
+            from: edge.from,
+            to: edge.to,
+            imports: edge.imports,
+            path,
+        });
+    }
+    let bounds = placed
+        .iter()
+        .map(Placed::footprint)
+        .fold(None, |acc: Option<[f32; 4]>, f| match acc {
+            None => Some(f),
+            Some(b) => Some([
+                b[0].min(f[0]),
+                b[1].min(f[1]),
+                b[2].max(f[2]),
+                b[3].max(f[3]),
+            ]),
+        });
+    Layout {
+        machines: placed,
+        belts,
+        bounds: bounds.unwrap_or([0.0; 4]),
     }
 }
 
-fn columns_for(machines: usize) -> usize {
-    ((machines as f32).sqrt() * COLUMNS_PER_SQRT)
-        .ceil()
-        .max(1.0) as usize
+/// Where one lane would like to cross its column: the channel, the machine its belt leaves,
+/// the y nearest its straight run, and its node.
+struct LaneWish {
+    channel: usize,
+    source: usize,
+    y: f32,
+    node: usize,
 }
 
-/// Machines in breadth-first order over the belts, each connected group in turn.
-fn placement_order(n: usize, links: &[(usize, usize)]) -> Vec<usize> {
-    let mut adjacent = vec![Vec::new(); n];
-    for &(a, b) in links {
-        adjacent[a].push(b);
-        adjacent[b].push(a);
-    }
-    let mut seen = vec![false; n];
-    let mut order = Vec::with_capacity(n);
-    for start in 0..n {
-        if seen[start] {
+/// Indices of the edges that keep the import graph acyclic, in input order. A self import, an
+/// edge to a machine that does not exist, and an edge that closes a cycle are dropped.
+fn acyclic_edges(machines: usize, edges: &[Edge]) -> Vec<usize> {
+    let mut out = vec![Vec::new(); machines];
+    let mut accepted = Vec::new();
+    for (k, edge) in edges.iter().enumerate() {
+        if edge.from >= machines
+            || edge.to >= machines
+            || edge.from == edge.to
+            || reaches(&out, edge.to, edge.from)
+        {
             continue;
         }
-        seen[start] = true;
-        let mut queue = VecDeque::from([start]);
-        while let Some(i) = queue.pop_front() {
-            order.push(i);
-            for &j in &adjacent[i] {
-                if !seen[j] {
-                    seen[j] = true;
-                    queue.push_back(j);
-                }
+        out[edge.from].push(edge.to);
+        accepted.push(k);
+    }
+    accepted
+}
+
+fn reaches(out: &[Vec<usize>], from: usize, to: usize) -> bool {
+    let mut seen = vec![false; out.len()];
+    let mut stack = vec![from];
+    while let Some(node) = stack.pop() {
+        if node == to {
+            return true;
+        }
+        if std::mem::replace(&mut seen[node], true) {
+            continue;
+        }
+        stack.extend(out[node].iter().copied());
+    }
+    false
+}
+
+/// Layer of each machine: the longest path from a source, so every edge points down a layer.
+fn longest_path_layers(machines: usize, edges: &[Edge], accepted: &[usize]) -> Vec<usize> {
+    let mut out = vec![Vec::new(); machines];
+    let mut indegree = vec![0_usize; machines];
+    for &k in accepted {
+        let edge = edges[k];
+        out[edge.from].push(edge.to);
+        indegree[edge.to] += 1;
+    }
+    let mut layer = vec![0_usize; machines];
+    let mut queue: VecDeque<usize> = (0..machines).filter(|&m| indegree[m] == 0).collect();
+    while let Some(u) = queue.pop_front() {
+        for &v in &out[u] {
+            layer[v] = layer[v].max(layer[u] + 1);
+            indegree[v] -= 1;
+            if indegree[v] == 0 {
+                queue.push_back(v);
             }
         }
     }
-    order
+    layer
+}
+
+/// The layered graph: machines are nodes `0..machines`, and every layer a long edge crosses
+/// adds one dummy node after them.
+struct Graph {
+    layer: Vec<usize>,
+    up: Vec<Vec<usize>>,
+    down: Vec<Vec<usize>>,
+    /// Per accepted edge, its nodes from source to target.
+    chains: Vec<Vec<usize>>,
+}
+
+impl Graph {
+    fn build(machine_layer: &[usize], edges: &[Edge], accepted: &[usize]) -> Self {
+        let mut layer = machine_layer.to_vec();
+        let mut chains = Vec::with_capacity(accepted.len());
+        for &k in accepted {
+            let edge = edges[k];
+            let mut chain = vec![edge.from];
+            for l in machine_layer[edge.from] + 1..machine_layer[edge.to] {
+                chain.push(layer.len());
+                layer.push(l);
+            }
+            chain.push(edge.to);
+            chains.push(chain);
+        }
+        let mut up = vec![Vec::new(); layer.len()];
+        let mut down = vec![Vec::new(); layer.len()];
+        for chain in &chains {
+            for pair in chain.windows(2) {
+                down[pair[0]].push(pair[1]);
+                up[pair[1]].push(pair[0]);
+            }
+        }
+        Self {
+            layer,
+            up,
+            down,
+            chains,
+        }
+    }
+}
+
+/// Nodes of each layer in drawing order, from the barycentre sweeps.
+fn order_rows(graph: &Graph) -> Vec<Vec<usize>> {
+    let layers = graph.layer.iter().copied().max().map_or(0, |max| max + 1);
+    let mut rows = vec![Vec::new(); layers];
+    for (node, &l) in graph.layer.iter().enumerate() {
+        rows[l].push(node);
+    }
+    let mut pos = vec![0_usize; graph.layer.len()];
+    for row in &rows {
+        set_positions(row, &mut pos);
+    }
+    for sweep in 0..SWEEPS {
+        let downward = sweep % 2 == 0;
+        let order: Vec<usize> = if downward {
+            (1..layers).collect()
+        } else {
+            (0..layers.saturating_sub(1)).rev().collect()
+        };
+        let neighbours = if downward { &graph.up } else { &graph.down };
+        for l in order {
+            let mut keyed: Vec<(f64, usize, usize)> = rows[l]
+                .iter()
+                .enumerate()
+                .map(|(i, &node)| {
+                    let adjacent = &neighbours[node];
+                    let key = if adjacent.is_empty() {
+                        i as f64
+                    } else {
+                        let sum: f64 = adjacent.iter().map(|&a| pos[a] as f64).sum();
+                        sum / adjacent.len() as f64
+                    };
+                    (key, i, node)
+                })
+                .collect();
+            keyed.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+            rows[l] = keyed.into_iter().map(|(_, _, node)| node).collect();
+            set_positions(&rows[l], &mut pos);
+        }
+    }
+    rows
+}
+
+fn set_positions(row: &[usize], pos: &mut [usize]) {
+    for (i, &node) in row.iter().enumerate() {
+        pos[node] = i;
+    }
+}
+
+/// Positions near `desired`, which is sorted, kept at least `step` apart inside `[lo, hi]`.
+/// The step shrinks when the range is too short for all of them.
+fn pack(desired: &[f32], lo: f32, hi: f32, step: f32) -> Vec<f32> {
+    let n = desired.len();
+    let span = (hi - lo).max(0.0);
+    let step = if n > 1 && span.is_finite() {
+        step.min(span / (n - 1) as f32)
+    } else {
+        step
+    };
+    let mut out: Vec<f32> = Vec::with_capacity(n);
+    for &d in desired {
+        let floor = out.last().map_or(lo, |&p| p + step);
+        out.push(d.max(floor));
+    }
+    let mut ceiling = hi;
+    for p in out.iter_mut().rev() {
+        *p = p.min(ceiling);
+        ceiling = *p - step;
+    }
+    out
+}
+
+/// Offset from a gap's centre line of belt `index` of `count`. Belts sit `BELT_STEP` apart,
+/// closer when `room` is too narrow for that.
+fn lane_offset(index: usize, count: usize, room: f32) -> f32 {
+    if count <= 1 {
+        return 0.0;
+    }
+    let step = BELT_STEP.min(room.max(0.0) / (count - 1) as f32);
+    (index as f32 - (count - 1) as f32 / 2.0) * step
+}
+
+fn snap(value: f32) -> f32 {
+    (value / GRID).round() * GRID
+}
+
+fn snap_up(value: f32) -> f32 {
+    (value / GRID).ceil() * GRID
 }
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
-    use acan_core::{FilePath, MachineKey};
-
     use super::*;
+    use crate::plant::{Plant, from_scan_json, stress};
 
-    fn machine(id: u32, name: &str, files: &[u32]) -> MachineJson {
-        MachineJson {
-            id,
-            name: name.to_owned(),
-            files: files.to_vec(),
+    const FIXTURE: &str = include_str!("../www/fixtures/demo-plant.json");
+
+    fn chain_plant() -> (Vec<Kind>, Vec<Edge>) {
+        let kinds = vec![
+            Kind::Gate,
+            Kind::Assembler,
+            Kind::Tank,
+            Kind::Crate,
+            Kind::Assembler,
+        ];
+        let edges = vec![
+            Edge {
+                from: 0,
+                to: 1,
+                imports: 1,
+            },
+            Edge {
+                from: 1,
+                to: 2,
+                imports: 2,
+            },
+            Edge {
+                from: 0,
+                to: 2,
+                imports: 1,
+            },
+            Edge {
+                from: 3,
+                to: 4,
+                imports: 1,
+            },
+            Edge {
+                from: 2,
+                to: 0,
+                imports: 1,
+            },
+        ];
+        (kinds, edges)
+    }
+
+    fn inside(footprint: [f32; 4], p: [f32; 2]) -> bool {
+        let inset = 0.5;
+        p[0] > footprint[0] + inset
+            && p[0] < footprint[2] - inset
+            && p[1] > footprint[1] + inset
+            && p[1] < footprint[3] - inset
+    }
+
+    fn on_boundary(footprint: [f32; 4], p: [f32; 2]) -> bool {
+        let eps = 1e-3;
+        let within = p[0] >= footprint[0] - eps
+            && p[0] <= footprint[2] + eps
+            && p[1] >= footprint[1] - eps
+            && p[1] <= footprint[3] + eps;
+        within
+            && ((p[0] - footprint[0]).abs() < eps
+                || (p[0] - footprint[2]).abs() < eps
+                || (p[1] - footprint[1]).abs() < eps
+                || (p[1] - footprint[3]).abs() < eps)
+    }
+
+    /// Checks every invariant the brief names on one laid-out plant.
+    fn check_invariants(layout: &Layout) {
+        let boxes: Vec<[f32; 4]> = layout.machines.iter().map(Placed::footprint).collect();
+        for (i, a) in boxes.iter().enumerate() {
+            for (j, b) in boxes.iter().enumerate().skip(i + 1) {
+                let apart = a[2] + GRID <= b[0]
+                    || b[2] + GRID <= a[0]
+                    || a[3] + GRID <= b[1]
+                    || b[3] + GRID <= a[1];
+                assert!(
+                    apart,
+                    "footprints {i} and {j} overlap or touch: {a:?} {b:?}"
+                );
+            }
+        }
+        for belt in &layout.belts {
+            let path = &belt.path;
+            assert!(
+                path.len() >= 2,
+                "belt {}->{} has no segment",
+                belt.from,
+                belt.to
+            );
+            for pair in path.windows(2) {
+                let (a, b) = (pair[0], pair[1]);
+                let horizontal = (a[1] - b[1]).abs() < 1e-3;
+                let vertical = (a[0] - b[0]).abs() < 1e-3;
+                assert!(
+                    horizontal ^ vertical,
+                    "belt {}->{} has a diagonal or empty segment: {a:?} {b:?}",
+                    belt.from,
+                    belt.to
+                );
+                let steps = ((b[0] - a[0]).abs() + (b[1] - a[1]).abs()).ceil() as usize;
+                for s in 0..=steps {
+                    let t = s as f32 / steps.max(1) as f32;
+                    let p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+                    for (m, footprint) in boxes.iter().enumerate() {
+                        assert!(
+                            !inside(*footprint, p),
+                            "belt {}->{} runs under machine {m} at {p:?}",
+                            belt.from,
+                            belt.to
+                        );
+                    }
+                }
+            }
+            let first = path[0];
+            let last = path[path.len() - 1];
+            assert!(
+                on_boundary(boxes[belt.from], first),
+                "belt {}->{} does not start on its plinth edge: {first:?}",
+                belt.from,
+                belt.to
+            );
+            assert!(
+                on_boundary(boxes[belt.to], last),
+                "belt {}->{} does not end on its plinth edge: {last:?}",
+                belt.from,
+                belt.to
+            );
         }
     }
 
-    fn sample() -> PlantJson {
-        PlantJson {
+    fn check_plant(plant: &Plant) {
+        let (kinds, edges) = plant.layout_input();
+        let layout = layout(&kinds, &edges);
+        assert_eq!(layout.machines.len(), plant.machines.len());
+        check_invariants(&layout);
+    }
+
+    #[test]
+    fn layout_is_deterministic() {
+        let (kinds, edges) = chain_plant();
+        assert_eq!(layout(&kinds, &edges), layout(&kinds, &edges));
+        let plant = stress(300);
+        let (kinds, edges) = plant.layout_input();
+        assert_eq!(layout(&kinds, &edges), layout(&kinds, &edges));
+    }
+
+    #[test]
+    fn imports_flow_left_to_right_by_layer() {
+        let (kinds, edges) = chain_plant();
+        let laid = layout(&kinds, &edges);
+        let x = |m: usize| laid.machines[m].x;
+        assert!(x(0) < x(1), "gate imports assembler, so it sits left of it");
+        assert!(x(1) < x(2), "assembler imports tank, so it sits left of it");
+    }
+
+    #[test]
+    fn a_closing_edge_is_dropped_not_routed() {
+        let (kinds, edges) = chain_plant();
+        let laid = layout(&kinds, &edges);
+        assert_eq!(laid.belts.len(), 4);
+        assert!(!laid.belts.iter().any(|b| b.from == 2 && b.to == 0));
+    }
+
+    #[test]
+    fn a_two_node_cycle_routes_one_belt() {
+        let kinds = [Kind::Gate, Kind::Tank];
+        let edges = [
+            Edge {
+                from: 0,
+                to: 1,
+                imports: 1,
+            },
+            Edge {
+                from: 1,
+                to: 0,
+                imports: 1,
+            },
+        ];
+        let laid = layout(&kinds, &edges);
+        assert_eq!(laid.belts.len(), 1);
+        check_invariants(&laid);
+    }
+
+    #[test]
+    #[should_panic(expected = "runs under machine")]
+    fn the_checker_rejects_a_belt_that_runs_under_a_machine() {
+        let laid = Layout {
             machines: vec![
-                machine(1, "api", &[10]),
-                machine(2, "ui", &[11]),
-                machine(3, "store", &[12]),
-            ],
-            belts: vec![BeltJson { from: 2, to: 1 }],
-            files: vec![
-                FileJson {
-                    id: 10,
-                    path: "src/api/handler.ts".to_owned(),
+                Placed {
+                    x: 0.0,
+                    y: 0.0,
+                    kind: Kind::Assembler,
                 },
-                FileJson {
-                    id: 11,
-                    path: "src/ui/greet.ts".to_owned(),
+                Placed {
+                    x: 200.0,
+                    y: 0.0,
+                    kind: Kind::Assembler,
                 },
-                FileJson {
-                    id: 12,
-                    path: "src/store.ts".to_owned(),
+                Placed {
+                    x: 400.0,
+                    y: 0.0,
+                    kind: Kind::Assembler,
                 },
             ],
+            belts: vec![Belt {
+                from: 0,
+                to: 2,
+                imports: 1,
+                path: vec![[96.0, 40.0], [400.0, 40.0]],
+            }],
+            bounds: [0.0, 0.0, 496.0, 86.0],
+        };
+        check_invariants(&laid);
+    }
+
+    #[test]
+    fn an_empty_plant_has_an_empty_layout() {
+        let laid = layout(&[], &[]);
+        assert!(laid.machines.is_empty());
+        assert!(laid.belts.is_empty());
+        assert_eq!(laid.bounds, [0.0; 4]);
+    }
+
+    #[test]
+    fn a_hand_built_plant_meets_every_invariant() {
+        let (kinds, edges) = chain_plant();
+        check_invariants(&layout(&kinds, &edges));
+    }
+
+    #[test]
+    fn the_demo_fixture_meets_every_invariant() {
+        let plant = from_scan_json(FIXTURE).expect("fixture parses");
+        check_plant(&plant);
+    }
+
+    #[test]
+    fn a_large_generated_plant_meets_every_invariant() {
+        check_plant(&stress(400));
+    }
+
+    #[test]
+    fn belts_from_one_source_leave_as_one_trunk() {
+        let plant = from_scan_json(FIXTURE).expect("fixture parses");
+        let (kinds, edges) = plant.layout_input();
+        let laid = layout(&kinds, &edges);
+        for a in &laid.belts {
+            for b in laid.belts.iter().filter(|b| b.from == a.from) {
+                assert_eq!(
+                    a.path[..2],
+                    b.path[..2],
+                    "belts of {} part at the plinth",
+                    a.from
+                );
+            }
         }
-    }
-
-    #[test]
-    fn machines_are_sorted_and_indexed_by_name_and_path() {
-        let plan = Plan::new(&sample());
-        let names: Vec<&str> = plan.machines.iter().map(|m| m.name.as_str()).collect();
-        assert_eq!(names, ["api", "store", "ui"]);
-        assert_eq!(plan.index_of("ui"), Some(2));
-        assert_eq!(plan.machine_of_path("src/api/handler.ts"), Some(0));
-        assert_eq!(plan.machine_of_path("missing.ts"), None);
-    }
-
-    #[test]
-    fn connected_machines_are_placed_next_to_each_other() {
-        // ui imports api, so the walk visits api first and ui right after it.
-        let order = placement_order(3, &[(2, 0)]);
-        assert_eq!(order, [0, 2, 1]);
-    }
-
-    #[test]
-    fn a_belt_runs_between_the_centers_of_its_machines() {
-        let plan = Plan::new(&sample());
-        let belt = &plan.belts[0];
-        assert_eq!(
-            belt.points.first(),
-            Some(&plan.machines[belt.from].center())
-        );
-        assert_eq!(belt.points.last(), Some(&plan.machines[belt.to].center()));
-    }
-
-    #[test]
-    fn a_locus_maps_to_the_machines_it_names() {
-        let plan = Plan::new(&sample());
-        let symbol = Locus::Symbol {
-            file: FilePath::from_str("src/api/handler.ts").expect("valid path"),
-            name: "handle".to_owned(),
-        };
-        assert_eq!(plan.machines_at(&symbol), [0]);
-        let belt = Locus::Belt {
-            from: MachineKey::from_str("ui").expect("valid key"),
-            to: MachineKey::from_str("api").expect("valid key"),
-        };
-        assert_eq!(plan.machines_at(&belt), [2, 0]);
-        let midpoint = plan.point_at(&belt).expect("both ends are on the plan");
-        let (a, b) = (plan.machines[2].center(), plan.machines[0].center());
-        assert_eq!(midpoint, [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]);
     }
 
     #[test]
     fn bounds_cover_every_footprint() {
-        let plan = Plan::new(&sample());
-        let (lo, hi) = plan.bounds().expect("a plan with machines has bounds");
-        for m in &plan.machines {
-            assert!(m.min[0] >= lo[0] && m.min[1] >= lo[1]);
-            assert!(m.min[0] + m.size[0] <= hi[0] && m.min[1] + m.size[1] <= hi[1]);
+        let plant = from_scan_json(FIXTURE).expect("fixture parses");
+        let (kinds, edges) = plant.layout_input();
+        let laid = layout(&kinds, &edges);
+        for placed in &laid.machines {
+            let f = placed.footprint();
+            assert!(f[0] >= laid.bounds[0] && f[2] <= laid.bounds[2]);
+            assert!(f[1] >= laid.bounds[1] && f[3] <= laid.bounds[3]);
         }
-        assert_eq!(Plan::default().bounds(), None);
-    }
-
-    #[test]
-    fn the_same_plant_gives_the_same_plan() {
-        assert_eq!(Plan::new(&sample()), Plan::new(&sample()));
     }
 }

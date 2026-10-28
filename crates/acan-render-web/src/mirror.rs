@@ -12,7 +12,7 @@ use acan_core::{
 };
 use serde::Serialize;
 
-use crate::layout::Plan;
+use crate::plan::Plan;
 
 /// Agent body colors, as `#rrggbb`. The first agent gets the first color.
 pub const PALETTE: [&str; 6] = [
@@ -535,15 +535,16 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::layout::PlantJson;
+    use crate::plant::from_scan_json;
     use crate::scenario::{self, Target};
 
     const PLANT: &str = r#"{
+        "root": "/repo",
         "machines": [
-            {"id": 1, "name": "src/api", "files": [1]},
-            {"id": 2, "name": "src/ui", "files": [2]}
+            {"id": 1, "name": "src/api", "dir": "src/api", "files": [1]},
+            {"id": 2, "name": "src/ui", "dir": "src/ui", "files": [2]}
         ],
-        "belts": [{"from": 2, "to": 1}],
+        "belts": [{"from": 2, "to": 1, "imports": 1}],
         "files": [
             {"id": 1, "path": "src/api/auth.ts"},
             {"id": 2, "path": "src/ui/dashboard.ts"}
@@ -551,8 +552,14 @@ mod tests {
     }"#;
 
     fn plan() -> Plan {
-        let plant: PlantJson = serde_json::from_str(PLANT).expect("the plant parses");
-        Plan::new(&plant)
+        let plant = from_scan_json(PLANT).expect("the plant parses");
+        Plan::new(&plant, |name| {
+            if name == "src/api" {
+                [0.0, 0.0, 96.0, 86.0]
+            } else {
+                [200.0, 0.0, 296.0, 86.0]
+            }
+        })
     }
 
     fn machine_index(view: &View, name: &str) -> usize {

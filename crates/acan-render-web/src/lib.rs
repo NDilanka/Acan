@@ -1,13 +1,20 @@
-//! The product screen's Rust side: the plant's plan, the origin's state folded from its log, and
-//! the view the HTML panels draw.
-//!
-//! Everything but the canvas is plain Rust and runs natively, so the event-to-view mapping is
-//! tested with `cargo test`. The wgpu canvas and the methods the page calls are wasm32 only.
+//! Browser host for `acan-render`. The plant input, the kind table, the layout, the scene and the
+//! plan build on every target, so `cargo test` covers them on the host. The product screen's
+//! state (the origin's log folded into a view) is here too. `App` is the wasm surface that the
+//! page drives.
 
+pub mod bends;
+pub mod kind;
+pub mod labels;
 pub mod layout;
 pub mod mirror;
-pub mod paint;
+pub mod plan;
+pub mod plant;
 pub mod scenario;
+pub mod scene;
 
 #[cfg(target_arch = "wasm32")]
-mod web;
+mod app;
+
+#[cfg(target_arch = "wasm32")]
+pub use app::App;

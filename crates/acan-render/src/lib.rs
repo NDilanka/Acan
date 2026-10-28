@@ -1,13 +1,19 @@
-//! Plant canvas renderer: instanced machine rects and triangulated belt
-//! polylines on a flat plan view. The renderer takes a `wgpu::Surface` and
-//! never learns what owns it, so a browser canvas and a native window are
-//! interchangeable hosts.
+//! The Acan plant renderer. The scene is 3D meshes on an infinite grid, drawn by wgpu with a
+//! perspective orbit camera (or orthographic on request), four-tone paper shading, and one
+//! anti-aliased stroke for every contour and crease, found from each mesh's edges. The model
+//! shape is the shared contract in `ui-figure-contract-v2`.
 
-mod camera;
-mod renderer;
-mod scene;
+pub mod camera;
+pub mod edges;
+pub mod geometry;
+pub mod model;
+pub mod renderer;
+pub mod scene;
+pub mod theme;
 
-pub use camera::Camera;
+pub use camera::{Camera, Projection};
+pub use model::{Aabb, Detail, Dot3, Ink, Line3, Mesh, Model, Surface};
 pub use renderer::{RenderError, Renderer};
-pub use scene::{BeltVertex, Polyline, Rect, Scene, tessellate_polyline};
+pub use scene::{Instance, Lod, Ribbon, Scene};
+/// The wgpu version this crate was built against. Callers create the instance and surface with it.
 pub use wgpu;

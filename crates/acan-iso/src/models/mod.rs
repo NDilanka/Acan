@@ -13,7 +13,7 @@ mod valve;
 use crate::model::Model;
 
 /// The machine kinds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Kind {
     /// A tall unit with a side panel of lights and four stacked trays.
     Intake,

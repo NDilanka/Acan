@@ -5,7 +5,7 @@
 //! `Near` and `Close` as zoom allows.
 
 /// A machine model: one mesh per level of detail, painted lines and dots, and the box that holds them.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Model {
     /// One mesh per level of detail, indexed by `Detail as usize`.
     pub meshes: [Mesh; 3],
@@ -84,6 +84,9 @@ pub enum Ink {
     Lo,
     /// Grooves and creases.
     Faint,
+    /// A seam: a light painted line where two parts of a surface meet. Lighter than the contours
+    /// and creases the renderer strokes from the mesh.
+    Edge,
     /// Amber. Reserved for waiting on the user, so no model draws it.
     Lit,
     /// A status colour.
@@ -98,9 +101,10 @@ pub enum Ink {
 
 /// The level of detail an item needs. `Always` is the silhouette and main structure. `Near` adds fine parts that
 /// show at moderate zoom. `Close` adds the finest parts, which show only when zoomed in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Detail {
     /// The silhouette and the main structure.
+    #[default]
     Always,
     /// Fine parts that show at moderate zoom: major ticks, seams, screws and bands.
     Near,
@@ -109,12 +113,46 @@ pub enum Detail {
 }
 
 /// An axis-aligned box.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Aabb {
     /// The low corner.
     pub min: [f32; 3],
     /// The high corner.
     pub max: [f32; 3],
+}
+
+impl Aabb {
+    /// The empty box, which grows to fit the first point added to it.
+    pub const EMPTY: Self = Self {
+        min: [f32::INFINITY; 3],
+        max: [f32::NEG_INFINITY; 3],
+    };
+
+    /// Grows the box to contain `p`.
+    pub fn include(&mut self, p: [f32; 3]) {
+        for (axis, &v) in p.iter().enumerate() {
+            self.min[axis] = self.min[axis].min(v);
+            self.max[axis] = self.max[axis].max(v);
+        }
+    }
+
+    /// Centre of the box.
+    pub fn centre(&self) -> [f32; 3] {
+        std::array::from_fn(|axis| (self.min[axis] + self.max[axis]) * 0.5)
+    }
+
+    /// The eight corners.
+    pub fn corners(&self) -> [[f32; 3]; 8] {
+        std::array::from_fn(|i| {
+            std::array::from_fn(|axis| {
+                if i >> axis & 1 == 1 {
+                    self.max[axis]
+                } else {
+                    self.min[axis]
+                }
+            })
+        })
+    }
 }
 
 #[cfg(test)]
@@ -126,5 +164,16 @@ mod tests {
         assert_eq!(Detail::Always as usize, 0);
         assert_eq!(Detail::Near as usize, 1);
         assert_eq!(Detail::Close as usize, 2);
+    }
+
+    #[test]
+    fn an_empty_box_grows_to_hold_its_points() {
+        let mut bounds = Aabb::EMPTY;
+        bounds.include([1.0, -2.0, 0.0]);
+        bounds.include([-3.0, 4.0, 5.0]);
+        assert_eq!(bounds.min, [-3.0, -2.0, 0.0]);
+        assert_eq!(bounds.max, [1.0, 4.0, 5.0]);
+        assert_eq!(bounds.centre(), [-1.0, 1.0, 2.5]);
+        assert_eq!(bounds.corners().len(), 8);
     }
 }

@@ -15,12 +15,14 @@ Verdict: ship it. Both backends render 300 machines and 600 belts above 60 fps a
 rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.129
 pwsh -File crates/acan-render-web/build.ps1
-node crates/acan-render-web/serve.mjs 8742
+cargo run -p acan-server -- serve --repo <repo> --web crates/acan-render-web/www
 ```
+
+`acan serve --web` serves `www/` at `/` next to the API, so the page needs no JavaScript runtime. The server prints an owner token; open `http://127.0.0.1:7311/#token=<token>` for the live origin, or `http://127.0.0.1:7311/?plant=fixture` for the demo plant with no log.
 
 `build.ps1` runs `cargo build -p acan-render-web --release --target wasm32-unknown-unknown` with `opt-level=s`, LTO, one codegen unit and `panic=abort`, set through `CARGO_PROFILE_RELEASE_*` variables. Then it runs `wasm-bindgen --target web` into `www/pkg` and prints the raw and gzip sizes.
 
-Open `http://127.0.0.1:8742/?backend=webgpu` or `?backend=webgl`. Add `&machines=N&belts=M` to change the scene size. Benchmarks run from the console: `runPanBench(10)`, `runRafBaseline(10)`, and `measureIdle(5)`. `window.spike.coldStart` holds the startup timestamps.
+Add `?backend=webgpu` or `?backend=webgl` to choose the backend. Add `&machines=N&belts=M` to change the scene size. Benchmarks run from the console: `runPanBench(10)`, `runRafBaseline(10)`, and `measureIdle(5)`. `window.spike.coldStart` holds the startup timestamps.
 
 ## Test machine
 
@@ -37,7 +39,7 @@ Open `http://127.0.0.1:8742/?backend=webgpu` or `?backend=webgl`. Add `&machines
 | 2 | WebGPU backend in headed Chrome | Pass | Adapter `BrowserWebGpu`, surface `Bgra8Unorm`, Intel gen-12lp | Chrome reports an empty adapter name and description, so only vendor and architecture are known. |
 | 3 | WebGL2 with WebGPU forced off (`webgl` feature) | Pass | `WebGL 2.0 (OpenGL ES 3.0 Chromium)`, ANGLE D3D11 on Intel UHD, surface `Rgba8Unorm` | Same scene and same code path; only `wgpu::Backends` differs. |
 | 4 | 300 machines and 600 belts, frame time while panning for 10 s | Pass at p50, noisy p95 | WebGPU: interval p50 7.0 to 13.9 ms, p95 14.0 to 48.8 ms over 6 runs. WebGL2: p50 14.1 to 20.8 ms, p95 27.4 to 27.6 ms over 3 runs. Renderer CPU time per frame: WebGPU p50 0.7 to 1.5 ms, WebGL2 p50 1.8 to 2.6 ms. | It is not the scene. 10 machines and 10 belts, and 2,000 machines and 4,000 belts, gave the same intervals as 300 and 600 on both backends (see below). The p95 spread follows host CPU load from other builds. WebGL2 lands on every second vsync at 144 Hz. Inferred cause: the GL path costs more per frame, measured at about 2 ms of CPU time against 0.7 ms on WebGPU, plus Chrome's GPU-process work. CPU time covers only the `render()` call. GPU time was not measured. |
-| 5 | Pan and zoom by mouse and keyboard, with HTML labels glued to 3 machines | Pass | A mouse drag of (-80, -60) px moved all three labels by exactly (-80, -60) px. Wheel zoom stays anchored at the pointer. The arrow keys and `-` pan and zoom. Screenshots: `interact-1-wheel-zoom.png`, `interact-2-mouse-drag.png`, `interact-3-keyboard.png`, `webgpu-fit.png`, `webgl2-fit.png`. | Labels are placed in the same frame as the draw, so they cannot lag the canvas. Labels on machines outside the viewport are clipped, not hidden. |
+| 5 | Pan and zoom by mouse and keyboard, with HTML labels glued to 3 machines | Pass | A mouse drag of (-80, -60) px moved all three labels by exactly (-80, -60) px. Wheel zoom stays anchored at the pointer. The arrow keys and `-` pan and zoom. | Labels are placed in the same frame as the draw, so they cannot lag the canvas. Labels on machines outside the viewport are clipped, not hidden. |
 | 6 | Cold start to first frame | Pass | Navigation start to first presented frame, over 3 reloads: WebGPU 259 to 331 ms, WebGL2 316 to 422 ms. On WebGPU, wasm fetch and compile took 68 to 86 ms and `Renderer::new` (adapter, device and pipelines) took 132 to 193 ms. | The local server sends the 3.1 MB wasm with `no-store`, so every reload fetches and compiles it again. The very first launch, including browser startup, took 5,530 ms. |
 | 7 | Idle cost | Pass | 5 s with no input after a pan benchmark: 0 `requestAnimationFrame` callbacks and 0 frames on both backends. | Frames are scheduled only by input, resize, or the benchmark. GPU and CPU process usage while idle was not measured. |
 

@@ -333,6 +333,7 @@ fn ink_colour(tone: Ink) -> &'static str {
         Ink::Mid | Ink::Agent(_) => "#8a8a8f",
         Ink::Lo => "#b4b4b8",
         Ink::Faint => "#d4d4d6",
+        Ink::Edge => "#ebebe9",
         Ink::Lit => "#e8a33d",
         Ink::Red => "#e5484d",
         Ink::Green => "#30a46c",

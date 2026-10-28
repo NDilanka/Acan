@@ -66,7 +66,9 @@ dependencies = [
 name = "acan-render"
 version = "0.1.0"
 dependencies = [
+ "acan-iso",
  "bytemuck",
+ "naga",
  "thiserror",
  "wgpu",
 ]
@@ -76,11 +78,13 @@ name = "acan-render-web"
 version = "0.1.0"
 dependencies = [
  "acan-core",
+ "acan-iso",
  "acan-render",
  "acan-server",
  "anyhow",
  "serde",
  "serde_json",
+ "thiserror",
  "tokio",
  "wasm-bindgen",
  "wasm-bindgen-futures",
