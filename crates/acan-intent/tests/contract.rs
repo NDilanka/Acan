@@ -13,7 +13,7 @@ use acan_intent::{
     ItemClass, ItemState, LedgerEvent, LedgerHash, LedgerHead, MaskablePath, McpError,
     McpErrorCode, Observation, ObservationPath, PlantView, PostReadbackRequest,
     PostReadbackResponse, ProbeCorpus, Receipt, RepairRound, RouteSource, RulingId, Run, Scope,
-    ScopeConfirmation, ScopeDraft, ScopeItem, Selector, SlotSpec, TourView, TwinError,
+    ScopeConfirmation, ScopeDraft, ScopeItem, Selector, SlotSpec, Step, TourView, TwinError,
     TwinRunRequest, TwinRunResponse, TwinSaveRequest, TwinSaveResponse, Unsupported, ValueType,
     WindowMs,
 };
@@ -865,6 +865,70 @@ fn a_reused_event_sequence_is_caught() {
             .any(|problem| problem.starts_with("event 3 is two different events")),
         "{problems:?}"
     );
+}
+
+fn reencoded<T: DeserializeOwned + Serialize>(value: Value) -> (T, Value) {
+    let decoded: T = serde_json::from_value(value).expect("decoding");
+    let encoded = serde_json::to_value(&decoded).expect("encoding");
+    (decoded, encoded)
+}
+
+/// The fixture with the body of its first HTTP step, under `steps`, set to `body` or removed.
+fn with_first_body(name: &str, steps: &str, body: Option<Value>) -> Value {
+    let mut value = raw(name);
+    let request = value
+        .pointer_mut(&format!("{steps}/0/request"))
+        .and_then(Value::as_object_mut)
+        .expect("the first step is an HTTP step");
+    match body {
+        Some(body) => request.insert("body".to_owned(), body),
+        None => request.remove("body"),
+    };
+    value
+}
+
+fn first_body<'a>(mut steps: impl Iterator<Item = &'a Step>) -> Option<&'a Value> {
+    match steps.next() {
+        Some(Step::Http(step)) => step.request.body.as_ref(),
+        _ => panic!("the first step is an HTTP step"),
+    }
+}
+
+#[test]
+fn a_run_response_keeps_a_null_request_body_apart_from_none() {
+    let pointer = "/steps/0/request/body";
+    let run = |body| {
+        reencoded::<TwinRunResponse>(with_first_body("twin-run-response.json", "/steps", body))
+    };
+    let (null, encoded) = run(Some(Value::Null));
+    assert_eq!(first_body(null.steps.iter()), Some(&Value::Null));
+    assert_eq!(encoded.pointer(pointer), Some(&Value::Null), "null was dropped");
+    let (absent, encoded) = run(None);
+    assert_eq!(first_body(absent.steps.iter()), None);
+    assert_eq!(encoded.pointer(pointer), None, "no body became a body");
+    assert_ne!(null, absent);
+}
+
+#[test]
+fn a_saved_null_body_probe_reloads_with_the_same_spec_hash() {
+    let saved = |body| {
+        let value = with_first_body("twin-save-response.json", "/probe/spec/steps", body);
+        let (first, encoded) = reencoded::<TwinSaveResponse>(value);
+        let (reloaded, _) = reencoded::<TwinSaveResponse>(encoded);
+        let hash = first.probe.spec.probe_hash().expect("hashing");
+        assert_eq!(
+            reloaded.probe.spec.probe_hash().expect("hashing"),
+            hash,
+            "the spec hash moved across a save and reload"
+        );
+        assert_eq!(reloaded, first);
+        (hash, first_body(reloaded.probe.spec.steps.iter()).cloned())
+    };
+    let (null_hash, null_body) = saved(Some(Value::Null));
+    let (absent_hash, absent_body) = saved(None);
+    assert_eq!(null_body, Some(Value::Null));
+    assert_eq!(absent_body, None);
+    assert_ne!(null_hash, absent_hash, "a null body and no body are one spec");
 }
 
 #[test]

@@ -112,8 +112,13 @@ pub struct RequestTemplate {
     /// Extra headers by lowercase name. The runner sets host, content type and session itself.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, Template>,
-    /// A JSON body. String leaves may hold `${capture}` placeholders.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// A JSON body. String leaves may hold `${capture}` placeholders. Absent sends no body;
+    /// JSON `null` is a present body and sends `null`.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::present_json",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub body: Option<serde_json::Value>,
 }
 
