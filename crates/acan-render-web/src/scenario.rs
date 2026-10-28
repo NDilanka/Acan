@@ -8,19 +8,12 @@ use std::str::FromStr;
 use acan_core::{
     AgentCmd, AgentId, Check, ClashId, CodeIndex, Command, CommitId, Ctx, DeclarationInput, Event,
     Explanation, Fence, FilePath, HumanCmd, Judgement, Locus, MachineKey, MemberId, OrderId,
-    Origin, ReadbackId, ReadbackVerdict, Rejection, Settlement, Stamped, Step, SymbolRef,
-    SystemCmd, TaskId, TaskSpec, TaskState, Timestamp, WitnessOutcome, WitnessSpec,
+    Origin, ReadbackId, ReadbackVerdict, Rejection, Settlement, Stamped, SymbolRef, SystemCmd,
+    TaskId, TaskSpec, TaskState, Timestamp, WitnessOutcome, WitnessSpec,
 };
 
 /// The two agents the script registers, in registration order.
 pub const AGENTS: [&str; 2] = ["agent-a", "agent-b"];
-
-/// The model the offline demo's explain call is recorded under.
-pub const OFFLINE_MODEL: &str = "offline";
-/// Token counts the explain call is recorded with. The offline demo has no model, so these are
-/// fixed stand-ins for a call's usage, not a measurement.
-const EXPLAIN_INPUT_TOKENS: u32 = 1_240;
-const EXPLAIN_OUTPUT_TOKENS: u32 = 96;
 
 /// Where the script pins its order, and the symbol both agents then declare.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,9 +219,10 @@ pub fn clash_script(
 
 /// Runs the rest of the demo on `origin`, after [`clash_script`] has left its clash open.
 ///
-/// The explain call the clash waits on is recorded, then the owner settles the clash so the
-/// first task goes first. Each task reports its build, passes its gate, and lands in turn. Every
-/// event comes from the origin's own `execute`, so the log replays like any other.
+/// The owner settles the clash so the first task goes first. Each task reports its build, passes
+/// its gate, and lands in turn. Every event comes from the origin's own `execute`, so the log
+/// replays like any other. No model call is recorded. The offline demo has no model, so the usage
+/// panel stays hidden rather than show numbers it never measured.
 ///
 /// # Errors
 ///
@@ -270,15 +264,6 @@ pub fn land_script(
         })
         .ok_or_else(|| invalid("a serialize choice"))?;
 
-    run(
-        origin,
-        Command::System(SystemCmd::ModelUsed {
-            model: OFFLINE_MODEL.to_owned(),
-            step: Step::Explain,
-            input_tokens: EXPLAIN_INPUT_TOKENS,
-            output_tokens: EXPLAIN_OUTPUT_TOKENS,
-        }),
-    )?;
     run(
         origin,
         Command::System(SystemCmd::ClashExplained {

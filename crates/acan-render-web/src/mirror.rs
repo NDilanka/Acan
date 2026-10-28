@@ -161,6 +161,7 @@ impl Mirror {
                 machine: task_machine(world, plan, task).map(|m| plan.machines[m].name.clone()),
                 change: self.changes.get(&task.id).cloned(),
                 check: self.check_view(world, task),
+                paths: task_paths(task),
             })
             .collect();
 
@@ -387,6 +388,8 @@ pub struct TaskView {
     pub change: Option<String>,
     /// The check the task answers to, if the order has one or the task has a readback.
     pub check: Option<CheckView>,
+    /// The repo paths its declaration names, while it still holds one. Sorted, without repeats.
+    pub paths: Vec<String>,
 }
 
 /// A registered agent, with its body on the plan when it has a task.
@@ -577,6 +580,22 @@ fn stage_key(stage: &Stage) -> &'static str {
     }
 }
 
+/// The paths a task's declaration names, while the task still holds one. Sorted, without repeats.
+fn task_paths(task: &Task) -> Vec<String> {
+    let TaskState::Claimed { stage, .. } = &task.state else {
+        return Vec::new();
+    };
+    let Some(decl) = stage_declaration(stage) else {
+        return Vec::new();
+    };
+    let mut paths: Vec<String> = footprint_paths(&decl.footprint)
+        .map(|path| path.as_str().to_owned())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
 fn stage_declaration(stage: &Stage) -> Option<&Declaration> {
     match stage {
         Stage::Declaring => None,
@@ -664,7 +683,7 @@ mod tests {
 
     use acan_core::{
         AgentCmd, Belt, CodeIndex, CodeRev, Command, CommitId, Ctx, FilePath, HumanCmd,
-        IndexedFile, IndexedSymbol, MachineKey, MemberId, Origin, Seq, SystemCmd, Timestamp,
+        IndexedFile, IndexedSymbol, MachineKey, MemberId, Origin, Seq, Step, SystemCmd, Timestamp,
         WorldId, WorldRef,
     };
     use serde_json::json;
@@ -1051,11 +1070,6 @@ mod tests {
     fn usage_is_empty_until_a_model_call_is_recorded() {
         let plan = plan();
         let (mut origin, mut log, index) = scripted();
-        let before = Mirror::from_log(log.clone())
-            .expect("the log replays")
-            .view(&plan);
-        assert!(before.usage.is_empty(), "no call, no usage rows");
-
         let events = scenario::land_script(
             &mut origin,
             &index,
@@ -1064,13 +1078,31 @@ mod tests {
         )
         .expect("the story runs");
         log.extend(events);
+        let before = Mirror::from_log(log.clone())
+            .expect("the log replays")
+            .view(&plan);
+        assert!(
+            before.usage.is_empty(),
+            "the offline story records no model call"
+        );
+
+        // The call is recorded here, in the test, so its numbers are test values and not demo ones.
+        log.extend(accepted(
+            &mut origin,
+            &index,
+            Command::System(SystemCmd::ModelUsed {
+                model: "test-model".to_owned(),
+                step: Step::Explain,
+                input_tokens: 30,
+                output_tokens: 4,
+            }),
+        ));
         let after = Mirror::from_log(log).expect("the log replays").view(&plan);
         let [row] = after.usage.as_slice() else {
-            panic!("the offline explain call is one row");
+            panic!("one recorded call is one row");
         };
         assert_eq!(row.role, "explain");
-        assert_eq!(row.model, scenario::OFFLINE_MODEL);
-        assert_eq!(row.calls, 1);
-        assert!(row.input > 0 && row.output > 0);
+        assert_eq!(row.model, "test-model");
+        assert_eq!((row.calls, row.input, row.output), (1, 30, 4));
     }
 }

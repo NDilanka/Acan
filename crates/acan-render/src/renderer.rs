@@ -14,8 +14,8 @@ use wgpu::util::DeviceExt;
 
 use crate::camera::{Camera, NEAR_FRACTION, ORTHO_FAR, Projection};
 use crate::geometry::{
-    self, DotVertex, EdgeVertex, HaloVertex, InstanceRaw, LineVertex, MeshVertex, RibbonVertex,
-    Strokes,
+    self, DotVertex, EdgeVertex, HaloVertex, HueVertex, InstanceRaw, LineVertex, MeshVertex,
+    RibbonVertex, Strokes,
 };
 use crate::model::{Mesh, Model};
 use crate::scene::{Lod, Scene};
@@ -134,12 +134,21 @@ struct ModelBuffers {
     dots: StrokeBuffers,
 }
 
+/// The belt hue lines of the scene. Each piece takes four vertices and six indices.
+struct HueBuffers {
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+    index_count: u32,
+}
+
 struct Pipelines {
     grid: wgpu::RenderPipeline,
     ribbon: wgpu::RenderPipeline,
     mesh: wgpu::RenderPipeline,
+    silhouette: wgpu::RenderPipeline,
     halo: wgpu::RenderPipeline,
     dot: wgpu::RenderPipeline,
+    hue: wgpu::RenderPipeline,
     edge: wgpu::RenderPipeline,
     line: wgpu::RenderPipeline,
     ink: wgpu::RenderPipeline,
@@ -182,6 +191,9 @@ pub struct Renderer {
     /// Six halo vertices per kind, kind by kind.
     halos: Option<wgpu::Buffer>,
     ribbons: Option<(wgpu::Buffer, u32)>,
+    hue: Option<HueBuffers>,
+    /// The kinds whose hidden instances draw as silhouettes, as the scene named them.
+    silhouettes: Vec<u16>,
     instances: Option<wgpu::Buffer>,
     /// Per kind: its range inside `instances`.
     ranges: Vec<Range<u32>>,
@@ -312,6 +324,8 @@ impl Renderer {
             quads: None,
             halos: None,
             ribbons: None,
+            hue: None,
+            silhouettes: Vec::new(),
             instances: None,
             ranges: Vec::new(),
         })
@@ -423,6 +437,21 @@ impl Renderer {
             &raw,
         ));
         self.ranges = ranges;
+
+        let hue = geometry::hue_vertices(&scene.hue_lines);
+        let quads = (hue.len() / geometry::QUAD_CORNERS as usize) as u32;
+        let indices = geometry::quad_indices(quads);
+        self.hue = (!hue.is_empty()).then(|| HueBuffers {
+            vertices: upload(&self.device, "hue lines", wgpu::BufferUsages::VERTEX, &hue),
+            indices: upload(
+                &self.device,
+                "hue indices",
+                wgpu::BufferUsages::INDEX,
+                &indices,
+            ),
+            index_count: indices.len() as u32,
+        });
+        self.silhouettes.clone_from(&scene.silhouettes);
     }
 
     /// Draws one frame at the given level of detail. Returns `Ok(false)` for a frame the surface
@@ -575,7 +604,51 @@ impl Renderer {
             }
         }
 
+        self.draw_silhouettes(pass, lod, instances);
         self.draw_strokes(pass, &self.pipelines.dot, lod, |m| &m.dots);
+        self.draw_hue(pass);
+    }
+
+    /// Draws each silhouette kind's instances where the scene in front hides them. The pass
+    /// reverses the depth test, so a part that is not hidden is left to the mesh pass.
+    fn draw_silhouettes(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        lod: Lod,
+        instances: &wgpu::Buffer,
+    ) {
+        pass.set_pipeline(&self.pipelines.silhouette);
+        for &kind in &self.silhouettes {
+            let (Some(model), Some(range)) = (
+                self.models.get(usize::from(kind)),
+                self.ranges.get(usize::from(kind)),
+            ) else {
+                continue;
+            };
+            if range.is_empty() {
+                continue;
+            }
+            for mesh in &model.levels[..=lod as usize] {
+                if mesh.index_count == 0 {
+                    continue;
+                }
+                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+                pass.set_vertex_buffer(1, instances.slice(..));
+                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..mesh.index_count, 0, range.clone());
+            }
+        }
+    }
+
+    /// Draws the belt hue lines, over the ground and under anything that stands in front of it.
+    fn draw_hue(&self, pass: &mut wgpu::RenderPass<'_>) {
+        let Some(hue) = &self.hue else {
+            return;
+        };
+        pass.set_pipeline(&self.pipelines.hue);
+        pass.set_vertex_buffer(0, hue.vertices.slice(..));
+        pass.set_index_buffer(hue.indices.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..hue.index_count, 0, 0..1);
     }
 
     /// Draws one kind of stroke of every model, instanced over the model's machines.
@@ -887,6 +960,11 @@ impl Pipelines {
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4],
         };
+        let hue_vertex = wgpu::VertexBufferLayout {
+            array_stride: size_of::<HueVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32, 4 => Float32, 5 => Uint32],
+        };
         let offset_instance = wgpu::VertexBufferLayout {
             array_stride: size_of::<InstanceRaw>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
@@ -970,6 +1048,22 @@ impl Pipelines {
                 scene_samples,
                 &[colour(None)],
             ),
+            // Silhouettes read the mesh's vertices with the depth test reversed. They draw only
+            // where something nearer hides them. Back faces are culled, as in the mesh pass.
+            silhouette: make(
+                "silhouette",
+                &scene_layout,
+                ("vs_mesh", "fs_silhouette"),
+                &[Some(mesh_vertex.clone()), Some(mesh_instance.clone())],
+                wgpu::PrimitiveState {
+                    front_face: wgpu::FrontFace::Cw,
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..triangles
+                },
+                Some(depth(false, wgpu::CompareFunction::Less)),
+                scene_samples,
+                &[colour(alpha)],
+            ),
             // Back faces are culled. With the slope bias, a back wall could otherwise win the
             // depth test along the far edge of the top in front of it. The camera's screen axes
             // turn a face that winds counter-clockwise from outside clockwise on screen.
@@ -1002,6 +1096,18 @@ impl Pipelines {
                 &scene_layout,
                 ("vs_dot", "fs_dot"),
                 &[Some(dot_vertex), Some(offset_instance.clone())],
+                triangles,
+                Some(depth(false, nearer)),
+                scene_samples,
+                &[colour(alpha)],
+            ),
+            // Hue lines lie on the ground, lifted toward the eye like the painted lines. They test
+            // against the depth the machines left, so a machine in front hides them.
+            hue: make(
+                "hue",
+                &scene_layout,
+                ("vs_hue", "fs_hue"),
+                &[Some(hue_vertex)],
                 triangles,
                 Some(depth(false, nearer)),
                 scene_samples,

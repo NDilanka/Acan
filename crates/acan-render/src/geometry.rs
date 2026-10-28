@@ -7,7 +7,7 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::edges::{self, Fold};
 use crate::model::{Aabb, Detail, Dot3, Line3, Mesh};
-use crate::scene::{Instance, Ribbon};
+use crate::scene::{HueLine, Instance, Ribbon};
 use crate::theme::{SHADOW_REACH, SHADOW_SHIFT, dot_slot, flat_code, ink_slot};
 
 /// A ribbon's miter never stretches its width by more than this at a sharp turn.
@@ -77,6 +77,21 @@ pub struct RibbonVertex {
     /// The ribbon's full length and half width, in plan units.
     pub length: f32,
     pub half: f32,
+}
+
+/// One corner of a hue line's stroke. Each piece is four vertices, one per corner in
+/// `SEGMENT_CORNERS`, like a painted segment.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+pub struct HueVertex {
+    pub a: [f32; 3],
+    pub b: [f32; 3],
+    pub corner: [f32; 2],
+    /// The stroke's width in device px.
+    pub width: f32,
+    /// The stroke's opacity, which fades toward a belt's ends.
+    pub alpha: f32,
+    pub tint: u32,
 }
 
 /// A contact shadow quad: one corner, with the footprint it falls around.
@@ -192,6 +207,80 @@ pub fn quad_indices(quads: u32) -> Vec<u32> {
     (0..quads)
         .flat_map(|q| [0, 1, 2, 0, 2, 3].map(|i| q * QUAD_CORNERS + i))
         .collect()
+}
+
+/// The width of a hue line in device px, before the shader's thinnest-stroke floor.
+pub const HUE_PX: f32 = 1.0;
+/// A hue line's opacity along the middle of its belt.
+pub const HUE_ALPHA: f32 = 0.8;
+/// The longest piece of a hue line, in plan units. Each piece has one opacity, so the fade steps
+/// by this much.
+const HUE_PIECE: f32 = 1.0;
+/// The share of a belt's length over which its hue line fades in from each end.
+const HUE_FADE_SHARE: f32 = 0.3;
+
+/// Four vertices per piece of every hue line, pieces at most `HUE_PIECE` plan units long. A
+/// piece's opacity follows how far its middle lies from the nearer end of its belt.
+pub fn hue_vertices(lines: &[HueLine]) -> Vec<HueVertex> {
+    let mut out = Vec::new();
+    for line in lines {
+        let total = polyline_length(&line.centre);
+        if total <= 0.0 {
+            continue;
+        }
+        let pieces = (total / HUE_PIECE).ceil().max(1.0) as usize;
+        let step = total / pieces as f32;
+        let fade = HUE_FADE_SHARE * total;
+        for piece in 0..pieces {
+            let from = piece as f32 * step;
+            let to = from + step;
+            let middle = 0.5 * (from + to);
+            let nearer_end = middle.min(total - middle);
+            let alpha = HUE_ALPHA * (nearer_end / fade).min(1.0);
+            let [ax, ay] = point_at(&line.centre, from);
+            let [bx, by] = point_at(&line.centre, to);
+            for corner in SEGMENT_CORNERS {
+                out.push(HueVertex {
+                    a: [ax, ay, 0.0],
+                    b: [bx, by, 0.0],
+                    corner,
+                    width: HUE_PX,
+                    alpha,
+                    tint: u32::from(line.tint),
+                });
+            }
+        }
+    }
+    out
+}
+
+fn segment_length(a: [f32; 2], b: [f32; 2]) -> f32 {
+    (b[0] - a[0]).hypot(b[1] - a[1])
+}
+
+/// The length of a polyline, in plan units.
+fn polyline_length(points: &[[f32; 2]]) -> f32 {
+    points
+        .windows(2)
+        .map(|pair| segment_length(pair[0], pair[1]))
+        .sum()
+}
+
+/// The point `along` plan units from the first point of a polyline, held at its ends.
+fn point_at(points: &[[f32; 2]], along: f32) -> [f32; 2] {
+    let mut left = along.max(0.0);
+    for pair in points.windows(2) {
+        let len = segment_length(pair[0], pair[1]);
+        if left <= len {
+            let t = if len > 0.0 { left / len } else { 0.0 };
+            return [
+                pair[0][0] + (pair[1][0] - pair[0][0]) * t,
+                pair[0][1] + (pair[1][1] - pair[0][1]) * t,
+            ];
+        }
+        left -= len;
+    }
+    points.last().copied().unwrap_or([0.0; 2])
 }
 
 /// Six vertices covering `bounds` plus the contact shadow's reach and its shift.
@@ -409,6 +498,27 @@ mod tests {
         assert_eq!(strokes.vertices[0].b, [2.0, 0.0, 0.0]);
         assert_eq!(strokes.vertices[4].b, [3.0, 0.0, 0.0]);
         assert_eq!(strokes.vertices[8].b, [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_hue_line_fades_toward_both_ends_and_is_steady_between() {
+        let line = HueLine {
+            centre: vec![[0.0, 0.0], [10.0, 0.0]],
+            tint: 3,
+        };
+        let vertices = hue_vertices(&[line]);
+        let alphas: Vec<f32> = vertices.chunks_exact(4).map(|quad| quad[0].alpha).collect();
+        assert_eq!(alphas.len(), 10, "one piece per plan unit");
+        assert!(
+            alphas[0] < alphas[1] && alphas[1] < alphas[2],
+            "it fades in"
+        );
+        assert!(
+            alphas[9] < alphas[8] && alphas[8] < alphas[7],
+            "it fades out"
+        );
+        assert_eq!(alphas[5], HUE_ALPHA, "the middle is fully opaque");
+        assert!(vertices.iter().all(|vertex| vertex.tint == 3));
     }
 
     #[test]

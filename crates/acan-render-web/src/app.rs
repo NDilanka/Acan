@@ -83,6 +83,8 @@ struct Loaded {
     rest: Vec<bool>,
     /// The machines and belts as the layout places them, before any mark is added.
     base: Scene,
+    /// The belts that draw, with the instance index of the machines they join.
+    belts: Vec<scene::BeltLine>,
     /// For each plan machine, its instance in `base`.
     plan_instance: Vec<usize>,
     /// For each plan machine, its model's top and the free spots on its plinth top.
@@ -618,6 +620,7 @@ impl App {
         self.motion = Motion::new(self.still);
         self.card_clash = None;
         self.dirty = true;
+        let belts = scene::belt_lines(&laid.belts);
         self.plant = Some(Loaded {
             repo: plant.repo,
             rest: {
@@ -637,6 +640,7 @@ impl App {
             bounds: scene.bounds,
             occluders,
             base: scene,
+            belts,
             plan_instance,
             stands,
         });
@@ -674,6 +678,13 @@ impl App {
         for (plan_index, &instance) in loaded.plan_instance.iter().enumerate() {
             scene.instances[instance].tint = self.marks.footprint_tint(plan_index);
         }
+        let hues: Vec<(usize, u8)> = self
+            .marks
+            .belt_hues
+            .iter()
+            .map(|&(plan_index, tint)| (loaded.plan_instance[plan_index], tint))
+            .collect();
+        scene.hue_lines = scene::hue_lines(&loaded.belts, &hues);
         scene.instances.extend(marks::mark_instances(
             &self.motion,
             &self.marks,

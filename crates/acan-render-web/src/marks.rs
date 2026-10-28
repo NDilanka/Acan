@@ -29,8 +29,9 @@ pub const PIN_MIN_PX: f32 = 18.0;
 pub const LANDED_HOLD_MS: f32 = 4_000.0;
 /// Milliseconds a bot takes to ease off its machine and fade, and an order flag to fade out.
 pub const LEAVE_MS: f32 = 400.0;
-/// Height above a machine's top where its landed dot anchors, in plan units.
-const LANDED_LIFT: f32 = 2.0;
+/// How far a landed dot sits inside its plinth's corner, in plan units, so it stands on the plinth
+/// and off its edge.
+const LANDED_INSET: f32 = 2.0;
 /// The diamond's half width as a share of its height. It sets where a clash label starts.
 const DIAMOND_HALF_WIDTH: f32 = 0.42;
 /// Gap between a bot's crown or a diamond and its flag, in CSS px.
@@ -225,6 +226,9 @@ pub struct Marks {
     pub flags: Vec<Flag>,
     /// For each plan machine, the hue slots of the agents whose footprints cover it, sorted.
     pub footprints: Vec<Vec<usize>>,
+    /// The plan machines that live tasks' declared files sit on, each with the tint of the agent
+    /// holding the task. Sorted and without repeats.
+    pub belt_hues: Vec<(usize, u8)>,
 }
 
 impl Marks {
@@ -248,6 +252,7 @@ impl Marks {
             pins,
             flags,
             footprints,
+            belt_hues: live_hues(view, plan, slots),
         }
     }
 
@@ -971,7 +976,7 @@ fn flags(view: &View, plan: &Plan, stands: &[Stand], bodies: &[Body], pins: &[Pi
             follow: Follow::Body(body.agent.clone()),
         });
     }
-    out.extend(landed_flags(view, plan, stands));
+    out.extend(landed_flags(view, plan));
     // One flag for the order in progress, the same one the page's order strip names.
     let active = view
         .orders
@@ -1034,10 +1039,30 @@ fn flags(view: &View, plan: &Plan, stands: &[Stand], bodies: &[Body], pins: &[Pi
     out
 }
 
+/// The plan machines that live tasks' declared files sit on, each with the tint of the agent that
+/// holds the task. A task that has no agent yet, or has landed, names no machine.
+fn live_hues(view: &View, plan: &Plan, slots: &AgentSlots) -> Vec<(usize, u8)> {
+    let mut hues = Vec::new();
+    for task in &view.tasks {
+        let Some(agent) = &task.agent else {
+            continue;
+        };
+        let tint = body_tint(slots.slot(&agent.to_string()));
+        for path in &task.paths {
+            if let Some(machine) = plan.machine_of_path(path) {
+                hues.push((machine, tint));
+            }
+        }
+    }
+    hues.sort_unstable();
+    hues.dedup();
+    hues
+}
+
 /// One landed dot per machine that has a landed task. Its text is `landed` and the change word of
 /// the last task that landed there. The page keeps the word for [`LANDED_HOLD_MS`], then the dot
-/// goes quiet with no text.
-fn landed_flags(view: &View, plan: &Plan, stands: &[Stand]) -> Vec<Flag> {
+/// goes quiet with no text. Every dot stands at the same corner of its machine's plinth.
+fn landed_flags(view: &View, plan: &Plan) -> Vec<Flag> {
     let mut per_machine: BTreeMap<usize, (usize, String)> = BTreeMap::new();
     for task in view.tasks.iter().filter(|task| task.state == "landed") {
         let Some(machine) = task.machine.as_deref().and_then(|name| plan.index_of(name)) else {
@@ -1051,8 +1076,7 @@ fn landed_flags(view: &View, plan: &Plan, stands: &[Stand]) -> Vec<Flag> {
     per_machine
         .into_iter()
         .map(|(machine, (count, word))| {
-            let centre = plan.machines[machine].center();
-            let top = stands.get(machine).map_or(PLINTH_TOP, |stand| stand.top);
+            let [x, y] = plan.machines[machine].min;
             Flag {
                 kind: FlagKind::Landed,
                 text: format!("landed · {word}"),
@@ -1062,7 +1086,7 @@ fn landed_flags(view: &View, plan: &Plan, stands: &[Stand]) -> Vec<Flag> {
                 check: None,
                 leaving: false,
                 machine: None,
-                at: [centre[0], centre[1], top + LANDED_LIFT],
+                at: [x + LANDED_INSET, y + LANDED_INSET, PLINTH_TOP],
                 follow: Follow::Landed { machine, count },
             }
         })
@@ -1677,6 +1701,57 @@ mod tests {
         let clash = flag(FlagKind::Clash);
         let label = flag_anchor(&clash, foot, project);
         assert!(label[0] > foot[0], "the label starts right of the diamond");
+    }
+
+    #[test]
+    fn a_landed_dot_stands_on_the_plinth_at_the_same_corner_of_every_machine() {
+        let plan = plan();
+        let (mirror, _index) = landed();
+        let view = mirror.view(&plan);
+        let marks = Marks::build(&view, &plan, &stands(&plan), &slots_for(&view));
+        let dots: Vec<&Flag> = marks
+            .flags
+            .iter()
+            .filter(|flag| flag.kind == FlagKind::Landed)
+            .collect();
+        assert!(!dots.is_empty(), "the landed story has a dot");
+        for dot in dots {
+            let machine = match dot.follow {
+                Follow::Landed { machine, .. } => machine,
+                _ => panic!("a landed dot follows its machine"),
+            };
+            let [x, y] = plan.machines[machine].min;
+            assert_eq!(
+                dot.at,
+                [x + LANDED_INSET, y + LANDED_INSET, PLINTH_TOP],
+                "the dot sits on the plinth top at the machine's corner"
+            );
+        }
+    }
+
+    #[test]
+    fn a_live_task_hues_the_belts_of_the_machines_its_declared_files_sit_on() {
+        let plan = plan();
+        let (_origin, log, _index) = scripted();
+        let view = Mirror::from_log(log).expect("the log replays").view(&plan);
+        let slots = slots_for(&view);
+        let marks = Marks::build(&view, &plan, &stands(&plan), &slots);
+        assert!(!marks.belt_hues.is_empty(), "the claimed tasks hue a belt");
+        for task in &view.tasks {
+            let Some(agent) = &task.agent else {
+                continue;
+            };
+            let tint = body_tint(slots.slot(&agent.to_string()));
+            for path in &task.paths {
+                let machine = plan
+                    .machine_of_path(path)
+                    .expect("a declared file sits on a machine");
+                assert!(
+                    marks.belt_hues.contains(&(machine, tint)),
+                    "{path} hues its machine in its agent's tint"
+                );
+            }
+        }
     }
 
     #[test]
