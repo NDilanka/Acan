@@ -7,6 +7,7 @@ repository.workspace = true
 description = "Acan's world model: orders, claims, clashes and gates as a pure event-sourced fold"
 
 [dependencies]
+acan-intent = { path = "../acan-intent" }
 serde.workspace = true
 thiserror.workspace = true
 

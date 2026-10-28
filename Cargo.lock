@@ -7,6 +7,7 @@ name = "acan-agent"
 version = "0.1.0"
 dependencies = [
  "acan-core",
+ "acan-intent",
  "acan-llm",
  "acan-server",
  "acan-witness",
@@ -27,6 +28,7 @@ dependencies = [
 name = "acan-core"
 version = "0.1.0"
 dependencies = [
+ "acan-intent",
  "serde",
  "serde_json",
  "thiserror",
@@ -37,6 +39,7 @@ name = "acan-git"
 version = "0.1.0"
 dependencies = [
  "acan-core",
+ "acan-intent",
  "tempfile",
  "thiserror",
  "tokio",
@@ -125,6 +128,7 @@ version = "0.1.0"
 dependencies = [
  "acan-core",
  "acan-git",
+ "acan-intent",
  "acan-llm",
  "acan-scan",
  "acan-witness",
@@ -154,9 +158,16 @@ name = "acan-witness"
 version = "0.1.0"
 dependencies = [
  "acan-core",
+ "acan-intent",
  "libc",
  "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
  "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
