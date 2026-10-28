@@ -1,0 +1,16 @@
+[package]
+name = "acan-intent"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "The contract of Acan's scope-first behavior gate: scopes, probes, observations, rulings, receipts and the plant view"
+
+[dependencies]
+schemars = "1"
+serde.workspace = true
+serde_jcs = "0.1"
+serde_json.workspace = true
+sha2 = "0.10"
+thiserror.workspace = true

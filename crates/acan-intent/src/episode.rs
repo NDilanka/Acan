@@ -1,0 +1,265 @@
+//! Discrepancy episodes, contests, and readback predictions.
+//!
+//! An episode is one failure the repair loop is working on. Its identity, the [`EpisodeId`], is
+//! the hash of its [`EpisodeKey`]: the order, the difference's selector, and the obligation. The
+//! key never includes a probe hash, a step id, a commit, a worker or a run, so a new probe
+//! spelling, a new commit or a new worker continues the same episode and its two-repair budget.
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+use crate::hash::{
+    CanonicalError, ContentHash, EpisodeId, EvidenceHash, ObservationHash, ProbeHash, ScopeHash,
+};
+use crate::scope::{Change, Selector};
+use crate::types::{
+    AgentRef, CommitSha, ContestId, ObligationId, ObservationPath, OrderRef, Scalar, ScopeRev,
+    StepId, TaskRef, UnixMillis,
+};
+use crate::verdict::ItemClass;
+use crate::version::{ContestV1, EpisodeV1};
+
+/// The stable identity of a discrepancy.
+///
+/// The core builds `selector` from the difference, not from the probe: the request's surface,
+/// method and route template, the channel, and the field with every array index written `[*]`.
+/// `step_context` is always `any`, and an actor principal is widened to `authenticated`.
+#[derive(
+    Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
+pub struct EpisodeKey {
+    /// The order.
+    pub order: OrderRef,
+    /// Where the difference is.
+    pub selector: Selector,
+    /// The failing obligation, or none for a difference no item allows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obligation_id: Option<ObligationId>,
+}
+
+impl EpisodeKey {
+    /// The episode identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] only if serialization fails.
+    pub fn episode_id(&self) -> Result<EpisodeId, CanonicalError> {
+        ContentHash::of(self).map(EpisodeId::from)
+    }
+}
+
+/// One scope revision an episode lived through.
+#[derive(
+    Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
+pub struct ScopeRevision {
+    /// The revision.
+    pub rev: ScopeRev,
+    /// Its hash.
+    pub scope_hash: ScopeHash,
+}
+
+/// The evidence one gate run produced for an episode.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EvidenceRevision {
+    /// 1 for the run that opened the episode, then one more per run.
+    pub revision: u32,
+    /// The tested merged commit.
+    pub merged_commit: CommitSha,
+    /// The probe that reproduced it.
+    pub probe_hash: ProbeHash,
+    /// The step.
+    pub step_id: StepId,
+    /// The candidate observation.
+    pub observation_hash: ObservationHash,
+    /// The raw evidence.
+    pub evidence_hash: EvidenceHash,
+    /// The class the core assigned.
+    pub class: ItemClass,
+}
+
+/// One candidate an agent offered for an episode.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateAttempt {
+    /// 1 for the first build, then one more per repair.
+    pub attempt: u32,
+    /// The prepared merged commit.
+    pub merged_commit: CommitSha,
+    /// The agent.
+    pub agent: AgentRef,
+    /// The task.
+    pub task: TaskRef,
+    /// When it was reported built.
+    pub at: UnixMillis,
+}
+
+/// Where an episode stands.
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum EpisodeState {
+    /// Found, not yet sent back.
+    Open,
+    /// Sent back to the agent with a reproducer.
+    Bounced,
+    /// The original obligation passed on a fresh run.
+    Fixed,
+    /// Waiting for a human ruling.
+    Residue,
+    /// An agent contested it. Waiting for the human. Never fixed, never a pass.
+    Contested,
+    /// A human ruling settled it.
+    Ruled,
+    /// The repair budget ran out.
+    Stopped,
+}
+
+/// One failure the repair loop tracks across commits, workers and probe spellings.
+///
+/// Missing evidence, a new mask, a contest, or a deferral never makes it `fixed`.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct DiscrepancyEpisode {
+    /// Always `acan-episode/1`.
+    pub version: EpisodeV1,
+    /// The hash of [`DiscrepancyEpisode::key`].
+    pub id: EpisodeId,
+    /// The order.
+    pub order: OrderRef,
+    /// The scope revisions it lived through, oldest first.
+    pub scope_lineage: Vec<ScopeRevision>,
+    /// The probe that reproduces it now. Not part of its identity.
+    pub probe_hash: ProbeHash,
+    /// The step that reproduces it now. Not part of its identity.
+    pub step_id: StepId,
+    /// Where the difference is.
+    pub selector: Selector,
+    /// The failing obligation, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obligation_id: Option<ObligationId>,
+    /// Every gate run's evidence, oldest first.
+    pub evidence_revisions: Vec<EvidenceRevision>,
+    /// Every candidate offered, oldest first.
+    pub candidate_attempts: Vec<CandidateAttempt>,
+    /// How many times it was sent back. The order's repair budget caps it.
+    pub bounce_count: u32,
+    /// Where it stands.
+    pub state: EpisodeState,
+}
+
+impl DiscrepancyEpisode {
+    /// The key its identity is the hash of.
+    #[must_use]
+    pub fn key(&self) -> EpisodeKey {
+        EpisodeKey {
+            order: self.order.clone(),
+            selector: self.selector.clone(),
+            obligation_id: self.obligation_id.clone(),
+        }
+    }
+}
+
+/// What an agent claims in a contest.
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ContestKind {
+    /// The scope blocks work the order needs.
+    Blocked,
+    /// Two obligations or rulings conflict.
+    SpecConflict,
+    /// The agent proposes a different behavior.
+    ProposedChange,
+}
+
+/// Where a contest stands. Only a human moves it out of `open`.
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ContestStatus {
+    /// Waiting for the human.
+    Open,
+    /// The human agreed and ruled or revised the scope.
+    Upheld,
+    /// The human disagreed.
+    Rejected,
+}
+
+/// An agent's objection to one episode, with a reproducer. A contest asks the human; it never
+/// widens the scope and never counts as fixed.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Contest {
+    /// Always `acan-contest/1`.
+    pub version: ContestV1,
+    /// The contest.
+    pub id: ContestId,
+    /// The order.
+    pub order: OrderRef,
+    /// The contesting agent.
+    pub agent: AgentRef,
+    /// Its task.
+    pub task: TaskRef,
+    /// The contested episode.
+    pub target: EpisodeId,
+    /// What it claims.
+    pub kind: ContestKind,
+    /// A probe that shows the problem.
+    pub reproducer: ProbeHash,
+    /// The agent's reason. Model text, shown labelled.
+    pub rationale: String,
+    /// Where it stands.
+    pub status: ContestStatus,
+    /// When it was filed.
+    pub filed_at: UnixMillis,
+}
+
+/// What an agent predicts its change does at one selector.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Predicted {
+    /// No observable difference.
+    Unchanged,
+    /// A difference of this kind.
+    Change {
+        /// The kind.
+        change: Change,
+    },
+    /// This value at this field.
+    Value {
+        /// The step.
+        step_id: StepId,
+        /// The field.
+        path: ObservationPath,
+        /// The value.
+        value: Scalar,
+    },
+}
+
+/// One prediction in a readback. The core scores it against the observations; a wrong
+/// prediction is a finding, and a right one is never a pass.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Prediction {
+    /// Where.
+    pub selector: Selector,
+    /// What.
+    pub predicted: Predicted,
+}
+
+/// A value a model suggests, such as a probe input. A human must adopt it before it is used.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ProposedValue {
+    /// The value.
+    pub value: Scalar,
+    /// Why, in one sentence.
+    pub rationale: String,
+}
