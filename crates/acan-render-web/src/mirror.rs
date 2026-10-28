@@ -535,15 +535,16 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::plan::PlantJson;
+    use crate::plant::from_scan_json;
     use crate::scenario::{self, Target};
 
     const PLANT: &str = r#"{
+        "root": "/repo",
         "machines": [
-            {"id": 1, "name": "src/api", "files": [1]},
-            {"id": 2, "name": "src/ui", "files": [2]}
+            {"id": 1, "name": "src/api", "dir": "src/api", "files": [1]},
+            {"id": 2, "name": "src/ui", "dir": "src/ui", "files": [2]}
         ],
-        "belts": [{"from": 2, "to": 1}],
+        "belts": [{"from": 2, "to": 1, "imports": 1}],
         "files": [
             {"id": 1, "path": "src/api/auth.ts"},
             {"id": 2, "path": "src/ui/dashboard.ts"}
@@ -551,7 +552,7 @@ mod tests {
     }"#;
 
     fn plan() -> Plan {
-        let plant: PlantJson = serde_json::from_str(PLANT).expect("the plant parses");
+        let plant = from_scan_json(PLANT).expect("the plant parses");
         Plan::new(&plant, |name| {
             if name == "src/api" {
                 [0.0, 0.0, 96.0, 86.0]

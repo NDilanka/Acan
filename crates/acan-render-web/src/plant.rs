@@ -22,6 +22,8 @@ pub struct PlantMachine {
     pub name: String,
     pub files: usize,
     pub kind: Kind,
+    /// The repo-relative paths of the files the machine groups, in scan order.
+    pub paths: Vec<String>,
 }
 
 impl Plant {
@@ -98,6 +100,7 @@ pub fn from_scan_json(text: &str) -> Result<Plant, PlantError> {
                 name: machine.name.clone(),
                 files: machine.files.len(),
                 kind: classify(&machine.name, &machine.dir, &paths),
+                paths: paths.iter().map(|path| (*path).to_owned()).collect(),
             }
         })
         .collect();
@@ -181,6 +184,7 @@ pub fn stress(count: usize) -> Plant {
             kind: classify(&name, "src", &refs),
             name,
             files,
+            paths,
         });
     }
     // Every machine below the first layer gets one edge from the layer above it, and about half
@@ -346,6 +350,7 @@ mod tests {
             name: format!("m{files}"),
             files,
             kind: Kind::Assembler,
+            paths: Vec::new(),
         };
         let machines: Vec<PlantMachine> = (0..25).map(|i| machine(i % 7)).collect();
         let named = rest_labels(&machines);

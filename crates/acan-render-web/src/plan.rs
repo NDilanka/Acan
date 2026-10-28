@@ -4,36 +4,8 @@
 use std::collections::BTreeMap;
 
 use acan_core::Locus;
-use serde::Deserialize;
 
-/// The plant as `GET /api/plant` returns it. Only the fields the plan reads are named.
-#[derive(Debug, Clone, Deserialize)]
-pub struct PlantJson {
-    /// Machines with their files.
-    pub machines: Vec<MachineJson>,
-    /// Every scanned file, with the id the machines refer to it by.
-    pub files: Vec<FileJson>,
-}
-
-/// One machine of the plant.
-#[derive(Debug, Clone, Deserialize)]
-pub struct MachineJson {
-    /// The machine id the belts refer to.
-    pub id: u32,
-    /// The machine name, which is also its machine key in the origin.
-    pub name: String,
-    /// The files the machine groups.
-    pub files: Vec<u32>,
-}
-
-/// A scanned file.
-#[derive(Debug, Clone, Deserialize)]
-pub struct FileJson {
-    /// The file id the machines refer to it by.
-    pub id: u32,
-    /// The repo-relative path, which is also its file path in the origin.
-    pub path: String,
-}
+use crate::plant::{Plant, PlantMachine};
 
 /// One machine's footprint on the plan.
 #[derive(Debug, Clone, PartialEq)]
@@ -70,21 +42,14 @@ impl Plan {
     /// Indexes `plant`, placing each machine at the rectangle `footprint` gives its name as
     /// `[min x, min y, max x, max y]`. The same plant and footprints always give the same plan.
     #[must_use]
-    pub fn new(plant: &PlantJson, footprint: impl Fn(&str) -> [f32; 4]) -> Self {
-        let mut sorted: Vec<&MachineJson> = plant.machines.iter().collect();
+    pub fn new(plant: &Plant, footprint: impl Fn(&str) -> [f32; 4]) -> Self {
+        let mut sorted: Vec<&PlantMachine> = plant.machines.iter().collect();
         sorted.sort_by(|a, b| a.name.cmp(&b.name));
 
-        let path_of_id: BTreeMap<u32, &str> = plant
-            .files
-            .iter()
-            .map(|f| (f.id, f.path.as_str()))
-            .collect();
         let mut by_path = BTreeMap::new();
         for (i, machine) in sorted.iter().enumerate() {
-            for file in &machine.files {
-                if let Some(path) = path_of_id.get(file) {
-                    by_path.insert((*path).to_owned(), i);
-                }
+            for path in &machine.paths {
+                by_path.insert(path.clone(), i);
             }
         }
 
@@ -165,36 +130,26 @@ mod tests {
     use acan_core::{FilePath, MachineKey};
 
     use super::*;
+    use crate::kind::Kind;
 
-    fn machine(id: u32, name: &str, files: &[u32]) -> MachineJson {
-        MachineJson {
-            id,
+    fn machine(name: &str, paths: &[&str]) -> PlantMachine {
+        PlantMachine {
             name: name.to_owned(),
-            files: files.to_vec(),
+            files: paths.len(),
+            kind: Kind::Assembler,
+            paths: paths.iter().map(|path| (*path).to_owned()).collect(),
         }
     }
 
-    fn sample() -> PlantJson {
-        PlantJson {
+    fn sample() -> Plant {
+        Plant {
+            repo: "repo".to_owned(),
             machines: vec![
-                machine(1, "api", &[10]),
-                machine(2, "ui", &[11]),
-                machine(3, "store", &[12]),
+                machine("api", &["src/api/handler.ts"]),
+                machine("ui", &["src/ui/greet.ts"]),
+                machine("store", &["src/store.ts"]),
             ],
-            files: vec![
-                FileJson {
-                    id: 10,
-                    path: "src/api/handler.ts".to_owned(),
-                },
-                FileJson {
-                    id: 11,
-                    path: "src/ui/greet.ts".to_owned(),
-                },
-                FileJson {
-                    id: 12,
-                    path: "src/store.ts".to_owned(),
-                },
-            ],
+            edges: Vec::new(),
         }
     }
 

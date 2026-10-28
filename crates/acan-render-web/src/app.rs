@@ -17,7 +17,7 @@ use crate::kind::PlanFootprint;
 use crate::labels::{self, LabelSpot};
 use crate::layout::{Layout, layout};
 use crate::mirror::Mirror;
-use crate::plan::{Plan, PlantJson};
+use crate::plan::Plan;
 use crate::plant::{Plant, PlantMachine, from_scan_json, rest_labels, stress};
 use crate::scene;
 
@@ -127,14 +127,13 @@ impl App {
     /// Returns an error when the JSON is not the plant's shape.
     pub fn set_plant(&mut self, json: &str) -> Result<u32, JsError> {
         let plant = from_scan_json(json).map_err(js_err)?;
-        let plan_json: PlantJson = serde_json::from_str(json).map_err(js_err)?;
-        Ok(self.load(plant, Some(&plan_json)))
+        Ok(self.load(plant))
     }
 
     /// Loads a generated plant of `machines` machines for the benchmark. It has no log, so the
     /// view stays empty.
     pub fn set_stress(&mut self, machines: u32) -> u32 {
-        self.load(stress(machines as usize), None)
+        self.load(stress(machines as usize))
     }
 
     /// Folds the log: a JSON array of stamped events from seq 0.
@@ -412,9 +411,8 @@ impl App {
 }
 
 impl App {
-    /// Puts `plant` on screen. `plan_json` is the same plant's JSON when the page has one, and
-    /// the plan places its machines where the layout puts them.
-    fn load(&mut self, plant: Plant, plan_json: Option<&PlantJson>) -> u32 {
+    /// Puts `plant` on screen, with the plan placing its machines where the layout puts them.
+    fn load(&mut self, plant: Plant) -> u32 {
         let (kinds, edges) = plant.layout_input();
         let laid = layout(&kinds, &edges);
         let scene = scene::plant_scene(&laid, &self.models);
@@ -440,11 +438,9 @@ impl App {
             .map(|(machine, placed)| (machine.name.as_str(), placed.footprint()))
             .collect();
         let count = plant.machines.len() as u32;
-        self.plan = plan_json.map(|json| {
-            Plan::new(json, |name| {
-                footprints.get(name).copied().unwrap_or([0.0; 4])
-            })
-        });
+        self.plan = Some(Plan::new(&plant, |name| {
+            footprints.get(name).copied().unwrap_or([0.0; 4])
+        }));
         self.dirty = true;
         self.plant = Some(Loaded {
             repo: plant.repo,
