@@ -565,12 +565,17 @@ impl Renderer {
         };
         let (fog_near, fog_far) = camera.fog_range();
         let (angle_lo, angle_hi) = theme::ANGLE_FADE;
+        let encoded = if self.config.format.is_srgb() {
+            0.0
+        } else {
+            1.0
+        };
         CameraUniform {
             right: [b.right[0], b.right[1], b.right[2], 0.0],
             up: [b.up[0], b.up[1], b.up[2], 0.0],
             toward: [b.toward[0], b.toward[1], b.toward[2], 0.0],
             eye: [eye[0], eye[1], eye[2], ortho],
-            pivot: [pivot[0], pivot[1], d, 0.0],
+            pivot: [pivot[0], pivot[1], d, encoded],
             view: [vw, vh, camera.zoom(), MIN_STROKE_PX],
             depth: [
                 NEAR_FRACTION * d,

@@ -20,7 +20,8 @@ pub const LABEL_DROP_CSS_PX: f32 = 13.0;
 /// The label's bottom edge sits this many `LABEL_DROP_CSS_PX` below the plate's front edge.
 const LABEL_BOTTOM_DROPS: f32 = 1.6;
 /// Below the size to name, this many of the largest machines are still named, down to
-/// `BUDGET_FLOOR_CSS_PX` of plate width.
+/// `BUDGET_FLOOR_CSS_PX` of plate width, at most one in each of as many equal regions of the
+/// screen. Largest first alone would name only the nearest edge of a perspective view.
 pub const REST_BUDGET: usize = 12;
 pub const BUDGET_FLOOR_CSS_PX: f32 = 6.0;
 /// The budget tries at most this many machines per label, so a dense plant where most
@@ -59,9 +60,10 @@ pub struct Machines<'a> {
 
 /// How many labels to place, in device pixels. A machine whose plate is at least `min_px`
 /// wide on screen is named. Below that, the largest machines down to `floor_px` are named
-/// until `budget` labels are placed, so even a far plant shows a few names. `drop_px` is the
-/// distance from an anchor to the label's middle, and `lift_px` the distance from a machine's
-/// highest point up to the anchor of a label above it.
+/// until `budget` labels are placed, at most one in each of about `budget` regions of the
+/// screen, so even a far plant shows a few names spread over it. `drop_px` is the distance
+/// from an anchor to the label's middle, and `lift_px` the distance from a machine's highest
+/// point up to the anchor of a label above it.
 pub struct Rules {
     pub min_px: f32,
     pub floor_px: f32,
@@ -73,9 +75,9 @@ pub struct Rules {
 /// The labels that may show, most important first. Every machine whose plate is at least
 /// `rules.floor_px` wide on screen is considered, largest first. One marked in `named` is
 /// placed once it reaches `rules.min_px`, and any other only while fewer than `rules.budget`
-/// labels are placed. A label hangs under its plate's front edge. When a nearer machine covers
-/// that spot it moves above its machine's highest point instead, and it is left out when
-/// another machine covers that spot too.
+/// labels are placed and its screen region holds none yet. A label hangs under its plate's
+/// front edge. When a nearer machine covers that spot it moves above its machine's highest
+/// point instead, and it is left out when another machine covers that spot too.
 pub fn place(
     camera: &Camera,
     machines: &Machines,
@@ -104,6 +106,7 @@ pub fn place(
         .collect();
     plates.sort_by(|a, b| b.size_px.total_cmp(&a.size_px).then(a.index.cmp(&b.index)));
     let mut spots = Vec::new();
+    let mut regions = Regions::new(camera.viewport(), rules.budget);
     let mut tries = rules.budget * BUDGET_TRIES;
     for plate in &plates {
         let big = plate.size_px >= rules.min_px;
@@ -116,6 +119,9 @@ pub fn place(
                 }
                 continue;
             }
+            if regions.taken(plate.at) {
+                continue;
+            }
             tries -= 1;
         }
         let half = machines
@@ -123,7 +129,12 @@ pub fn place(
             .get(plate.index)
             .copied()
             .unwrap_or(0.0);
-        if let Some(anchor) = placer.anchor(plate, half) {
+        if let Some(anchor) = placer.anchor(plate, half, !is_named) {
+            // A label that moved above its machine may have moved into a taken region.
+            if !is_named && regions.taken(anchor) {
+                continue;
+            }
+            regions.take(anchor);
             spots.push(LabelSpot {
                 index: plate.index,
                 screen: anchor,
@@ -135,13 +146,51 @@ pub fn place(
     spots
 }
 
+/// Equal regions of the viewport, about as many as the budget and close to square, each
+/// marked once it holds a label. A point off screen counts in the nearest region.
+struct Regions {
+    cols: usize,
+    rows: usize,
+    cell: [f32; 2],
+    taken: Vec<bool>,
+}
+
+impl Regions {
+    fn new([vw, vh]: [f32; 2], budget: usize) -> Self {
+        let n = budget.max(1) as f32;
+        let cols = (n * vw / vh.max(1.0)).sqrt().round().clamp(1.0, n);
+        let rows = (n / cols).ceil();
+        Regions {
+            cols: cols as usize,
+            rows: rows as usize,
+            cell: [vw.max(1.0) / cols, vh.max(1.0) / rows],
+            taken: vec![false; cols as usize * rows as usize],
+        }
+    }
+
+    fn of(&self, p: [f32; 2]) -> usize {
+        let at = |v: f32, size: f32, count: usize| ((v / size).max(0.0) as usize).min(count - 1);
+        at(p[1], self.cell[1], self.rows) * self.cols + at(p[0], self.cell[0], self.cols)
+    }
+
+    fn taken(&self, p: [f32; 2]) -> bool {
+        self.taken[self.of(p)]
+    }
+
+    fn take(&mut self, p: [f32; 2]) {
+        let i = self.of(p);
+        self.taken[i] = true;
+    }
+}
+
 /// A machine's plate as seen on screen.
 struct Plate {
     index: usize,
     centre: [f32; 3],
     front: [f32; 3],
-    /// The front corner's screen row.
-    front_y: f32,
+    /// Where a label under the plate hangs from: below the plate's centre, on the front
+    /// corner's screen row.
+    at: [f32; 2],
     size_px: f32,
     opacity: f32,
 }
@@ -242,19 +291,22 @@ impl Placer<'_> {
         if opacity < MIN_OPACITY {
             return None;
         }
+        let centre = [(f[0] + f[2]) * 0.5, (f[1] + f[3]) * 0.5, 0.0];
         Some(Plate {
             index,
-            centre: [(f[0] + f[2]) * 0.5, (f[1] + f[3]) * 0.5, 0.0],
+            centre,
             front: corners[front],
-            front_y: screen[front][1],
+            at: [self.view.world_to_screen(centre)[0], screen[front][1]],
             size_px,
             opacity,
         })
     }
 
     /// Where the label of `plate` hangs from, or `None` when no spot for it is clear.
-    /// `half` is the label's half width.
-    fn anchor(&self, plate: &Plate, half: f32) -> Option<[f32; 2]> {
+    /// `half` is the label's half width. With `over_farther` the spot above the machine may
+    /// lie over machines behind it, so a far name can sit inside a dense field, where no spot
+    /// is ever clear of every other machine.
+    fn anchor(&self, plate: &Plate, half: f32, over_farther: bool) -> Option<[f32; 2]> {
         let (camera, rules) = (self.camera, self.rules);
         let across = |anchor: [f32; 2], rows: [f32; 2]| {
             rows.into_iter().flat_map(move |drop| {
@@ -264,7 +316,7 @@ impl Placer<'_> {
 
         // Under the plate: hidden when a nearer machine stands on the ground under any part
         // of the text, or in front of the plate's front corner.
-        let below = [self.view.world_to_screen(plate.centre)[0], plate.front_y];
+        let below = plate.at;
         let (centre, front) = (plate.centre, plate.front);
         let out = unit2([front[0] - centre[0], front[1] - centre[1]]);
         let edge = [front[0] + out[0], front[1] + out[1], 0.5];
@@ -284,7 +336,7 @@ impl Placer<'_> {
         }
 
         // Above the machine: hidden when any other machine lies on the ray through any part of
-        // the text, nearer or farther, so the label never sits on one.
+        // the text, nearer or, unless `over_farther`, farther, so a label never sits on one.
         let first = self
             .occluders
             .partition_point(|(owner, _)| *owner < plate.index);
@@ -304,7 +356,14 @@ impl Placer<'_> {
         if !self.inside(above) {
             return None;
         }
-        let far = camera.fog_range().1;
+        let far = if over_farther {
+            let (eye, toward) = (camera.eye(), camera.basis().toward);
+            -(0..3)
+                .map(|i| (plate.centre[i] - eye[i]) * toward[i])
+                .sum::<f32>()
+        } else {
+            camera.fog_range().1
+        };
         let near = self.near(across(above, rows), plate.index);
         let covered = across(above, rows).any(|px| {
             let (from, to) = (camera.ray_point(px, 0.0), camera.ray_point(px, far));
@@ -601,6 +660,36 @@ mod tests {
             .map(|s| s.index)
             .collect();
         assert_eq!(shown, vec![2], "only the nearest is named");
+    }
+
+    #[test]
+    fn the_budget_spreads_its_names_over_the_screen() {
+        // Spread out, and packed so tight that no spot inside the field is clear of every
+        // other machine. Packed tight, the field's right edge covers every spot in the lower
+        // right region, so that region stays empty.
+        for (pitch, count) in [(200.0, 6), (W + 8.0, 5)] {
+            let machines: Vec<_> = (0..64)
+                .map(|k| machine(pitch * (k % 8) as f32, pitch * (k / 8) as f32))
+                .collect();
+            let camera = camera_on(&machines, 45.0, 30.0);
+            let budget = Rules {
+                budget: 6,
+                ..rules(1e6)
+            };
+            let shown = spots(&machines, &camera, 0.0, &budget);
+            assert_eq!(shown.len(), count, "pitch {pitch}: {shown:?}");
+            let regions = Regions::new(camera.viewport(), budget.budget);
+            let mut cells: Vec<usize> = shown.iter().map(|s| regions.of(s.screen)).collect();
+            cells.sort_unstable();
+            cells.dedup();
+            assert_eq!(cells.len(), count, "one name to a region: {shown:?}");
+            let rows = shown.iter().map(|s| s.screen[1]);
+            let spread = rows.clone().fold(f32::MIN, f32::max) - rows.fold(f32::MAX, f32::min);
+            assert!(
+                spread > 0.25 * camera.viewport()[1],
+                "pitch {pitch}: names reach into the field, {spread}"
+            );
+        }
     }
 
     #[test]
