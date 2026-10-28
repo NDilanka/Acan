@@ -6,11 +6,11 @@ use std::ops::Range;
 use bytemuck::{Pod, Zeroable};
 
 use crate::model::{Aabb, Detail, Dot3, Line3, Mesh};
-use crate::scene::Instance;
-use crate::theme::{dot_slot, flat_code, ink_slot};
+use crate::scene::{Instance, Ribbon};
+use crate::theme::{SHADOW_REACH, SHADOW_SHIFT, dot_slot, flat_code, ink_slot};
 
-/// Width of the floor halo's falloff beyond a machine's plinth, in plan units.
-pub const HALO_WIDTH: f32 = 28.0;
+/// A ribbon's miter never stretches its width by more than this at a sharp turn.
+const MAX_MITER: f32 = 2.0;
 
 /// Object IDs are packed into three 8-bit channels of the ID target, so they run to 2^24 - 1.
 pub const MAX_OBJECT_ID: u32 = 1 << 24;
@@ -49,6 +49,21 @@ pub struct DotVertex {
     pub tone: u32,
 }
 
+/// One corner of a ribbon segment.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+pub struct RibbonVertex {
+    pub position: [f32; 2],
+    /// -1 on one side of the ribbon and 1 on the other.
+    pub side: f32,
+    /// Plan units along the centre line from the ribbon's start.
+    pub along: f32,
+    /// The ribbon's full length and half width, in plan units.
+    pub length: f32,
+    pub half: f32,
+}
+
+/// A contact shadow quad: one corner, with the footprint it falls around.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
 pub struct HaloVertex {
@@ -154,13 +169,14 @@ pub fn dot_vertices(dots: &[Dot3]) -> Strokes<DotVertex> {
     cumulative(buckets)
 }
 
-/// Six vertices covering `bounds` plus the halo's falloff.
+/// Six vertices covering `bounds` plus the contact shadow's reach and its shift.
 pub fn halo_vertices(bounds: &Aabb) -> [HaloVertex; 6] {
+    let reach = SHADOW_REACH + SHADOW_SHIFT;
     let [x0, y0, x1, y1] = [
-        bounds.min[0] - HALO_WIDTH,
-        bounds.min[1] - HALO_WIDTH,
-        bounds.max[0] + HALO_WIDTH,
-        bounds.max[1] + HALO_WIDTH,
+        bounds.min[0] - reach,
+        bounds.min[1] - reach,
+        bounds.max[0] + reach,
+        bounds.max[1] + reach,
     ];
     let rect = [bounds.min[0], bounds.min[1], bounds.max[0], bounds.max[1]];
     let corner = |x: f32, y: f32| HaloVertex {
@@ -174,6 +190,81 @@ pub fn halo_vertices(bounds: &Aabb) -> [HaloVertex; 6] {
         corner(x0, y1),
     );
     [a, b, c, a, c, d]
+}
+
+/// Two triangles per centre-line segment of every ribbon. Corners are mitred, so a ribbon
+/// keeps its width through a turn.
+pub fn ribbon_vertices(ribbons: &[Ribbon]) -> Vec<RibbonVertex> {
+    let mut out = Vec::new();
+    for ribbon in ribbons {
+        let centre = &ribbon.centre;
+        if centre.len() < 2 {
+            continue;
+        }
+        let mut along = vec![0.0_f32; centre.len()];
+        for i in 1..centre.len() {
+            let d = sub2(centre[i], centre[i - 1]);
+            along[i] = along[i - 1] + d[0].hypot(d[1]);
+        }
+        let length = along[centre.len() - 1];
+        let half = ribbon.width * 0.5;
+        let offsets = miter_offsets(centre);
+        let corner = |i: usize, side: f32| RibbonVertex {
+            position: [
+                centre[i][0] + side * half * offsets[i][0],
+                centre[i][1] + side * half * offsets[i][1],
+            ],
+            side,
+            along: along[i],
+            length,
+            half,
+        };
+        for i in 0..centre.len() - 1 {
+            let (a, b, c, d) = (
+                corner(i, 1.0),
+                corner(i, -1.0),
+                corner(i + 1, -1.0),
+                corner(i + 1, 1.0),
+            );
+            out.extend([a, b, c, a, c, d]);
+        }
+    }
+    out
+}
+
+/// The offset of each centre point's side corner for a unit half width: the mitred normal.
+fn miter_offsets(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
+    let unit = |v: [f32; 2]| {
+        let len = v[0].hypot(v[1]);
+        (len > 1e-6).then(|| [v[0] / len, v[1] / len])
+    };
+    let normal = |d: [f32; 2]| [-d[1], d[0]];
+    (0..points.len())
+        .map(|i| {
+            let incoming = (i > 0)
+                .then(|| unit(sub2(points[i], points[i - 1])))
+                .flatten();
+            let outgoing = (i + 1 < points.len())
+                .then(|| unit(sub2(points[i + 1], points[i])))
+                .flatten();
+            match (incoming, outgoing) {
+                (Some(a), Some(b)) => {
+                    let (na, nb) = (normal(a), normal(b));
+                    let Some(m) = unit([na[0] + nb[0], na[1] + nb[1]]) else {
+                        return na;
+                    };
+                    let stretch = (1.0 / (m[0] * na[0] + m[1] * na[1]).max(1e-3)).min(MAX_MITER);
+                    [m[0] * stretch, m[1] * stretch]
+                }
+                (Some(d), None) | (None, Some(d)) => normal(d),
+                (None, None) => [0.0, 1.0],
+            }
+        })
+        .collect()
+}
+
+fn sub2(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
+    [a[0] - b[0], a[1] - b[1]]
 }
 
 /// Instance data for the world (one identity instance at index 0) and then each kind in order.
@@ -331,8 +422,41 @@ mod tests {
         let corners = halo_vertices(&bounds);
         let xs: Vec<f32> = corners.iter().map(|v| v.position[0]).collect();
         let lowest = xs.iter().copied().fold(f32::INFINITY, f32::min);
-        assert!((lowest - (-48.0 - HALO_WIDTH)).abs() < 1e-4);
+        assert!((lowest - (-48.0 - SHADOW_REACH - SHADOW_SHIFT)).abs() < 1e-4);
         assert!(corners.iter().all(|v| v.rect == [-48.0, -43.0, 48.0, 43.0]));
+    }
+
+    #[test]
+    fn a_ribbon_keeps_its_width_through_a_right_angle_turn() {
+        let ribbon = Ribbon {
+            centre: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
+            width: 4.0,
+        };
+        let vertices = ribbon_vertices(&[ribbon]);
+        assert_eq!(vertices.len(), 2 * 6, "two segments of two triangles");
+        let at_turn: Vec<[f32; 2]> = vertices
+            .iter()
+            .filter(|v| (v.along - 10.0).abs() < 1e-4)
+            .map(|v| v.position)
+            .collect();
+        assert!(!at_turn.is_empty());
+        for p in at_turn {
+            let off = [(p[0] - 10.0).abs(), p[1].abs()];
+            assert!(
+                (off[0] - 2.0).abs() < 1e-3 && (off[1] - 2.0).abs() < 1e-3,
+                "the mitred corner sits a half width from both runs: {p:?}"
+            );
+        }
+        assert!(vertices.iter().all(|v| v.length == 20.0 && v.half == 2.0));
+    }
+
+    #[test]
+    fn a_ribbon_with_one_point_draws_nothing() {
+        let ribbon = Ribbon {
+            centre: vec![[0.0, 0.0]],
+            width: 4.0,
+        };
+        assert!(ribbon_vertices(&[ribbon]).is_empty());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use crate::model::{Aabb, Detail, Line3, Mesh};
+use crate::model::{Aabb, Detail};
 
 /// One machine on the plan: a model kind placed at an offset.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -11,13 +11,21 @@ pub struct Instance {
     pub tint: u8,
 }
 
+/// A belt: a flat opaque ribbon lying on the ground along a centre line, with a fine line
+/// along its sides and across its ends. The edge pass reads it as ground.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Ribbon {
+    /// Plan points of the centre line, with any rounded corners already in it.
+    pub centre: Vec<[f32; 2]>,
+    /// Full width in plan units.
+    pub width: f32,
+}
+
 /// What the renderer draws, set once per plant change.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scene {
-    /// Static geometry: belts and anything else that is not a model instance.
-    pub world: Mesh,
-    /// Static lines in world space, such as the edges of a belt.
-    pub lines: Vec<Line3>,
+    /// Belts, drawn in order. A later ribbon covers an earlier one where they cross.
+    pub ribbons: Vec<Ribbon>,
     pub instances: Vec<Instance>,
     /// Box around everything in the scene, used to size the depth range.
     pub bounds: Aabb,

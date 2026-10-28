@@ -1,10 +1,11 @@
-//! Stand-in models and belt channels, until acan-iso supplies the real models. A model is a
-//! beveled plinth with either a two-slab body or a cylinder, a lip or rim on top at the Near
-//! level, and screws or a panel at the Close level. Models follow the shared contract: plan
-//! units, z up, origin at the plan centre on the ground.
+//! Stand-in models and belts, until acan-iso supplies the real models. A model is a beveled
+//! plinth with either a two-slab body or a cylinder. Detail is painted on: a panel line on a
+//! slab top or a seam round a cylinder at the Near level and screws at the Close level, so no small step in the mesh draws a
+//! doubled line. Models follow the shared contract: plan units, z up, origin at the plan
+//! centre on the ground.
 
 use acan_render::model::{Aabb, Detail, Dot3, Ink, Line3, Mesh, Model, Surface};
-use acan_render::{Instance, Scene};
+use acan_render::{Instance, Ribbon, Scene};
 
 use crate::kind::Kind;
 use crate::layout::{Belt, Layout};
@@ -13,20 +14,17 @@ use crate::layout::{Belt, Layout};
 const BEVEL_RUN: f32 = 1.2;
 const BEVEL_RISE: f32 = 1.6;
 const CYLINDER_SEGMENTS: usize = 32;
-const RIM_WIDTH: f32 = 1.2;
-const RIM_HEIGHT: f32 = 1.6;
 /// The upper slab steps in this far from the lower one, which leaves a ledge.
 const SLAB_STEP: f32 = 3.0;
-const LIP_WIDTH: f32 = 2.0;
-const LIP_HEIGHT: f32 = 1.2;
-const PANEL_HEIGHT: f32 = 0.4;
+/// The painted panel on a slab top sits this far inside the top's edge.
+const PANEL_INSET: f32 = 4.0;
 const SCREW_RADIUS: f32 = 1.3;
 /// Width of a detail line in device pixels. The renderer draws nothing thinner than this.
 const LINE_WIDTH: f32 = 0.75;
-/// Width of a belt's edge lines in device pixels. They stay this thin at every zoom.
-const BELT_EDGE_PX: f32 = 1.0;
 /// Radius of a belt's rounded corners, in plan units.
-const BELT_CORNER: f32 = 10.0;
+const BELT_CORNER: f32 = 8.0;
+/// A belt stops this far short of a plinth, so its end line reads as a port on the plate edge.
+const BELT_PORT_GAP: f32 = 1.5;
 /// Segments per rounded corner.
 const CORNER_STEPS: usize = 4;
 
@@ -92,6 +90,32 @@ fn shape(kind: Kind) -> Shape {
     }
 }
 
+/// The solid parts of a kind that can hide a label behind them, in model space: the plinth,
+/// and the body standing on it. They are tighter than the model's box, which would also hide
+/// labels in the empty air above a plinth's corners.
+pub fn occluders(kind: Kind) -> [Aabb; 2] {
+    let (w, d) = kind.footprint();
+    let s = shape(kind);
+    let (hx, hy) = (w / 2.0, d / 2.0);
+    let (bx, by) = match s.form {
+        Form::Slabs { inset } => (hx - inset, hy - inset),
+        Form::Cylinder { radius } => {
+            let r = radius * w.min(d);
+            (r, r)
+        }
+    };
+    [
+        Aabb {
+            min: [-hx, -hy, 0.0],
+            max: [hx, hy, s.plinth],
+        },
+        Aabb {
+            min: [-bx, -by, s.plinth],
+            max: [bx, by, s.plinth + s.body],
+        },
+    ]
+}
+
 /// One model per kind, in `Kind::ALL` order.
 pub fn models() -> Vec<Model> {
     Kind::ALL.iter().map(|&kind| model(kind)).collect()
@@ -102,8 +126,6 @@ fn model(kind: Kind) -> Model {
     let s = shape(kind);
     let (hx, hy) = (w / 2.0, d / 2.0);
     let mut base = Builder::default();
-    let mut near = Builder::default();
-    let mut close = Builder::default();
     let mut lines = Vec::new();
     let mut dots = Vec::new();
 
@@ -112,32 +134,18 @@ fn model(kind: Kind) -> Model {
         Form::Slabs { inset } => {
             let top = two_slabs(&mut base, hx, hy, s.plinth, s.body, inset);
             let (ux, uy) = (hx - inset - SLAB_STEP, hy - inset - SLAB_STEP);
-            let seam = top - 4.0;
+            let (px, py) = (ux - PANEL_INSET, uy - PANEL_INSET);
             lines.push(stroke(
-                vec![[-ux, uy, seam], [ux, uy, seam]],
-                false,
-                Ink::Lo,
-                Detail::Always,
+                vec![
+                    [-px, -py, top],
+                    [px, -py, top],
+                    [px, py, top],
+                    [-px, py, top],
+                ],
+                true,
+                Ink::Faint,
+                Detail::Near,
             ));
-            let ticks = 5;
-            for k in 0..ticks {
-                let x = -ux + (k as f32 + 0.5) * (2.0 * ux / ticks as f32);
-                lines.push(stroke(
-                    vec![[x, uy, top - 9.0], [x, uy, top - 7.0]],
-                    false,
-                    Ink::Lo,
-                    Detail::Near,
-                ));
-            }
-            let outer = (ux - 1.5, uy - 1.5);
-            let inner = (outer.0 - LIP_WIDTH, outer.1 - LIP_WIDTH);
-            ring_lip(&mut near, outer, inner, top, LIP_HEIGHT);
-            slab_panel(
-                &mut close,
-                (inner.0 - 1.5, inner.1 - 1.5),
-                top,
-                top + PANEL_HEIGHT,
-            );
             let sites = [
                 [ux - 4.0, uy - 4.0],
                 [-ux + 4.0, uy - 4.0],
@@ -156,10 +164,9 @@ fn model(kind: Kind) -> Model {
             let top = s.plinth + s.body;
             cylinder(&mut base, r, s.plinth, top);
             let seam = s.plinth + s.body / 2.0;
-            lines.push(stroke(circle(r, seam), true, Ink::Lo, Detail::Always));
-            lines.push(stroke(circle(r - 5.0, top), true, Ink::Faint, Detail::Near));
-            rim(&mut near, r, top);
-            cylinder_panel(&mut close, r - 3.0, top);
+            // A painted circle inside the top would read as a second rim, so a cylinder's
+            // only top line is its crease.
+            lines.push(stroke(circle(r, seam), true, Ink::Faint, Detail::Near));
             for k in 0..s.screws {
                 let a = std::f32::consts::TAU * k as f32 / s.screws as f32;
                 let (sn, cs) = a.sin_cos();
@@ -169,7 +176,7 @@ fn model(kind: Kind) -> Model {
         }
     };
 
-    let meshes = [base.finish(), near.finish(), close.finish()];
+    let meshes = [base.finish(), Mesh::default(), Mesh::default()];
     let mut bounds = Aabb::EMPTY;
     for mesh in &meshes {
         for &p in &mesh.positions {
@@ -218,18 +225,6 @@ impl Builder {
     /// A quad with one normal for the whole face.
     fn flat(&mut self, c: [[f32; 3]; 4], n: [f32; 3]) {
         self.quad(c, [n; 4]);
-    }
-
-    /// A quad lying flat on the ground. The edge pass reads it as ground, not as an object.
-    fn floor(&mut self, c: [[f32; 3]; 4]) {
-        let first = self.positions.len() as u32;
-        for p in c {
-            self.positions.push(p);
-            self.normals.push([0.0, 0.0, 1.0]);
-            self.surfaces.push(Surface::Floor);
-        }
-        self.indices
-            .extend([first, first + 1, first + 2, first, first + 2, first + 3]);
     }
 
     fn finish(self) -> Mesh {
@@ -292,30 +287,6 @@ fn ring_cap(b: &mut Builder, outer: (f32, f32), inner: (f32, f32), z: f32) {
             [0.0, 0.0, 1.0],
         );
     }
-}
-
-/// A raised frame on a surface: outer walls, inner walls facing into the opening, and the top
-/// between them. Its bottom lies on the surface below and is not drawn.
-fn ring_lip(b: &mut Builder, outer: (f32, f32), inner: (f32, f32), z0: f32, height: f32) {
-    slab(b, outer, z0, z0 + height);
-    for (a, c, n) in sides(inner.0, inner.1) {
-        b.flat(
-            [
-                [a[0], a[1], z0],
-                [c[0], c[1], z0],
-                [c[0], c[1], z0 + height],
-                [a[0], a[1], z0 + height],
-            ],
-            [-n[0], -n[1], 0.0],
-        );
-    }
-    ring_cap(b, outer, inner, z0 + height);
-}
-
-/// A low raised box on a surface, from `z0` up to a flat top at `z1`.
-fn slab_panel(b: &mut Builder, half: (f32, f32), z0: f32, z1: f32) {
-    slab(b, half, z0, z1);
-    cap(b, half, z1);
 }
 
 /// A beveled plinth on the ground: vertical walls, a chamfer at the top, and a flat top.
@@ -404,26 +375,13 @@ fn segment_angle(k: usize) -> (f32, f32) {
     a.sin_cos()
 }
 
-/// A rim around the top of a cylinder of `radius`: a band outside the body, and its flat top.
-fn rim(b: &mut Builder, radius: f32, top: f32) {
-    let outer = radius + RIM_WIDTH;
-    radial_band(b, outer, top, top + RIM_HEIGHT);
-    radial_cap(b, outer, radius, top + RIM_HEIGHT);
-}
-
-/// A low disc on top of a cylinder, inside its rim.
-fn cylinder_panel(b: &mut Builder, radius: f32, top: f32) {
-    radial_band(b, radius, top, top + PANEL_HEIGHT);
-    radial_cap(b, radius, 0.0, top + PANEL_HEIGHT);
-}
-
 /// A flat screw head on the top surface at `(x, y)`.
 fn screw(x: f32, y: f32, z: f32) -> Dot3 {
     Dot3 {
         center: [x, y, z],
         normal: [0.0, 0.0, 1.0],
         radius: SCREW_RADIUS,
-        tone: Ink::Hi,
+        tone: Ink::Lo,
         detail: Detail::Close,
     }
 }
@@ -448,17 +406,14 @@ fn circle(radius: f32, z: f32) -> Vec<[f32; 3]> {
         .collect()
 }
 
-/// The world drawn under the machines: a ribbon and two edge lines for each belt.
+/// The plant: a ribbon for each belt and an instance for each machine.
 pub fn scene(layout: &Layout, models: &[Model]) -> Scene {
-    let mut world = Builder::default();
-    let mut lines = Vec::new();
-    for belt in &layout.belts {
-        belt_ribbon(&mut world, &mut lines, belt);
-    }
-    let world = world.finish();
+    let ribbons: Vec<Ribbon> = layout.belts.iter().filter_map(belt_ribbon).collect();
     let mut bounds = Aabb::EMPTY;
-    for &p in &world.positions {
-        bounds.include(p);
+    for ribbon in &ribbons {
+        for &[x, y] in &ribbon.centre {
+            bounds.include([x, y, 0.0]);
+        }
     }
 
     let mut instances = Vec::with_capacity(layout.machines.len());
@@ -481,42 +436,41 @@ pub fn scene(layout: &Layout, models: &[Model]) -> Scene {
         };
     }
     Scene {
-        world,
-        lines,
+        ribbons,
         instances,
         bounds,
     }
 }
 
-/// A belt is a flat ribbon on the ground with a fine line along each side. Walls would draw a
-/// double track, so the ribbon has none.
-fn belt_ribbon(world: &mut Builder, lines: &mut Vec<Line3>, belt: &Belt) {
-    let centre = rounded(&belt.path);
-    if centre.len() < 2 {
-        return;
-    }
-    let normals = normals(&centre);
-    let half = belt_width(belt.imports) / 2.0;
-    let at = |i: usize, side: f32| {
-        let (p, n) = (centre[i], normals[i]);
-        [p[0] + side * n[0] * half, p[1] + side * n[1] * half, 0.0]
-    };
-    for i in 0..centre.len() - 1 {
-        world.floor([at(i, 1.0), at(i, -1.0), at(i + 1, -1.0), at(i + 1, 1.0)]);
-    }
-    for side in [1.0_f32, -1.0] {
-        lines.push(Line3 {
-            points: (0..centre.len()).map(|i| at(i, side)).collect(),
-            closed: false,
-            tone: Ink::Lo,
-            width: BELT_EDGE_PX,
-            detail: Detail::Always,
-        });
-    }
+/// A belt is a flat ribbon on the ground along its rounded path, stopped just short of both
+/// plinths.
+fn belt_ribbon(belt: &Belt) -> Option<Ribbon> {
+    let path = trimmed(&belt.path, BELT_PORT_GAP)?;
+    Some(Ribbon {
+        centre: rounded(&path),
+        width: belt_width(belt.imports),
+    })
 }
 
-fn belt_width(imports: u32) -> f32 {
-    8.0 + imports.min(8) as f32 * 0.5
+/// A belt's width in plan units, a little wider for more imports. The widest belt still leaves
+/// a gap to its neighbour at the layout's belt step.
+pub fn belt_width(imports: u32) -> f32 {
+    4.0 + imports.min(8) as f32 * 0.3
+}
+
+/// The path with `gap` cut off each end, or `None` when nothing is left.
+fn trimmed(path: &[[f32; 2]], gap: f32) -> Option<Vec<[f32; 2]>> {
+    let [first, second] = [*path.first()?, *path.get(1)?];
+    let n = path.len();
+    let [before_last, last] = [path[n - 2], path[n - 1]];
+    let (head, tail) = (distance(first, second), distance(before_last, last));
+    if head <= gap || tail <= gap || (n == 2 && head <= 2.0 * gap) {
+        return None;
+    }
+    let mut out = path.to_vec();
+    out[0] = toward(first, second, gap / head);
+    out[n - 1] = toward(last, before_last, gap / tail);
+    Some(out)
 }
 
 /// Replaces each right-angle corner with a short quadratic curve. The curve starts and ends
@@ -545,31 +499,6 @@ fn rounded(path: &[[f32; 2]]) -> Vec<[f32; 2]> {
     }
     out.push(path[path.len() - 1]);
     out
-}
-
-/// A unit normal at each point, from the directions of the segments on either side.
-fn normals(points: &[[f32; 2]]) -> Vec<[f32; 2]> {
-    let direction = |a: [f32; 2], b: [f32; 2]| {
-        let v = sub(b, a);
-        let len = distance(a, b).max(1e-6);
-        [v[0] / len, v[1] / len]
-    };
-    (0..points.len())
-        .map(|i| {
-            let incoming = (i > 0).then(|| direction(points[i - 1], points[i]));
-            let outgoing = (i + 1 < points.len()).then(|| direction(points[i], points[i + 1]));
-            let tangent = match (incoming, outgoing) {
-                (Some(a), Some(b)) => {
-                    let sum = [a[0] + b[0], a[1] + b[1]];
-                    if sum[0].hypot(sum[1]) < 1e-6 { a } else { sum }
-                }
-                (Some(d), None) | (None, Some(d)) => d,
-                (None, None) => [1.0, 0.0],
-            };
-            let len = tangent[0].hypot(tangent[1]).max(1e-6);
-            [-tangent[1] / len, tangent[0] / len]
-        })
-        .collect()
 }
 
 fn quadratic(a: [f32; 2], c: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] {
@@ -622,7 +551,7 @@ mod tests {
     }
 
     #[test]
-    fn every_kind_has_all_three_levels_and_a_valid_base() {
+    fn every_kind_has_a_valid_base_and_painted_detail_at_each_level() {
         let models = models();
         assert_eq!(models.len(), Kind::ALL.len());
         for (kind, model) in Kind::ALL.iter().zip(&models) {
@@ -630,18 +559,38 @@ mod tests {
                 !model.meshes[0].indices.is_empty(),
                 "{kind:?} has no base mesh"
             );
-            assert!(
-                !model.meshes[1].indices.is_empty(),
-                "{kind:?} has no near mesh"
-            );
-            assert!(
-                !model.meshes[2].indices.is_empty(),
-                "{kind:?} has no close mesh"
-            );
             for mesh in &model.meshes {
                 check_mesh(mesh);
             }
+            assert!(
+                model.lines.iter().any(|l| l.detail == Detail::Near),
+                "{kind:?} paints no near detail"
+            );
+            assert!(
+                model.dots.iter().all(|d| d.detail == Detail::Close) && !model.dots.is_empty(),
+                "{kind:?} has no close screws"
+            );
         }
+    }
+
+    #[test]
+    fn a_cylinder_top_has_one_rim_line() {
+        let model = model(Kind::Tank);
+        let top = model.bounds.max[2];
+        let r = 0.36 * 86.0;
+        let rims = acan_render::edges::feature_lines(&model.meshes[0], Detail::Always)
+            .into_iter()
+            .chain(model.lines.iter().cloned())
+            .filter(|line| {
+                line.points
+                    .iter()
+                    .all(|p| (p[2] - top).abs() < 2.0 && (p[0].hypot(p[1]) - r).abs() < 3.0)
+            })
+            .count();
+        assert_eq!(
+            rims, CYLINDER_SEGMENTS,
+            "one crease segment per side of the rim, nothing else"
+        );
     }
 
     #[test]
@@ -670,7 +619,7 @@ mod tests {
             assert_eq!(inst.offset, [placed.x + w / 2.0, placed.y + d / 2.0, 0.0]);
             assert_eq!(usize::from(inst.kind), placed.kind.index());
         }
-        check_mesh(&scene.world);
+        assert_eq!(scene.ribbons.len(), laid.belts.len());
     }
 
     #[test]
@@ -684,51 +633,48 @@ mod tests {
             assert!(f[0] >= scene.bounds.min[0] && f[2] <= scene.bounds.max[0]);
             assert!(f[1] >= scene.bounds.min[1] && f[3] <= scene.bounds.max[1]);
         }
-        for p in &scene.world.positions {
-            for (axis, value) in p.iter().enumerate() {
-                assert!(*value >= scene.bounds.min[axis] - 1e-3);
-                assert!(*value <= scene.bounds.max[axis] + 1e-3);
+        for ribbon in &scene.ribbons {
+            for p in &ribbon.centre {
+                for (axis, value) in p.iter().enumerate() {
+                    assert!(*value >= scene.bounds.min[axis] - 1e-3);
+                    assert!(*value <= scene.bounds.max[axis] + 1e-3);
+                }
             }
         }
     }
 
     #[test]
-    fn a_belt_is_a_flat_ribbon_with_one_edge_line_per_side() {
+    fn a_belt_stops_just_short_of_both_plates() {
         let belt = Belt {
             from: 0,
             to: 1,
             imports: 1,
             path: vec![[0.0, 0.0], [100.0, 0.0]],
         };
-        let mut world = Builder::default();
-        let mut lines = Vec::new();
-        belt_ribbon(&mut world, &mut lines, &belt);
-        let mesh = world.finish();
-        let half = belt_width(1) / 2.0;
-        assert!(
-            mesh.positions.iter().all(|p| p[2] == 0.0),
-            "belt lies on the ground"
+        let ribbon = belt_ribbon(&belt).expect("a long belt draws");
+        assert_eq!(
+            ribbon.centre,
+            vec![[BELT_PORT_GAP, 0.0], [100.0 - BELT_PORT_GAP, 0.0]]
         );
+        assert_eq!(ribbon.width, belt_width(1));
+        let stub = Belt {
+            path: vec![[0.0, 0.0], [2.0, 0.0]],
+            ..belt
+        };
         assert!(
-            mesh.normals.iter().all(|n| *n == [0.0, 0.0, 1.0]),
-            "belt has no walls"
+            belt_ribbon(&stub).is_none(),
+            "a belt shorter than its gaps draws nothing"
         );
-        assert!(mesh.surfaces.iter().all(|s| *s == Surface::Floor));
-        assert!(mesh.positions.iter().all(|p| p[1].abs() <= half + 1e-4));
-        assert_eq!(lines.len(), 2, "one edge line per side");
-        for line in &lines {
-            assert_eq!(line.tone, Ink::Lo);
-            assert!(line.points.iter().all(|p| (p[1].abs() - half).abs() < 1e-4));
-        }
     }
 
     #[test]
-    fn every_belt_gets_its_edge_lines_in_the_scene() {
-        let plant = stress(200);
-        let (kinds, edges) = plant.layout_input();
-        let laid = layout(&kinds, &edges);
-        let scene = scene(&laid, &models());
-        assert_eq!(scene.lines.len(), 2 * laid.belts.len());
+    fn belts_are_narrow_next_to_the_machines() {
+        let (w, d) = Kind::Assembler.footprint();
+        assert!(
+            belt_width(8) * 10.0 < w.min(d),
+            "the widest belt stays under a tenth of a plate"
+        );
+        assert!(belt_width(1) < belt_width(8));
     }
 
     #[test]

@@ -18,7 +18,7 @@ function summary(values) {
   };
 }
 
-export function installBench({ App, app, canvas, timing, redraw }) {
+export function installBench({ App, app, canvas, timing, redraw, setAlt }) {
   let rafCalls = 0;
   let renders = 0;
   let renderMs = 0;
@@ -105,6 +105,30 @@ export function installBench({ App, app, canvas, timing, redraw }) {
       app.focus(index, ratio);
       redraw();
       return { detail: app.detail() };
+    },
+
+    /** Turns to fixed angles and fits there, so screenshots are repeatable. */
+    view(azimuth, elevation) {
+      app.view(azimuth, elevation);
+      redraw();
+    },
+
+    /** Zooms about the canvas centre by `factor`. */
+    zoom(factor) {
+      app.zoom_at(canvas.clientWidth / 2, canvas.clientHeight / 2, factor);
+      redraw();
+    },
+
+    /** Switches between perspective and orthographic. */
+    projection() {
+      app.toggle_projection();
+      redraw();
+    },
+
+    /** Holds or releases Alt, which shows every label with its file count. */
+    alt(down) {
+      setAlt(down);
+      redraw();
     },
   };
 }

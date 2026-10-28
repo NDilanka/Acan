@@ -7,6 +7,8 @@ use acan_render::{Aabb, Camera, Lod, Model, Renderer, wgpu};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
+use crate::kind::Kind;
+use crate::labels::{self, LabelSpot};
 use crate::layout::{Layout, layout};
 use crate::plant::{Plant, PlantMachine, from_scan_json, rest_labels, stress};
 use crate::stand_in;
@@ -44,30 +46,10 @@ struct Loaded {
     layout: Layout,
     /// Bounds of everything drawn, in plan units and height.
     bounds: Aabb,
+    /// The solid parts of every machine, each with its machine index, for label occlusion.
+    occluders: Vec<(usize, Aabb)>,
     /// Machines that carry a name at rest.
     rest: Vec<usize>,
-}
-
-impl Loaded {
-    /// The plinth corner nearest the viewer, on the ground, for a label to sit under.
-    fn front_corner(&self, index: usize, toward: [f32; 2]) -> Option<[f32; 3]> {
-        let placed = self.layout.machines.get(index)?;
-        let (w, d) = placed.kind.footprint();
-        let (cx, cy) = (placed.x + w / 2.0, placed.y + d / 2.0);
-        let corner = [
-            [cx - w / 2.0, cy - d / 2.0],
-            [cx + w / 2.0, cy - d / 2.0],
-            [cx + w / 2.0, cy + d / 2.0],
-            [cx - w / 2.0, cy + d / 2.0],
-        ]
-        .into_iter()
-        .max_by(|a, b| {
-            let da = a[0] * toward[0] + a[1] * toward[1];
-            let db = b[0] * toward[0] + b[1] * toward[1];
-            da.total_cmp(&db)
-        })?;
-        Some([corner[0], corner[1], 0.0])
-    }
 }
 
 #[wasm_bindgen]
@@ -218,6 +200,16 @@ impl App {
         self.camera.zoom_at([x * self.dpr, y * self.dpr], factor);
     }
 
+    /// Turns to the given angles in degrees and fits the plant there, centred on screen.
+    pub fn view(&mut self, azimuth: f32, elevation: f32) {
+        self.turn = None;
+        self.camera.set_angles(azimuth, elevation);
+        if let Some(loaded) = &self.plant {
+            let bounds = loaded.bounds;
+            self.camera.fit(&bounds, FIT_MARGIN_CSS * self.dpr);
+        }
+    }
+
     /// Returns to the default angles and fits the plant.
     pub fn fit(&mut self) {
         self.turn = None;
@@ -253,40 +245,51 @@ impl App {
             .map_err(js_err)
     }
 
-    /// Label positions as flat `[machine index, css x, css y, opacity]` quads. Labels sit under
-    /// each plinth's front corner, projected in the same frame as the render, and fade with the
-    /// same fog as the plant. `all` lists every machine, and otherwise only the ones named at
-    /// rest. A label whose corner is behind the camera is left out.
+    /// Label candidates as flat `[machine index, css x, css y, opacity]` quads, most important
+    /// first: the machines largest on screen lead, so the page keeps the larger or nearer one
+    /// when two labels collide. Each label hangs under its plate's front edge, fades with the
+    /// plant's fog, and is left out when another machine hides its spot or its machine is too
+    /// small on screen to name. `all` considers every machine, and otherwise only the ones
+    /// named at rest.
     pub fn label_layout(&self, all: bool) -> Vec<f32> {
         let Some(loaded) = &self.plant else {
             return Vec::new();
         };
-        let toward = self.camera.basis().toward;
-        let toward = [toward[0], toward[1]];
-        let count = if all {
-            loaded.machines.len()
+        let candidates: Vec<usize> = if all {
+            (0..loaded.machines.len()).collect()
         } else {
-            loaded.rest.len()
+            loaded.rest.clone()
         };
-        let mut out = Vec::new();
-        for slot in 0..count {
-            let index = if all { slot } else { loaded.rest[slot] };
-            let Some(anchor) = loaded.front_corner(index, toward) else {
-                continue;
-            };
-            if !self.camera.in_front(anchor) {
-                continue;
-            }
-            let screen = self.camera.world_to_screen(anchor);
-            let opacity = 1.0 - self.camera.fog_at(anchor);
-            out.extend([
-                index as f32,
-                screen[0] / self.dpr,
-                screen[1] / self.dpr,
-                opacity,
-            ]);
-        }
-        out
+        let min_px = if all {
+            labels::ALL_MIN_CSS_PX
+        } else {
+            labels::REST_MIN_CSS_PX
+        } * self.dpr;
+        let footprints: Vec<[f32; 4]> = loaded
+            .layout
+            .machines
+            .iter()
+            .map(|m| m.footprint())
+            .collect();
+        let spots: Vec<LabelSpot> = labels::place(
+            &self.camera,
+            &footprints,
+            &loaded.occluders,
+            &candidates,
+            min_px,
+            labels::LABEL_DROP_CSS_PX * self.dpr,
+        );
+        spots
+            .iter()
+            .flat_map(|spot| {
+                [
+                    spot.index as f32,
+                    spot.screen[0] / self.dpr,
+                    spot.screen[1] / self.dpr,
+                    spot.opacity,
+                ]
+            })
+            .collect()
     }
 
     pub fn machine_name(&self, index: u32) -> String {
@@ -317,12 +320,27 @@ impl App {
         let scene = stand_in::scene(&laid, &self.models);
         self.renderer.set_scene(&scene);
         let count = plant.machines.len() as u32;
+        let occluders = scene
+            .instances
+            .iter()
+            .enumerate()
+            .flat_map(|(machine, inst)| {
+                stand_in::occluders(Kind::ALL[usize::from(inst.kind)]).map(|part| {
+                    let world = Aabb {
+                        min: std::array::from_fn(|axis| inst.offset[axis] + part.min[axis]),
+                        max: std::array::from_fn(|axis| inst.offset[axis] + part.max[axis]),
+                    };
+                    (machine, world)
+                })
+            })
+            .collect();
         self.plant = Some(Loaded {
             repo: plant.repo,
             rest: rest_labels(&plant.machines),
             machines: plant.machines,
             layout: laid,
             bounds: scene.bounds,
+            occluders,
         });
         self.fit();
         count

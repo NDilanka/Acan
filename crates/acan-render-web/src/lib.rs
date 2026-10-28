@@ -3,6 +3,7 @@
 //! surface that the page drives.
 
 pub mod kind;
+pub mod labels;
 pub mod layout;
 pub mod plant;
 pub mod stand_in;

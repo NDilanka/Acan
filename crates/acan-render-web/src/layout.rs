@@ -16,10 +16,11 @@ pub const COLUMN_GAP: f32 = 72.0;
 pub const ROW_GAP: f32 = 40.0;
 /// Height of the band a belt crosses a column in when it passes that column without a machine.
 pub const LANE: f32 = 16.0;
-/// Horizontal step between belts that share a gap.
-const BELT_STEP: f32 = 6.0;
-/// Belts in one gap cycle through this many offsets.
-const BELT_SLOTS: usize = 11;
+/// Horizontal step between belts that share a gap: the widest belt plus a clear gap.
+const BELT_STEP: f32 = 8.0;
+/// Belts in one gap cycle through this many offsets, which keeps every lane clear of the
+/// columns on either side.
+const BELT_SLOTS: usize = 7;
 /// Barycentre sweeps. Each sweep moves down or up one layer at a time.
 const SWEEPS: usize = 8;
 

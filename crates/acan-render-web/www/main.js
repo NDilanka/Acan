@@ -8,6 +8,8 @@ const ZOOM_KEY = 1.25;
 const WHEEL_RATE = 0.0015;
 const TURN_DEG = 45;
 const TOKEN_KEY = 'acan.token';
+const LABEL_OFFSET_PX = 6;
+const LABEL_PAD_PX = 4;
 
 const params = new URLSearchParams(location.search);
 const canvas = document.getElementById('plant');
@@ -47,11 +49,14 @@ function drawFrame(now = performance.now()) {
   }
 }
 
+// Labels come in priority order, larger and nearer first. A label that would overlap one
+// already placed stays hidden, so the plant never shows a pile of names.
 function placeLabels() {
   const width = canvas.clientWidth;
   const height = canvas.clientHeight;
   labelGeneration += 1;
   const quads = app.label_layout(altDown);
+  const placed = [];
   for (let k = 0; k < quads.length; k += 4) {
     const index = quads[k];
     const x = quads[k + 1];
@@ -64,10 +69,23 @@ function placeLabels() {
       labelsEl.appendChild(el);
     }
     el.generation = labelGeneration;
-    const inside = x >= -40 && x <= width + 40 && y >= -20 && y <= height + 20;
-    el.style.display = inside ? '' : 'none';
+    if (el.size === undefined || el.sizedAlt !== altDown) {
+      el.size = [el.offsetWidth, el.offsetHeight];
+      el.sizedAlt = altDown;
+    }
+    const [w, h] = el.size;
+    const box = {
+      left: x - w / 2 - LABEL_PAD_PX,
+      right: x + w / 2 + LABEL_PAD_PX,
+      top: y + LABEL_OFFSET_PX - LABEL_PAD_PX,
+      bottom: y + LABEL_OFFSET_PX + h + LABEL_PAD_PX,
+    };
+    const inside = box.right >= 0 && box.left <= width && box.bottom >= 0 && box.top <= height;
+    const clear = inside && placed.every((other) => !overlaps(box, other));
+    if (clear) placed.push(box);
+    el.style.visibility = clear ? 'visible' : 'hidden';
     el.style.opacity = String(opacity);
-    el.style.transform = `translate(${x}px, ${y}px) translate(-50%, 6px)`;
+    el.style.transform = `translate(${x}px, ${y}px) translate(-50%, ${LABEL_OFFSET_PX}px)`;
   }
   for (const [index, el] of labels) {
     if (el.generation !== labelGeneration) {
@@ -77,6 +95,9 @@ function placeLabels() {
   }
 }
 
+function overlaps(a, b) {
+  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+}
 function makeLabel(index) {
   const el = document.createElement('div');
   el.className = 'label';
@@ -183,7 +204,7 @@ async function boot() {
   requestRender();
   if (params.get('bench') === '1') {
     const { installBench } = await import('./bench.js');
-    installBench({ App, app, canvas, timing, redraw: drawFrame });
+    installBench({ App, app, canvas, timing, redraw: drawFrame, setAlt });
   }
 }
 

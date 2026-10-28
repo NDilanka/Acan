@@ -1,5 +1,5 @@
-//! The wgpu renderer. A frame has two passes. The first draws the ground, belts, halos,
-//! machines, lines and dots into colour, object-ID and depth targets, 4x MSAA where the device
+//! The wgpu renderer. A frame has two passes. The first draws the ground, belts, contact
+//! shadows, machines, lines and dots into colour, object-ID and depth targets, 4x MSAA where the device
 //! allows it. The ground writes no ID, so it is object 0. The second runs the outline pass over
 //! every MSAA sample of IDs and depth and resolves into the surface. Model buffers are uploaded
 //! once per model set and per scene, never per frame.
@@ -13,7 +13,8 @@ use wgpu::util::DeviceExt;
 use crate::camera::{Camera, NEAR_FRACTION, ORTHO_FAR, Projection};
 use crate::edges;
 use crate::geometry::{
-    self, DETAILS, DotVertex, HALO_WIDTH, HaloVertex, InstanceRaw, LineVertex, MeshVertex, Strokes,
+    self, DETAILS, DotVertex, HaloVertex, InstanceRaw, LineVertex, MeshVertex, RibbonVertex,
+    Strokes,
 };
 use crate::model::{Line3, Mesh, Model};
 use crate::scene::{Lod, Scene};
@@ -57,7 +58,6 @@ pub struct CameraUniform {
     pub view: [f32; 4],
     pub depth: [f32; 4],
     pub fog: [f32; 4],
-    pub halo: [f32; 4],
 }
 
 /// The shader source for a scene target with `samples` MSAA samples per pixel.
@@ -67,25 +67,7 @@ pub fn plant_source(samples: u32) -> String {
         .replace("@@MS@@", multisampled)
         .replace("@@SAMPLES@@", &samples.to_string())
         .replace("@@PALETTE_LEN@@", &PALETTE_LEN.to_string())
-        .replace("@@GRID@@", &grid_consts())
-}
-
-/// The grid constants of `theme.rs`, as the WGSL constants that `plant.wgsl` reads.
-fn grid_consts() -> String {
-    let (show_lo, show_hi) = theme::GRID_SHOW_PX;
-    format!(
-        "const GRID_LEVELS: i32 = {};\n\
-         const GRID_BASE: f32 = {:?};\n\
-         const GRID_STEP: f32 = {:?};\n\
-         const GRID_LEVEL_ALPHA: f32 = {:?};\n\
-         const GRID_MAX_ALPHA: f32 = {:?};\n\
-         const GRID_SHOW_PX: vec2<f32> = vec2<f32>({show_lo:?}, {show_hi:?});\n",
-        theme::GRID_LEVELS,
-        theme::GRID_BASE,
-        theme::GRID_STEP,
-        theme::GRID_LEVEL_ALPHA,
-        theme::GRID_MAX_ALPHA,
-    )
+        .replace("@@THEME@@", &theme::wgsl_consts())
 }
 
 #[repr(C)]
@@ -115,6 +97,7 @@ struct ModelBuffers {
 
 struct Pipelines {
     grid: wgpu::RenderPipeline,
+    ribbon: wgpu::RenderPipeline,
     mesh: wgpu::RenderPipeline,
     halo: wgpu::RenderPipeline,
     line: wgpu::RenderPipeline,
@@ -147,8 +130,7 @@ pub struct Renderer {
     models: Vec<ModelBuffers>,
     /// Six halo vertices per kind, kind by kind.
     halos: Option<wgpu::Buffer>,
-    world: Option<MeshBuffers>,
-    world_lines: Option<StrokeBuffers>,
+    ribbons: Option<(wgpu::Buffer, u32)>,
     instances: Option<wgpu::Buffer>,
     /// Per kind: its range inside `instances`.
     ranges: Vec<Range<u32>>,
@@ -275,8 +257,7 @@ impl Renderer {
             },
             models: Vec::new(),
             halos: None,
-            world: None,
-            world_lines: None,
+            ribbons: None,
             instances: None,
             ranges: Vec::new(),
         })
@@ -353,18 +334,21 @@ impl Renderer {
         self.instances = None;
     }
 
-    /// Uploads the static world (belts and the like) and the machine instances. Call when the
-    /// plant changes, not per frame.
+    /// Uploads the belts and the machine instances. Call when the plant changes, not per frame.
     ///
     /// # Panics
     ///
     /// If an instance names a kind that `set_models` did not upload.
     pub fn set_scene(&mut self, scene: &Scene) {
-        self.world = Some(self.mesh_buffers(&scene.world));
-        self.world_lines = Some(self.strokes(
-            "world lines",
-            geometry::line_vertices(&scene.lines),
-            wgpu::BufferUsages::VERTEX,
+        let ribbons = geometry::ribbon_vertices(&scene.ribbons);
+        self.ribbons = Some((
+            upload(
+                &self.device,
+                "ribbons",
+                wgpu::BufferUsages::VERTEX,
+                &ribbons,
+            ),
+            ribbons.len() as u32,
         ));
         let (raw, ranges) = geometry::instance_data(&scene.instances, self.models.len());
         self.instances = Some(upload(
@@ -491,12 +475,12 @@ impl Renderer {
         let Some(instances) = &self.instances else {
             return;
         };
-        if let Some(world) = &self.world {
-            pass.set_pipeline(&self.pipelines.mesh);
-            pass.set_vertex_buffer(0, world.vertices.slice(..));
-            pass.set_vertex_buffer(1, instances.slice(..));
-            pass.set_index_buffer(world.indices.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..world.index_count, 0, 0..1);
+        if let Some((ribbons, count)) = &self.ribbons
+            && *count > 0
+        {
+            pass.set_pipeline(&self.pipelines.ribbon);
+            pass.set_vertex_buffer(0, ribbons.slice(..));
+            pass.draw(0..*count, 0..1);
         }
 
         if let Some(halos) = &self.halos {
@@ -537,16 +521,6 @@ impl Renderer {
             pass.set_vertex_buffer(1, instances.slice(..));
             pass.draw(0..count, range.clone());
         }
-        // World lines are always drawn, so the total is the last cumulative count. The identity
-        // instance is instance 0.
-        if let Some(lines) = &self.world_lines {
-            let count = lines.counts[Lod::Close as usize];
-            if count > 0 {
-                pass.set_vertex_buffer(0, lines.buffer.slice(..));
-                pass.set_vertex_buffer(1, instances.slice(..));
-                pass.draw(0..count, 0..1);
-            }
-        }
 
         pass.set_pipeline(&self.pipelines.dot);
         for (model, range) in self.models.iter().zip(&self.ranges) {
@@ -581,7 +555,6 @@ impl Renderer {
             view: [vw, vh, camera.zoom(), MIN_STROKE_PX],
             depth: [NEAR_FRACTION * d, ORTHO_FAR * d, camera.focal(), 0.0],
             fog: [fog_near, fog_far, angle_lo, angle_hi],
-            halo: [HALO_WIDTH, 0.0, 0.0, 0.0],
         }
     }
 
@@ -797,6 +770,11 @@ impl Pipelines {
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x2, 4 => Uint32],
         };
+        let ribbon_vertex = wgpu::VertexBufferLayout {
+            array_stride: size_of::<RibbonVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32, 2 => Float32, 3 => Float32, 4 => Float32],
+        };
         let halo_vertex = wgpu::VertexBufferLayout {
             array_stride: size_of::<HaloVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -856,6 +834,18 @@ impl Pipelines {
                 depth(true, wgpu::CompareFunction::Always),
                 &[colour(None), ids(false)],
             ),
+            // Belts and shadows lie on the ground, which is drawn first and lies under them, so
+            // they skip the depth test. Testing them against the ground's per-pixel depth lets
+            // the grid through at the far samples of a pixel.
+            ribbon: make(
+                "ribbons",
+                &scene_layout,
+                "vs_ribbon",
+                "fs_ribbon",
+                &[Some(ribbon_vertex)],
+                depth(true, wgpu::CompareFunction::Always),
+                &[colour(None), ids(false)],
+            ),
             mesh: make(
                 "mesh",
                 &scene_layout,
@@ -871,7 +861,7 @@ impl Pipelines {
                 "vs_halo",
                 "fs_halo",
                 &[Some(halo_vertex), Some(halo_instance)],
-                depth(false, nearer),
+                depth(false, wgpu::CompareFunction::Always),
                 &[colour(alpha), ids(false)],
             ),
             line: make(

@@ -16,8 +16,6 @@ struct Camera {
     // x, y: fog starts and ends, in eye distances. z, w: the angle fade, as the absolute sine of a
     // ray's elevation, from and to.
     fog: vec4<f32>,
-    // x: halo falloff in plan units.
-    halo: vec4<f32>,
 }
 
 struct Theme {
@@ -33,18 +31,10 @@ struct Theme {
 @group(1) @binding(0) var depth_tex: texture_depth_@@MS@@2d;
 @group(1) @binding(1) var id_tex: texture_@@MS@@2d<f32>;
 
-const SLOT_PAGE: u32 = 0u;
-const SLOT_TOP: u32 = 1u;
-const SLOT_SHADE0: u32 = 2u;
-const SLOT_HALO: u32 = 8u;
-const SLOT_GRID: u32 = 9u;
-// Matches `theme::SLOT_OUTLINE`, which is the second slot from the end.
-const SLOT_OUTLINE: u32 = 22u;
-
 // MSAA samples per pixel in the scene targets: 1 or 4. The renderer fills this in.
 const SAMPLES: i32 = @@SAMPLES@@;
-// The grid constants of `theme.rs`, written in by the renderer.
-@@GRID@@
+// Palette slots and tuning constants from `theme.rs`, written in by the renderer.
+@@THEME@@
 // The ground is depth-tested this far below z = 0, so surfaces that lie on it pass the test.
 const GROUND_Z: f32 = -0.05;
 // Faces whose normal is steeper than this are tops.
@@ -93,19 +83,19 @@ fn fog_at(p: vec3<f32>) -> f32 {
     return smoothstep(camera.fog.x * d, camera.fog.y * d, distance(p, camera.eye.xyz));
 }
 
-// The four-tone paper shade of a face, from its normal and the light that sits at the camera's
-// right-hand side, so the look is the same at every azimuth.
-fn paper_slot(n: vec3<f32>) -> u32 {
-    if (n.z > TOP_NZ) {
-        return SLOT_TOP;
-    }
+// The paper grey of a face, from its normal. The light is fixed to the camera's left, so a face
+// keeps its tone at every azimuth: tops are nearly white, sides run from the lit tone to the dark
+// one as they turn away from the light, and slopes blend toward the top.
+fn paper_grey(n: vec3<f32>) -> f32 {
     let horizontal = n.xy;
-    if (dot(horizontal, horizontal) < 1e-8) {
-        return SLOT_TOP;
+    var side = PAPER_LIT;
+    if (dot(horizontal, horizontal) > 1e-8) {
+        let light = -normalize(camera.right.xy);
+        let away = 0.5 - 0.5 * dot(normalize(horizontal), light);
+        side = mix(PAPER_LIT, PAPER_DARK, away);
     }
-    let light = -normalize(camera.right.xy);
-    let lit = (dot(normalize(horizontal), light) + 1.0) * 0.5;
-    return SLOT_SHADE0 + u32(clamp(floor(lit * 4.0), 0.0, 3.0));
+    let up = smoothstep(0.3, TOP_NZ + 0.25, abs(n.z));
+    return 1.0 - mix(side, PAPER_TOP, up);
 }
 
 // An object ID in three 8-bit channels. The alpha carries the fog for the outline pass.
@@ -155,14 +145,11 @@ fn vs_mesh(v: MeshIn) -> MeshOut {
 @fragment
 fn fs_mesh(v: MeshOut) -> FragOut {
     let n = normalize(v.normal);
-    let base = v.code & 0xffffu;
-    var slot = SLOT_PAGE;
-    if (base == 0u) {
-        slot = paper_slot(n);
-    } else {
-        slot = base - 1u;
+    var ink = vec4<f32>(vec3<f32>(paper_grey(n)), 1.0);
+    if (v.code != 0u) {
+        ink = theme.palette[v.code - 1u];
     }
-    let ink = theme.palette[slot] * theme.tints[v.tint];
+    ink = ink * theme.tints[v.tint];
     let fog = fog_at(v.world);
     let page = theme.palette[SLOT_PAGE].rgb;
     return FragOut(vec4<f32>(mix(ink.rgb, page, fog), ink.a), id_colour(v.id, fog));
@@ -220,18 +207,21 @@ fn grid_line(ground: vec2<f32>, spacing: f32) -> vec2<f32> {
     return vec2<f32>(coverage, 1.0 / max(d.x, d.y));
 }
 
-// Ink alpha of the grid at a ground point. Each level adds its alpha while it is shown, so a line
-// that two levels share is darker. The total is capped.
+// Ink alpha of the grid at a ground point. A level fades in as its on-screen spacing grows,
+// starting minor, and turns major as the next finer level fades in under it. The strongest
+// level wins, so a line that two levels share is no darker than a major line.
 fn grid_alpha(ground: vec2<f32>) -> f32 {
-    var sum = 0.0;
+    var best = 0.0;
     var spacing = GRID_BASE;
     for (var level = 0; level < GRID_LEVELS; level = level + 1) {
         let line = grid_line(ground, spacing);
         let shown = smoothstep(GRID_SHOW_PX[0], GRID_SHOW_PX[1], line.y);
-        sum = sum + GRID_LEVEL_ALPHA * shown * line.x;
+        let finer = smoothstep(GRID_SHOW_PX[0], GRID_SHOW_PX[1], line.y / GRID_STEP);
+        let ink = mix(GRID_MINOR_ALPHA, GRID_MAJOR_ALPHA, finer);
+        best = max(best, ink * shown * line.x);
         spacing = spacing * GRID_STEP;
     }
-    return min(GRID_MAX_ALPHA, sum);
+    return best;
 }
 
 struct GridOut {
@@ -257,7 +247,58 @@ fn fs_grid(@builtin(position) frag: vec4<f32>) -> GridOut {
     return GridOut(vec4<f32>(mix(page, ink, alpha), 1.0), vec4<f32>(0.0), depth);
 }
 
-// Halo: a soft ring on the ground around each footprint, drawn before the machines.
+// Belts: flat opaque ribbons on the ground. The side and end lines are drawn in the fill, from the
+// distance to the ribbon's border in device pixels, so they never break up at a distance. They
+// fade as the ribbon narrows on screen.
+
+struct RibbonIn {
+    @location(0) position: vec2<f32>,
+    @location(1) side: f32,
+    @location(2) along: f32,
+    @location(3) length: f32,
+    @location(4) half: f32,
+}
+
+struct RibbonOut {
+    @builtin(position) clip: vec4<f32>,
+    // Plan units from the centre line, signed.
+    @location(0) across: f32,
+    @location(1) along: f32,
+    @location(2) @interpolate(flat) size: vec2<f32>,
+    @location(3) world: vec3<f32>,
+}
+
+@vertex
+fn vs_ribbon(v: RibbonIn) -> RibbonOut {
+    let p = vec3<f32>(v.position, 0.0);
+    var out: RibbonOut;
+    out.clip = to_clip(p);
+    out.across = v.side * v.half;
+    out.along = v.along;
+    out.size = vec2<f32>(v.length, v.half);
+    out.world = p;
+    return out;
+}
+
+@fragment
+fn fs_ribbon(v: RibbonOut) -> FragOut {
+    let per_px_across = max(fwidth(v.across), 1e-6);
+    let per_px_along = max(fwidth(v.along), 1e-6);
+    let side_px = (v.size.y - abs(v.across)) / per_px_across;
+    let end_px = min(v.along, v.size.x - v.along) / per_px_along;
+    let line = clamp(BELT_EDGE_PX + 0.5 - min(side_px, end_px), 0.0, 1.0);
+    let width_px = 2.0 * v.size.y / per_px_across;
+    let shown = smoothstep(BELT_EDGE_FADE_PX[0], BELT_EDGE_FADE_PX[1], width_px);
+    let edge = theme.palette[SLOT_BELT_EDGE];
+    let fill = theme.palette[SLOT_BELT].rgb;
+    let colour = mix(fill, edge.rgb, edge.a * line * shown);
+    let fog = fog_at(v.world);
+    let page = theme.palette[SLOT_PAGE].rgb;
+    return FragOut(vec4<f32>(mix(colour, page, fog), 1.0), vec4<f32>(0.0));
+}
+
+// Contact shadow: a short soft falloff on the ground around each footprint, pushed a little
+// away from the light, drawn before the machines.
 
 struct HaloIn {
     @location(0) position: vec3<f32>,
@@ -285,9 +326,10 @@ fn vs_halo(v: HaloIn) -> HaloOut {
 
 @fragment
 fn fs_halo(v: HaloOut) -> FragOut {
-    let q = max(max(v.rect.xy - v.local, v.local - v.rect.zw), vec2<f32>(0.0));
-    let fade = 1.0 - smoothstep(0.0, camera.halo.x, length(q));
-    let halo = theme.palette[SLOT_HALO];
+    let shifted = v.local - SHADOW_SHIFT * normalize(camera.right.xy);
+    let q = max(max(v.rect.xy - shifted, shifted - v.rect.zw), vec2<f32>(0.0));
+    let fade = 1.0 - smoothstep(0.0, SHADOW_REACH, length(q));
+    let halo = theme.palette[SLOT_SHADOW];
     let page = theme.palette[SLOT_PAGE].rgb;
     let fog = fog_at(v.world);
     let alpha = halo.a * fade * fade * (1.0 - fog);
@@ -315,8 +357,24 @@ struct LineOut {
     @location(4) world: vec3<f32>,
 }
 
+// How much of a machine's inner line art shows, from its size on screen at its origin.
+fn detail_shown(origin: vec3<f32>) -> f32 {
+    var px_per_unit = camera.view.z;
+    if (!is_ortho()) {
+        px_per_unit = camera.depth.z / max(depth_of(origin), camera.depth.x);
+    }
+    return smoothstep(LOD_FADE_PX[0], LOD_FADE_PX[1], px_per_unit * LOD_REFERENCE);
+}
+
 @vertex
 fn vs_line(v: LineIn) -> LineOut {
+    let shown = detail_shown(v.offset);
+    if (shown <= 0.0) {
+        // Every corner of the segment lands on one point, so it rasterizes nothing.
+        var gone: LineOut;
+        gone.clip = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+        return gone;
+    }
     let lift = camera.toward.xyz * LIFT;
     let pa = v.a + v.offset + lift;
     let pb = v.b + v.offset + lift;
@@ -344,7 +402,7 @@ fn vs_line(v: LineIn) -> LineOut {
     out.clip = vec4<f32>(base.xy + shift, base.z, base.w);
     out.across = across;
     out.half_px = half_px;
-    out.cover = min(v.width / min_px, 1.0);
+    out.cover = min(v.width / min_px, 1.0) * shown;
     out.tone = v.tone;
     out.world = mix(pa, pb, v.corner.x);
     return out;

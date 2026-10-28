@@ -50,15 +50,13 @@ pub struct Dot3 {
     pub detail: Detail,
 }
 
-/// How a surface is shaded. Paper gets the kit's four-tone light shading from its normal; the
+/// How a surface is shaded. Paper gets the three-tone light shading from its normal; the
 /// others are flat fills.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Surface {
     Paper,
     Lit,
     Glass,
-    /// A flat fill lying on the ground, such as a belt. The edge pass treats it as ground.
-    Floor,
     Ink(Ink),
 }
 
