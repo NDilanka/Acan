@@ -136,7 +136,10 @@ impl Repo {
             return Ok(LandOutcome::HeadMoved { current });
         }
         if self.is_ancestor(&current, gated).await? {
-            return self.advance(gated, expected_head).await;
+            return self
+                .advance(gated, expected_head)
+                .await
+                .map(LandOutcome::from);
         }
 
         let out = git::run(
@@ -186,15 +189,17 @@ impl Repo {
             &message,
         ];
         let merged: CommitId = git::ok(&self.root, &args, &envs).await?.trim().parse()?;
-        self.advance(&merged, expected_head).await
+        self.advance(&merged, expected_head)
+            .await
+            .map(LandOutcome::from)
     }
 
     /// Point the protected branch at `commit`, which descends from `expected_head`.
-    async fn advance(
+    pub(crate) async fn advance(
         &self,
         commit: &CommitId,
         expected_head: &CommitId,
-    ) -> Result<LandOutcome, Error> {
+    ) -> Result<Advance, Error> {
         match self.checkout_of_protected().await? {
             Some(checkout) => {
                 self.advance_checkout(&checkout, commit, expected_head)
@@ -210,7 +215,7 @@ impl Repo {
         &self,
         commit: &CommitId,
         expected_head: &CommitId,
-    ) -> Result<LandOutcome, Error> {
+    ) -> Result<Advance, Error> {
         let protected_ref = format!("refs/heads/{}", self.protected);
         let args = [
             "update-ref",
@@ -220,13 +225,13 @@ impl Repo {
         ];
         let out = git::run(&self.root, &args, &[]).await?;
         if out.status.success() {
-            return Ok(LandOutcome::Landed {
+            return Ok(Advance::Landed {
                 commit: commit.clone(),
             });
         }
         let current = self.protected_head().await?;
         if current != *expected_head {
-            return Ok(LandOutcome::HeadMoved { current });
+            return Ok(Advance::HeadMoved { current });
         }
         // The ref did not move, yet the update failed: a real git error.
         Err(git::ensure_ok(out, &args).expect_err("status was not success"))
@@ -245,7 +250,7 @@ impl Repo {
         checkout: &Path,
         commit: &CommitId,
         expected_head: &CommitId,
-    ) -> Result<LandOutcome, Error> {
+    ) -> Result<Advance, Error> {
         let dirty = git::ok(
             checkout,
             &["status", "--porcelain", "--untracked-files=no"],
@@ -253,7 +258,7 @@ impl Repo {
         )
         .await?;
         if !dirty.trim().is_empty() {
-            return Ok(LandOutcome::CheckoutDirty {
+            return Ok(Advance::CheckoutDirty {
                 path: checkout.to_path_buf(),
             });
         }
@@ -262,14 +267,14 @@ impl Repo {
         match self.checkout_branch(checkout).await? {
             Some(branch) if branch == self.protected => {}
             _ => {
-                return Ok(LandOutcome::CheckoutMoved {
+                return Ok(Advance::CheckoutMoved {
                     path: checkout.to_path_buf(),
                 });
             }
         }
         let current = self.protected_head().await?;
         if current != *expected_head {
-            return Ok(LandOutcome::HeadMoved { current });
+            return Ok(Advance::HeadMoved { current });
         }
         let hooks = self.empty_hooks_dir().await?;
         let hooks_arg = format!("core.hooksPath={hooks}");
@@ -289,7 +294,7 @@ impl Repo {
             // A configured merge option can make git exit 0 without moving the branch.
             // Only the postcondition says the land happened.
             if self.protected_head().await? == *commit {
-                return Ok(LandOutcome::Landed {
+                return Ok(Advance::Landed {
                     commit: commit.clone(),
                 });
             }
@@ -299,13 +304,13 @@ impl Repo {
             });
         }
         if out.stderr.contains("would be overwritten by merge") {
-            return Ok(LandOutcome::CheckoutBlocked {
+            return Ok(Advance::CheckoutBlocked {
                 path: checkout.to_path_buf(),
             });
         }
         let current = self.protected_head().await?;
         if current != *expected_head {
-            return Ok(LandOutcome::HeadMoved { current });
+            return Ok(Advance::HeadMoved { current });
         }
         Err(git::ensure_ok(out, &args).expect_err("status was not success"))
     }
@@ -321,16 +326,20 @@ impl Repo {
 
     /// An empty hooks directory, so the automated merge runs no hooks.
     async fn empty_hooks_dir(&self) -> Result<String, Error> {
+        let hooks = self.common_dir().await?.join("acan-hooks");
+        tokio::fs::create_dir_all(&hooks).await?;
+        path_str(&hooks).map(str::to_owned)
+    }
+
+    /// The repository's common git directory, shared by every worktree.
+    pub(crate) async fn common_dir(&self) -> Result<PathBuf, Error> {
         let out = git::ok(&self.root, &["rev-parse", "--git-common-dir"], &[]).await?;
         let common = PathBuf::from(out.trim());
-        let common = if common.is_absolute() {
+        Ok(if common.is_absolute() {
             common
         } else {
             self.root.join(common)
-        };
-        let hooks = common.join("acan-hooks");
-        tokio::fs::create_dir_all(&hooks).await?;
-        path_str(&hooks).map(str::to_owned)
+        })
     }
 
     /// The checkout that has the protected branch checked out, the user's main
@@ -376,7 +385,11 @@ impl Repo {
         Ok(head.clone())
     }
 
-    async fn is_ancestor(&self, older: &CommitId, newer: &CommitId) -> Result<bool, Error> {
+    pub(crate) async fn is_ancestor(
+        &self,
+        older: &CommitId,
+        newer: &CommitId,
+    ) -> Result<bool, Error> {
         let args = [
             "merge-base",
             "--is-ancestor",
@@ -391,7 +404,7 @@ impl Repo {
         }
     }
 
-    fn author_env(&self) -> [(String, String); 4] {
+    pub(crate) fn author_env(&self) -> [(String, String); 4] {
         [
             ("GIT_AUTHOR_NAME".to_owned(), self.author_name.clone()),
             ("GIT_AUTHOR_EMAIL".to_owned(), self.author_email.clone()),
@@ -468,6 +481,32 @@ impl From<LandOutcome> for Result<CommitId, String> {
                 "{} left the protected branch; land again",
                 path.display()
             )),
+        }
+    }
+}
+
+/// How moving the protected branch to a commit that descends from the expected head ended.
+pub(crate) enum Advance {
+    /// The protected branch now points at `commit`.
+    Landed { commit: CommitId },
+    /// The protected branch is no longer at the expected head.
+    HeadMoved { current: CommitId },
+    /// The checkout of the protected branch has uncommitted changes to tracked files.
+    CheckoutDirty { path: PathBuf },
+    /// The checkout holds an untracked or ignored file the move would overwrite.
+    CheckoutBlocked { path: PathBuf },
+    /// The checkout switched away from the protected branch.
+    CheckoutMoved { path: PathBuf },
+}
+
+impl From<Advance> for LandOutcome {
+    fn from(advance: Advance) -> Self {
+        match advance {
+            Advance::Landed { commit } => Self::Landed { commit },
+            Advance::HeadMoved { current } => Self::HeadMoved { current },
+            Advance::CheckoutDirty { path } => Self::CheckoutDirty { path },
+            Advance::CheckoutBlocked { path } => Self::CheckoutBlocked { path },
+            Advance::CheckoutMoved { path } => Self::CheckoutMoved { path },
         }
     }
 }
@@ -758,7 +797,7 @@ async fn config(root: &Path, key: &str) -> Result<Option<String>, Error> {
     Ok((!value.is_empty()).then(|| value.to_owned()))
 }
 
-fn path_str(path: &Path) -> Result<&str, Error> {
+pub(crate) fn path_str(path: &Path) -> Result<&str, Error> {
     path.to_str()
         .ok_or_else(|| Error::NonUtf8Path(path.to_path_buf()))
 }
