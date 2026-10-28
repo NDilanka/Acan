@@ -13,6 +13,7 @@ pub mod plan;
 pub mod plant;
 pub mod scenario;
 pub mod scene;
+pub mod stand;
 
 #[cfg(target_arch = "wasm32")]
 mod app;

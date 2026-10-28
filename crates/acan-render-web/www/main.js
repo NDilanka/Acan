@@ -18,11 +18,22 @@ const LABEL_PAD_PX = 4;
 // tip opens its card.
 const CLICK_PX = 4;
 const PIN_PICK_PX = 18;
+// The gap between the flags of one machine, stacked in a column above its bots.
+const FLAG_ROW_GAP_PX = 4;
+// A settled card shows its one line this long, then fades out over FADE_MS.
+const FADE_HOLD_MS = 1500;
+const FADE_MS = 400;
+const SVG_NS = "http://www.w3.org/2000/svg";
 
 const params = new URLSearchParams(location.search);
+// `?freeze=1` holds the plant still for screenshots. The page loads the log and folds only the
+// events of its own settles, so the server's later events, such as a lease ending, do not move
+// the marks.
+const freeze = params.get("freeze") === "1";
 const $ = (id) => document.getElementById(id);
 const canvas = $("plant");
 const labelsEl = $("labels");
+const leadersEl = $("leaders");
 const flagsEl = $("flags");
 const card = $("card");
 const gate = $("gate");
@@ -44,6 +55,8 @@ let renderedVersion = -1;
 // The marks as the wasm side last gave them: the flags in order, and the open clash card.
 let markState = { flags: [], card: null };
 let flagEls = [];
+let leaderEls = [];
+let fadeTimer = null;
 let socket = null;
 let usageTimer = null;
 let usageRows = [];
@@ -199,7 +212,11 @@ async function start() {
   setLink("loading");
   app.set_plant(await get("/api/plant"));
   await reload();
-  connect();
+  if (freeze) {
+    setLink(`frozen · seq ${app.next_seq()}`);
+  } else {
+    connect();
+  }
   refreshUsage();
 }
 
@@ -304,42 +321,90 @@ function flagElement(flag) {
   return el;
 }
 
-// Each flag is anchored above its point and keeps its place as the bodies and pins move. A
-// flag that would overlap one already placed is hidden; flags are placed before the names.
+// Flags are placed before the names and are never hidden for overlap; a flag is hidden only when
+// it is off the canvas. An agent's flags stack in a column above their machine's bots, each with
+// a leader line to its bot's crown. A clash label starts to the right of its diamond, and the
+// order flag sits above its machine. Each flag keeps its place as the bots and diamonds move.
 function placeFlags(placedBoxes) {
   const quads = app.flag_layout();
-  const width = canvas.clientWidth;
-  const height = canvas.clientHeight;
+  const columns = new Map();
   for (let k = 0; k < quads.length; k += 4) {
     const el = flagEls[quads[k]];
     if (el === undefined) continue;
-    const x = quads[k + 1];
-    const y = quads[k + 2];
+    const machine = quads[k + 1];
+    const x = quads[k + 2];
+    const y = quads[k + 3];
     if (el.size === undefined) el.size = [el.offsetWidth, el.offsetHeight];
+    if (machine >= 0) {
+      if (!columns.has(machine)) columns.set(machine, []);
+      columns.get(machine).push({ el, x, y });
+      continue;
+    }
     const [w, h] = el.size;
-    const box = {
-      left: x - w / 2 - LABEL_PAD_PX,
-      right: x + w / 2 + LABEL_PAD_PX,
-      top: y - LABEL_OFFSET_PX - h - LABEL_PAD_PX,
-      bottom: y - LABEL_OFFSET_PX + LABEL_PAD_PX,
-    };
-    const inside = box.right >= 0 && box.left <= width && box.bottom >= 0 && box.top <= height;
-    const clear = inside && placedBoxes.every((other) => !overlaps(box, other));
-    if (clear) placedBoxes.push(box);
-    el.style.visibility = clear ? "visible" : "hidden";
-    el.style.transform = `translate(${x}px, ${y}px) translate(-50%, calc(-100% - ${LABEL_OFFSET_PX}px))`;
+    const clash = el.classList.contains("clash");
+    const left = clash ? x : x - w / 2;
+    const top = clash ? y - h / 2 : y - LABEL_OFFSET_PX - h;
+    placeFlag(el, left, top, placedBoxes);
   }
+  let leaders = 0;
+  for (const column of columns.values()) {
+    const centre = column.reduce((sum, item) => sum + item.x, 0) / column.length;
+    let bottom = Math.min(...column.map((item) => item.y)) - LABEL_OFFSET_PX;
+    for (const item of column) {
+      const [w, h] = item.el.size;
+      placeFlag(item.el, centre - w / 2, bottom - h, placedBoxes);
+      drawLeader(leaders, centre, bottom, item.x, item.y);
+      leaders += 1;
+      bottom -= h + FLAG_ROW_GAP_PX;
+    }
+  }
+  for (let i = leaders; i < leaderEls.length; i += 1) {
+    leaderEls[i].style.display = "none";
+  }
+}
+
+function placeFlag(el, left, top, placedBoxes) {
+  const [w, h] = el.size;
+  const box = {
+    left: left - LABEL_PAD_PX,
+    right: left + w + LABEL_PAD_PX,
+    top: top - LABEL_PAD_PX,
+    bottom: top + h + LABEL_PAD_PX,
+  };
+  placedBoxes.push(box);
+  const inside = box.right >= 0 && box.left <= canvas.clientWidth
+    && box.bottom >= 0 && box.top <= canvas.clientHeight;
+  el.style.visibility = inside ? "visible" : "hidden";
+  el.style.transform = `translate(${left}px, ${top}px)`;
+}
+
+// A thin line from a flag's bottom edge to its bot's crown. The leaders sit under the flags, so
+// a flag hides the start of its own line.
+function drawLeader(index, x1, y1, x2, y2) {
+  let line = leaderEls[index];
+  if (line === undefined) {
+    line = document.createElementNS(SVG_NS, "line");
+    leadersEl.append(line);
+    leaderEls[index] = line;
+  }
+  line.setAttribute("x1", String(x1));
+  line.setAttribute("y1", String(y1));
+  line.setAttribute("x2", String(x2));
+  line.setAttribute("y2", String(y2));
+  line.style.display = "";
 }
 
 function openCard(index) {
   app.open_card(index);
   note = "";
+  cancelFade();
   showCard();
 }
 
 function toggleCard() {
   app.toggle_card();
   note = "";
+  cancelFade();
   showCard();
 }
 
@@ -364,9 +429,9 @@ function pinAt(x, y) {
   return found;
 }
 
-// The clash card: the two declarations with their hues, the witness the clash would break, and
-// the suggested settlement last. Below them, what each key does. Settled clashes show how they
-// were resolved.
+// The clash card: the two declarations with their hues, and the witness the clash would break.
+// Below them, the settlement options as a list, each with its key chip. The suggested option says
+// so. Once the clash is settled, one line says how, and the card fades out.
 function paintCard() {
   const data = markState.card;
   if (!data || !view) {
@@ -389,25 +454,19 @@ function paintCard() {
   head.append(title, close);
   const children = [head];
 
-  for (const row of data.rows) {
-    if (row.kind === "settle" && !unsettled) continue;
-    children.push(cardRow(row, clash));
-  }
-  if (unsettled && data.keys.length > 0) {
-    const list = document.createElement("ol");
-    list.className = "keys";
-    for (const line of data.keys) {
-      const item = document.createElement("li");
-      item.textContent = line;
-      list.append(item);
+  if (unsettled) {
+    cancelFade();
+    for (const row of data.rows) {
+      if (row.kind !== "settle") children.push(cardRow(row));
     }
-    children.push(list);
-  }
-  if (!unsettled && data.resolved) {
-    const resolved = document.createElement("p");
-    resolved.className = "resolved";
-    resolved.textContent = data.resolved;
-    children.push(resolved);
+    const suggested = data.rows.find((row) => row.kind === "settle" && row.suggested);
+    children.push(optionList(clash, suggested ? suggested.key : null));
+  } else if (data.resolved) {
+    const settled = document.createElement("p");
+    settled.className = "resolved";
+    settled.textContent = `settled · ${data.resolved}`;
+    children.push(settled);
+    scheduleFade();
   }
   if (note) {
     const error = document.createElement("p");
@@ -418,7 +477,7 @@ function paintCard() {
   card.replaceChildren(...children);
 }
 
-function cardRow(row, clash) {
+function cardRow(row) {
   const el = document.createElement("p");
   el.className = `row ${row.kind}`;
   if (row.kind === "declaration") {
@@ -427,24 +486,63 @@ function cardRow(row, clash) {
     dot.style.background = row.hue;
     const text = document.createElement("span");
     text.textContent = row.text;
-    const who = document.createElement("span");
-    who.className = "muted";
-    who.textContent = row.agent;
-    el.append(dot, text, who);
-  } else if (row.kind === "witness") {
-    el.textContent = row.text;
+    el.title = row.agent;
+    el.append(dot, text);
   } else {
-    const key = document.createElement("span");
-    key.className = "key";
-    key.textContent = String(row.key);
-    const button = document.createElement("button");
-    button.type = "button";
-    button.textContent = row.suggested ? `${row.text} (suggested)` : row.text;
-    button.disabled = settling;
-    button.addEventListener("click", () => settle(clash, clash.options[row.key - 1]));
-    el.append(key, button);
+    el.textContent = row.text;
   }
   return el;
+}
+
+function optionList(clash, suggestedKey) {
+  const list = document.createElement("ol");
+  list.className = "options";
+  for (const option of clash.options) {
+    const item = document.createElement("li");
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "option";
+    button.disabled = settling;
+    const chip = document.createElement("kbd");
+    chip.textContent = String(option.key);
+    const label = document.createElement("span");
+    label.textContent = option.label;
+    button.append(chip, label);
+    if (option.key === suggestedKey) {
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = "suggested";
+      button.append(tag);
+    }
+    button.addEventListener("click", () => settle(clash, option));
+    item.append(button);
+    list.append(item);
+  }
+  return list;
+}
+
+// A settled card shows its one line for FADE_HOLD_MS, then fades out and closes.
+function scheduleFade() {
+  if (fadeTimer !== null) return;
+  fadeTimer = setTimeout(() => {
+    card.classList.add("fading");
+    fadeTimer = setTimeout(closeSettledCard, FADE_MS);
+  }, FADE_HOLD_MS);
+}
+
+function cancelFade() {
+  if (fadeTimer !== null) clearTimeout(fadeTimer);
+  fadeTimer = null;
+  card.classList.remove("fading");
+}
+
+function closeSettledCard() {
+  fadeTimer = null;
+  card.classList.remove("fading");
+  app.close_card();
+  markState = JSON.parse(app.marks_json());
+  paintCard();
+  requestRender();
 }
 
 // Keys 1, 2 and 3 settle the open clash on the card with the matching choice.
@@ -472,6 +570,10 @@ async function settle(clash, option) {
       forgetToken();
     } else if (!res.ok) {
       note = `the origin refused: ${(await res.text()).slice(0, 160)}`;
+    } else if (freeze) {
+      // The frozen page does not hear the stream, so it folds the settle's own events here.
+      for (const event of await res.json()) app.ingest(JSON.stringify(event));
+      requestRender();
     }
   } catch (err) {
     note = "the settle did not reach the server";

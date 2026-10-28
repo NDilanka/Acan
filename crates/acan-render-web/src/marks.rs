@@ -1,31 +1,34 @@
-//! The marks the product screen draws on the plant, read from the origin's view.
+//! The marks drawn on the plant, read from the origin's view.
 //!
-//! [`Marks::build`] says where each mark stands: an agent's body on its machine, the amber ring
-//! round an agent that waits on the user, the clash pin, the footprints the agents tint, and the
-//! flags the page labels. [`card`] builds the clash card from the view and the world, so its rows
-//! follow the origin. [`Motion`] only eases marks between the positions the view gives them.
+//! [`Marks::build`] says where each mark stands: an agent's bot on its machine's plinth top, the
+//! amber ring round an agent that waits on the user, the clash pin on its stalk, the footprints
+//! the agents tint, and the flags the page labels. [`card`] builds the clash card from the view
+//! and the world, so its rows follow the origin. [`Motion`] only eases marks between the positions
+//! the view gives them.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use acan_core::{OrderId, TaskId, World};
-use acan_iso::{BODY_HEIGHT, PIN_HEIGHT, PLINTH_TOP};
+use acan_iso::{BOT_HEIGHT, PIN_HEIGHT, PLINTH_TOP, STALK_HEIGHT};
 use acan_render::Instance;
 use acan_render::theme::{self, AGENT_SLOTS, TINT_BODY0, TINT_FOOTPRINT0, TINT_LEN, TINT_SHARED};
 use serde::Serialize;
 
-use crate::mirror::{AgentView, ClashView, View};
+use crate::mirror::{ClashView, View};
 use crate::plan::Plan;
 
-/// Distance between two bodies on one machine, in plan units.
-pub const SEAT_STEP: f32 = 16.0;
-/// Clearance a body keeps from the side of its machine, in plan units.
-const EDGE_CLEAR: f32 = 6.0;
+/// Distance between two bots on one machine, in plan units.
+const SEAT_STEP: f32 = 10.0;
 /// Height above a machine's top where its order flag anchors, in plan units.
 const ORDER_LIFT: f32 = 4.0;
-/// Height above a body's crown where its flag anchors, in plan units.
-const FLAG_LIFT: f32 = 2.0;
-/// Height above a pin's tip where its label anchors, in plan units.
-const PIN_LABEL_LIFT: f32 = 1.0;
+/// The shortest a bot and a clash diamond are drawn on screen, in CSS px. The renderer grows
+/// either one that would be shorter.
+pub const BOT_MIN_PX: f32 = 14.0;
+pub const PIN_MIN_PX: f32 = 18.0;
+/// The diamond's half width as a share of its height. It sets where a clash label starts.
+const DIAMOND_HALF_WIDTH: f32 = 0.42;
+/// Gap between a bot's crown or a diamond and its flag, in CSS px.
+const FLAG_GAP_PX: f32 = 8.0;
 /// How far below its place a body starts its ease-in, and a pin its rise, in plan units.
 const RISE: f32 = 6.0;
 /// Milliseconds a body takes to ease in on arrival.
@@ -37,17 +40,44 @@ pub const PIN_MS: f32 = 250.0;
 /// The dot of a declaration whose task has no agent.
 const UNCLAIMED: &str = "#7a7a72";
 
-/// The palette slot of an agent's hue: a 32-bit FNV-1a hash of its id, modulo the palette. The
-/// hash is fixed, so an agent keeps its hue across reloads and builds.
-#[must_use]
-pub fn hue_slot(agent: &str) -> usize {
-    let hash = agent.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
-        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
-    });
-    hash as usize % AGENT_SLOTS
+/// The palette slot of each agent. The first agent in the view takes slot 0, the next slot 1, and
+/// so on. A slot stays with its agent while the agent is in the view, so a hue does not move
+/// when another agent arrives.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct AgentSlots(BTreeMap<String, usize>);
+
+impl AgentSlots {
+    /// Gives every agent in `view` a slot, keeping the ones already given. A new agent takes the
+    /// lowest slot that no agent holds.
+    pub fn assign(&mut self, view: &View) {
+        let present: BTreeSet<String> = view
+            .agents
+            .iter()
+            .map(|agent| agent.id.to_string())
+            .collect();
+        self.0.retain(|agent, _| present.contains(agent));
+        for agent in &view.agents {
+            let id = agent.id.to_string();
+            if self.0.contains_key(&id) {
+                continue;
+            }
+            let taken: BTreeSet<usize> = self.0.values().copied().collect();
+            let slot = (0..AGENT_SLOTS)
+                .find(|slot| !taken.contains(slot))
+                .unwrap_or(taken.len() % AGENT_SLOTS);
+            self.0.insert(id, slot);
+        }
+    }
+
+    /// The slot of `agent`. An agent the view has not given a slot reads slot 0.
+    #[must_use]
+    pub fn slot(&self, agent: &str) -> usize {
+        self.0.get(agent).copied().unwrap_or(0)
+    }
 }
 
-/// The hue of a palette slot, as `#rrggbb`.
+/// The hue of a palette slot, as `#rrggbb`. Every mark that shows an agent's hue reads it here,
+/// and the renderer's tint for the body and footprint come from the same palette.
 #[must_use]
 pub fn hue_css(slot: usize) -> String {
     let [r, g, b, _] = theme::agent_colour(slot).map(|c| (c * 255.0).round() as u32);
@@ -83,7 +113,8 @@ pub struct Pin {
     pub clash: usize,
     /// The plan index of the machine it stands on.
     pub machine: usize,
-    /// Where the pin's foot stands, in world units: the machine's centre on its top.
+    /// Where the stalk stands, in world units: the machine's centre on its top. The diamond sits
+    /// on the stalk's top, [`STALK_HEIGHT`] above this point.
     pub at: [f32; 3],
 }
 
@@ -94,7 +125,7 @@ pub enum Follow {
     Still,
     /// Rides the body of the named agent.
     Body(String),
-    /// Rides the pin of the named clash.
+    /// Rides the diamond of the named clash.
     Pin(String),
 }
 
@@ -118,6 +149,9 @@ pub struct Flag {
     pub waiting: bool,
     /// The clash index a clash flag belongs to, so a click opens its card.
     pub clash: Option<usize>,
+    /// The plan index of the machine an agent's flag stacks on, so the page groups them.
+    #[serde(skip)]
+    pub machine: Option<usize>,
     #[serde(skip)]
     pub at: [f32; 3],
     #[serde(skip)]
@@ -157,6 +191,15 @@ pub struct Card {
     pub resolved: Option<String>,
 }
 
+/// What the marks need from a plan machine's model: the height of its top, and the free spots on
+/// its plinth top, in world XY, front first.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Stand {
+    /// The height of the model's top, in world units. The stalk rises from it.
+    pub top: f32,
+    pub spots: Vec<[f32; 2]>,
+}
+
 /// Every mark the view calls for, placed on the plan.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Marks {
@@ -168,22 +211,21 @@ pub struct Marks {
 }
 
 impl Marks {
-    /// Places the marks for `view` on `plan`. `tops` gives each plan machine's top height, in
-    /// world units, in plan order. A pin stands on it.
+    /// Places the marks for `view` on `plan`. `stands` gives each plan machine's model, in plan
+    /// order. `slots` gives each agent its hue, so it must already cover the view's agents.
     #[must_use]
-    pub fn build(view: &View, plan: &Plan, tops: &[f32]) -> Self {
+    pub fn build(view: &View, plan: &Plan, stands: &[Stand], slots: &AgentSlots) -> Self {
         let waiting = waiting_agents(view);
-        let bodies = bodies(view, plan, &waiting);
+        let (bodies, pins) = place(view, plan, stands, slots, &waiting);
         let mut footprints = vec![Vec::new(); plan.machines.len()];
         for body in &bodies {
-            let slots: &mut Vec<usize> = &mut footprints[body.machine];
-            if !slots.contains(&body.slot) {
-                slots.push(body.slot);
-                slots.sort_unstable();
+            let hues: &mut Vec<usize> = &mut footprints[body.machine];
+            if !hues.contains(&body.slot) {
+                hues.push(body.slot);
+                hues.sort_unstable();
             }
         }
-        let pins = pins(view, plan, tops);
-        let flags = flags(view, plan, tops, &bodies, &pins);
+        let flags = flags(view, plan, stands, &bodies, &pins);
         Self {
             bodies,
             pins,
@@ -231,11 +273,11 @@ impl Marks {
 
 /// The clash card for the clash at `index` in the view, or `None` when there is no such clash.
 #[must_use]
-pub fn card(view: &View, world: &World, index: usize) -> Option<Card> {
+pub fn card(view: &View, world: &World, index: usize, slots: &AgentSlots) -> Option<Card> {
     let clash = view.clashes.get(index)?;
     let mut rows: Vec<CardRow> = [clash.a, clash.b]
         .into_iter()
-        .map(|task| declaration(view, task))
+        .map(|task| declaration(view, task, slots))
         .collect();
     if let Some(witness) = &clash.breaks {
         rows.push(CardRow::Witness {
@@ -317,10 +359,15 @@ struct Rise {
 }
 
 impl Rise {
+    /// Where the diamond's foot stands: the top of the stalk, eased in or out.
     fn at(&self) -> [f32; 3] {
         let t = ease(self.elapsed / PIN_MS);
         let lift = if self.leaving { t } else { 1.0 - t };
-        [self.pin.at[0], self.pin.at[1], self.pin.at[2] - RISE * lift]
+        [
+            self.pin.at[0],
+            self.pin.at[1],
+            self.pin.at[2] + STALK_HEIGHT - RISE * lift,
+        ]
     }
 
     fn running(&self) -> bool {
@@ -401,33 +448,31 @@ impl Motion {
         self.bodies.get(agent).map(Glide::at)
     }
 
-    /// Where a clash's pin stands now. Pins that are sinking out are included until they are gone.
+    /// Where a clash's diamond stands now: its foot, on the top of the stalk. Pins that are
+    /// sinking out are included until they are gone.
     #[must_use]
     pub fn pin_at(&self, clash: &str) -> Option<[f32; 3]> {
         self.pins.get(clash).map(Rise::at)
     }
 
-    /// Where a flag's anchor stands now. A flag that follows a body or a pin rides it.
+    /// Where a flag's anchor stands now. A flag that follows a body or a diamond rides it.
     #[must_use]
     pub fn flag_at(&self, flag: &Flag) -> [f32; 3] {
         match &flag.follow {
             Follow::Still => flag.at,
-            Follow::Body(agent) => self
-                .body_at(agent)
-                .map_or(flag.at, |[x, y, z]| [x, y, z + body_flag_lift()]),
-            Follow::Pin(clash) => self
-                .pin_at(clash)
-                .map_or(flag.at, |[x, y, z]| [x, y, z + pin_flag_lift()]),
+            Follow::Body(agent) => self.body_at(agent).unwrap_or(flag.at),
+            Follow::Pin(clash) => self.pin_at(clash).unwrap_or(flag.at),
         }
     }
 
-    /// Every pin on the plant now, with its height. A pin that has sunk out is gone.
+    /// Every pin on the plant now, as its stalk's foot and its diamond's foot. A pin that has
+    /// sunk out is gone.
     #[must_use]
-    pub fn pins_now(&self) -> Vec<[f32; 3]> {
+    pub fn pins_now(&self) -> Vec<([f32; 3], [f32; 3])> {
         self.pins
             .values()
             .filter(|rise| !rise.leaving || rise.running())
-            .map(Rise::at)
+            .map(|rise| (rise.pin.at, rise.at()))
             .collect()
     }
 }
@@ -438,11 +483,16 @@ pub struct MarkKinds {
     pub body: u16,
     pub ring: u16,
     pub pin: u16,
+    pub stalk: u16,
 }
 
-/// The instances of the marks now: every body, the ring round each waiting body, and every pin.
+/// The instances of the marks now: every bot, the ring round each waiting bot, and each pin's
+/// stalk and diamond. A bot, its ring and a diamond grow to their screen floor, which `dpr`
+/// turns from CSS px into device px. A stalk keeps its plan size.
 #[must_use]
-pub fn mark_instances(motion: &Motion, marks: &Marks, kinds: MarkKinds) -> Vec<Instance> {
+pub fn mark_instances(motion: &Motion, marks: &Marks, kinds: MarkKinds, dpr: f32) -> Vec<Instance> {
+    let bot = [BOT_MIN_PX * dpr, BOT_HEIGHT];
+    let diamond = [PIN_MIN_PX * dpr, PIN_HEIGHT];
     let mut out = Vec::new();
     for body in &marks.bodies {
         let Some(at) = motion.body_at(&body.agent) else {
@@ -452,35 +502,75 @@ pub fn mark_instances(motion: &Motion, marks: &Marks, kinds: MarkKinds) -> Vec<I
             offset: at,
             kind: kinds.body,
             tint: body_tint(body.slot),
+            grow: bot,
         });
         if body.waiting {
             out.push(Instance {
                 offset: [at[0], at[1], PLINTH_TOP],
                 kind: kinds.ring,
                 tint: 0,
+                grow: bot,
             });
         }
     }
-    for at in motion.pins_now() {
+    for (foot, head) in motion.pins_now() {
         out.push(Instance {
-            offset: at,
+            offset: foot,
+            kind: kinds.stalk,
+            tint: 0,
+            grow: [0.0; 2],
+        });
+        out.push(Instance {
+            offset: head,
             kind: kinds.pin,
             tint: 0,
+            grow: diamond,
         });
     }
     out
 }
 
-/// The height a flag's anchor sits above its body's crown.
+/// Where a flag anchors on screen, in CSS px, given its point `at` in world units and how the
+/// camera projects a world point to the screen. A bot's flag anchors at the bot's crown, and the
+/// page stacks the flags of one machine above it with a leader. A clash flag anchors to the right
+/// of its diamond. Other flags anchor at their own point.
 #[must_use]
-pub fn body_flag_lift() -> f32 {
-    BODY_HEIGHT + FLAG_LIFT
+pub fn flag_anchor(flag: &Flag, at: [f32; 3], project: impl Fn([f32; 3]) -> [f32; 2]) -> [f32; 2] {
+    match flag.kind {
+        FlagKind::Agent => {
+            let (foot, height) = visual_extent(at, BOT_HEIGHT, BOT_MIN_PX, &project);
+            [foot[0], foot[1] - height]
+        }
+        FlagKind::Clash => {
+            let (foot, height) = visual_extent(at, PIN_HEIGHT, PIN_MIN_PX, &project);
+            [
+                foot[0] + height * DIAMOND_HALF_WIDTH + FLAG_GAP_PX,
+                foot[1] - height * 0.5,
+            ]
+        }
+        FlagKind::Order | FlagKind::Question => project(at),
+    }
 }
 
-/// The height a flag's anchor sits above its pin's tip.
+/// Where a diamond's centre is on screen, in CSS px, given its foot in world units.
 #[must_use]
-pub fn pin_flag_lift() -> f32 {
-    PIN_HEIGHT + PIN_LABEL_LIFT
+pub fn diamond_centre(foot: [f32; 3], project: impl Fn([f32; 3]) -> [f32; 2]) -> [f32; 2] {
+    let (base, height) = visual_extent(foot, PIN_HEIGHT, PIN_MIN_PX, &project);
+    [base[0], base[1] - height * 0.5]
+}
+
+/// A model's foot on screen, and its height on screen in CSS px: its plan height at the foot's
+/// scale, or the floor when that is taller, as the renderer draws it.
+fn visual_extent(
+    foot: [f32; 3],
+    plan_height: f32,
+    floor_px: f32,
+    project: &impl Fn([f32; 3]) -> [f32; 2],
+) -> ([f32; 2], f32) {
+    let base = project(foot);
+    let up = project([foot[0], foot[1], foot[2] + 1.0]);
+    let per_unit = (base[1] - up[1]).abs();
+    (base, (plan_height * per_unit).max(floor_px))
 }
 
 fn ease(t: f32) -> f32 {
@@ -521,7 +611,14 @@ fn waiting_agents(view: &View) -> BTreeSet<String> {
         .collect()
 }
 
-fn bodies(view: &View, plan: &Plan, waiting: &BTreeSet<String>) -> Vec<Body> {
+/// Places every bot on its machine's plinth top, and every diamond on its stalk.
+fn place(
+    view: &View,
+    plan: &Plan,
+    stands: &[Stand],
+    slots: &AgentSlots,
+    waiting: &BTreeSet<String>,
+) -> (Vec<Body>, Vec<Pin>) {
     let homes: Vec<Option<usize>> = view
         .agents
         .iter()
@@ -532,50 +629,60 @@ fn bodies(view: &View, plan: &Plan, waiting: &BTreeSet<String>) -> Vec<Body> {
                 .and_then(|name| plan.index_of(name))
         })
         .collect();
-    let mut crowd: BTreeMap<usize, usize> = BTreeMap::new();
-    for home in homes.iter().flatten() {
-        *crowd.entry(*home).or_insert(0) += 1;
-    }
-    let mut seated: BTreeMap<usize, usize> = BTreeMap::new();
-    let mut out = Vec::new();
+    let mut seated: BTreeMap<usize, Vec<[f32; 2]>> = BTreeMap::new();
+    let mut bodies = Vec::new();
     for (agent, home) in view.agents.iter().zip(homes) {
         let Some(machine) = home else {
             continue;
         };
-        let seat = seated.entry(machine).or_insert(0);
-        let offset = (*seat as f32 - (crowd[&machine] as f32 - 1.0) * 0.5) * SEAT_STEP;
-        *seat += 1;
-        out.push(body(agent, machine, offset, plan, waiting));
+        let centre = plan.machines[machine].center();
+        let spots: &[[f32; 2]] = stands
+            .get(machine)
+            .map_or(&[][..], |stand| stand.spots.as_slice());
+        let seats = seated.entry(machine).or_default();
+        let spot = seat(spots, centre, seats);
+        seats.push(spot);
+        let id = agent.id.to_string();
+        bodies.push(Body {
+            slot: slots.slot(&id),
+            waiting: waiting.contains(&id),
+            agent: id,
+            machine,
+            at: [spot[0], spot[1], PLINTH_TOP],
+            activity: agent.activity,
+        });
     }
-    out
+    (bodies, pins(view, plan, stands))
 }
 
-fn body(
-    agent: &AgentView,
-    machine: usize,
-    offset: f32,
-    plan: &Plan,
-    waiting: &BTreeSet<String>,
-) -> Body {
-    let id = agent.id.to_string();
-    let centre = plan.machines[machine].center();
-    let half_width = plan.machines[machine].size[0] * 0.5;
-    let limit = (half_width - EDGE_CLEAR).max(0.0);
-    Body {
-        slot: hue_slot(&id),
-        waiting: waiting.contains(&id),
-        agent: id,
-        machine,
-        at: [
-            centre[0] + offset.clamp(-limit, limit),
-            centre[1],
-            PLINTH_TOP,
-        ],
-        activity: agent.activity,
-    }
+/// The spot an agent takes on a machine: the first free spot a seat's step from the agents
+/// already seated there, or else the spot farthest from them. A machine with no free spot seats
+/// its agent at the machine's centre.
+fn seat(spots: &[[f32; 2]], centre: [f32; 2], taken: &[[f32; 2]]) -> [f32; 2] {
+    let apart = |spot: &[f32; 2]| {
+        taken
+            .iter()
+            .map(|other| distance(*other, *spot))
+            .fold(f32::INFINITY, f32::min)
+    };
+    spots
+        .iter()
+        .copied()
+        .find(|spot| apart(spot) >= SEAT_STEP)
+        .or_else(|| {
+            spots
+                .iter()
+                .copied()
+                .max_by(|a, b| apart(a).total_cmp(&apart(b)))
+        })
+        .unwrap_or(centre)
 }
 
-fn pins(view: &View, plan: &Plan, tops: &[f32]) -> Vec<Pin> {
+fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
+    (a[0] - b[0]).hypot(a[1] - b[1])
+}
+
+fn pins(view: &View, plan: &Plan, stands: &[Stand]) -> Vec<Pin> {
     view.clashes
         .iter()
         .enumerate()
@@ -583,21 +690,18 @@ fn pins(view: &View, plan: &Plan, tops: &[f32]) -> Vec<Pin> {
         .filter_map(|(index, clash)| {
             let machine = nearest(plan, clash.at?)?;
             let centre = plan.machines[machine].center();
+            let top = stands.get(machine).map_or(PLINTH_TOP, |stand| stand.top);
             Some(Pin {
                 id: clash.id.to_string(),
                 clash: index,
                 machine,
-                at: [
-                    centre[0],
-                    centre[1],
-                    tops.get(machine).copied().unwrap_or(0.0),
-                ],
+                at: [centre[0], centre[1], top],
             })
         })
         .collect()
 }
 
-fn flags(view: &View, plan: &Plan, tops: &[f32], bodies: &[Body], pins: &[Pin]) -> Vec<Flag> {
+fn flags(view: &View, plan: &Plan, stands: &[Stand], bodies: &[Body], pins: &[Pin]) -> Vec<Flag> {
     let mut out = Vec::new();
     for body in bodies {
         out.push(Flag {
@@ -606,7 +710,8 @@ fn flags(view: &View, plan: &Plan, tops: &[f32], bodies: &[Body], pins: &[Pin]) 
             hue: Some(hue_css(body.slot)),
             waiting: body.waiting,
             clash: None,
-            at: [body.at[0], body.at[1], body.at[2] + body_flag_lift()],
+            machine: Some(body.machine),
+            at: body.at,
             follow: Follow::Body(body.agent.clone()),
         });
     }
@@ -619,6 +724,7 @@ fn flags(view: &View, plan: &Plan, tops: &[f32], bodies: &[Body], pins: &[Pin]) 
         && let Some(machine) = plan.index_of(&order.machine)
     {
         let centre = plan.machines[machine].center();
+        let top = stands.get(machine).map_or(PLINTH_TOP, |stand| stand.top);
         out.push(Flag {
             kind: FlagKind::Order,
             text: format!(
@@ -630,11 +736,8 @@ fn flags(view: &View, plan: &Plan, tops: &[f32], bodies: &[Body], pins: &[Pin]) 
             hue: None,
             waiting: false,
             clash: None,
-            at: [
-                centre[0],
-                centre[1],
-                tops.get(machine).copied().unwrap_or(0.0) + ORDER_LIFT,
-            ],
+            machine: None,
+            at: [centre[0], centre[1], top + ORDER_LIFT],
             follow: Follow::Still,
         });
     }
@@ -645,7 +748,8 @@ fn flags(view: &View, plan: &Plan, tops: &[f32], bodies: &[Body], pins: &[Pin]) 
             hue: None,
             waiting: false,
             clash: Some(pin.clash),
-            at: [pin.at[0], pin.at[1], pin.at[2] + pin_flag_lift()],
+            machine: None,
+            at: [pin.at[0], pin.at[1], pin.at[2] + STALK_HEIGHT],
             follow: Follow::Pin(pin.id.clone()),
         });
     }
@@ -659,21 +763,22 @@ fn flags(view: &View, plan: &Plan, tops: &[f32], bodies: &[Body], pins: &[Pin]) 
             hue: None,
             waiting: true,
             clash: None,
-            at: [at[0], at[1], PLINTH_TOP + body_flag_lift()],
+            machine: None,
+            at: [at[0], at[1], PLINTH_TOP + ORDER_LIFT],
             follow: Follow::Still,
         });
     }
     out
 }
 
-fn declaration(view: &View, task: TaskId) -> CardRow {
+fn declaration(view: &View, task: TaskId, slots: &AgentSlots) -> CardRow {
     let found = view.tasks.iter().find(|candidate| candidate.id == task);
     let title = found.map_or_else(|| task.to_string(), |candidate| candidate.title.clone());
     match found.and_then(|candidate| candidate.agent.clone()) {
         Some(agent) => {
             let id = agent.to_string();
             CardRow::Declaration {
-                hue: hue_css(hue_slot(&id)),
+                hue: hue_css(slots.slot(&id)),
                 agent: id,
                 text: format!("{task} · {title}"),
             }
@@ -738,9 +843,18 @@ mod tests {
         })
     }
 
-    /// Every machine's top, as the scene gives it: the plinth top for each.
-    fn tops(plan: &Plan) -> Vec<f32> {
-        vec![PLINTH_TOP; plan.machines.len()]
+    /// Every machine's stand: its top at the plinth top, with three spots round its centre.
+    fn stands(plan: &Plan) -> Vec<Stand> {
+        plan.machines
+            .iter()
+            .map(|machine| {
+                let c = machine.center();
+                Stand {
+                    top: PLINTH_TOP,
+                    spots: vec![[c[0] - 6.0, c[1]], [c[0] + 6.0, c[1]], [c[0], c[1] + 6.0]],
+                }
+            })
+            .collect()
     }
 
     fn founder() -> MemberId {
@@ -804,22 +918,41 @@ mod tests {
         plan.index_of(name).expect("the plan has the machine")
     }
 
+    /// The slots of the scripted view's agents, in view order.
+    fn slots_for(view: &View) -> AgentSlots {
+        let mut slots = AgentSlots::default();
+        slots.assign(view);
+        slots
+    }
+
+    fn flag(kind: FlagKind) -> Flag {
+        Flag {
+            kind,
+            text: String::new(),
+            hue: None,
+            waiting: false,
+            clash: None,
+            machine: None,
+            at: [0.0; 3],
+            follow: Follow::Still,
+        }
+    }
+
     #[test]
-    fn a_hue_depends_only_on_the_agent_id() {
-        let a = hue_slot("agent-a");
-        assert_eq!(
-            a,
-            hue_slot("agent-a"),
-            "the same id always gets the same hue"
-        );
-        assert!(a < AGENT_SLOTS);
-        assert_eq!(hue_css(a).len(), 7);
-        assert!(hue_css(a).starts_with('#'));
-        assert_ne!(
-            hue_slot("agent-a"),
-            hue_slot("agent-b"),
-            "the two scenario agents get different hues"
-        );
+    fn the_first_two_agents_take_teal_and_violet_and_keep_them() {
+        let plan = plan();
+        let (_origin, log, _index) = scripted();
+        let view = Mirror::from_log(log).expect("the log replays").view(&plan);
+        let mut slots = AgentSlots::default();
+        slots.assign(&view);
+        let ids: Vec<String> = view.agents.iter().map(|a| a.id.to_string()).collect();
+        assert_eq!(slots.slot(&ids[0]), 0, "the first agent takes slot 0");
+        assert_eq!(slots.slot(&ids[1]), 1, "the second agent takes slot 1");
+        assert_eq!(hue_css(0), "#1f9e8f", "teal");
+        assert_eq!(hue_css(1), "#7a5cd6", "violet");
+        let before = slots.clone();
+        slots.assign(&view);
+        assert_eq!(slots, before, "a slot stays with its agent");
     }
 
     #[test]
@@ -827,7 +960,8 @@ mod tests {
         let plan = plan();
         let (_origin, log, _index) = scripted();
         let view = Mirror::from_log(log).expect("the log replays").view(&plan);
-        let marks = Marks::build(&view, &plan, &tops(&plan));
+        let slots = slots_for(&view);
+        let marks = Marks::build(&view, &plan, &stands(&plan), &slots);
 
         let api = machine(&plan, "src/api");
         let on_api: Vec<&Body> = marks
@@ -838,20 +972,28 @@ mod tests {
         let [first, second] = on_api.as_slice() else {
             panic!("both agents stand on src/api");
         };
-        assert!(
-            (first.at[0] - second.at[0]).abs() >= SEAT_STEP,
-            "the bodies are a seat apart"
-        );
-        assert_eq!(first.at[1], second.at[1]);
-        let centre = plan.machines[api].center();
-        for body in [first, second] {
-            assert!(
-                (body.at[0] - centre[0]).abs() <= plan.machines[api].size[0] * 0.5,
-                "a body stands on its machine"
-            );
-            assert_eq!(body.at[2], PLINTH_TOP);
-        }
+        let gap = distance([first.at[0], first.at[1]], [second.at[0], second.at[1]]);
+        assert!(gap >= SEAT_STEP, "the bodies are a seat apart, not {gap}");
+        assert_eq!(first.at[2], PLINTH_TOP);
+        assert_eq!(second.at[2], PLINTH_TOP);
         assert_ne!(first.slot, second.slot, "the two agents have distinct hues");
+    }
+
+    #[test]
+    fn a_bot_falls_back_to_the_centre_when_no_spot_is_free() {
+        let plan = plan();
+        let (_origin, log, _index) = scripted();
+        let view = Mirror::from_log(log).expect("the log replays").view(&plan);
+        let mut bare = stands(&plan);
+        for stand in &mut bare {
+            stand.spots.clear();
+        }
+        let marks = Marks::build(&view, &plan, &bare, &slots_for(&view));
+        let api = machine(&plan, "src/api");
+        let centre = plan.machines[api].center();
+        for body in marks.bodies.iter().filter(|body| body.machine == api) {
+            assert_eq!([body.at[0], body.at[1]], centre);
+        }
     }
 
     #[test]
@@ -859,7 +1001,7 @@ mod tests {
         let plan = plan();
         let (_origin, log, _index) = scripted();
         let view = Mirror::from_log(log).expect("the log replays").view(&plan);
-        let marks = Marks::build(&view, &plan, &tops(&plan));
+        let marks = Marks::build(&view, &plan, &stands(&plan), &slots_for(&view));
 
         let api = machine(&plan, "src/api");
         let [pin] = marks.pins.as_slice() else {
@@ -868,7 +1010,10 @@ mod tests {
         assert_eq!(pin.machine, api);
         assert_eq!(pin.clash, 0);
         assert_eq!(pin.id, view.clashes[0].id.to_string());
-        assert_eq!(pin.at[2], PLINTH_TOP);
+        assert_eq!(
+            pin.at[2], PLINTH_TOP,
+            "the stalk rises from the machine top"
+        );
 
         let clash_flag = marks
             .flags
@@ -877,6 +1022,11 @@ mod tests {
             .expect("the pin has a flag");
         assert_eq!(clash_flag.text, view.clashes[0].label);
         assert_eq!(clash_flag.clash, Some(0));
+        assert_eq!(
+            clash_flag.at[2],
+            PLINTH_TOP + STALK_HEIGHT,
+            "the flag rides the diamond"
+        );
 
         assert_eq!(
             marks.bodies.iter().filter(|body| body.waiting).count(),
@@ -896,7 +1046,7 @@ mod tests {
         let mirror = Mirror::from_log(log).expect("the log replays");
         let view = mirror.view(&plan);
 
-        let card = card(&view, mirror.world(), 0).expect("clash 0 has a card");
+        let card = card(&view, mirror.world(), 0, &slots_for(&view)).expect("clash 0 has a card");
         assert_eq!(card.title, view.clashes[0].label);
         let [first, second, settle] = card.rows.as_slice() else {
             panic!("two declarations and the settle row, with no witness");
@@ -924,7 +1074,7 @@ mod tests {
         let mut view = mirror.view(&plan);
         view.clashes[0].breaks = Some("w-2".to_owned());
 
-        let card = card(&view, mirror.world(), 0).expect("clash 0 has a card");
+        let card = card(&view, mirror.world(), 0, &slots_for(&view)).expect("clash 0 has a card");
         let [_, _, witness, settle] = card.rows.as_slice() else {
             panic!("two declarations, the witness and the settle row");
         };
@@ -940,13 +1090,18 @@ mod tests {
     #[test]
     fn a_settled_clash_loses_its_pin_once_the_pin_has_sunk() {
         let plan = plan();
-        let tops = tops(&plan);
+        let stands = stands(&plan);
         let (mut origin, log, index) = scripted();
         let mut mirror = Mirror::from_log(log).expect("the log replays");
 
         let before = mirror.view(&plan);
         let mut motion = Motion::default();
-        motion.sync(&Marks::build(&before, &plan, &tops));
+        motion.sync(&Marks::build(
+            &before,
+            &plan,
+            &stands,
+            &AgentSlots::default(),
+        ));
         assert_eq!(motion.pins_now().len(), 1, "the open clash shows its pin");
 
         let clash = before.clashes[0].id;
@@ -976,7 +1131,7 @@ mod tests {
         }
 
         let after = mirror.view(&plan);
-        let marks = Marks::build(&after, &plan, &tops);
+        let marks = Marks::build(&after, &plan, &stands, &AgentSlots::default());
         assert!(marks.pins.is_empty(), "a settled clash has no pin");
         motion.sync(&marks);
         assert_eq!(
@@ -992,11 +1147,11 @@ mod tests {
     }
 
     #[test]
-    fn a_waiting_body_gets_a_ring_and_each_pin_an_instance() {
+    fn a_waiting_body_gets_a_ring_and_each_pin_a_stalk_and_a_diamond() {
         let plan = plan();
         let (_origin, log, _index) = scripted();
         let view = Mirror::from_log(log).expect("the log replays").view(&plan);
-        let marks = Marks::build(&view, &plan, &tops(&plan));
+        let marks = Marks::build(&view, &plan, &stands(&plan), &slots_for(&view));
         let mut motion = Motion::default();
         motion.sync(&marks);
         motion.advance(ARRIVE_MS);
@@ -1005,11 +1160,49 @@ mod tests {
             body: 40,
             ring: 41,
             pin: 42,
+            stalk: 43,
         };
-        let instances = mark_instances(&motion, &marks, kinds);
+        let instances = mark_instances(&motion, &marks, kinds, 1.0);
         let count = |kind: u16| instances.iter().filter(|i| i.kind == kind).count();
         assert_eq!(count(kinds.body), 2);
         assert_eq!(count(kinds.ring), 2, "each waiting agent has a ring");
         assert_eq!(count(kinds.pin), 1);
+        assert_eq!(count(kinds.stalk), 1, "each diamond has its stalk");
+    }
+
+    #[test]
+    fn a_bot_flag_sits_above_the_crown_and_a_clash_label_to_the_right() {
+        // Screen y falls as z rises, and one plan unit is one px, so the floors decide the sizes.
+        let project = |p: [f32; 3]| [p[0], -p[2]];
+        let agent = Flag {
+            kind: FlagKind::Agent,
+            ..flag(FlagKind::Agent)
+        };
+        let foot = [10.0, 5.0, PLINTH_TOP];
+        let crown = flag_anchor(&agent, foot, project);
+        assert_eq!(crown[0], 10.0);
+        assert!(
+            (crown[1] - (-PLINTH_TOP - BOT_MIN_PX)).abs() < 1e-3,
+            "the crown is the floor above the foot, got {}",
+            crown[1]
+        );
+
+        let clash = flag(FlagKind::Clash);
+        let label = flag_anchor(&clash, foot, project);
+        assert!(label[0] > foot[0], "the label starts right of the diamond");
+    }
+
+    #[test]
+    fn a_seat_stays_put_and_the_farthest_free_spot_takes_the_rest() {
+        let spots = [[0.0, 0.0], [4.0, 0.0]];
+        let first = seat(&spots, [9.0, 9.0], &[]);
+        assert_eq!(first, [0.0, 0.0]);
+        let second = seat(&spots, [9.0, 9.0], &[first]);
+        assert_eq!(
+            second,
+            [4.0, 0.0],
+            "a spot nearer than a seat step is not free"
+        );
+        assert_eq!(seat(&[], [9.0, 9.0], &[]), [9.0, 9.0]);
     }
 }

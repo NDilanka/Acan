@@ -13,7 +13,7 @@ pub const AGENT_HUES: [u32; AGENT_SLOTS] =
     [0x1f9e8f, 0x7a5cd6, 0x3d7fd1, 0xc0548c, 0x6a9a2e, 0x9b4d9b];
 pub const AGENT_SLOTS: usize = 6;
 /// The share of an agent's hue a machine's footprint takes, mixed into white.
-pub const FOOTPRINT_MIX: f32 = 0.12;
+pub const FOOTPRINT_MIX: f32 = 0.22;
 /// Tint slot of each agent's body at full hue: `TINT_BODY0 + slot`.
 pub const TINT_BODY0: u32 = 1;
 /// Tint slot of each agent's footprint mix: `TINT_FOOTPRINT0 + slot`.

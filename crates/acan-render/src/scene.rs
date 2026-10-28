@@ -9,6 +9,10 @@ pub struct Instance {
     pub kind: u16,
     /// Index into the theme's tint slots. Slot 0 is the identity.
     pub tint: u8,
+    /// A screen-size floor for a small mark: the model grows about its origin until it is at
+    /// least `grow[0]` device px tall. `grow[1]` is its height in plan units. `[0.0; 2]` draws
+    /// the model at plan size.
+    pub grow: [f32; 2],
 }
 
 /// A belt: a flat opaque ribbon lying on the ground along a centre line, with a fine line

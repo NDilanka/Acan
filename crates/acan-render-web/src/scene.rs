@@ -11,14 +11,15 @@ use crate::marks::MarkKinds;
 /// The gap between a belt's end and the plinth it meets, in plan units.
 const BELT_PORT_GAP: f32 = 1.5;
 
-/// One acan-iso model per kind, in [`kind::ALL`] order, then the marks: an agent's body, the
-/// ring round a waiting agent, and the clash pin. [`mark_kinds`] names the last three.
+/// One acan-iso model per kind, in [`kind::ALL`] order, then the marks: an agent's bot, the
+/// ring round a waiting agent, the clash pin, and its stalk. [`mark_kinds`] names the last four.
 pub fn models() -> Vec<Model> {
     let mut out: Vec<Model> = ALL.iter().map(|&kind| acan_iso::model(kind)).collect();
     out.extend([
         acan_iso::agent_body(),
         acan_iso::waiting_ring(),
         acan_iso::clash_pin(),
+        acan_iso::clash_stalk(),
     ]);
     out
 }
@@ -30,6 +31,7 @@ pub fn mark_kinds() -> MarkKinds {
         body: base,
         ring: base + 1,
         pin: base + 2,
+        stalk: base + 3,
     }
 }
 
@@ -56,6 +58,7 @@ pub fn plant_scene(layout: &Layout, models: &[Model]) -> Scene {
             offset,
             kind: index as u16,
             tint: 0,
+            grow: [0.0; 2],
         });
     }
     if bounds.min[0] > bounds.max[0] {

@@ -8,20 +8,20 @@
 use std::collections::HashMap;
 
 use acan_core::Stamped;
-use acan_iso::PIN_HEIGHT;
 use acan_render::camera::{DEFAULT_AZIMUTH, DEFAULT_ELEVATION};
 use acan_render::{Aabb, Camera, Lod, Model, Renderer, Scene, wgpu};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
-use crate::kind::PlanFootprint;
+use crate::kind::{self, ALL, PlanFootprint};
 use crate::labels::{self, LabelSpot};
 use crate::layout::{Layout, layout};
-use crate::marks::{self, Marks, Motion};
+use crate::marks::{self, AgentSlots, Marks, Motion, Stand};
 use crate::mirror::{Mirror, View};
 use crate::plan::Plan;
 use crate::plant::{Plant, PlantMachine, from_scan_json, rest_labels, stress};
 use crate::scene;
+use crate::stand;
 
 /// Space around the plant at fit, in CSS pixels.
 const FIT_MARGIN_CSS: f32 = 24.0;
@@ -37,6 +37,8 @@ pub struct App {
     renderer: Renderer,
     camera: Camera,
     models: Vec<Model>,
+    /// The free spots a bot can stand on, per model kind, relative to the model's origin.
+    kind_spots: Vec<Vec<[f32; 2]>>,
     dpr: f32,
     turn: Option<Turn>,
     plant: Option<Loaded>,
@@ -46,6 +48,8 @@ pub struct App {
     view: Option<View>,
     marks: Marks,
     motion: Motion,
+    /// Each agent's hue slot. It keeps a slot while the agent is in the view.
+    slots: AgentSlots,
     /// Whether the marks' eases were moving on the last frame.
     moving: bool,
     /// The index of the clash whose card is open, if any.
@@ -79,8 +83,8 @@ struct Loaded {
     base: Scene,
     /// For each plan machine, its instance in `base`.
     plan_instance: Vec<usize>,
-    /// For each plan machine, the height of its top, in world units.
-    tops: Vec<f32>,
+    /// For each plan machine, its model's top and the free spots on its plinth top.
+    stands: Vec<Stand>,
 }
 
 #[wasm_bindgen]
@@ -109,10 +113,22 @@ impl App {
             .map_err(js_err)?;
         let models = scene::models();
         renderer.set_models(&models);
+        // The default view looks at the plant from the front corner. A bot stands on the side
+        // nearest that corner first.
+        let facing = DEFAULT_AZIMUTH.to_radians();
+        let front = [facing.cos(), facing.sin()];
+        let kind_spots = ALL
+            .iter()
+            .map(|&kind| {
+                let (w, d) = kind.footprint();
+                stand::spots(&models[kind::index(kind)], [w / 2.0, d / 2.0], front)
+            })
+            .collect();
         Ok(App {
             renderer,
             camera: Camera::new([size[0] as f32, size[1] as f32]),
             models,
+            kind_spots,
             dpr: 1.0,
             turn: None,
             plant: None,
@@ -121,6 +137,7 @@ impl App {
             view: None,
             marks: Marks::default(),
             motion: Motion::default(),
+            slots: AgentSlots::default(),
             moving: false,
             card_clash: None,
             view_json: String::new(),
@@ -220,6 +237,8 @@ impl App {
         ];
         self.camera.set_viewport([size[0] as f32, size[1] as f32]);
         self.renderer.resize(size);
+        // The screen-size floors of the marks are in device px, so a new ratio moves them.
+        self.sync_scene();
     }
 
     /// Moves the scene so the ground under the CSS point `(x0, y0)` lands under `(x1, y1)`.
@@ -426,7 +445,7 @@ impl App {
         let card = self.card_clash.and_then(|index| {
             let view = self.view.as_ref()?;
             let mirror = self.mirror.as_ref()?;
-            marks::card(view, mirror.world(), index)
+            marks::card(view, mirror.world(), index, &self.slots)
         });
         serde_json::to_string(&Out {
             flags: &self.marks.flags,
@@ -435,31 +454,34 @@ impl App {
         .expect("marks serialize as JSON")
     }
 
-    /// Each flag's anchor on screen, as flat `[flag index, css x, css y, 1]` quads, in the order
-    /// `marks_json` lists the flags. The anchors follow the bodies and pins while they move.
+    /// Each flag's anchor on screen, as flat `[flag index, machine or -1, css x, css y]` quads, in
+    /// the order `marks_json` lists the flags. The machine is the one an agent's flag stacks on,
+    /// and -1 is a flag that stands alone. The anchors follow the bodies and diamonds while they
+    /// move.
     pub fn flag_layout(&self) -> Vec<f32> {
         self.marks
             .flags
             .iter()
             .enumerate()
             .flat_map(|(index, flag)| {
-                let [x, y, z] = self.motion.flag_at(flag);
-                let [px, py] = self.camera.world_to_screen([x, y, z]);
-                [index as f32, px / self.dpr, py / self.dpr, 1.0]
+                let at = self.motion.flag_at(flag);
+                let [x, y] = marks::flag_anchor(flag, at, |p| self.screen(p));
+                let machine = flag.machine.map_or(-1.0, |machine| machine as f32);
+                [index as f32, machine, x, y]
             })
             .collect()
     }
 
-    /// Each clash pin's tip on screen, as flat `[clash index, css x, css y]` triples. The page
-    /// opens the card of the pin a click lands on.
+    /// Each clash diamond's centre on screen, as flat `[clash index, css x, css y]` triples. The
+    /// page opens the card of the diamond a click lands on.
     pub fn pin_layout(&self) -> Vec<f32> {
         self.marks
             .pins
             .iter()
             .flat_map(|pin| {
-                let [x, y, z] = self.motion.pin_at(&pin.id).unwrap_or(pin.at);
-                let [px, py] = self.camera.world_to_screen([x, y, z + PIN_HEIGHT]);
-                [pin.clash as f32, px / self.dpr, py / self.dpr]
+                let foot = self.motion.pin_at(&pin.id).unwrap_or(pin.at);
+                let [x, y] = marks::diamond_centre(foot, |p| self.screen(p));
+                [pin.clash as f32, x, y]
             })
             .collect()
     }
@@ -474,6 +496,11 @@ impl App {
         {
             self.card_clash = Some(index);
         }
+    }
+
+    /// Closes the card, if one is open.
+    pub fn close_card(&mut self) {
+        self.card_clash = None;
     }
 
     /// Closes the card when it is open. Otherwise opens the card of the first unsettled clash.
@@ -554,9 +581,19 @@ impl App {
             .iter()
             .map(|machine| instance_of[machine.name.as_str()])
             .collect();
-        let tops: Vec<f32> = plan_instance
+        let stands: Vec<Stand> = plan_instance
             .iter()
-            .map(|&i| self.models[usize::from(scene.instances[i].kind)].bounds.max[2])
+            .map(|&i| {
+                let instance = &scene.instances[i];
+                let kind = usize::from(instance.kind);
+                Stand {
+                    top: self.models[kind].bounds.max[2],
+                    spots: self.kind_spots[kind]
+                        .iter()
+                        .map(|spot| [instance.offset[0] + spot[0], instance.offset[1] + spot[1]])
+                        .collect(),
+                }
+            })
             .collect();
         self.plan = Some(plan);
         self.view = None;
@@ -584,7 +621,7 @@ impl App {
             occluders,
             base: scene,
             plan_instance,
-            tops,
+            stands,
         });
         self.fit();
         self.sync_scene();
@@ -599,7 +636,8 @@ impl App {
             return Ok(());
         };
         let view = mirror.view(plan);
-        let marks = Marks::build(&view, plan, &loaded.tops);
+        self.slots.assign(&view);
+        let marks = Marks::build(&view, plan, &loaded.stands, &self.slots);
         self.view_json = serde_json::to_string(&view).map_err(js_err)?;
         self.view_version += 1;
         self.motion.sync(&marks);
@@ -623,9 +661,16 @@ impl App {
             &self.motion,
             &self.marks,
             scene::mark_kinds(),
+            self.dpr,
         ));
         self.renderer.set_scene(&scene);
         self.renderer.set_tints(&self.marks.tint_table());
+    }
+
+    /// A world point on screen, in CSS px.
+    fn screen(&self, point: [f32; 3]) -> [f32; 2] {
+        let [x, y] = self.camera.world_to_screen(point);
+        [x / self.dpr, y / self.dpr]
     }
 
     /// The zoom at which the plant fills the view at the default angles, in the current

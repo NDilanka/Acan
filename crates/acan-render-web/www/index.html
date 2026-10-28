@@ -33,12 +33,14 @@
   #labels.alt .count { display: inline; }
   /* Flags are the marks the plant draws: an agent with its activity, the order, a clash, a
      question. Each is one fixed-size label with a hue dot; an amber dot means it waits on you. */
+  #leaders { position: fixed; inset: 0; width: 100%; height: 100%; pointer-events: none; overflow: visible; }
+  #leaders line { stroke: #8a8a8f; stroke-width: 1; }
   #flags { position: fixed; inset: 0; pointer-events: none; overflow: hidden; }
-  .flag { position: absolute; left: 0; top: 0; display: flex; gap: 5px; align-items: center; white-space: nowrap;
-    font: 11px/1.2 var(--mono); color: var(--ink); background: var(--face); border: 1px solid var(--rule);
-    border-radius: 3px; padding: 2px 6px; }
+  .flag { position: absolute; left: 0; top: 0; display: flex; gap: 6px; align-items: center; white-space: nowrap;
+    font: 13px/1.2 var(--mono); color: var(--ink); background: var(--face); border: 1px solid var(--rule);
+    border-radius: 3px; padding: 3px 8px; }
   .flag.question { border-style: dashed; }
-  .flag .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .flag .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
   .flag .dot.wait { background: var(--amber); }
   .flag.clash { pointer-events: auto; cursor: pointer; color: var(--red); border-color: var(--red); }
   .island { position: fixed; background: var(--face); border: 1px solid #e5e5e2; border-radius: 10px;
@@ -51,7 +53,15 @@
   #hint { top: 12px; left: 50%; transform: translateX(-50%); color: #57575a; white-space: nowrap; }
   kbd { font: 11px ui-monospace, Consolas, monospace; color: var(--ink); background: var(--face);
     border: 1px solid #e5e5e2; border-radius: 4px; padding: 0 4px; }
-  #card { position: fixed; right: 16px; top: 16px; width: 300px; box-sizing: border-box; background: #ffffff; border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; }
+  #card { position: fixed; right: 16px; top: 16px; width: 300px; box-sizing: border-box; background: #ffffff; border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; transition: opacity 0.4s ease; }
+  #card.fading { opacity: 0; }
+  #card ol.options { list-style: none; margin: 8px 0 0; padding: 0; border-top: 1px solid var(--rule); }
+  #card ol.options li { margin: 0; border-bottom: 1px solid var(--rule); }
+  #card button.option { display: flex; align-items: center; gap: 10px; width: 100%; box-sizing: border-box; padding: 7px 2px; background: none; border: none; border-radius: 0; color: var(--ink); font: 12px/1.3 var(--sans); text-align: left; cursor: pointer; }
+  #card button.option:hover span:not(.tag) { text-decoration: underline; }
+  #card button.option:disabled { color: var(--muted); cursor: default; }
+  #card button.option kbd { min-width: 16px; text-align: center; font: 11px var(--mono); color: var(--ink); background: var(--card); border: 1px solid var(--rule); border-radius: 3px; padding: 0 4px; }
+  #card button.option .tag { margin-left: auto; font: 11px var(--mono); color: var(--muted); }
   #card .head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
   #card h2 { margin: 0 0 6px; font: 600 13px/1.3 var(--mono); color: var(--ink); }
   #card p { margin: 6px 0; }
@@ -85,6 +95,7 @@
 <body>
 <canvas id="plant" tabindex="0"></canvas>
 <div id="labels" aria-hidden="true"></div>
+<svg id="leaders" aria-hidden="true"></svg>
 <div id="flags" aria-live="polite"></div>
 <div class="island" id="shell"><span class="brand">Acan</span><span class="repo" id="repo"></span><span id="link" class="muted">starting</span></div>
 <div class="island" id="order" hidden><span id="order-line" class="muted"></span></div>
