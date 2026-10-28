@@ -1,4 +1,5 @@
-//! The scope-first MCP tools: get_scope, get_rulings, post_readback, contest and get_receipt.
+//! The scope-first MCP tools: `get_scope`, `get_rulings`, `post_readback`, `contest` and
+//! `get_receipt`.
 //!
 //! Each tool authorizes the principal, checks the scope revision and evidence it names against
 //! the confirmed ones, and answers with the `acan-mcp/1` envelopes. An agent token may read and

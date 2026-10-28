@@ -413,6 +413,10 @@ string_newtype!(
 
 impl ObservationPath {
     /// The channel this path addresses. Never [`Channel::Any`].
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: every constructor, including decoding, validates the path.
     #[must_use]
     pub fn channel(&self) -> Channel {
         parse_channel_path(&self.0, Wildcards::Refused)
@@ -440,6 +444,10 @@ string_newtype!(
 
 impl PathPattern {
     /// The channel this pattern addresses. Never [`Channel::Any`].
+    ///
+    /// # Panics
+    ///
+    /// Never in practice: every constructor, including decoding, validates the pattern.
     #[must_use]
     pub fn channel(&self) -> Channel {
         parse_channel_path(&self.0, Wildcards::Allowed)
@@ -621,7 +629,7 @@ pub enum Scalar {
     Null,
     /// A boolean.
     Bool(bool),
-    /// A number, kept exactly as serde_json parsed it.
+    /// A number, kept exactly as `serde_json` parsed it.
     Number(serde_json::Number),
     /// A string.
     Text(String),
