@@ -170,6 +170,38 @@ mod tests {
     }
 
     #[test]
+    fn no_belt_reaches_under_a_plinth_across_its_whole_width() {
+        for plant in [
+            from_scan_json(FIXTURE).expect("fixture parses"),
+            stress(200),
+        ] {
+            let (kinds, edges) = plant.layout_input();
+            let laid = layout(&kinds, &edges);
+            for ribbon in &plant_scene(&laid, &models()).ribbons {
+                let c = &ribbon.centre;
+                for i in 0..c.len() {
+                    let next = c[(i + 1).min(c.len() - 1)];
+                    let prev = c[i.saturating_sub(1)];
+                    let d = [next[0] - prev[0], next[1] - prev[1]];
+                    let len = d[0].hypot(d[1]).max(1e-6);
+                    let across = [-d[1] / len, d[0] / len];
+                    for s in [-1.0, -0.5, 0.0, 0.5, 1.0] {
+                        let k = 0.5 * ribbon.width * s;
+                        let p = [c[i][0] + across[0] * k, c[i][1] + across[1] * k];
+                        for m in &laid.machines {
+                            let f = m.footprint();
+                            assert!(
+                                !(p[0] > f[0] && p[0] < f[2] && p[1] > f[1] && p[1] < f[3]),
+                                "{p:?} of a belt lies under the plinth at {f:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_belt_stops_just_short_of_both_plates() {
         let belt = Belt {
             from: 0,
