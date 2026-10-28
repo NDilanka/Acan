@@ -6,7 +6,8 @@ struct Camera {
     // xyz: the eye. For the orthographic view it is the equivalent perspective eye, used for fog.
     // w: 1 when orthographic.
     eye: vec4<f32>,
-    // xy: the ground pivot. z: eye distance, the length from the eye to the pivot.
+    // xy: the ground pivot. z: eye distance, the length from the eye to the pivot. w: 1 when the
+    // frame holds sRGB-encoded values, so blending does not happen in linear light.
     pivot: vec4<f32>,
     // x, y: viewport in device px. z: zoom in device px per plan unit at the pivot. w: thinnest
     // stroke in device px.
@@ -410,30 +411,41 @@ fn no_stroke() -> StrokeOut {
     return gone;
 }
 
+// Device px from the viewport's middle, y up, of a clip-space point.
+fn to_screen(c: vec4<f32>) -> vec2<f32> {
+    return c.xy / c.w * camera.view.xy * 0.5;
+}
+
+// `outside` is a screen direction, or zero. A stroke with one moves its own half width that way,
+// so it lies beside the silhouette and not across it.
 fn stroke(
     a: vec3<f32>,
     b: vec3<f32>,
     half_px: f32,
     ink: vec4<f32>,
     corner: vec2<f32>,
+    outside: vec2<f32>,
 ) -> StrokeOut {
     let pa = lifted(a);
     let pb = lifted(b);
     let ca = to_clip(pa);
     let cb = to_clip(pb);
     let view = camera.view.xy;
-    let sa = ca.xy / ca.w * view * 0.5;
-    let sb = cb.xy / cb.w * view * 0.5;
-    let delta = sb - sa;
+    let delta = to_screen(cb) - to_screen(ca);
     let len = length(delta);
     var dir = vec2<f32>(1.0, 0.0);
     if (len > 1e-6) {
         dir = delta / len;
     }
     let normal = vec2<f32>(-dir.y, dir.x);
-    // The coverage reaches zero half a pixel past the stroke's edge.
-    let reach = half_px + 0.5;
-    let shift = (normal * corner.y + dir * (corner.x * 2.0 - 1.0)) * reach;
+    let side = dot(normal, outside);
+    let push = normal * select(0.0, sign(side) * half_px, abs(side) > 1e-3);
+    let sa = to_screen(ca) + push;
+    let sb = to_screen(cb) + push;
+    // A pixel square reaches at most half its diagonal along any direction, so the coverage
+    // is zero that far past the stroke's edge.
+    let reach = half_px + 0.71;
+    let shift = push + (normal * corner.y + dir * (corner.x * 2.0 - 1.0)) * reach;
 
     // Clip space is linear along a segment, so the interpolated point is exact. An offset of
     // `shift` px is 2 / view times that in NDC, and NDC is clip over w.
@@ -464,7 +476,19 @@ fn vs_edge(v: EdgeIn) -> StrokeOut {
     if (ink.a <= 0.0) {
         return no_stroke();
     }
-    return stroke(a, b, 0.5 * LINE_PX, ink, v.corner);
+    // A contour drawn across the silhouette loses its inner half to the depth test wherever
+    // the facets next to it graze the view, which bends and fades the line. Beside the
+    // silhouette it lies over what is behind. The two normals add up to one that points out
+    // of the surface across the edge.
+    var outside = vec2<f32>(0.0);
+    if (front_a != front_b) {
+        let n = v.normal_a + v.normal_b;
+        let s = to_screen(to_clip(mid + n)) - to_screen(to_clip(mid));
+        if (length(s) > 1e-6) {
+            outside = normalize(s);
+        }
+    }
+    return stroke(a, b, 0.5 * LINE_PX, ink, v.corner, outside);
 }
 
 @vertex
@@ -477,22 +501,61 @@ fn vs_line(v: LineIn) -> StrokeOut {
     let min_px = camera.view.w;
     var ink = theme.palette[v.tone];
     ink.a = ink.a * min(v.width / min_px, 1.0) * shown;
-    return stroke(v.a + v.offset, v.b + v.offset, 0.5 * max(v.width, min_px), ink, v.corner);
+    let half_px = 0.5 * max(v.width, min_px);
+    return stroke(v.a + v.offset, v.b + v.offset, half_px, ink, v.corner, vec2<f32>(0.0));
 }
 
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
 
-// The ink a stroke lays on the page, as how much it darkens it.
+// The share of a pixel square within `x` of its centre along the unit direction `n`. The
+// square projects onto `n` as a trapezoid, `a + b` wide with a flat top `a - b` wide.
+fn pixel_share(x: f32, n: vec2<f32>) -> f32 {
+    let a = max(abs(n.x), abs(n.y));
+    let b = min(abs(n.x), abs(n.y));
+    let t = x + 0.5 * (a + b);
+    if (t <= 0.0) {
+        return 0.0;
+    }
+    if (t >= a + b) {
+        return 1.0;
+    }
+    if (t < b) {
+        return t * t / (2.0 * a * b);
+    }
+    if (t <= a) {
+        return (t - 0.5 * b) / a;
+    }
+    let u = a + b - t;
+    return 1.0 - u * u / (2.0 * a * b);
+}
+
+// The ink a stroke lays on the page, as how much it darkens it. The coverage is the share of
+// the pixel square inside the stroke. A plain ramp on the distance shades a slanted thin line
+// unevenly, alternately one dark pixel and two light ones, which reads as a beaded line.
 @fragment
 fn fs_stroke(v: StrokeOut) -> @location(0) vec4<f32> {
     let p = vec2<f32>(v.clip.x - 0.5 * camera.view.x, 0.5 * camera.view.y - v.clip.y);
     let a = v.ends.xy;
     let ab = v.ends.zw - a;
     let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
-    let coverage = clamp(v.half_px - distance(p, a + t * ab) + 0.5, 0.0, 1.0);
+    let off = p - (a + t * ab);
+    let d = length(off);
+    var n = vec2<f32>(-ab.y, ab.x) / max(length(ab), 1e-6);
+    if (d > 1e-4) {
+        n = off / d;
+    }
+    let coverage = pixel_share(v.half_px - d, n) - pixel_share(-v.half_px - d, n);
+    let lit = dot(v.ink.rgb, LUMA);
+    var dark = (1.0 - lit) * coverage;
+    if (camera.pivot.w > 0.5) {
+        // An encoded frame darkens a pixel a stroke half covers by half its ink, which takes
+        // more light than half. A slanted line, alternately on one pixel and split over two,
+        // then beads. This darkens each pixel by what its share takes in light, on paper.
+        let light = 1.0 - coverage * (1.0 - pow(lit, 2.2));
+        dark = 1.0 - pow(light, 1.0 / 2.2);
+    }
     // No discard: under the max blend a zero changes nothing, and a discard costs more.
-    let alpha = coverage * v.ink.a;
-    return vec4<f32>((1.0 - dot(v.ink.rgb, LUMA)) * alpha, 0.0, 0.0, alpha);
+    return vec4<f32>(dark * v.ink.a, 0.0, 0.0, coverage * v.ink.a);
 }
 // Dots: a disc is a square of corners in its own plane, cut to a circle in the fragment shader.
 
