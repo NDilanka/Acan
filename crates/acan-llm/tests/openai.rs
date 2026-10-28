@@ -149,6 +149,78 @@ async fn request_matches_openai_chat_completions_and_sends_bearer_key() {
     );
 }
 
+fn capped_client(meta: &MockServer, token_limit_field: &str) -> OpenAiCompatible {
+    let meta_url = meta.uri();
+    let toml = format!(
+        r#"
+[[providers]]
+name = "meta"
+base_url = "{meta_url}/v1"
+api_key_env = "META_API_KEY"
+default_model = "muse-spark-1.3"
+token_limit_field = "{token_limit_field}"
+
+[routing.foreman]
+provider = "meta"
+
+[routing.worker]
+provider = "meta"
+
+[routing.fast]
+provider = "meta"
+"#
+    );
+    client_for(LlmConfig::from_toml_str(&toml).expect("test config is valid"))
+}
+
+async fn body_for_capped_call(token_limit_field: &str, max_tokens: Option<u32>) -> Value {
+    let meta = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(text_reply("OK"))
+        .expect(1)
+        .mount(&meta)
+        .await;
+
+    let request = ChatRequest {
+        messages: vec![Message::user("Reply with the single word OK.")],
+        max_tokens,
+        ..Default::default()
+    };
+    capped_client(&meta, token_limit_field)
+        .chat(Role::Foreman, request)
+        .await
+        .expect("chat succeeds");
+    body_of(&meta, 0).await
+}
+
+#[tokio::test]
+async fn token_cap_is_sent_under_the_configured_field_name() {
+    let legacy = body_for_capped_call("max_tokens", Some(64)).await;
+    assert_eq!(legacy["max_tokens"], json!(64), "cap under max_tokens");
+    assert!(
+        legacy.get("max_completion_tokens").is_none(),
+        "max_completion_tokens is not sent: {legacy}"
+    );
+
+    let canonical = body_for_capped_call("max_completion_tokens", Some(64)).await;
+    assert_eq!(
+        canonical["max_completion_tokens"],
+        json!(64),
+        "cap under max_completion_tokens"
+    );
+    assert!(
+        canonical.get("max_tokens").is_none(),
+        "max_tokens is not sent: {canonical}"
+    );
+
+    let uncapped = body_for_capped_call("max_completion_tokens", None).await;
+    assert!(
+        uncapped.get("max_tokens").is_none() && uncapped.get("max_completion_tokens").is_none(),
+        "no cap was set, so no cap field is sent: {uncapped}"
+    );
+}
+
 #[tokio::test]
 async fn tool_history_and_tool_calls_use_openai_shapes() {
     let meta = MockServer::start().await;

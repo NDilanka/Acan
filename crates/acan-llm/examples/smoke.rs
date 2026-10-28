@@ -6,15 +6,15 @@
 //! - `--tool`: one function tool with a required argument. It passes only when the reply holds
 //!   a `tool_calls` entry whose arguments parse against the tool's schema.
 //!
-//! `--provider <name>` routes the role to that provider for this run. Keys come from the
-//! environment or `crates/acan-llm/.env`.
+//! `--provider <name>` routes the role to that provider for this run. `--max-tokens <n>` caps the
+//! reply in plain mode. Keys come from the environment or `crates/acan-llm/.env`.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use acan_llm::{
     ApiKeys, CallRecord, ChatRequest, ChatResponse, JsonSchemaFormat, LlmConfig, Message,
-    OpenAiCompatible, RequestId, Role, Structured, ToolSpec, Traced, UnknownRole,
+    OpenAiCompatible, RequestId, Role, Structured, TokenLimitField, ToolSpec, Traced, UnknownRole,
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -37,6 +37,7 @@ struct Args {
     config: PathBuf,
     prompt: Option<String>,
     mode: Mode,
+    max_tokens: Option<u32>,
 }
 
 /// The typed reply `--json` asks for.
@@ -63,6 +64,7 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
         config: Path::new(env!("CARGO_MANIFEST_DIR")).join("llm.toml"),
         prompt: None,
         mode: Mode::Plain,
+        max_tokens: None,
     };
     while let Some(flag) = args.next() {
         if let Some(mode) = mode_flag(&flag) {
@@ -80,8 +82,18 @@ fn parse_args(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
             "--provider" => parsed.provider = Some(value),
             "--config" => parsed.config = PathBuf::from(value),
             "--prompt" => parsed.prompt = Some(value),
+            "--max-tokens" => {
+                parsed.max_tokens = Some(
+                    value
+                        .parse()
+                        .map_err(|_| format!("--max-tokens needs a whole number, got {value}"))?,
+                );
+            }
             other => return Err(format!("unknown flag {other}")),
         }
+    }
+    if parsed.max_tokens.is_some() && parsed.mode != Mode::Plain {
+        return Err("--max-tokens works with plain mode only".to_owned());
     }
     Ok(parsed)
 }
@@ -104,6 +116,13 @@ async fn main() -> ExitCode {
             eprintln!("{message}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn wire_name(field: TokenLimitField) -> &'static str {
+    match field {
+        TokenLimitField::MaxTokens => "max_tokens",
+        TokenLimitField::MaxCompletionTokens => "max_completion_tokens",
     }
 }
 
@@ -146,28 +165,25 @@ async fn run() -> Result<(), String> {
             .map_err(|err| describe(&err))?;
     }
     let keys = ApiKeys::from_env(&config);
-    let client = OpenAiCompatible::new(config, keys).map_err(|err| err.to_string())?;
+    let client = OpenAiCompatible::new(config.clone(), keys).map_err(|err| err.to_string())?;
 
     match args.mode {
-        Mode::Plain => plain(&client, args.role, args.prompt).await,
+        Mode::Plain => plain(&client, &config, args).await,
         Mode::Json => json(&client, args.role, args.prompt).await,
         Mode::Tool => tool(&client, args.role, args.prompt).await,
     }
 }
 
-async fn plain(
-    client: &OpenAiCompatible,
-    role: Role,
-    prompt: Option<String>,
-) -> Result<(), String> {
+async fn plain(client: &OpenAiCompatible, config: &LlmConfig, args: Args) -> Result<(), String> {
     let request = ChatRequest {
         messages: vec![Message::user(
-            prompt.unwrap_or_else(|| DEFAULT_PROMPT.to_owned()),
+            args.prompt.unwrap_or_else(|| DEFAULT_PROMPT.to_owned()),
         )],
+        max_tokens: args.max_tokens,
         ..Default::default()
     };
     let traced = client
-        .chat_traced(role, request)
+        .chat_traced(args.role, request)
         .await
         .map_err(|err| describe(&err))?;
     let Traced {
@@ -176,6 +192,15 @@ async fn plain(
         reply_model,
     } = traced;
     print_call(&response.call, request_id.as_ref(), reply_model.as_deref());
+    let field = config
+        .providers()
+        .iter()
+        .find(|provider| provider.name == response.call.provider)
+        .map_or("unknown", |provider| wire_name(provider.token_limit_field));
+    let cap = args
+        .max_tokens
+        .map_or_else(|| "none".to_owned(), |cap| cap.to_string());
+    println!("token cap {cap} field {field}");
     println!("reply:");
     println!("{}", response.content.unwrap_or_default());
     Ok(())

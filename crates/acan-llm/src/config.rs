@@ -19,6 +19,17 @@ pub enum StructuredOutput {
     Prompt,
 }
 
+/// The wire name a provider expects for the reply-length cap.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenLimitField {
+    /// Sends `max_tokens`. Providers that name no field get this one.
+    #[default]
+    MaxTokens,
+    /// Sends `max_completion_tokens`, the name Meta's docs make canonical.
+    MaxCompletionTokens,
+}
+
 /// One OpenAI-compatible endpoint. The key is not stored here; `api_key_env` names the variable that holds it.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,6 +40,8 @@ pub struct ProviderConfig {
     pub default_model: String,
     #[serde(default)]
     pub structured_output: StructuredOutput,
+    #[serde(default)]
+    pub token_limit_field: TokenLimitField,
     #[serde(default = "default_timeout_secs")]
     pub timeout_secs: u64,
 }

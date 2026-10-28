@@ -10,6 +10,8 @@ base_url = "https://api.meta.ai/v1"
 api_key_env = "META_API_KEY"
 default_model = "muse-spark-1.3"
 structured_output = "json_schema"
+# Meta's docs make max_completion_tokens canonical and max_tokens a deprecated alias.
+token_limit_field = "max_completion_tokens"
 timeout_secs = 120
 
 [[providers]]

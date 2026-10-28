@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::chat::{ChatRequest, ChatResponse, Message, ToolCall, ToolKind, ToolSpec};
 use crate::client::{ModelClient, Structured, parse_structured, with_schema};
-use crate::config::{ConfigError, LlmConfig, ProviderConfig, StructuredOutput};
+use crate::config::{ConfigError, LlmConfig, ProviderConfig, StructuredOutput, TokenLimitField};
 use crate::error::LlmError;
 use crate::key::{ApiKey, ApiKeys};
 use crate::role::Role;
@@ -103,7 +103,12 @@ impl OpenAiCompatible {
                 env_var: provider.api_key_env.clone(),
             })?;
 
-        let body = wire_request(route.model, &request, provider.structured_output);
+        let body = wire_request(
+            route.model,
+            &request,
+            provider.structured_output,
+            provider.token_limit_field,
+        );
         let started = Instant::now();
         let Posted {
             completion,
@@ -364,7 +369,12 @@ fn wire_request<'a>(
     model: &'a str,
     request: &'a ChatRequest,
     mode: StructuredOutput,
+    token_limit_field: TokenLimitField,
 ) -> WireRequest<'a> {
+    let (max_tokens, max_completion_tokens) = match token_limit_field {
+        TokenLimitField::MaxTokens => (request.max_tokens, None),
+        TokenLimitField::MaxCompletionTokens => (None, request.max_tokens),
+    };
     let (messages, response_format) = match (&request.response_format, mode) {
         (None, _) => (request.messages.clone(), None),
         (Some(format), StructuredOutput::JsonSchema) => (
@@ -398,7 +408,8 @@ fn wire_request<'a>(
             })
             .collect(),
         temperature: request.temperature,
-        max_tokens: request.max_tokens,
+        max_tokens,
+        max_completion_tokens,
         response_format,
     }
 }
@@ -419,6 +430,8 @@ struct WireRequest<'a> {
     temperature: Option<f32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<WireResponseFormat<'a>>,
 }
