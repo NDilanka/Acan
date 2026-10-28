@@ -142,8 +142,8 @@ fn folder_name(root: &str) -> String {
         .to_string()
 }
 
-/// A generated plant of `count` machines for the benchmark. Machines sit in layers, about
-/// `sqrt(count)` of them, and import one to three layers down, so belts stay short.
+/// A generated plant of `count` machines for the benchmark. Machines sit in about `sqrt(count)`
+/// layers, and every belt runs from one layer to the next, so belts stay short.
 pub fn stress(count: usize) -> Plant {
     const NAMES: [&str; 12] = [
         "server",
@@ -181,24 +181,38 @@ pub fn stress(count: usize) -> Plant {
             files,
         });
     }
+    // Every machine below the first layer gets one edge from the layer above it, and about half
+    // of the machines start one edge into the next layer down. Each belt then spans exactly one
+    // layer, so the layout adds no lane nodes and the footprint stays near square.
     let mut edges = Vec::new();
-    for (from, &layer) in layer_of.iter().enumerate() {
-        if layer + 1 >= layers {
-            continue;
-        }
-        for _ in 0..1 + rng.below(2) {
-            let target_layer = (layer + 1 + rng.below(3)).min(layers - 1);
-            let pool = &members[target_layer];
+    for layer in 1..layers {
+        for &to in &members[layer] {
+            let pool = &members[layer - 1];
             if pool.is_empty() {
                 continue;
             }
-            let to = pool[rng.below(pool.len())];
+            let from = pool[rng.below(pool.len())];
             edges.push(Edge {
                 from,
                 to,
                 imports: 1 + rng.below(3) as u32,
             });
         }
+    }
+    for (from, &layer) in layer_of.iter().enumerate() {
+        if layer + 1 >= layers || rng.below(2) == 0 {
+            continue;
+        }
+        let pool = &members[layer + 1];
+        if pool.is_empty() {
+            continue;
+        }
+        let to = pool[rng.below(pool.len())];
+        edges.push(Edge {
+            from,
+            to,
+            imports: 1 + rng.below(3) as u32,
+        });
     }
     Plant {
         repo: "stress".to_string(),
@@ -306,6 +320,22 @@ mod tests {
         assert!(!a.edges.is_empty());
         let kinds: std::collections::BTreeSet<Kind> = a.machines.iter().map(|m| m.kind).collect();
         assert!(kinds.len() >= 4, "stress plant covers only {kinds:?}");
+    }
+
+    #[test]
+    fn the_stress_footprint_stays_within_two_and_a_half_to_one() {
+        for count in [100_usize, 500, 2000] {
+            let plant = stress(count);
+            let (kinds, edges) = plant.layout_input();
+            let laid = crate::layout::layout(&kinds, &edges);
+            let [x0, y0, x1, y1] = laid.bounds;
+            let (w, d) = (x1 - x0, y1 - y0);
+            let aspect = w.max(d) / w.min(d);
+            assert!(
+                aspect <= 2.5,
+                "{count} machines: footprint {w} by {d}, aspect {aspect}"
+            );
+        }
     }
 
     #[test]

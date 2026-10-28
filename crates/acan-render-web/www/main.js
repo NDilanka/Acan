@@ -52,10 +52,11 @@ function placeLabels() {
   const height = canvas.clientHeight;
   labelGeneration += 1;
   const quads = app.label_layout(altDown);
-  for (let k = 0; k < quads.length; k += 3) {
+  for (let k = 0; k < quads.length; k += 4) {
     const index = quads[k];
     const x = quads[k + 1];
     const y = quads[k + 2];
+    const opacity = quads[k + 3];
     let el = labels.get(index);
     if (el === undefined) {
       el = makeLabel(index);
@@ -65,6 +66,7 @@ function placeLabels() {
     el.generation = labelGeneration;
     const inside = x >= -40 && x <= width + 40 && y >= -20 && y <= height + 20;
     el.style.display = inside ? '' : 'none';
+    el.style.opacity = String(opacity);
     el.style.transform = `translate(${x}px, ${y}px) translate(-50%, 6px)`;
   }
   for (const [index, el] of labels) {
@@ -187,8 +189,9 @@ async function boot() {
 
 window.addEventListener('resize', sizeCanvas);
 
-// Left drag pans. Right drag, or Alt with left drag, orbits and tilts about the ground point
-// under the screen centre.
+// Left drag moves the ground under the pointer, so the point you grab stays under the cursor.
+// Right drag, or Alt with left drag, orbits and tilts about the ground point under the screen
+// centre.
 canvas.addEventListener('contextmenu', (event) => event.preventDefault());
 
 canvas.addEventListener('pointerdown', (event) => {
@@ -204,15 +207,19 @@ canvas.addEventListener('pointerdown', (event) => {
 
 canvas.addEventListener('pointermove', (event) => {
   if (drag === null) return;
-  const dx = event.clientX - drag.x;
-  const dy = event.clientY - drag.y;
+  if (drag.orbit) {
+    app.orbit(event.clientX - drag.x, event.clientY - drag.y);
+  } else {
+    const rect = canvas.getBoundingClientRect();
+    app.drag(
+      drag.x - rect.left,
+      drag.y - rect.top,
+      event.clientX - rect.left,
+      event.clientY - rect.top,
+    );
+  }
   drag.x = event.clientX;
   drag.y = event.clientY;
-  if (drag.orbit) {
-    app.orbit(dx, dy);
-  } else {
-    app.pan(dx, dy);
-  }
   requestRender();
 });
 
@@ -262,6 +269,13 @@ window.addEventListener('keydown', (event) => {
     event.preventDefault();
     app.pan(...ARROW_PAN[event.key]);
     requestRender();
+    return;
+  }
+  if (event.key === '5' || event.code === 'Numpad5') {
+    if (!event.repeat) {
+      app.toggle_projection();
+      requestRender();
+    }
     return;
   }
   switch (event.key) {

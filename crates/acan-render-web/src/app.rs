@@ -2,7 +2,7 @@
 //! works in device pixels, so this file scales input by the device pixel ratio. Positions that
 //! cross back to JavaScript are CSS pixels.
 
-use acan_render::camera::{DEFAULT_AZIMUTH, DEFAULT_ELEVATION, fit_at};
+use acan_render::camera::{DEFAULT_AZIMUTH, DEFAULT_ELEVATION};
 use acan_render::{Aabb, Camera, Lod, Model, Renderer, wgpu};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
@@ -149,9 +149,28 @@ impl App {
         self.renderer.resize(size);
     }
 
-    /// Moves the ground under a drag of `(dx, dy)` CSS pixels, so the content follows the pointer.
+    /// Moves the scene so the ground under the CSS point `(x0, y0)` lands under `(x1, y1)`.
+    /// Called with the previous and the current pointer position, the ground point stays under
+    /// the pointer in either projection.
+    pub fn drag(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        self.camera.drag_ground(
+            [x0 * self.dpr, y0 * self.dpr],
+            [x1 * self.dpr, y1 * self.dpr],
+        );
+    }
+
+    /// Moves the scene by `(dx, dy)` CSS pixels as if dragged from the screen centre. The arrow
+    /// keys and the benchmark use it.
     pub fn pan(&mut self, dx: f32, dy: f32) {
-        self.camera.pan_px([dx * self.dpr, dy * self.dpr]);
+        let [vw, vh] = self.camera.viewport();
+        let from = [vw * 0.5, vh * 0.5];
+        self.camera
+            .drag_ground(from, [from[0] + dx * self.dpr, from[1] + dy * self.dpr]);
+    }
+
+    /// Switches between the perspective and orthographic projections, keeping the framing.
+    pub fn toggle_projection(&mut self) {
+        self.camera.toggle_projection();
     }
 
     /// Turns the view by `(dx, dy)` CSS pixels of drag: horizontal orbits, vertical tilts. This
@@ -234,9 +253,10 @@ impl App {
             .map_err(js_err)
     }
 
-    /// Label positions as flat `[machine index, css x, css y]` triples. Labels sit under each
-    /// plinth's front corner, projected in the same frame as the render. `all` lists every
-    /// machine, and otherwise only the ones named at rest.
+    /// Label positions as flat `[machine index, css x, css y, opacity]` quads. Labels sit under
+    /// each plinth's front corner, projected in the same frame as the render, and fade with the
+    /// same fog as the plant. `all` lists every machine, and otherwise only the ones named at
+    /// rest. A label whose corner is behind the camera is left out.
     pub fn label_layout(&self, all: bool) -> Vec<f32> {
         let Some(loaded) = &self.plant else {
             return Vec::new();
@@ -254,8 +274,17 @@ impl App {
             let Some(anchor) = loaded.front_corner(index, toward) else {
                 continue;
             };
+            if !self.camera.in_front(anchor) {
+                continue;
+            }
             let screen = self.camera.world_to_screen(anchor);
-            out.extend([index as f32, screen[0] / self.dpr, screen[1] / self.dpr]);
+            let opacity = 1.0 - self.camera.fog_at(anchor);
+            out.extend([
+                index as f32,
+                screen[0] / self.dpr,
+                screen[1] / self.dpr,
+                opacity,
+            ]);
         }
         out
     }
@@ -299,19 +328,16 @@ impl App {
         count
     }
 
-    /// The zoom at which the plant fills the view at the default angles. Level of detail is
-    /// measured against this, so orbiting never changes the detail.
+    /// The zoom at which the plant fills the view at the default angles, in the current
+    /// projection. Level of detail is measured against this, so orbiting never changes the
+    /// detail.
     fn fit_zoom(&self) -> f32 {
         match &self.plant {
             Some(loaded) => {
-                fit_at(
-                    self.camera.viewport(),
-                    &loaded.bounds,
-                    FIT_MARGIN_CSS * self.dpr,
-                    DEFAULT_AZIMUTH,
-                    DEFAULT_ELEVATION,
-                )
-                .1
+                let mut probe = self.camera;
+                probe.set_angles(DEFAULT_AZIMUTH, DEFAULT_ELEVATION);
+                probe.fit(&loaded.bounds, FIT_MARGIN_CSS * self.dpr);
+                probe.zoom()
             }
             None => 1.0,
         }
