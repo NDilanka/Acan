@@ -1,4 +1,4 @@
-use acan_llm::{ApiKey, ApiKeys, ConfigError, LlmConfig, OpenAiCompatible, Role};
+use acan_llm::{ApiKey, ApiKeys, ConfigError, LlmConfig, OpenAiCompatible, Role, TokenLimitField};
 
 const CANARY: &str = "sk-canary-must-never-print";
 
@@ -56,6 +56,56 @@ fn route_to_an_undefined_provider_is_rejected_and_leaves_the_route_alone() {
         format!("{config:?}").contains("provider: \"meta\""),
         "foreman route changed after a rejected route_to"
     );
+}
+
+/// Adds one line to the meta provider block.
+fn with_meta_line(line: &str) -> String {
+    CONFIG.replace(
+        "api_key_env = \"META_API_KEY\"",
+        &format!("api_key_env = \"META_API_KEY\"\n{line}"),
+    )
+}
+
+#[test]
+fn token_limit_field_reads_the_canonical_name_and_defaults_to_max_tokens() {
+    let text = with_meta_line("token_limit_field = \"max_completion_tokens\"");
+
+    let config = LlmConfig::from_toml_str(&text).expect("config is valid");
+    let fields: Vec<TokenLimitField> = config
+        .providers()
+        .iter()
+        .map(|provider| provider.token_limit_field)
+        .collect();
+
+    assert_eq!(
+        fields,
+        [
+            TokenLimitField::MaxCompletionTokens,
+            TokenLimitField::MaxTokens
+        ],
+        "meta reads max_completion_tokens and baseten keeps the default"
+    );
+}
+
+#[test]
+fn unknown_token_limit_value_fails_at_load() {
+    let text = with_meta_line("token_limit_field = \"max_output_tokens\"");
+
+    match LlmConfig::from_toml_str(&text).expect_err("max_output_tokens is not a token limit field")
+    {
+        ConfigError::Parse(_) => {}
+        other => panic!("expected Parse, got {other}"),
+    }
+}
+
+#[test]
+fn unknown_provider_field_fails_at_load() {
+    let text = with_meta_line("max_output = 5");
+
+    match LlmConfig::from_toml_str(&text).expect_err("max_output is not a provider field") {
+        ConfigError::Parse(_) => {}
+        other => panic!("expected Parse, got {other}"),
+    }
 }
 
 #[test]

@@ -20,7 +20,7 @@ pub use chat::{
     ToolSpec,
 };
 pub use client::{ModelClient, Structured};
-pub use config::{ConfigError, LlmConfig, ProviderConfig, StructuredOutput};
+pub use config::{ConfigError, LlmConfig, ProviderConfig, StructuredOutput, TokenLimitField};
 pub use error::{LlmError, UnknownRole};
 pub use key::{ApiKey, ApiKeys};
 pub use openai::{OpenAiCompatible, RetryPolicy};
