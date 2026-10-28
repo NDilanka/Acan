@@ -1,0 +1,27 @@
+{
+  "version": "acan-observation/1",
+  "run_id": "run-candidate-login",
+  "probe": "sha256:762703905cfc5ffa376dfb1b89d53c9ce693dc5f3e1628b39b06935364f62b45",
+  "step_id": "s6",
+  "completeness": {
+    "state": "complete"
+  },
+  "request": {
+    "method": "POST",
+    "route_template": "/api/login",
+    "client": "client-a",
+    "sent_at_ms": 5000
+  },
+  "raw_ref": "sha256:84f0e02286696758fac47139e88e02483025d34bc3d23bcd11d0ea989cfe77f9",
+  "commit": "a27a5f30da19543ee34362516e29bf7561214156",
+  "channels": {
+    "status": 429,
+    "headers": {
+      "content-type": "application/json"
+    },
+    "body": {
+      "status": "limited",
+      "error": "too many attempts"
+    }
+  }
+}

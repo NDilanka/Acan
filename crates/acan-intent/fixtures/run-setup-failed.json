@@ -1,0 +1,28 @@
+{
+  "version": "acan-run/1",
+  "id": "run-candidate-signup",
+  "probe": "sha256:4ec9ed851c57f319a4a0e263a5771cb59ad2676511eb233ac407667c31d6b118",
+  "commit": "a27a5f30da19543ee34362516e29bf7561214156",
+  "role": "candidate",
+  "env": {
+    "lockfile_hash": "sha256:5dd3909fd7cc889f9d3635f02a8b1eb462eaf95a85f550fad2aae6ef409f7b54",
+    "fixture_hash": "sha256:560eaf3afedc770e778c6d10bfec10e783ed2dffec0904165dffe833bfc2d1af",
+    "runtime": "bun-1.4.4"
+  },
+  "runner": "sha256:02b428f772fbef62ede2b5c9d022c4e49f7e17dbed2e7a396f402aad28a24b47",
+  "outcome": {
+    "outcome": "setup_failed",
+    "step_id": "f1",
+    "detail": "POST /api/signup answered 500 during the fixture recipe"
+  },
+  "captures": [
+    {
+      "outcome": "missing",
+      "binding": "alice_session",
+      "step_id": "f3",
+      "reason": "step_failed"
+    }
+  ],
+  "started_at": 1793259700000,
+  "finished_at": 1793259704500
+}

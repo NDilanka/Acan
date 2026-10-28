@@ -9,6 +9,7 @@ description = "Per-task git worktrees and queue-ordered landing onto the protect
 
 [dependencies]
 acan-core = { path = "../acan-core" }
+acan-intent = { path = "../acan-intent" }
 thiserror.workspace = true
 tokio.workspace = true
 

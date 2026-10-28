@@ -1,0 +1,1637 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PlantView",
+  "description": "The view of one receipt snapshot.",
+  "type": "object",
+  "properties": {
+    "base_sha": {
+      "description": "The order's base commit.",
+      "$ref": "#/$defs/CommitSha"
+    },
+    "catalog_version": {
+      "description": "The caption catalog tours are checked against.",
+      "$ref": "#/$defs/CatalogVersion"
+    },
+    "counts": {
+      "description": "The counts.",
+      "$ref": "#/$defs/PlantCounts"
+    },
+    "gate_state": {
+      "description": "Where the gate is.",
+      "$ref": "#/$defs/GateState"
+    },
+    "items": {
+      "description": "Every receipt item.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PlantItem"
+      }
+    },
+    "machines": {
+      "description": "Every machine.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/PlantMachine"
+      }
+    },
+    "merged_sha": {
+      "description": "The tested merged commit.",
+      "$ref": "#/$defs/CommitSha"
+    },
+    "order": {
+      "description": "The order.",
+      "$ref": "#/$defs/PlantOrder"
+    },
+    "receipt_hash": {
+      "description": "The receipt it shows.",
+      "$ref": "#/$defs/ReceiptHash"
+    },
+    "scope": {
+      "description": "The confirmed scope.",
+      "$ref": "#/$defs/ScopeView"
+    },
+    "tour": {
+      "description": "The tour, if one was made and validated. Absent means the plain card.",
+      "anyOf": [
+        {
+          "$ref": "#/$defs/TourView"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "version": {
+      "description": "Always `plant-view/1`.",
+      "$ref": "#/$defs/PlantViewV1"
+    }
+  },
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "receipt_hash",
+    "base_sha",
+    "merged_sha",
+    "gate_state",
+    "order",
+    "machines",
+    "scope",
+    "items",
+    "counts",
+    "catalog_version"
+  ],
+  "$defs": {
+    "BehaviorCounts": {
+      "description": "The behavioral denominator: obligations, not route hits.",
+      "type": "object",
+      "properties": {
+        "failed": {
+          "description": "Those that failed.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "obligations_total": {
+          "description": "Acceptance, must-keep and ruling obligations that apply.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "passed": {
+          "description": "Those that passed.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "unknown": {
+          "description": "Those with no answer. Never a pass.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "obligations_total",
+        "passed",
+        "failed",
+        "unknown"
+      ]
+    },
+    "Camera": {
+      "description": "Where the camera goes for one tour step.",
+      "type": "object",
+      "properties": {
+        "machine_id": {
+          "description": "The machine.",
+          "$ref": "#/$defs/MachineId"
+        },
+        "zoom": {
+          "description": "The zoom.",
+          "$ref": "#/$defs/ZoomLevel"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "machine_id",
+        "zoom"
+      ]
+    },
+    "Caption": {
+      "description": "A caption from the trusted template catalog, its slots bound to evidence references.",
+      "type": "object",
+      "properties": {
+        "slots": {
+          "description": "Each slot's evidence. Never a literal.",
+          "type": "object",
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[A-Za-z0-9._:/@-]{1,128}$": {
+              "$ref": "#/$defs/EvidenceRef"
+            }
+          }
+        },
+        "template_id": {
+          "description": "The template.",
+          "$ref": "#/$defs/TemplateId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "template_id",
+        "slots"
+      ]
+    },
+    "CatalogVersion": {
+      "description": "catalog version",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/@-]{1,128}$"
+    },
+    "ChoiceId": {
+      "description": "choice id",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/@-]{1,128}$"
+    },
+    "ChoiceOption": {
+      "description": "One answer to an open choice.",
+      "type": "object",
+      "properties": {
+        "key": {
+          "description": "The answer key.",
+          "$ref": "#/$defs/OptionKey"
+        },
+        "label": {
+          "description": "The answer in words.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "label"
+      ]
+    },
+    "ClassCounts": {
+      "description": "Items per class. Core-derived: the fields are private to this crate and no public\nconstructor exists, so a count can only come from the core's classification. A decoded\ncopy is display data until [`Receipt::check_counts`] or [`crate::PlantView::check_counts`]\nhas matched it against the items.",
+      "type": "object",
+      "properties": {
+        "authorized_but_unspecified": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "error": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "incomparable": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "obligation_failed": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "obligation_fulfilled": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "out_of_scope": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "preserved": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "unstable_base": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "violates_ruling": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "preserved",
+        "obligation_fulfilled",
+        "obligation_failed",
+        "authorized_but_unspecified",
+        "out_of_scope",
+        "violates_ruling",
+        "unstable_base",
+        "incomparable",
+        "error"
+      ]
+    },
+    "CommitSha": {
+      "description": "git commit",
+      "type": "string",
+      "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "ContentHash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "Coverage": {
+      "description": "How well probes cover a machine.",
+      "oneOf": [
+        {
+          "description": "Every route through it has a probe.",
+          "type": "string",
+          "const": "covered"
+        },
+        {
+          "description": "Some do.",
+          "type": "string",
+          "const": "partial"
+        },
+        {
+          "description": "None do. Drawn hatched with a `no probes` chip.",
+          "type": "string",
+          "const": "uncovered"
+        }
+      ]
+    },
+    "EpisodeId": {
+      "description": "A discrepancy episode's identity: the hash of its [`crate::EpisodeKey`].",
+      "$ref": "#/$defs/ContentHash"
+    },
+    "Evidence": {
+      "description": "What one path held in one observation, target or prediction: a present JSON value, which may\nbe `null`, an empty object or an empty array, or nothing at all.\n\nA missing header and a header observed as `null` are different evidence, and so are a body\nwith `\"links\": []` and a body with no `links` key.",
+      "oneOf": [
+        {
+          "description": "The path held this value.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "present"
+            },
+            "value": {
+              "description": "The value, with its structure."
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "state",
+            "value"
+          ]
+        },
+        {
+          "description": "The path held nothing: no such header, cookie, key or element.",
+          "type": "object",
+          "properties": {
+            "state": {
+              "type": "string",
+              "const": "missing"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "state"
+          ]
+        }
+      ]
+    },
+    "EvidenceRef": {
+      "description": "A reference to one evidence row of one item in the snapshot.",
+      "type": "object",
+      "properties": {
+        "field": {
+          "description": "The field.",
+          "$ref": "#/$defs/ObservationPath"
+        },
+        "item_id": {
+          "description": "The receipt item.",
+          "$ref": "#/$defs/ItemId"
+        },
+        "slot": {
+          "description": "The column.",
+          "$ref": "#/$defs/EvidenceSlot"
+        },
+        "step": {
+          "description": "The step.",
+          "$ref": "#/$defs/StepId"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "item_id",
+        "slot",
+        "step",
+        "field"
+      ]
+    },
+    "EvidenceRow": {
+      "type": "object",
+      "properties": {
+        "commit": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CommitSha"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "field": {
+          "$ref": "#/$defs/ObservationPath"
+        },
+        "observation_hash": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservationHash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "provenance": {
+          "$ref": "#/$defs/Provenance"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "slot": {
+          "$ref": "#/$defs/EvidenceSlot"
+        },
+        "step": {
+          "$ref": "#/$defs/StepId"
+        },
+        "value": {
+          "$ref": "#/$defs/Evidence"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "slot",
+        "step",
+        "field",
+        "value",
+        "provenance"
+      ]
+    },
+    "EvidenceSlot": {
+      "description": "Which column of the card an evidence value belongs to.",
+      "oneOf": [
+        {
+          "description": "The first base run.",
+          "type": "string",
+          "const": "base_a"
+        },
+        {
+          "description": "The second base run.",
+          "type": "string",
+          "const": "base_b"
+        },
+        {
+          "description": "The candidate run.",
+          "type": "string",
+          "const": "candidate"
+        },
+        {
+          "description": "The scope example's desired target.",
+          "type": "string",
+          "const": "target"
+        },
+        {
+          "description": "The agent's prediction.",
+          "type": "string",
+          "const": "prediction"
+        }
+      ]
+    },
+    "ExampleView": {
+      "description": "A scope example as the card shows it: a target, never an observation.",
+      "type": "object",
+      "properties": {
+        "after": {
+          "description": "What the human wants, or [`Evidence::Missing`] for a removal.",
+          "$ref": "#/$defs/Evidence"
+        },
+        "before": {
+          "description": "What the human expects today, if they said.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Evidence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "description": "Always `target`.",
+          "$ref": "#/$defs/TargetKind"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "after"
+      ]
+    },
+    "GateState": {
+      "description": "Where the gate is for the receipt's candidate. Drawn on the order plate.",
+      "oneOf": [
+        {
+          "description": "The merged commit is prepared; no run has started.",
+          "type": "string",
+          "const": "prepared"
+        },
+        {
+          "description": "Runs are in progress.",
+          "type": "string",
+          "const": "running"
+        },
+        {
+          "description": "An item does not pass, or a required behavior is not enforced. Land is refused.",
+          "type": "string",
+          "const": "blocked"
+        },
+        {
+          "description": "The tested merged commit landed.",
+          "type": "string",
+          "const": "landed"
+        },
+        {
+          "description": "The repair budget ran out.",
+          "type": "string",
+          "const": "stopped"
+        }
+      ]
+    },
+    "ItemClass": {
+      "description": "The one class the core assigns to each receipt item.",
+      "oneOf": [
+        {
+          "description": "No difference from base where none was allowed.",
+          "type": "string",
+          "const": "preserved"
+        },
+        {
+          "description": "Every acceptance obligation of the item passed.",
+          "type": "string",
+          "const": "obligation_fulfilled"
+        },
+        {
+          "description": "An acceptance or must-keep obligation failed.",
+          "type": "string",
+          "const": "obligation_failed"
+        },
+        {
+          "description": "A difference inside a may-change item that no obligation checks.",
+          "type": "string",
+          "const": "authorized_but_unspecified"
+        },
+        {
+          "description": "A difference no scope item allows.",
+          "type": "string",
+          "const": "out_of_scope"
+        },
+        {
+          "description": "An active ruling rejected the candidate.",
+          "type": "string",
+          "const": "violates_ruling"
+        },
+        {
+          "description": "The two base runs disagreed on an unmaskable field.",
+          "type": "string",
+          "const": "unstable_base"
+        },
+        {
+          "description": "Base and candidate could not be compared.",
+          "type": "string",
+          "const": "incomparable"
+        },
+        {
+          "description": "The run or the evaluation failed.",
+          "type": "string",
+          "const": "error"
+        }
+      ]
+    },
+    "ItemId": {
+      "description": "item id",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/@-]{1,128}$"
+    },
+    "ItemProvenance": {
+      "description": "Where a scope item came from. Drawn as a chip on the card.",
+      "oneOf": [
+        {
+          "description": "The user's own requirement.",
+          "type": "string",
+          "const": "user"
+        },
+        {
+          "description": "An existing ruling.",
+          "type": "string",
+          "const": "ruling"
+        },
+        {
+          "description": "The model's interpretation of the order. Needs the human's confirmation like the rest.",
+          "type": "string",
+          "const": "model"
+        },
+        {
+          "description": "An open choice the human answered.",
+          "type": "string",
+          "const": "open"
+        }
+      ]
+    },
+    "ItemState": {
+      "description": "Where an item stands in the repair loop.",
+      "oneOf": [
+        {
+          "description": "Checked, nothing pending.",
+          "type": "string",
+          "const": "open"
+        },
+        {
+          "description": "Sent back to the agent with a reproducer.",
+          "type": "string",
+          "const": "bounced"
+        },
+        {
+          "description": "Bounced, then the original obligation passed fresh.",
+          "type": "string",
+          "const": "fixed"
+        },
+        {
+          "description": "Waiting for a human ruling.",
+          "type": "string",
+          "const": "residue"
+        },
+        {
+          "description": "The repair budget ran out. Shown as stopped, never as passed.",
+          "type": "string",
+          "const": "stopped"
+        }
+      ]
+    },
+    "MachineId": {
+      "description": "machine id",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/@-]{1,128}$"
+    },
+    "MarkRef": {
+      "description": "A mark of the snapshot a tour step stages. Every reference must exist in the snapshot.",
+      "oneOf": [
+        {
+          "description": "A may-change footprint.",
+          "type": "object",
+          "properties": {
+            "item_id": {
+              "description": "The scope item.",
+              "$ref": "#/$defs/ItemId"
+            },
+            "mark": {
+              "type": "string",
+              "const": "footprint"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mark",
+            "item_id"
+          ]
+        },
+        {
+          "description": "A must-keep pin.",
+          "type": "object",
+          "properties": {
+            "mark": {
+              "type": "string",
+              "const": "must_keep_pin"
+            },
+            "must_keep_id": {
+              "description": "The rule.",
+              "$ref": "#/$defs/MustKeepId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mark",
+            "must_keep_id"
+          ]
+        },
+        {
+          "description": "A question pin.",
+          "type": "object",
+          "properties": {
+            "choice_id": {
+              "description": "The choice.",
+              "$ref": "#/$defs/ChoiceId"
+            },
+            "mark": {
+              "type": "string",
+              "const": "question_pin"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mark",
+            "choice_id"
+          ]
+        },
+        {
+          "description": "A `no probes` chip.",
+          "type": "object",
+          "properties": {
+            "machine_id": {
+              "description": "The machine.",
+              "$ref": "#/$defs/MachineId"
+            },
+            "mark": {
+              "type": "string",
+              "const": "no_probes"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mark",
+            "machine_id"
+          ]
+        },
+        {
+          "description": "The ghost base machine beside an item's machine.",
+          "type": "object",
+          "properties": {
+            "item_id": {
+              "description": "The receipt item.",
+              "$ref": "#/$defs/ItemId"
+            },
+            "mark": {
+              "type": "string",
+              "const": "ghost"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mark",
+            "item_id"
+          ]
+        },
+        {
+          "description": "The crates of an item's sequence on its route path.",
+          "type": "object",
+          "properties": {
+            "item_id": {
+              "description": "The receipt item.",
+              "$ref": "#/$defs/ItemId"
+            },
+            "mark": {
+              "type": "string",
+              "const": "crates"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mark",
+            "item_id"
+          ]
+        },
+        {
+          "description": "An item's `bounced` chip.",
+          "type": "object",
+          "properties": {
+            "item_id": {
+              "description": "The receipt item.",
+              "$ref": "#/$defs/ItemId"
+            },
+            "mark": {
+              "type": "string",
+              "const": "bounced_chip"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mark",
+            "item_id"
+          ]
+        },
+        {
+          "description": "An item's amber residue card.",
+          "type": "object",
+          "properties": {
+            "item_id": {
+              "description": "The receipt item.",
+              "$ref": "#/$defs/ItemId"
+            },
+            "mark": {
+              "type": "string",
+              "const": "residue_card"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mark",
+            "item_id"
+          ]
+        },
+        {
+          "description": "A ruling's tag.",
+          "type": "object",
+          "properties": {
+            "mark": {
+              "type": "string",
+              "const": "ruling_tag"
+            },
+            "ruling_id": {
+              "description": "The ruling.",
+              "$ref": "#/$defs/RulingId"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mark",
+            "ruling_id"
+          ]
+        },
+        {
+          "description": "An item's grey unknown mark.",
+          "type": "object",
+          "properties": {
+            "item_id": {
+              "description": "The receipt item.",
+              "$ref": "#/$defs/ItemId"
+            },
+            "mark": {
+              "type": "string",
+              "const": "unknown"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mark",
+            "item_id"
+          ]
+        },
+        {
+          "description": "The order plate.",
+          "type": "object",
+          "properties": {
+            "mark": {
+              "type": "string",
+              "const": "order_plate"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mark"
+          ]
+        }
+      ]
+    },
+    "ModelRef": {
+      "description": "model id",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/@-]{1,128}$"
+    },
+    "MustKeepId": {
+      "description": "must-keep id",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/@-]{1,128}$"
+    },
+    "MustKeepView": {
+      "description": "A must-keep pin.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The rule.",
+          "$ref": "#/$defs/MustKeepId"
+        },
+        "machine_ids": {
+          "description": "The machines it guards.",
+          "$ref": "#/$defs/NonEmpty_MachineId"
+        },
+        "ruling_id": {
+          "description": "The ruling it restates.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RulingId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "text": {
+          "description": "The rule in words.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "machine_ids",
+        "text"
+      ]
+    },
+    "NonEmpty_ChoiceOption": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ChoiceOption"
+      },
+      "minItems": 1
+    },
+    "NonEmpty_MachineId": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/MachineId"
+      },
+      "minItems": 1
+    },
+    "NonEmpty_ObligationId": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ObligationId"
+      },
+      "minItems": 1
+    },
+    "NonEmpty_TourStep": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/TourStep"
+      },
+      "minItems": 1
+    },
+    "ObligationId": {
+      "description": "obligation id",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/@-]{1,128}$"
+    },
+    "ObservationHash": {
+      "description": "The hash of one [`crate::Observation`].",
+      "$ref": "#/$defs/ContentHash"
+    },
+    "ObservationPath": {
+      "description": "observation path",
+      "type": "string",
+      "pattern": "^(status|(header|cookie)\\.[A-Za-z0-9_$-]+|body([.\\[].*)?|side_effect\\.(store|outbound_http)([.\\[].*)?)$"
+    },
+    "OpenChoiceView": {
+      "description": "A question pin.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The choice.",
+          "$ref": "#/$defs/ChoiceId"
+        },
+        "machine_id": {
+          "description": "Where the pin goes.",
+          "$ref": "#/$defs/MachineId"
+        },
+        "options": {
+          "description": "One key per answer.",
+          "$ref": "#/$defs/NonEmpty_ChoiceOption"
+        },
+        "question": {
+          "description": "The question.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "machine_id",
+        "question",
+        "options"
+      ]
+    },
+    "OptionKey": {
+      "description": "option key",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/@-]{1,128}$"
+    },
+    "OrderRef": {
+      "description": "order id",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/@-]{1,128}$"
+    },
+    "PlantCounts": {
+      "description": "The plant's counts. Each has its denominator beside it.",
+      "type": "object",
+      "properties": {
+        "behavior": {
+          "description": "Obligations, the behavioral denominator. Drawn beside the route hits, never merged.",
+          "$ref": "#/$defs/BehaviorCounts"
+        },
+        "by_class": {
+          "description": "Items per class; their total is the item denominator.",
+          "$ref": "#/$defs/ClassCounts"
+        },
+        "masks_applied": {
+          "description": "Masks applied.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "probes_run": {
+          "description": "Probes run, of `probes_total`.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "probes_total": {
+          "description": "Probes in the corpus.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "routes_covered": {
+          "description": "Routes hit by a probe, of `routes_total`. A hit is not behavioral coverage.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "routes_total": {
+          "description": "Baseline routes.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "by_class",
+        "probes_run",
+        "probes_total",
+        "routes_covered",
+        "routes_total",
+        "masks_applied",
+        "behavior"
+      ]
+    },
+    "PlantItem": {
+      "description": "One receipt item on the plant.",
+      "type": "object",
+      "properties": {
+        "attempts": {
+          "description": "Repair attempts used.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "budget": {
+          "description": "Repair attempts allowed.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "class": {
+          "description": "Its class.",
+          "$ref": "#/$defs/ItemClass"
+        },
+        "episode_id": {
+          "description": "Its episode.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EpisodeId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence": {
+          "description": "The values on the card.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceRow"
+          }
+        },
+        "item_id": {
+          "description": "The item.",
+          "$ref": "#/$defs/ItemId"
+        },
+        "machine_id": {
+          "description": "The machine its mark goes on.",
+          "$ref": "#/$defs/MachineId"
+        },
+        "probe_id": {
+          "description": "The probe that checked it.",
+          "$ref": "#/$defs/ProbeHash"
+        },
+        "route_path": {
+          "description": "The machines its request passes.",
+          "$ref": "#/$defs/RoutePath"
+        },
+        "ruling_id": {
+          "description": "The ruling it violates or relies on.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RulingId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sequence": {
+          "description": "The sequence strip.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SequenceStep"
+          }
+        },
+        "state": {
+          "description": "Where it stands.",
+          "$ref": "#/$defs/ItemState"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "item_id",
+        "class",
+        "machine_id",
+        "probe_id",
+        "attempts",
+        "budget",
+        "state",
+        "route_path",
+        "sequence",
+        "evidence"
+      ]
+    },
+    "PlantMachine": {
+      "description": "One machine of the plant.",
+      "type": "object",
+      "properties": {
+        "coverage": {
+          "description": "Its probe coverage.",
+          "$ref": "#/$defs/Coverage"
+        },
+        "machine_id": {
+          "description": "The machine.",
+          "$ref": "#/$defs/MachineId"
+        },
+        "probes": {
+          "description": "How many corpus probes pass through it.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "routes": {
+          "description": "The routes whose static path passes through it.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RouteTemplate"
+          }
+        },
+        "rulings": {
+          "description": "Its ruling tags.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RulingTag"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "machine_id",
+        "coverage",
+        "probes",
+        "routes",
+        "rulings"
+      ]
+    },
+    "PlantOrder": {
+      "description": "The order on the plate.",
+      "type": "object",
+      "properties": {
+        "confirmed_at": {
+          "description": "When the human confirmed it.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UnixMillis"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "description": "The order.",
+          "$ref": "#/$defs/OrderRef"
+        },
+        "machine_id": {
+          "description": "The machine it is pinned on.",
+          "$ref": "#/$defs/MachineId"
+        },
+        "scope_rev": {
+          "description": "The confirmed scope revision.",
+          "$ref": "#/$defs/ScopeRev"
+        },
+        "sentence": {
+          "description": "Its sentence.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "sentence",
+        "machine_id",
+        "scope_rev"
+      ]
+    },
+    "PlantViewV1": {
+      "type": "string",
+      "const": "plant-view/1"
+    },
+    "ProbeHash": {
+      "description": "A probe's identity: the hash of its [`crate::ProbeSpec`].",
+      "$ref": "#/$defs/ContentHash"
+    },
+    "Provenance": {
+      "description": "The provenance label the plant and the card draw next to a value.",
+      "oneOf": [
+        {
+          "description": "Recorded by the runner from one run, commit, step and field.",
+          "type": "string",
+          "const": "observed"
+        },
+        {
+          "description": "Computed by the core from observations, masks, scope and expectations.",
+          "type": "string",
+          "const": "core_derived"
+        },
+        {
+          "description": "Written or confirmed by a human.",
+          "type": "string",
+          "const": "human_spec"
+        },
+        {
+          "description": "Proposed by a model. Never evidence.",
+          "type": "string",
+          "const": "model_proposal"
+        }
+      ]
+    },
+    "ReceiptHash": {
+      "description": "The hash of a [`crate::Receipt`].",
+      "$ref": "#/$defs/ContentHash"
+    },
+    "RoutePath": {
+      "description": "The machines a request passes through, in order.",
+      "type": "object",
+      "properties": {
+        "machines": {
+          "description": "The machines.",
+          "$ref": "#/$defs/NonEmpty_MachineId"
+        },
+        "source": {
+          "description": "How the path was found.",
+          "$ref": "#/$defs/RouteSource"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "machines",
+        "source"
+      ]
+    },
+    "RouteSource": {
+      "description": "How a route path was found.",
+      "oneOf": [
+        {
+          "description": "From the route table and the middleware chain. Labelled static on screen.",
+          "type": "string",
+          "const": "static"
+        },
+        {
+          "description": "From a trace of the run.",
+          "type": "string",
+          "const": "traced"
+        }
+      ]
+    },
+    "RouteTemplate": {
+      "description": "route template",
+      "type": "string",
+      "pattern": "^/(([A-Za-z0-9._~-]+|:[A-Za-z_][A-Za-z0-9_]*)(/([A-Za-z0-9._~-]+|:[A-Za-z_][A-Za-z0-9_]*))*)?$"
+    },
+    "RulingId": {
+      "description": "ruling id",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/@-]{1,128}$"
+    },
+    "RulingTag": {
+      "description": "A ruling's tag on a machine.",
+      "type": "object",
+      "properties": {
+        "enforced": {
+          "description": "Brass when true, hollow `NOT ENFORCED` when false.",
+          "type": "boolean"
+        },
+        "label": {
+          "description": "The label.",
+          "type": "string"
+        },
+        "ruling_id": {
+          "description": "The ruling lineage.",
+          "$ref": "#/$defs/RulingId"
+        },
+        "state": {
+          "description": "Whether it is current.",
+          "$ref": "#/$defs/RulingTagState"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "ruling_id",
+        "enforced",
+        "state",
+        "label"
+      ]
+    },
+    "RulingTagState": {
+      "description": "Whether a ruling's tag is current.",
+      "oneOf": [
+        {
+          "description": "In force.",
+          "type": "string",
+          "const": "active"
+        },
+        {
+          "description": "Replaced by a later decision.",
+          "type": "string",
+          "const": "superseded"
+        }
+      ]
+    },
+    "RunId": {
+      "description": "run id",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/@-]{1,128}$"
+    },
+    "RunRole": {
+      "description": "Which side of a contrast a run is.",
+      "oneOf": [
+        {
+          "description": "The first base run.",
+          "type": "string",
+          "const": "base_a"
+        },
+        {
+          "description": "The second base run, which decides what may be masked.",
+          "type": "string",
+          "const": "base_b"
+        },
+        {
+          "description": "The candidate, on the prepared merged commit.",
+          "type": "string",
+          "const": "candidate"
+        }
+      ]
+    },
+    "ScopeItemView": {
+      "description": "A may-change item's footprint.",
+      "type": "object",
+      "properties": {
+        "example": {
+          "description": "Its example.",
+          "$ref": "#/$defs/ExampleView"
+        },
+        "item_id": {
+          "description": "The item.",
+          "$ref": "#/$defs/ItemId"
+        },
+        "machine_ids": {
+          "description": "The machines it covers.",
+          "$ref": "#/$defs/NonEmpty_MachineId"
+        },
+        "obligations": {
+          "description": "Its acceptance obligations.",
+          "$ref": "#/$defs/NonEmpty_ObligationId"
+        },
+        "provenance": {
+          "description": "Where it came from.",
+          "$ref": "#/$defs/ItemProvenance"
+        },
+        "selector_text": {
+          "description": "Its selector in the core's words.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "item_id",
+        "machine_ids",
+        "selector_text",
+        "obligations",
+        "provenance",
+        "example"
+      ]
+    },
+    "ScopeRev": {
+      "description": "A scope revision of one order. Revision 1 is the first draft.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
+    },
+    "ScopeView": {
+      "description": "The confirmed scope's marks.",
+      "type": "object",
+      "properties": {
+        "items": {
+          "description": "The may-change items.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ScopeItemView"
+          }
+        },
+        "must_keep": {
+          "description": "The must-keep rules.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MustKeepView"
+          }
+        },
+        "open": {
+          "description": "The open choices.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OpenChoiceView"
+          }
+        },
+        "rev": {
+          "description": "The revision, shown as `MAY CHANGE · rev N`.",
+          "$ref": "#/$defs/ScopeRev"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "rev",
+        "items",
+        "must_keep",
+        "open"
+      ]
+    },
+    "SequenceStep": {
+      "description": "One request of a probe sequence in one run.",
+      "type": "object",
+      "properties": {
+        "request": {
+          "description": "The request's position in the sequence, from 1.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "role": {
+          "description": "The run's role.",
+          "$ref": "#/$defs/RunRole"
+        },
+        "run_id": {
+          "description": "The run.",
+          "$ref": "#/$defs/RunId"
+        },
+        "status": {
+          "description": "The observed HTTP status, if the request completed.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint16",
+          "maximum": 65535,
+          "minimum": 0
+        },
+        "step_id": {
+          "description": "The step.",
+          "$ref": "#/$defs/StepId"
+        },
+        "tint": {
+          "description": "The tint.",
+          "$ref": "#/$defs/StepTint"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "step_id",
+        "request",
+        "run_id",
+        "role",
+        "tint"
+      ]
+    },
+    "StepId": {
+      "description": "step id",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/@-]{1,128}$"
+    },
+    "StepTint": {
+      "description": "How one step of a probe sequence went, for the crate tint and the sequence strip.",
+      "oneOf": [
+        {
+          "description": "The step matched base.",
+          "type": "string",
+          "const": "same"
+        },
+        {
+          "description": "The step differed from base.",
+          "type": "string",
+          "const": "differed"
+        },
+        {
+          "description": "The step has no answer. Drawn grey, never green.",
+          "type": "string",
+          "const": "unknown"
+        }
+      ]
+    },
+    "TargetKind": {
+      "description": "Marks an example as a desired target. A pre-code example is never an observation.",
+      "oneOf": [
+        {
+          "description": "A desired target.",
+          "type": "string",
+          "const": "target"
+        }
+      ]
+    },
+    "TemplateId": {
+      "description": "template id",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:/@-]{1,128}$"
+    },
+    "Tour": {
+      "description": "An ordered walk over one immutable receipt snapshot.",
+      "type": "object",
+      "properties": {
+        "receipt_hash": {
+          "description": "The snapshot. A tour for any other receipt is rejected.",
+          "$ref": "#/$defs/ReceiptHash"
+        },
+        "steps": {
+          "description": "The steps. Every mandatory item must be reachable.",
+          "$ref": "#/$defs/NonEmpty_TourStep"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "receipt_hash",
+        "steps"
+      ]
+    },
+    "TourStep": {
+      "description": "One step of a tour.",
+      "type": "object",
+      "properties": {
+        "camera": {
+          "description": "Where the camera goes.",
+          "$ref": "#/$defs/Camera"
+        },
+        "caption": {
+          "description": "The caption.",
+          "$ref": "#/$defs/Caption"
+        },
+        "evidence_refs": {
+          "description": "The evidence it points at.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/EvidenceRef"
+          }
+        },
+        "item_id": {
+          "description": "The receipt item the step is about.",
+          "$ref": "#/$defs/ItemId"
+        },
+        "stage": {
+          "description": "The marks it stages.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MarkRef"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "item_id",
+        "camera",
+        "stage",
+        "evidence_refs",
+        "caption"
+      ]
+    },
+    "TourView": {
+      "description": "A validated tour and who ordered it. The UI shows a `directed` or `plain` toggle.",
+      "oneOf": [
+        {
+          "description": "Ordered by the director model and validated by trusted code.",
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "directed"
+            },
+            "model": {
+              "description": "The director.",
+              "$ref": "#/$defs/ModelRef"
+            },
+            "tour": {
+              "description": "The tour.",
+              "$ref": "#/$defs/Tour"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "model",
+            "tour"
+          ]
+        },
+        {
+          "description": "The deterministic order: residue, then violations, then bounced, then fulfilled.",
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "const": "deterministic"
+            },
+            "tour": {
+              "description": "The tour.",
+              "$ref": "#/$defs/Tour"
+            }
+          },
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "tour"
+          ]
+        }
+      ]
+    },
+    "UnixMillis": {
+      "description": "Milliseconds since the Unix epoch.",
+      "type": "integer",
+      "format": "uint64",
+      "minimum": 0
+    },
+    "ZoomLevel": {
+      "description": "A zoom level of the camera catalog.",
+      "oneOf": [
+        {
+          "description": "The whole plant.",
+          "type": "string",
+          "const": "fit"
+        },
+        {
+          "description": "One machine and its neighbours.",
+          "type": "string",
+          "const": "machine"
+        },
+        {
+          "description": "One machine up close.",
+          "type": "string",
+          "const": "close"
+        }
+      ]
+    }
+  }
+}

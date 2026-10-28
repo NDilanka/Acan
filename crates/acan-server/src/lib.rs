@@ -12,14 +12,54 @@ mod git;
 mod host;
 mod http;
 mod index;
+#[allow(
+    dead_code,
+    reason = "the scope-first lane is disabled: no route or job reaches it yet"
+)]
+mod intent_api;
 mod jobs;
+#[allow(
+    dead_code,
+    reason = "the scope-first lane is disabled: no route or job reaches it yet"
+)]
+mod land;
+#[allow(
+    dead_code,
+    reason = "the scope-first lane is disabled: no route or job reaches it yet"
+)]
+mod ledger;
 mod mcp;
 pub mod model;
 mod models;
+#[allow(
+    dead_code,
+    reason = "the scope-first lane is disabled: no route or job reaches it yet"
+)]
+mod observations;
+#[allow(
+    dead_code,
+    reason = "the scope-first lane is disabled: no route or job reaches it yet"
+)]
+mod observe;
 mod offline;
 mod public;
+#[allow(
+    dead_code,
+    reason = "the scope-first lane is disabled: no route or job reaches it yet"
+)]
+mod receipt;
+#[allow(
+    dead_code,
+    reason = "the scope-first lane is disabled: no route or job reaches it yet"
+)]
+mod receipt_cli;
 mod store;
 mod stream;
+#[allow(
+    dead_code,
+    reason = "the scope-first lane is disabled: no route or job reaches it yet"
+)]
+mod tour;
 mod writer;
 
 use std::fs;

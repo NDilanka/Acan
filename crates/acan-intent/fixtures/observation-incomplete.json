@@ -1,0 +1,21 @@
+{
+  "version": "acan-observation/1",
+  "run_id": "run-candidate-signup",
+  "probe": "sha256:4ec9ed851c57f319a4a0e263a5771cb59ad2676511eb233ac407667c31d6b118",
+  "step_id": "s2",
+  "completeness": {
+    "state": "incomplete",
+    "reasons": [
+      {
+        "reason": "sink_incomplete",
+        "sink": "store"
+      },
+      {
+        "reason": "capture_missing",
+        "binding": "alice_session"
+      }
+    ]
+  },
+  "commit": "a27a5f30da19543ee34362516e29bf7561214156",
+  "channels": {}
+}

@@ -322,6 +322,9 @@ pub struct Readback {
 }
 
 /// The foreman's judgement of a readback against one revision of the witness set.
+///
+/// Legacy: a model verdict. It decodes and replays so recorded logs stay valid, and it gates
+/// claims only in the legacy lane. The scope-first lane never takes it as authority.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReadbackVerdict {
     /// The order revision this verdict was judged against.

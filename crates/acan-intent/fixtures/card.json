@@ -1,0 +1,262 @@
+{
+  "version": "acan-card/1",
+  "receipt_hash": "sha256:857e03cb7b4baadaad3beafc566d9309bee763b930eb8beec9e0ee001ece6901",
+  "item": {
+    "item_id": "d-links-clicks",
+    "class": "out_of_scope",
+    "state": "stopped",
+    "machine_id": "links",
+    "probe_hash": "sha256:8199bdc4720dbc54756c8c7778a1dec62c5ed03a3d6489d6279de0d9eb572e5a",
+    "episode_id": "sha256:f11834e907288a4bda5dce1b104d65542010dfc746ec645386aa4d602fc37683",
+    "attempts": 2,
+    "budget": 2,
+    "route_path": {
+      "machines": [
+        "server",
+        "middleware",
+        "ratelimit",
+        "auth",
+        "links",
+        "store"
+      ],
+      "source": "static"
+    },
+    "sequence": [
+      {
+        "step_id": "s1",
+        "request": 1,
+        "run_id": "run-candidate-links",
+        "role": "candidate",
+        "status": 200,
+        "tint": "same"
+      },
+      {
+        "step_id": "s2",
+        "request": 2,
+        "run_id": "run-candidate-links",
+        "role": "candidate",
+        "status": 200,
+        "tint": "same"
+      },
+      {
+        "step_id": "s3",
+        "request": 3,
+        "run_id": "run-candidate-links",
+        "role": "candidate",
+        "status": 201,
+        "tint": "same"
+      },
+      {
+        "step_id": "s4",
+        "request": 4,
+        "run_id": "run-candidate-links",
+        "role": "candidate",
+        "status": 200,
+        "tint": "differed"
+      }
+    ],
+    "evidence": [
+      {
+        "slot": "base_a",
+        "run_id": "run-basea-links",
+        "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+        "step": "s4",
+        "field": "body.links[0].clicks",
+        "value": {
+          "state": "present",
+          "value": 0
+        },
+        "provenance": "observed",
+        "observation_hash": "sha256:589829241e2fabd7153e5b9abe873679710093b90c91eaf246f8b2fe81f6f22d"
+      },
+      {
+        "slot": "base_b",
+        "run_id": "run-baseb-links",
+        "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+        "step": "s4",
+        "field": "body.links[0].clicks",
+        "value": {
+          "state": "present",
+          "value": 0
+        },
+        "provenance": "observed",
+        "observation_hash": "sha256:be2a9972672d72d869c76bc50a5d91b4fe05a2c8d66a3c340c1c0a1c31d3aa37"
+      },
+      {
+        "slot": "candidate",
+        "run_id": "run-candidate-links",
+        "commit": "a27a5f30da19543ee34362516e29bf7561214156",
+        "step": "s4",
+        "field": "body.links[0].clicks",
+        "value": {
+          "state": "missing"
+        },
+        "provenance": "observed",
+        "observation_hash": "sha256:954da543343a343b8917a3d370510b4f2476109fe4919534834ab74b9e303295"
+      }
+    ],
+    "evaluation": {
+      "authorization": {
+        "kind": "none"
+      },
+      "outcome": {
+        "kind": "changed",
+        "differences": [
+          {
+            "probe_hash": "sha256:8199bdc4720dbc54756c8c7778a1dec62c5ed03a3d6489d6279de0d9eb572e5a",
+            "step_id": "s4",
+            "path": "body.links[0].clicks",
+            "base": {
+              "state": "present",
+              "value": 0
+            },
+            "candidate": {
+              "state": "missing"
+            },
+            "episode_id": "sha256:f11834e907288a4bda5dce1b104d65542010dfc746ec645386aa4d602fc37683"
+          }
+        ]
+      },
+      "obligations": []
+    }
+  },
+  "counts": {
+    "preserved": 1,
+    "obligation_fulfilled": 1,
+    "obligation_failed": 1,
+    "authorized_but_unspecified": 1,
+    "out_of_scope": 1,
+    "violates_ruling": 1,
+    "unstable_base": 1,
+    "incomparable": 1,
+    "error": 1
+  },
+  "probes": {
+    "total": 6,
+    "run": 6,
+    "errored": 1
+  },
+  "routes": {
+    "total": 9,
+    "covered": 7,
+    "uncovered": [
+      {
+        "method": "GET",
+        "route_template": "/:code",
+        "reason": "redirect probes wait for the follow-redirect runner"
+      },
+      {
+        "method": "POST",
+        "route_template": "/api/logout",
+        "reason": "no probe yet"
+      }
+    ]
+  },
+  "behavior": {
+    "obligations_total": 7,
+    "passed": 4,
+    "failed": 2,
+    "unknown": 1
+  },
+  "masks": [
+    {
+      "probe_hash": "sha256:8199bdc4720dbc54756c8c7778a1dec62c5ed03a3d6489d6279de0d9eb572e5a",
+      "selector": {
+        "step_id": "s3",
+        "path": "body.code"
+      },
+      "base_a_observation_hash": "sha256:98278ed3856d5d861707014d431ae23473dc9d451c5c0fc6667973927fa84375",
+      "base_b_observation_hash": "sha256:c2c1e19e7aa956f5210312e208c62e822b21bccea3eb4c66cfcdaf18b18b5ec6",
+      "normalization_version": "norm/1",
+      "normalization_hash": "sha256:68055ed85b59fb375d723c22bcaf638aaaede6b7568fe25930de1194c42574a8"
+    }
+  ],
+  "rulings": [
+    {
+      "check": {
+        "ruling_id": "r-1",
+        "event_seq": 1,
+        "label": "Links list stays newest first",
+        "machine_ids": [
+          "links"
+        ],
+        "status": {
+          "status": "violated",
+          "item_ids": [
+            "d-links-sort"
+          ]
+        }
+      },
+      "decision": {
+        "selector": {
+          "surface": "http",
+          "method": "GET",
+          "route_template": "/api/links",
+          "step_context": {
+            "kind": "any"
+          },
+          "principal": {
+            "kind": "authenticated"
+          },
+          "channel": "body",
+          "field_path": "links[*].code"
+        },
+        "predicate": {
+          "predicate": "equals_base",
+          "step_id": "s4",
+          "path": "body.links[*].code",
+          "anchor": {
+            "kind": "fresh"
+          }
+        },
+        "accepts": [
+          "sha256:83403a25049fdcc71fef2bc4a86d076f189c86cf80e17f4d4e1991e9f8b5709b"
+        ],
+        "rejects": [
+          "sha256:426263b3ceb8b39bb835cc41d12c151ea6ce66f3d27d26c0f1b8a734bf4469fe"
+        ],
+        "ruled_on": "sha256:426263b3ceb8b39bb835cc41d12c151ea6ce66f3d27d26c0f1b8a734bf4469fe",
+        "applicability": "standing_predicate_approval",
+        "normalization_hash": "sha256:68055ed85b59fb375d723c22bcaf638aaaede6b7568fe25930de1194c42574a8"
+      }
+    }
+  ],
+  "contests": [
+    {
+      "version": "acan-contest/1",
+      "id": "k-1",
+      "order": "o-3",
+      "agent": "worker-2",
+      "task": "t-4",
+      "target": "sha256:f11834e907288a4bda5dce1b104d65542010dfc746ec645386aa4d602fc37683",
+      "kind": "spec_conflict",
+      "reproducer": "sha256:8199bdc4720dbc54756c8c7778a1dec62c5ed03a3d6489d6279de0d9eb572e5a",
+      "rationale": "The clicks field is dropped because the new limiter reads links before counting; the scope does not allow changing the counter.",
+      "status": "open",
+      "filed_at": 1793259900000
+    }
+  ],
+  "prepared": {
+    "base_commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+    "context": {
+      "protected_head": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+      "merged_commit": "a27a5f30da19543ee34362516e29bf7561214156",
+      "effective_artifact_hashes": {
+        "bun.lock": "sha256:5dd3909fd7cc889f9d3635f02a8b1eb462eaf95a85f550fad2aae6ef409f7b54"
+      },
+      "ledger_head": {
+        "event_seq": 3,
+        "hash": "sha256:dfd226635be9d2a3e4ba3bb2b0cfac331f520bfa1e5166349e3ffae0d0656151"
+      },
+      "scope_hash": "sha256:eaab9bc0a3a9320938e24f5d50332cf9802ed3cf10b4c26497f8c518642bd415",
+      "probe_set_hash": "sha256:08cbc55fe91e0a7d35d66a97b619a7931d518dccb0a3268d75ab7b9eac74af03",
+      "runner_hash": "sha256:02b428f772fbef62ede2b5c9d022c4e49f7e17dbed2e7a396f402aad28a24b47",
+      "evaluator_version": "acan-intent/0.1.0",
+      "runtime": "bun-1.4.4",
+      "controlled_env_hash": "sha256:96f3b648e7620cf579630eeb0f7234347766890e6ea45f8d4fe429c791493989",
+      "sandbox_policy_hash": "sha256:47fce79ea90015907ea46731aa4aeae2ce3821c64b7104aee750b72a76c170a6",
+      "overlay_hash": "sha256:c27af44102a1dd3819def6db27bb5e79c2ff5023379faf9e8feddba8a780fd64",
+      "fixture_set_hash": "sha256:29007a22a25a34d8c43c2e3aba058bc33e54d60e6db3aae1c2ae84eb5459cf94"
+    }
+  }
+}

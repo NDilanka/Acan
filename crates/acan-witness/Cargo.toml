@@ -9,8 +9,17 @@ description = "Runs a witness check against a task's worktree and reports the ou
 
 [dependencies]
 acan-core = { path = "../acan-core" }
+acan-intent = { path = "../acan-intent" }
 reqwest = "0.12"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

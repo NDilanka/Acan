@@ -1,0 +1,10 @@
+{
+  "version": "acan-twin/1",
+  "error": {
+    "code": "cap_exceeded",
+    "cap": "steps",
+    "limit": 32,
+    "requested": 40
+  },
+  "message": "The edited probe expands to 40 steps; the twin runs at most 32."
+}

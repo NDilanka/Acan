@@ -1,0 +1,94 @@
+{
+  "version": "acan-caption-catalog/1",
+  "catalog_version": "captions-1",
+  "templates": [
+    {
+      "template_id": "residue.changed_value",
+      "text": "Base answered {base}; the candidate answers {candidate}. No scope item covers it.",
+      "slots": {
+        "base": {
+          "column": "base_a",
+          "value_type": "text"
+        },
+        "candidate": {
+          "column": "candidate",
+          "value_type": "text"
+        }
+      }
+    },
+    {
+      "template_id": "violation.ruling",
+      "text": "The candidate answers {candidate}, which the ruling forbids.",
+      "slots": {
+        "candidate": {
+          "column": "candidate",
+          "value_type": "identifier"
+        }
+      }
+    },
+    {
+      "template_id": "bounced.obligation_failed",
+      "text": "The scope wants {target} here; the candidate does not answer it yet.",
+      "slots": {
+        "target": {
+          "column": "target",
+          "value_type": "text"
+        }
+      }
+    },
+    {
+      "template_id": "unknown.unstable_base",
+      "text": "The second base run answered {base_b}, so this check has no answer.",
+      "slots": {
+        "base_b": {
+          "column": "base_b",
+          "value_type": "status"
+        }
+      }
+    },
+    {
+      "template_id": "stopped.out_of_scope",
+      "text": "Base answered {base}; the candidate answers {candidate}. Out of scope, and the repair budget is spent.",
+      "slots": {
+        "base": {
+          "column": "base_a",
+          "value_type": "number"
+        },
+        "candidate": {
+          "column": "candidate",
+          "value_type": "number"
+        }
+      }
+    },
+    {
+      "template_id": "unknown.incomparable",
+      "text": "Base reached this step with {base_a}; the candidate did not, so the runs cannot be compared.",
+      "slots": {
+        "base_a": {
+          "column": "base_a",
+          "value_type": "status"
+        }
+      }
+    },
+    {
+      "template_id": "unknown.error",
+      "text": "Base answered {base_a}; the candidate run did not complete, so this check has no answer.",
+      "slots": {
+        "base_a": {
+          "column": "base_a",
+          "value_type": "status"
+        }
+      }
+    },
+    {
+      "template_id": "fulfilled.obligations",
+      "text": "The candidate answers {candidate}, as the scope asked.",
+      "slots": {
+        "candidate": {
+          "column": "candidate",
+          "value_type": "status"
+        }
+      }
+    }
+  ]
+}

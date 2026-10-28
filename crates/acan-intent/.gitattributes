@@ -1,0 +1,2 @@
+# Tests compare these files byte for byte and hash them, so every checkout keeps LF.
+fixtures/** text eol=lf

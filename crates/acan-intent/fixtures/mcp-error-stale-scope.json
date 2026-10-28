@@ -1,0 +1,9 @@
+{
+  "version": "acan-mcp/1",
+  "error": {
+    "code": "stale_scope",
+    "current_rev": 3,
+    "current_hash": "sha256:eae725b3c47911fb2e8659d852184bc6377468b6f63c4567ac83dfcf3830da32"
+  },
+  "message": "The scope moved to revision 3; read it again before building."
+}

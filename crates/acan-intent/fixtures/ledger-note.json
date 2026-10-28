@@ -1,0 +1,18 @@
+{
+  "event": "note_recorded",
+  "schema_version": "acan-ledger/1",
+  "event_seq": 2,
+  "prev_hash": "sha256:10ac446706bbf6db2da875f845edfe28012ead5f5f865863427ecfc7f8b4d492",
+  "actor": "owner",
+  "at": 1793255400000,
+  "ruling_id": "r-2",
+  "order": "o-2",
+  "text": "Error pages read as plain sentences",
+  "reason": {
+    "kind": "unexpressible",
+    "detail": "tone of error text has no predicate"
+  },
+  "machine_ids": [
+    "errors"
+  ]
+}

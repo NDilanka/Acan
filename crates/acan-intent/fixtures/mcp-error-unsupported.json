@@ -1,0 +1,8 @@
+{
+  "version": "acan-mcp/1",
+  "error": {
+    "code": "unsupported",
+    "operation": "API01: get_scope"
+  },
+  "message": "unsupported: API01: get_scope"
+}

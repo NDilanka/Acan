@@ -1,0 +1,69 @@
+{
+  "version": "acan-episode/1",
+  "id": "sha256:1acc401ccb3ea61be044f545a3612c535b8aebe6d8333b3d55cc56773f59e736",
+  "order": "o-3",
+  "scope_lineage": [
+    {
+      "rev": 1,
+      "scope_hash": "sha256:b4aaa8ebd740be30d05d101339b66ebc7853050c06a3a7d5397ee1d94df3dc1b"
+    },
+    {
+      "rev": 2,
+      "scope_hash": "sha256:eaab9bc0a3a9320938e24f5d50332cf9802ed3cf10b4c26497f8c518642bd415"
+    }
+  ],
+  "probe_hash": "sha256:762703905cfc5ffa376dfb1b89d53c9ce693dc5f3e1628b39b06935364f62b45",
+  "step_id": "s6",
+  "selector": {
+    "surface": "http",
+    "method": "POST",
+    "route_template": "/api/login",
+    "step_context": {
+      "kind": "any"
+    },
+    "principal": {
+      "kind": "anonymous"
+    },
+    "channel": "header",
+    "field_path": "retry-after"
+  },
+  "obligation_id": "obl-retry-after",
+  "evidence_revisions": [
+    {
+      "revision": 1,
+      "merged_commit": "13461aa0d25c27898308b73f280ca4c82e2aaac2",
+      "probe_hash": "sha256:bbf6aa70b9ab38ac096429930697f8b8c9900b78d7128fe75b2bbe90b3ccb56c",
+      "step_id": "s5",
+      "observation_hash": "sha256:2f4a058790a09d3ae3f40b993264419af0bcca91543512a63a549b568efff6e9",
+      "evidence_hash": "sha256:0dbad6ffbbc6b4edc63f6a404598809be4f2819e2ce2643e6cd7158c42bc855f",
+      "class": "obligation_failed"
+    },
+    {
+      "revision": 2,
+      "merged_commit": "a27a5f30da19543ee34362516e29bf7561214156",
+      "probe_hash": "sha256:762703905cfc5ffa376dfb1b89d53c9ce693dc5f3e1628b39b06935364f62b45",
+      "step_id": "s6",
+      "observation_hash": "sha256:7eb49a93513700609650475d49cea80005122a87481fbe6645b7106f50eed5f2",
+      "evidence_hash": "sha256:84f0e02286696758fac47139e88e02483025d34bc3d23bcd11d0ea989cfe77f9",
+      "class": "obligation_failed"
+    }
+  ],
+  "candidate_attempts": [
+    {
+      "attempt": 1,
+      "merged_commit": "13461aa0d25c27898308b73f280ca4c82e2aaac2",
+      "agent": "worker-1",
+      "task": "t-4",
+      "at": 1793259300000
+    },
+    {
+      "attempt": 2,
+      "merged_commit": "a27a5f30da19543ee34362516e29bf7561214156",
+      "agent": "worker-2",
+      "task": "t-4",
+      "at": 1793259800000
+    }
+  ],
+  "bounce_count": 1,
+  "state": "bounced"
+}

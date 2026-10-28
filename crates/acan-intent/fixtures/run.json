@@ -1,0 +1,26 @@
+{
+  "version": "acan-run/1",
+  "id": "run-candidate-login",
+  "probe": "sha256:762703905cfc5ffa376dfb1b89d53c9ce693dc5f3e1628b39b06935364f62b45",
+  "commit": "a27a5f30da19543ee34362516e29bf7561214156",
+  "role": "candidate",
+  "env": {
+    "lockfile_hash": "sha256:5dd3909fd7cc889f9d3635f02a8b1eb462eaf95a85f550fad2aae6ef409f7b54",
+    "fixture_hash": "sha256:560eaf3afedc770e778c6d10bfec10e783ed2dffec0904165dffe833bfc2d1af",
+    "runtime": "bun-1.4.4"
+  },
+  "runner": "sha256:02b428f772fbef62ede2b5c9d022c4e49f7e17dbed2e7a396f402aad28a24b47",
+  "outcome": {
+    "outcome": "completed"
+  },
+  "captures": [
+    {
+      "outcome": "captured",
+      "binding": "alice_session",
+      "step_id": "f3",
+      "value_hash": "sha256:24c9c3998be7554448b3598353e620026b2355d132b7d6bdc462432d0cf300ee"
+    }
+  ],
+  "started_at": 1793259700000,
+  "finished_at": 1793259704500
+}

@@ -1,0 +1,8 @@
+{
+  "version": "acan-mcp/1",
+  "error": {
+    "code": "scope_not_confirmed",
+    "order": "o-3"
+  },
+  "message": "The order has no confirmed scope yet."
+}

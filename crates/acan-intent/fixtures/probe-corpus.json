@@ -1,0 +1,692 @@
+{
+  "version": "acan-probes/1",
+  "fixtures": [
+    {
+      "id": "f-alice",
+      "recipe": [
+        {
+          "step": "http",
+          "id": "f1",
+          "client": "client-a",
+          "request": {
+            "method": "POST",
+            "path": "/api/signup",
+            "body": {
+              "email": "alice@example.test",
+              "password": "alice-pass-1"
+            }
+          },
+          "redirect": "manual",
+          "deadline_ms": 2000
+        },
+        {
+          "step": "http",
+          "id": "f2",
+          "client": "client-a",
+          "request": {
+            "method": "POST",
+            "path": "/api/login",
+            "body": {
+              "email": "alice@example.test",
+              "password": "alice-pass-1"
+            }
+          },
+          "redirect": "manual",
+          "deadline_ms": 2000
+        },
+        {
+          "step": "capture",
+          "id": "f3",
+          "from": "f2",
+          "source": {
+            "part": "cookie",
+            "name": "session"
+          },
+          "binding": "alice_session",
+          "kind": "session",
+          "actor": "alice"
+        }
+      ],
+      "isolation": "fresh_instance",
+      "runner_contract": "acan-runner/1"
+    },
+    {
+      "id": "f-empty",
+      "recipe": [],
+      "isolation": "fresh_instance",
+      "runner_contract": "acan-runner/1"
+    }
+  ],
+  "probes": [
+    {
+      "label": "login-rate-limit",
+      "spec": {
+        "surface": "http",
+        "fixture": "f-alice",
+        "steps": [
+          {
+            "step": "http",
+            "id": "s1",
+            "client": "client-a",
+            "request": {
+              "method": "POST",
+              "path": "/api/login",
+              "body": {
+                "email": "alice@example.test",
+                "password": "wrong"
+              }
+            },
+            "redirect": "manual",
+            "deadline_ms": 2000
+          },
+          {
+            "step": "http",
+            "id": "s2",
+            "client": "client-a",
+            "request": {
+              "method": "POST",
+              "path": "/api/login",
+              "body": {
+                "email": "alice@example.test",
+                "password": "wrong"
+              }
+            },
+            "redirect": "manual",
+            "deadline_ms": 2000
+          },
+          {
+            "step": "http",
+            "id": "s3",
+            "client": "client-a",
+            "request": {
+              "method": "POST",
+              "path": "/api/login",
+              "body": {
+                "email": "alice@example.test",
+                "password": "wrong"
+              }
+            },
+            "redirect": "manual",
+            "deadline_ms": 2000
+          },
+          {
+            "step": "http",
+            "id": "s4",
+            "client": "client-a",
+            "request": {
+              "method": "POST",
+              "path": "/api/login",
+              "body": {
+                "email": "alice@example.test",
+                "password": "wrong"
+              }
+            },
+            "redirect": "manual",
+            "deadline_ms": 2000
+          },
+          {
+            "step": "http",
+            "id": "s5",
+            "client": "client-a",
+            "request": {
+              "method": "POST",
+              "path": "/api/login",
+              "body": {
+                "email": "alice@example.test",
+                "password": "wrong"
+              }
+            },
+            "redirect": "manual",
+            "deadline_ms": 2000
+          },
+          {
+            "step": "http",
+            "id": "s6",
+            "client": "client-a",
+            "request": {
+              "method": "POST",
+              "path": "/api/login",
+              "body": {
+                "email": "alice@example.test",
+                "password": "wrong"
+              }
+            },
+            "redirect": "manual",
+            "deadline_ms": 2000
+          },
+          {
+            "step": "advance_time",
+            "id": "s7",
+            "by_ms": 61000
+          },
+          {
+            "step": "http",
+            "id": "s8",
+            "client": "client-a",
+            "request": {
+              "method": "POST",
+              "path": "/api/login",
+              "body": {
+                "email": "alice@example.test",
+                "password": "alice-pass-1"
+              }
+            },
+            "redirect": "manual",
+            "deadline_ms": 2000
+          }
+        ]
+      },
+      "origin": "scope_example",
+      "route_path": {
+        "machines": [
+          "server",
+          "middleware",
+          "ratelimit",
+          "auth",
+          "errors"
+        ],
+        "source": "static"
+      },
+      "normalization": {
+        "version": "norm/1",
+        "typed_captures": [
+          {
+            "binding": "alice_session",
+            "kind": "session"
+          },
+          {
+            "binding": "link_code",
+            "kind": "identifier"
+          }
+        ],
+        "projections": [
+          {
+            "path": "cookie.session",
+            "kind": {
+              "kind": "canonical_identity",
+              "binding": "alice_session"
+            }
+          },
+          {
+            "path": "body.token",
+            "kind": {
+              "kind": "redact_secret"
+            }
+          }
+        ],
+        "relations": [
+          {
+            "kind": "equal",
+            "paths": [
+              {
+                "step_id": "f2",
+                "path": "cookie.session"
+              }
+            ]
+          },
+          {
+            "kind": "unique",
+            "paths": [
+              {
+                "step_id": "s8",
+                "path": "body.links[*].code"
+              }
+            ]
+          },
+          {
+            "kind": "references",
+            "from": {
+              "step_id": "s1",
+              "path": "body.code"
+            },
+            "to": {
+              "step_id": "s8",
+              "path": "body.links[*].code"
+            }
+          }
+        ],
+        "maskable_paths": [
+          "cookie.session",
+          "body.links[*].code",
+          "side_effect.store.users[*].created_at"
+        ]
+      }
+    },
+    {
+      "label": "links-create-delete",
+      "spec": {
+        "surface": "http",
+        "fixture": "f-alice",
+        "steps": [
+          {
+            "step": "http",
+            "id": "s1",
+            "actor": "alice",
+            "client": "client-a",
+            "request": {
+              "method": "POST",
+              "path": "/api/links",
+              "body": {
+                "url": "https://example.test/a"
+              }
+            },
+            "redirect": "manual",
+            "deadline_ms": 2000
+          },
+          {
+            "step": "capture",
+            "id": "s2",
+            "from": "s1",
+            "source": {
+              "part": "body",
+              "path": "code"
+            },
+            "binding": "link_code",
+            "kind": "identifier"
+          },
+          {
+            "step": "http",
+            "id": "s3",
+            "actor": "alice",
+            "client": "client-a",
+            "request": {
+              "method": "DELETE",
+              "path": "/api/links/${link_code}",
+              "headers": {
+                "x-request-id": "probe-${link_code}"
+              }
+            },
+            "redirect": "manual",
+            "deadline_ms": 2000
+          },
+          {
+            "step": "http",
+            "id": "s4",
+            "actor": "alice",
+            "client": "client-a",
+            "request": {
+              "method": "GET",
+              "path": "/api/links"
+            },
+            "redirect": "manual",
+            "deadline_ms": 2000
+          }
+        ]
+      },
+      "origin": "ruling",
+      "route_path": {
+        "machines": [
+          "server",
+          "middleware",
+          "ratelimit",
+          "auth",
+          "links",
+          "store"
+        ],
+        "source": "static"
+      },
+      "normalization": {
+        "version": "norm/1",
+        "typed_captures": [
+          {
+            "binding": "alice_session",
+            "kind": "session"
+          },
+          {
+            "binding": "link_code",
+            "kind": "identifier"
+          }
+        ],
+        "projections": [
+          {
+            "path": "cookie.session",
+            "kind": {
+              "kind": "canonical_identity",
+              "binding": "alice_session"
+            }
+          },
+          {
+            "path": "body.token",
+            "kind": {
+              "kind": "redact_secret"
+            }
+          }
+        ],
+        "relations": [
+          {
+            "kind": "equal",
+            "paths": [
+              {
+                "step_id": "f2",
+                "path": "cookie.session"
+              }
+            ]
+          },
+          {
+            "kind": "unique",
+            "paths": [
+              {
+                "step_id": "s4",
+                "path": "body.links[*].code"
+              }
+            ]
+          },
+          {
+            "kind": "references",
+            "from": {
+              "step_id": "s1",
+              "path": "body.code"
+            },
+            "to": {
+              "step_id": "s4",
+              "path": "body.links[*].code"
+            }
+          }
+        ],
+        "maskable_paths": [
+          "cookie.session",
+          "body.links[*].code",
+          "side_effect.store.users[*].created_at"
+        ]
+      }
+    },
+    {
+      "label": "signup-store",
+      "spec": {
+        "surface": "http",
+        "fixture": "f-empty",
+        "steps": [
+          {
+            "step": "http",
+            "id": "s1",
+            "client": "client-a",
+            "request": {
+              "method": "POST",
+              "path": "/api/signup",
+              "body": {
+                "email": "bob@example.test",
+                "password": "bob-pass-1"
+              }
+            },
+            "redirect": "manual",
+            "deadline_ms": 2000
+          },
+          {
+            "step": "observe_side_effect",
+            "id": "s2",
+            "sink": "store",
+            "correlate": "s1",
+            "barrier": {
+              "timeout_ms": 2000,
+              "quiet_ms": 100
+            }
+          }
+        ]
+      },
+      "origin": "human",
+      "route_path": {
+        "machines": [
+          "server",
+          "middleware",
+          "ratelimit",
+          "auth",
+          "store"
+        ],
+        "source": "traced"
+      },
+      "normalization": {
+        "version": "norm/1",
+        "typed_captures": [
+          {
+            "binding": "alice_session",
+            "kind": "session"
+          },
+          {
+            "binding": "link_code",
+            "kind": "identifier"
+          }
+        ],
+        "projections": [
+          {
+            "path": "cookie.session",
+            "kind": {
+              "kind": "canonical_identity",
+              "binding": "alice_session"
+            }
+          },
+          {
+            "path": "body.token",
+            "kind": {
+              "kind": "redact_secret"
+            }
+          }
+        ],
+        "relations": [
+          {
+            "kind": "equal",
+            "paths": [
+              {
+                "step_id": "s1",
+                "path": "cookie.session"
+              }
+            ]
+          },
+          {
+            "kind": "unique",
+            "paths": [
+              {
+                "step_id": "s2",
+                "path": "body.links[*].code"
+              }
+            ]
+          },
+          {
+            "kind": "references",
+            "from": {
+              "step_id": "s1",
+              "path": "body.code"
+            },
+            "to": {
+              "step_id": "s2",
+              "path": "body.links[*].code"
+            }
+          }
+        ],
+        "maskable_paths": [
+          "cookie.session",
+          "body.links[*].code",
+          "side_effect.store.users[*].created_at"
+        ]
+      }
+    },
+    {
+      "label": "health",
+      "spec": {
+        "surface": "http",
+        "fixture": "f-empty",
+        "steps": [
+          {
+            "step": "http",
+            "id": "s1",
+            "client": "client-a",
+            "request": {
+              "method": "GET",
+              "path": "/health"
+            },
+            "redirect": "manual",
+            "deadline_ms": 2000
+          }
+        ]
+      },
+      "origin": "diff_aware",
+      "route_path": {
+        "machines": [
+          "server"
+        ],
+        "source": "static"
+      },
+      "normalization": {
+        "version": "norm/1",
+        "typed_captures": [],
+        "projections": [],
+        "relations": [],
+        "maskable_paths": []
+      }
+    }
+  ],
+  "routes": [
+    {
+      "method": "GET",
+      "route_template": "/health",
+      "route_path": {
+        "machines": [
+          "server"
+        ],
+        "source": "static"
+      },
+      "status": {
+        "status": "covered"
+      }
+    },
+    {
+      "method": "POST",
+      "route_template": "/api/signup",
+      "route_path": {
+        "machines": [
+          "server",
+          "middleware",
+          "ratelimit",
+          "auth",
+          "store"
+        ],
+        "source": "static"
+      },
+      "status": {
+        "status": "covered"
+      }
+    },
+    {
+      "method": "POST",
+      "route_template": "/api/login",
+      "route_path": {
+        "machines": [
+          "server",
+          "middleware",
+          "ratelimit",
+          "auth",
+          "store"
+        ],
+        "source": "static"
+      },
+      "status": {
+        "status": "covered"
+      }
+    },
+    {
+      "method": "POST",
+      "route_template": "/api/logout",
+      "route_path": {
+        "machines": [
+          "server",
+          "middleware",
+          "ratelimit",
+          "auth"
+        ],
+        "source": "static"
+      },
+      "status": {
+        "status": "uncovered",
+        "reason": "no probe yet"
+      }
+    },
+    {
+      "method": "GET",
+      "route_template": "/api/links",
+      "route_path": {
+        "machines": [
+          "server",
+          "middleware",
+          "ratelimit",
+          "auth",
+          "links",
+          "store"
+        ],
+        "source": "static"
+      },
+      "status": {
+        "status": "covered"
+      }
+    },
+    {
+      "method": "POST",
+      "route_template": "/api/links",
+      "route_path": {
+        "machines": [
+          "server",
+          "middleware",
+          "ratelimit",
+          "auth",
+          "links",
+          "store"
+        ],
+        "source": "static"
+      },
+      "status": {
+        "status": "covered"
+      }
+    },
+    {
+      "method": "DELETE",
+      "route_template": "/api/links/:code",
+      "route_path": {
+        "machines": [
+          "server",
+          "middleware",
+          "ratelimit",
+          "auth",
+          "links",
+          "store"
+        ],
+        "source": "static"
+      },
+      "status": {
+        "status": "covered"
+      }
+    },
+    {
+      "method": "GET",
+      "route_template": "/dashboard",
+      "route_path": {
+        "machines": [
+          "server",
+          "middleware",
+          "ratelimit",
+          "auth",
+          "dashboard"
+        ],
+        "source": "static"
+      },
+      "status": {
+        "status": "covered"
+      }
+    },
+    {
+      "method": "GET",
+      "route_template": "/:code",
+      "route_path": {
+        "machines": [
+          "server",
+          "middleware",
+          "ratelimit",
+          "links",
+          "store"
+        ],
+        "source": "static"
+      },
+      "status": {
+        "status": "uncovered",
+        "reason": "redirect probes wait for the follow-redirect runner"
+      }
+    }
+  ]
+}
