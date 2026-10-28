@@ -26,18 +26,28 @@
 //! - `crashed`, `cancelled` and `error`, which name no step: a prefix of the sequence. Every
 //!   step before the last record holds its own.
 //!
+//! [`tour`] admits a model-proposed tour over a plant view by the rule in the
+//! [`crate::PlantView`] module docs, and binds its captions.
+//!
 //! [`retained_example`] returns [`Unsupported`] until P01 implements it.
+
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::compare::Contrast;
 use crate::error::Unsupported;
-use crate::hash::{CanonicalError, ObservationHash};
+use crate::hash::{CanonicalError, ObservationHash, ReceiptHash};
 use crate::ledger::ContrastExample;
 use crate::observation::{Observation, ObservedRun};
 use crate::predicate::RetainedExample;
 use crate::probe::{CorpusProbe, Fixture, Run, RunOutcome, Step};
 use crate::provenance::CoreDerived;
-use crate::types::StepId;
-use crate::verdict::Comparison;
+use crate::types::{CatalogVersion, ItemId, MachineId, SlotName, StepId, TemplateId};
+use crate::verdict::{Comparison, ItemClass, ItemState};
+use crate::view::{
+    BindableValue, BoundItemView, CaptionCatalog, Coverage, EvidenceRef, MarkRef, PlantItem,
+    PlantView, Tour, TourStep,
+};
 
 /// Why stored records were not admitted. Never evidence, never a pass.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -265,4 +275,287 @@ pub fn retained_example<'a>(
     _comparison: &'a CoreDerived<Comparison>,
 ) -> Result<RetainedExample<'a>, AdmitError> {
     Err(Unsupported("P01: admit::retained_example").into())
+}
+
+/// Whether a caption slot may be bound to a row that holds no value.
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum SlotPresence {
+    /// The row must hold a present value of the slot's type.
+    Required,
+    /// The row may also be [`crate::Evidence::Missing`], written as [`MISSING_VALUE_TEXT`].
+    Optional,
+}
+
+/// What the trusted card writes for a bound row that holds no value.
+pub const MISSING_VALUE_TEXT: &str = "no value";
+
+/// How an evidence row does not fit a caption slot ([`crate::SlotSpec::check`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum SlotMismatch {
+    /// The row is in another column: a base and candidate swap.
+    #[error("the row is from another column")]
+    Column,
+    /// The column does not admit the row's provenance: a hypothetical shown as observed.
+    #[error("the column does not admit the row's provenance")]
+    Provenance,
+    /// The row holds no value and the slot requires one.
+    #[error("the row holds no value and the slot requires one")]
+    Missing,
+    /// The row's value is not of the slot's type.
+    #[error("the row's value is not of the slot's type")]
+    Type,
+}
+
+/// Why a proposed tour was rejected. Any one rejects the whole tour.
+#[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum TourRejection {
+    /// The tour was made for another receipt.
+    #[error("the tour is for receipt {tour}, not the view's {view}")]
+    StaleReceipt {
+        /// The tour's receipt.
+        tour: ReceiptHash,
+        /// The view's receipt.
+        view: ReceiptHash,
+    },
+    /// The catalog is not the one the view names.
+    #[error("the view names catalog {view}, not {catalog}")]
+    CatalogMismatch {
+        /// The view's catalog version.
+        view: CatalogVersion,
+        /// The catalog's.
+        catalog: CatalogVersion,
+    },
+    /// One step is invalid.
+    #[error("tour step {tour_step}: {fault}")]
+    Step {
+        /// The step's index, from 0.
+        tour_step: usize,
+        /// What is wrong with it.
+        fault: StepFault,
+    },
+    /// A mandatory item has no step.
+    #[error("mandatory item {item_id} is not reached")]
+    Unreached {
+        /// The item.
+        item_id: ItemId,
+    },
+}
+
+/// What is wrong with one tour step.
+#[derive(Clone, PartialEq, Eq, Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum StepFault {
+    /// The step's item is not in the view.
+    #[error("item {item_id} is not in the view")]
+    UnknownItem {
+        /// The item.
+        item_id: ItemId,
+    },
+    /// The camera's machine is not in the view.
+    #[error("machine {machine_id} is not in the view")]
+    UnknownMachine {
+        /// The machine.
+        machine_id: MachineId,
+    },
+    /// A staged mark is not one the view draws.
+    #[error("the view draws no {mark:?}")]
+    UnknownMark {
+        /// The mark.
+        mark: MarkRef,
+    },
+    /// A reference names another item than the step's.
+    #[error("{reference:?} names another item than the step's")]
+    ForeignItem {
+        /// The reference.
+        reference: EvidenceRef,
+    },
+    /// A reference names no row of the view.
+    #[error("{reference:?} names no evidence row")]
+    Unresolved {
+        /// The reference.
+        reference: EvidenceRef,
+    },
+    /// The caption's template is not in the catalog.
+    #[error("template {template_id} is not in the catalog")]
+    UnknownTemplate {
+        /// The template.
+        template_id: TemplateId,
+    },
+    /// The caption binds other slots than its template declares.
+    #[error("the caption does not bind exactly the slots of {template_id}")]
+    SlotsDiffer {
+        /// The template.
+        template_id: TemplateId,
+    },
+    /// A bound row does not fit its slot.
+    #[error("slot {slot}: {mismatch}")]
+    Slot {
+        /// The slot.
+        slot: SlotName,
+        /// How the row does not fit.
+        mismatch: SlotMismatch,
+    },
+}
+
+/// Admits a proposed `tour` over `view` and binds every caption against `catalog`, by the rule
+/// in the [`crate::PlantView`] module docs. Returns one bound view per tour step, in step order.
+///
+/// # Errors
+///
+/// Returns the first [`TourRejection`]; any one rejects the whole tour.
+pub fn tour(
+    view: &PlantView,
+    catalog: &CaptionCatalog,
+    tour: &Tour,
+) -> Result<Vec<BoundItemView>, TourRejection> {
+    if tour.receipt_hash != view.receipt_hash {
+        return Err(TourRejection::StaleReceipt {
+            tour: tour.receipt_hash,
+            view: view.receipt_hash,
+        });
+    }
+    if catalog.catalog_version != view.catalog_version {
+        return Err(TourRejection::CatalogMismatch {
+            view: view.catalog_version.clone(),
+            catalog: catalog.catalog_version.clone(),
+        });
+    }
+    let bound = tour
+        .steps
+        .iter()
+        .enumerate()
+        .map(|(tour_step, step)| {
+            bind_step(view, catalog, step).map_err(|fault| TourRejection::Step { tour_step, fault })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    match view
+        .mandatory_items()
+        .find(|item| !tour.reaches(&item.item_id))
+    {
+        Some(item) => Err(TourRejection::Unreached {
+            item_id: item.item_id.clone(),
+        }),
+        None => Ok(bound),
+    }
+}
+
+fn item<'v>(view: &'v PlantView, item_id: &ItemId) -> Option<&'v PlantItem> {
+    view.items.iter().find(|item| &item.item_id == item_id)
+}
+
+/// Whether `mark` is one `view` draws.
+fn draws(view: &PlantView, mark: &MarkRef) -> bool {
+    let item = |item_id: &ItemId| item(view, item_id);
+    match mark {
+        MarkRef::Footprint { item_id } => view.scope.items.iter().any(|i| &i.item_id == item_id),
+        MarkRef::MustKeepPin { must_keep_id } => view
+            .scope
+            .must_keep
+            .iter()
+            .any(|rule| &rule.id == must_keep_id),
+        MarkRef::QuestionPin { choice_id } => {
+            view.scope.open.iter().any(|choice| &choice.id == choice_id)
+        }
+        MarkRef::NoProbes { machine_id } => view.machines.iter().any(|machine| {
+            &machine.machine_id == machine_id && machine.coverage == Coverage::Uncovered
+        }),
+        MarkRef::Ghost { item_id } | MarkRef::Crates { item_id } => item(item_id).is_some(),
+        MarkRef::BouncedChip { item_id } => {
+            item(item_id).is_some_and(|item| item.state == ItemState::Bounced)
+        }
+        MarkRef::ResidueCard { item_id } => {
+            item(item_id).is_some_and(|item| item.state == ItemState::Residue)
+        }
+        MarkRef::Unknown { item_id } => item(item_id).is_some_and(|item| {
+            matches!(
+                item.class,
+                ItemClass::UnstableBase | ItemClass::Incomparable | ItemClass::Error
+            )
+        }),
+        MarkRef::RulingTag { ruling_id } => view
+            .machines
+            .iter()
+            .flat_map(|machine| &machine.rulings)
+            .any(|tag| &tag.ruling_id == ruling_id),
+        MarkRef::OrderPlate {} => true,
+    }
+}
+
+fn bind_step(
+    view: &PlantView,
+    catalog: &CaptionCatalog,
+    step: &TourStep,
+) -> Result<BoundItemView, StepFault> {
+    let item = item(view, &step.item_id).ok_or_else(|| StepFault::UnknownItem {
+        item_id: step.item_id.clone(),
+    })?;
+    let machine_id = &step.camera.machine_id;
+    if !view
+        .machines
+        .iter()
+        .any(|machine| &machine.machine_id == machine_id)
+    {
+        return Err(StepFault::UnknownMachine {
+            machine_id: machine_id.clone(),
+        });
+    }
+    if let Some(mark) = step.stage.iter().find(|mark| !draws(view, mark)) {
+        return Err(StepFault::UnknownMark { mark: mark.clone() });
+    }
+    let own_row = |reference: &EvidenceRef| {
+        if reference.item_id != item.item_id {
+            return Err(StepFault::ForeignItem {
+                reference: reference.clone(),
+            });
+        }
+        view.resolve(reference)
+            .ok_or_else(|| StepFault::Unresolved {
+                reference: reference.clone(),
+            })
+    };
+    for reference in &step.evidence_refs {
+        own_row(reference)?;
+    }
+    let template_id = &step.caption.template_id;
+    let template = catalog
+        .template(template_id)
+        .ok_or_else(|| StepFault::UnknownTemplate {
+            template_id: template_id.clone(),
+        })?;
+    if !step.caption.slots.keys().eq(template.slots.keys()) {
+        return Err(StepFault::SlotsDiffer {
+            template_id: template_id.clone(),
+        });
+    }
+    let typed_slot_bindings = template
+        .slots
+        .iter()
+        .zip(step.caption.slots.values())
+        .map(|((slot, spec), reference)| {
+            let row = own_row(reference)?;
+            spec.check(row).map_err(|mismatch| StepFault::Slot {
+                slot: slot.clone(),
+                mismatch,
+            })?;
+            let value = BindableValue {
+                value_type: spec.value_type,
+                unit: spec.unit,
+                receipt_hash: view.receipt_hash,
+                item_id: item.item_id.clone(),
+                row: row.clone(),
+            };
+            Ok((slot.clone(), value))
+        })
+        .collect::<Result<_, StepFault>>()?;
+    Ok(BoundItemView {
+        receipt_hash: view.receipt_hash,
+        item_id: item.item_id.clone(),
+        typed_slot_bindings,
+        catalog_version: view.catalog_version.clone(),
+    })
 }

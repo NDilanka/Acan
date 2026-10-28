@@ -8,11 +8,13 @@
       "slots": {
         "base": {
           "column": "base_a",
-          "value_type": "text"
+          "value_type": "text",
+          "presence": "required"
         },
         "candidate": {
           "column": "candidate",
-          "value_type": "text"
+          "value_type": "text",
+          "presence": "required"
         }
       }
     },
@@ -22,7 +24,8 @@
       "slots": {
         "candidate": {
           "column": "candidate",
-          "value_type": "identifier"
+          "value_type": "identifier",
+          "presence": "required"
         }
       }
     },
@@ -32,7 +35,8 @@
       "slots": {
         "target": {
           "column": "target",
-          "value_type": "text"
+          "value_type": "text",
+          "presence": "required"
         }
       }
     },
@@ -42,7 +46,8 @@
       "slots": {
         "base_b": {
           "column": "base_b",
-          "value_type": "status"
+          "value_type": "status",
+          "presence": "required"
         }
       }
     },
@@ -52,11 +57,13 @@
       "slots": {
         "base": {
           "column": "base_a",
-          "value_type": "number"
+          "value_type": "number",
+          "presence": "required"
         },
         "candidate": {
           "column": "candidate",
-          "value_type": "number"
+          "value_type": "number",
+          "presence": "optional"
         }
       }
     },
@@ -66,7 +73,8 @@
       "slots": {
         "base_a": {
           "column": "base_a",
-          "value_type": "status"
+          "value_type": "status",
+          "presence": "required"
         }
       }
     },
@@ -76,7 +84,8 @@
       "slots": {
         "base_a": {
           "column": "base_a",
-          "value_type": "status"
+          "value_type": "status",
+          "presence": "required"
         }
       }
     },
@@ -86,7 +95,8 @@
       "slots": {
         "candidate": {
           "column": "candidate",
-          "value_type": "status"
+          "value_type": "status",
+          "presence": "required"
         }
       }
     }

@@ -5,7 +5,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use acan_intent::admit::{self, AdmitError};
+use acan_intent::admit::{
+    self, AdmitError, MISSING_VALUE_TEXT, SlotMismatch, SlotPresence, StepFault, TourRejection,
+};
 use acan_intent::{
     AppContract, CaptionCatalog, Card, CardRequest, ContainerNetwork, ContainerPolicy, Contest,
     ContestRequest, ContestResponse, ContrastExample, CorpusProbe, Coverage, DiscrepancyEpisode,
@@ -495,6 +497,7 @@ fn stale_swapped_and_hypothetical_bindings_are_refused() {
         column: EvidenceSlot::Candidate,
         value_type: ValueType::Status,
         unit: None,
+        presence: SlotPresence::Required,
     };
     assert!(
         !candidate.accepts(base),
@@ -504,6 +507,7 @@ fn stale_swapped_and_hypothetical_bindings_are_refused() {
         column: EvidenceSlot::Target,
         value_type: ValueType::Status,
         unit: None,
+        presence: SlotPresence::Required,
     };
     let observed_target = EvidenceRow {
         slot: EvidenceSlot::Target,
@@ -515,6 +519,226 @@ fn stale_swapped_and_hypothetical_bindings_are_refused() {
     );
 }
 
+/// The directed fixture tour, after `edit` on its JSON steps, admitted over the fixture view.
+fn admit_tour_with(
+    catalog: &CaptionCatalog,
+    edit: impl FnOnce(&mut Vec<Value>),
+) -> Result<Vec<acan_intent::BoundItemView>, TourRejection> {
+    let mut value = raw("plant-view-v1.json");
+    edit(
+        value["tour"]["tour"]["steps"]
+            .as_array_mut()
+            .expect("tour steps"),
+    );
+    let view: PlantView = serde_json::from_value(value).expect("decoding the view");
+    let Some(TourView::Directed { tour, .. }) = &view.tour else {
+        panic!("the fixture has a directed tour");
+    };
+    admit::tour(&view, catalog, tour)
+}
+
+fn reference(item: &str, slot: &str, step: &str, field: &str) -> Value {
+    json!({ "item_id": item, "slot": slot, "step": step, "field": field })
+}
+
+/// The index of the tour step about `item`.
+fn step_about(steps: &[Value], item: &str) -> usize {
+    steps
+        .iter()
+        .position(|step| step["item_id"] == item)
+        .unwrap_or_else(|| panic!("no step about {item}"))
+}
+
+fn slot_fault(tour_step: usize, slot: &str, mismatch: SlotMismatch) -> TourRejection {
+    TourRejection::Step {
+        tour_step,
+        fault: StepFault::Slot {
+            slot: slot.parse().expect("a slot name"),
+            mismatch,
+        },
+    }
+}
+
+#[test]
+fn the_directed_fixture_tour_is_admitted_and_writes_missing_values() {
+    let catalog: CaptionCatalog = load("caption-catalog.json");
+    let bound = admit_tour_with(&catalog, |_| {}).expect("the fixture tour is admitted");
+    let view: PlantView = load("plant-view-v1.json");
+    let Some(TourView::Directed { tour, .. }) = &view.tour else {
+        panic!("the fixture has a directed tour");
+    };
+    assert_eq!(bound.len(), tour.steps.iter().count());
+    let slot_text = |item: &str, slot: &str| {
+        let bound = bound
+            .iter()
+            .find(|view| view.item_id.as_str() == item)
+            .unwrap_or_else(|| panic!("{item} is bound"));
+        bound.typed_slot_bindings[&slot.parse().expect("a slot")].to_string()
+    };
+    assert_eq!(slot_text("d-links-clicks", "base"), "0");
+    assert_eq!(slot_text("d-links-clicks", "candidate"), MISSING_VALUE_TEXT);
+    assert_eq!(slot_text("i-retry-after", "target"), "60");
+}
+
+#[test]
+fn a_cross_item_reference_rejects_the_whole_tour() {
+    let catalog: CaptionCatalog = load("caption-catalog.json");
+    for borrowed in [
+        reference("d-login-error-body", "target", "s6", "body.error"),
+        reference("i-login-limit", "target", "s6", "status"),
+    ] {
+        let mut at = 0;
+        let rejected = admit_tour_with(&catalog, |steps| {
+            at = step_about(steps, "i-retry-after");
+            steps[at]["caption"]["slots"]["target"] = borrowed.clone();
+        });
+        assert!(
+            matches!(
+                rejected,
+                Err(TourRejection::Step { tour_step, fault: StepFault::ForeignItem { .. } })
+                    if tour_step == at
+            ),
+            "{borrowed}: {rejected:?}"
+        );
+    }
+    let rejected = admit_tour_with(&catalog, |steps| {
+        let at = step_about(steps, "d-links-sort");
+        steps[at]["evidence_refs"][0] =
+            reference("d-links-clicks", "candidate", "s4", "body.links[0].clicks");
+    });
+    assert!(
+        matches!(
+            rejected,
+            Err(TourRejection::Step {
+                fault: StepFault::ForeignItem { .. },
+                ..
+            })
+        ),
+        "{rejected:?}"
+    );
+}
+
+#[test]
+fn a_number_in_a_text_slot_rejects_the_whole_tour() {
+    let catalog: CaptionCatalog = load("caption-catalog.json");
+    let mut at = 0;
+    let rejected = admit_tour_with(&catalog, |steps| {
+        at = step_about(steps, "i-login-limit");
+        steps[at]["caption"] = json!({
+            "template_id": "residue.changed_value",
+            "slots": {
+                "base": reference("i-login-limit", "base_a", "s6", "status"),
+                "candidate": reference("i-login-limit", "candidate", "s6", "status"),
+            }
+        });
+    });
+    assert_eq!(rejected, Err(slot_fault(at, "base", SlotMismatch::Type)));
+    let rejected = admit_tour_with(&catalog, |steps| {
+        at = step_about(steps, "d-login-error-body");
+        steps[at]["caption"] = json!({
+            "template_id": "unknown.error",
+            "slots": { "base_a": reference("d-login-error-body", "base_a", "s6", "body.error") }
+        });
+    });
+    assert_eq!(rejected, Err(slot_fault(at, "base_a", SlotMismatch::Type)));
+}
+
+#[test]
+fn a_stale_swapped_or_missing_binding_rejects_the_whole_tour() {
+    let catalog: CaptionCatalog = load("caption-catalog.json");
+    let rejected = admit_tour_with(&catalog, |steps| {
+        steps[0]["caption"]["slots"]["base"] =
+            reference("d-login-error-body", "candidate", "s6", "body.error");
+    });
+    assert_eq!(
+        rejected,
+        Err(slot_fault(0, "base", SlotMismatch::Column)),
+        "a candidate row filled a base slot"
+    );
+    let rejected = admit_tour_with(&catalog, |steps| {
+        steps[0]["caption"]["slots"]["base"] =
+            reference("d-login-error-body", "base_a", "s9", "body.error");
+    });
+    assert!(
+        matches!(
+            rejected,
+            Err(TourRejection::Step {
+                tour_step: 0,
+                fault: StepFault::Unresolved { .. }
+            })
+        ),
+        "{rejected:?}"
+    );
+    let mut value = raw("plant-view-v1.json");
+    value["tour"]["tour"]["receipt_hash"] = json!(format!("sha256:{}", "0".repeat(64)));
+    let view: PlantView = serde_json::from_value(value).expect("decoding");
+    let Some(TourView::Directed { tour, .. }) = &view.tour else {
+        panic!("the fixture has a directed tour");
+    };
+    assert!(matches!(
+        admit::tour(&view, &catalog, tour),
+        Err(TourRejection::StaleReceipt { .. })
+    ));
+    let mut strict = raw("caption-catalog.json");
+    for template in strict["templates"].as_array_mut().expect("templates") {
+        for spec in template["slots"]
+            .as_object_mut()
+            .expect("slots")
+            .values_mut()
+        {
+            spec["presence"] = json!("required");
+        }
+    }
+    let strict: CaptionCatalog = serde_json::from_value(strict).expect("decoding");
+    let mut at = 0;
+    let rejected = admit_tour_with(&strict, |steps| at = step_about(steps, "d-links-clicks"));
+    assert_eq!(
+        rejected,
+        Err(slot_fault(at, "candidate", SlotMismatch::Missing))
+    );
+    let rejected = admit_tour_with(&catalog, |steps| {
+        let at = step_about(steps, "chk-signup-store");
+        steps.remove(at);
+    });
+    assert_eq!(
+        rejected,
+        Err(TourRejection::Unreached {
+            item_id: "chk-signup-store".parse().expect("an id")
+        })
+    );
+    let rejected = admit_tour_with(&catalog, |steps| {
+        let at = step_about(steps, "i-login-limit");
+        steps[at]["stage"] = json!([{ "mark": "bounced_chip", "item_id": "i-login-limit" }]);
+    });
+    assert!(
+        matches!(
+            rejected,
+            Err(TourRejection::Step {
+                fault: StepFault::UnknownMark { .. },
+                ..
+            })
+        ),
+        "a bounced chip on a fixed item: {rejected:?}"
+    );
+}
+
+#[test]
+fn a_slot_unit_its_type_is_never_shown_in_is_refused() {
+    let spec = |value_type: &str, unit: Option<&str>| {
+        let mut value =
+            json!({ "column": "candidate", "value_type": value_type, "presence": "required" });
+        if let Some(unit) = unit {
+            value["unit"] = json!(unit);
+        }
+        serde_json::from_value::<SlotSpec>(value)
+    };
+    assert!(spec("duration", Some("ms")).is_ok());
+    assert!(spec("duration", None).is_err());
+    assert!(spec("count", Some("requests")).is_ok());
+    assert!(spec("status", Some("ms")).is_err());
+    assert!(spec("text", Some("bytes")).is_err());
+    assert!(spec("text", None).is_ok());
+}
 #[test]
 fn the_card_is_the_receipt_s_own_item_and_context() {
     let receipt: Receipt = load("receipt.json");
