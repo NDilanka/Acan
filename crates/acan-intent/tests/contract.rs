@@ -5,17 +5,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use acan_intent::admit::{self, AdmitError};
 use acan_intent::{
     AppContract, CaptionCatalog, Card, CardRequest, ContainerNetwork, ContainerPolicy, Contest,
-    ContestRequest, ContestResponse, ContrastExample, Coverage, DiscrepancyEpisode, Evidence,
-    EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern, GateState, GetReceiptRequest,
-    GetReceiptResponse, GetRulingsRequest, GetRulingsResponse, GetScopeRequest, GetScopeResponse,
-    ItemClass, ItemState, LedgerEvent, LedgerHash, LedgerHead, MaskablePath, McpError,
-    McpErrorCode, Observation, ObservationPath, PlantView, PostReadbackRequest,
-    PostReadbackResponse, ProbeCorpus, Receipt, RepairRound, RouteSource, RulingId, Run, Scope,
-    ScopeConfirmation, ScopeDraft, ScopeItem, Selector, SlotSpec, Step, TourView, TwinError,
-    TwinRunRequest, TwinRunResponse, TwinSaveRequest, TwinSaveResponse, Unsupported, ValueType,
-    WindowMs,
+    ContestRequest, ContestResponse, ContrastExample, CorpusProbe, Coverage, DiscrepancyEpisode,
+    Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern, Fixture, GateState,
+    GetReceiptRequest, GetReceiptResponse, GetRulingsRequest, GetRulingsResponse, GetScopeRequest,
+    GetScopeResponse, ItemClass, ItemState, LedgerEvent, LedgerHash, LedgerHead, MaskablePath,
+    McpError, McpErrorCode, Observation, ObservationHash, ObservationPath, PlantView,
+    PostReadbackRequest, PostReadbackResponse, ProbeCorpus, Receipt, RepairRound, RouteSource,
+    RulingId, Run, Scope, ScopeConfirmation, ScopeDraft, ScopeItem, Selector, SlotSpec, Step,
+    StepId, TourView, TwinError, TwinRunRequest, TwinRunResponse, TwinSaveRequest,
+    TwinSaveResponse, Unsupported, ValueType, WindowMs,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -902,7 +903,11 @@ fn a_run_response_keeps_a_null_request_body_apart_from_none() {
     };
     let (null, encoded) = run(Some(Value::Null));
     assert_eq!(first_body(null.steps.iter()), Some(&Value::Null));
-    assert_eq!(encoded.pointer(pointer), Some(&Value::Null), "null was dropped");
+    assert_eq!(
+        encoded.pointer(pointer),
+        Some(&Value::Null),
+        "null was dropped"
+    );
     let (absent, encoded) = run(None);
     assert_eq!(first_body(absent.steps.iter()), None);
     assert_eq!(encoded.pointer(pointer), None, "no body became a body");
@@ -928,7 +933,157 @@ fn a_saved_null_body_probe_reloads_with_the_same_spec_hash() {
     let (absent_hash, absent_body) = saved(None);
     assert_eq!(null_body, Some(Value::Null));
     assert_eq!(absent_body, None);
-    assert_ne!(null_hash, absent_hash, "a null body and no body are one spec");
+    assert_ne!(
+        null_hash, absent_hash,
+        "a null body and no body are one spec"
+    );
+}
+
+/// One stored observation per HTTP and side-effect step of `run`'s sequence, except `skip`.
+fn observations_for(
+    probe: &CorpusProbe,
+    fixture: &Fixture,
+    run: &Run,
+    skip: &[&str],
+) -> Vec<(ObservationHash, Observation)> {
+    fixture
+        .recipe
+        .iter()
+        .chain(probe.spec.steps.iter())
+        .filter(|step| matches!(step, Step::Http(_) | Step::ObserveSideEffect(_)))
+        .filter(|step| !skip.contains(&step.id().as_str()))
+        .map(|step| {
+            let mut observation: Observation = load("observation.json");
+            observation.run_id = run.id.clone();
+            observation.commit = run.commit.clone();
+            observation.probe = run.probe;
+            observation.step_id = step.id().clone();
+            (
+                observation.observation_hash().expect("hashing"),
+                observation,
+            )
+        })
+        .collect()
+}
+
+fn step(id: &str) -> StepId {
+    id.parse().expect("a step id")
+}
+
+#[test]
+fn every_run_of_the_contrast_example_is_admitted_with_its_listed_observations() {
+    let example: ContrastExample = load("contrast-example.json");
+    for (role, manifest) in [
+        ("base_a", &example.base_a),
+        ("base_b", &example.base_b),
+        ("candidate", &example.candidate),
+    ] {
+        let stored = observations_for(&example.probe, &example.fixture, &manifest.run, &[]);
+        assert_eq!(
+            stored.len(),
+            manifest.observations.len(),
+            "{role} lists another number of observations than its HTTP and sink steps"
+        );
+        let admitted = admit::observed_run(
+            &example.probe,
+            &example.fixture,
+            manifest.run.clone(),
+            stored,
+        )
+        .unwrap_or_else(|err| panic!("{role} was refused: {err}"));
+        assert_eq!(admitted.observations().count(), manifest.observations.len());
+    }
+}
+
+/// The example's probe with a clock step and a store read appended, and a base run of it.
+fn probe_with_a_sink() -> (CorpusProbe, Fixture, Run) {
+    let mut value = raw("contrast-example.json");
+    let steps = value["probe"]["spec"]["steps"]
+        .as_array_mut()
+        .expect("probe steps");
+    steps.push(json!({ "step": "advance_time", "id": "s5", "by_ms": 1000 }));
+    steps.push(json!({
+        "step": "observe_side_effect", "id": "s6", "sink": "store", "correlate": "s4",
+        "barrier": { "timeout_ms": 500, "quiet_ms": 50 }
+    }));
+    let example: ContrastExample = serde_json::from_value(value).expect("decoding");
+    let mut run = example.base_a.run.clone();
+    run.probe = example.probe.spec.probe_hash().expect("hashing");
+    (example.probe, example.fixture, run)
+}
+
+#[test]
+fn a_completed_run_missing_an_http_or_sink_observation_is_refused() {
+    let example: ContrastExample = load("contrast-example.json");
+    let (probe, fixture, run) = (&example.probe, &example.fixture, &example.base_a.run);
+    let admit = |probe: &CorpusProbe, run: &Run, skip: &[&str]| {
+        let stored = observations_for(probe, fixture, run, skip);
+        admit::observed_run(probe, fixture, run.clone(), stored).map(|_| ())
+    };
+    for missing in ["f1", "s3", "s4"] {
+        assert_eq!(
+            admit(probe, run, &[missing]),
+            Err(AdmitError::Unrecorded {
+                step_id: step(missing)
+            }),
+            "{missing}"
+        );
+    }
+    let (with_sink, _, sink_run) = probe_with_a_sink();
+    assert_eq!(admit(&with_sink, &sink_run, &[]), Ok(()));
+    assert_eq!(
+        admit(&with_sink, &sink_run, &["s6"]),
+        Err(AdmitError::Unrecorded {
+            step_id: step("s6")
+        })
+    );
+    let mut no_capture = run.clone();
+    no_capture.captures.pop();
+    assert_eq!(
+        admit(probe, &no_capture, &[]),
+        Err(AdmitError::Unrecorded {
+            step_id: step("s2")
+        })
+    );
+}
+
+#[test]
+fn a_stopped_run_holds_records_only_up_to_its_stop() {
+    let example: ContrastExample = load("contrast-example.json");
+    let (probe, fixture) = (&example.probe, &example.fixture);
+    let mut run = example.base_a.run.clone();
+    run.outcome = serde_json::from_value(json!({ "outcome": "timed_out", "step_id": "s3" }))
+        .expect("an outcome");
+    let admit = |run: &Run, skip: &[&str]| {
+        let stored = observations_for(probe, fixture, run, skip);
+        admit::observed_run(probe, fixture, run.clone(), stored).map(|_| ())
+    };
+    assert_eq!(admit(&run, &["s3", "s4"]), Ok(()));
+    assert_eq!(admit(&run, &["s4"]), Ok(()));
+    assert_eq!(
+        admit(&run, &[]),
+        Err(AdmitError::AfterStop {
+            step_id: step("s4")
+        })
+    );
+    assert_eq!(
+        admit(&run, &["s1", "s3", "s4"]),
+        Err(AdmitError::Unrecorded {
+            step_id: step("s1")
+        })
+    );
+    run.outcome =
+        serde_json::from_value(json!({ "outcome": "setup_failed", "detail": "not ready" }))
+            .expect("an outcome");
+    run.captures.clear();
+    let everything: Vec<&str> = ["f1", "f2", "s1", "s3", "s4"].into();
+    assert_eq!(admit(&run, &everything), Ok(()));
+    assert_eq!(
+        admit(&run, &everything[1..]),
+        Err(AdmitError::AfterStop {
+            step_id: step("f1")
+        })
+    );
 }
 
 #[test]

@@ -635,6 +635,24 @@ pub enum CaptureOutcome {
     },
 }
 
+impl CaptureOutcome {
+    /// The capture step.
+    #[must_use]
+    pub fn step_id(&self) -> &StepId {
+        match self {
+            Self::Captured { step_id, .. } | Self::Missing { step_id, .. } => step_id,
+        }
+    }
+
+    /// The binding.
+    #[must_use]
+    pub fn binding(&self) -> &CaptureName {
+        match self {
+            Self::Captured { binding, .. } | Self::Missing { binding, .. } => binding,
+        }
+    }
+}
+
 /// One run of one probe against one commit in one role. Written by the runner, never a model.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -655,7 +673,7 @@ pub struct Run {
     pub runner: RunnerHash,
     /// How it ended.
     pub outcome: RunOutcome,
-    /// One entry per capture step.
+    /// One entry per capture step the run reached, in sequence order. See [`crate::admit`].
     pub captures: Vec<CaptureOutcome>,
     /// When the app was started.
     pub started_at: UnixMillis,

@@ -228,8 +228,8 @@ impl Observation {
     }
 }
 
-/// One run admitted as evidence: its record and every observation of its sequence, recipe
-/// steps first, each with the hash it was stored under.
+/// One run admitted as evidence: its record and one observation per HTTP and side-effect step
+/// it reached, recipe steps first, each with the hash it was stored under.
 ///
 /// Built only by [`crate::admit::observed_run`], which checks the observations against the
 /// stored hashes and the run record. It does not decode, so stored or model-written JSON can
@@ -241,10 +241,6 @@ pub struct ObservedRun {
 }
 
 impl ObservedRun {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "P01 admits runs through admit.rs")
-    )]
     pub(crate) fn admitted(run: Run, observations: Vec<(ObservationHash, Observation)>) -> Self {
         Self { run, observations }
     }
