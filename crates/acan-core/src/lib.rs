@@ -18,8 +18,8 @@ mod order;
 mod world;
 
 pub use clash::{
-    Clash, ClashKey, ClashState, ContractRef, Declaration, DeclarationInput, Explanation, Overlap,
-    OverlapKind, Settlement, SymbolRef, detect,
+    Barrier, BarrierHold, Clash, ClashKey, ClashState, ContractRef, Declaration, DeclarationInput,
+    Explanation, Overlap, OverlapKind, Settlement, SymbolRef, detect,
 };
 pub use event::{
     Actor, AgentCmd, Command, Event, HumanCmd, Rejection, ReplayError, Stamped, SystemCmd,
@@ -32,7 +32,7 @@ pub use ids::{
 };
 pub use index::{Belt, CodeIndex, IndexedFile, IndexedSymbol, Locus};
 pub use job::Job;
-pub use lease::{Claim, Fence, LEASE_TTL_MS, Lease, LeaseEnd};
+pub use lease::{Claim, DECLARE_BARRIER_MS, Fence, LEASE_TTL_MS, Lease, LeaseEnd};
 pub use member::{AgentPrincipal, Member, Role, SettleRight};
 pub use order::{
     Check, Judgement, Order, OrderPhase, OrderState, Question, QuestionDraft, Readback,

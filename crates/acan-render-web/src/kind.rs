@@ -1,42 +1,36 @@
-//! Maps a scanned machine to the model kind that draws it. Pure Rust, so the rules are unit
-//! tested on the host and the same table serves live, fixture and stress plants.
+//! Maps a scanned machine to the model kind that draws it, and gives each kind its plan footprint.
+//! Pure Rust, so the rules are unit tested on the host and the same table serves live, fixture
+//! and stress plants.
 
-/// A model kind. The stand-in draws one model per kind; acan-iso will replace the models.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Kind {
-    Intake,
-    Gate,
-    Tank,
-    Splitter,
-    Valve,
-    Assembler,
-    Crate,
+pub use acan_iso::Kind;
+
+/// Every kind, in the order their models are built. A kind's index here is its model's index.
+pub const ALL: [Kind; 7] = [
+    Kind::Intake,
+    Kind::Gate,
+    Kind::Assembler,
+    Kind::Tank,
+    Kind::Splitter,
+    Kind::Valve,
+    Kind::Crate,
+];
+
+/// The index of `kind` in [`ALL`].
+pub fn index(kind: Kind) -> usize {
+    ALL.iter()
+        .position(|&k| k == kind)
+        .expect("ALL lists every kind")
 }
 
-impl Kind {
-    /// Every kind, in model index order.
-    pub const ALL: [Kind; 7] = [
-        Kind::Intake,
-        Kind::Gate,
-        Kind::Tank,
-        Kind::Splitter,
-        Kind::Valve,
-        Kind::Assembler,
-        Kind::Crate,
-    ];
+/// A kind's plan footprint as `(width, depth)`, from acan-iso's table.
+pub trait PlanFootprint {
+    fn footprint(self) -> (f32, f32);
+}
 
-    /// Index into `ALL`, which is also the index of the kind's model.
-    pub fn index(self) -> usize {
-        self as usize
-    }
-
-    /// Plan footprint `(width, depth)`. Crates are small; every other kind uses the
-    /// assembler footprint until acan-iso supplies real ones.
-    pub fn footprint(self) -> (f32, f32) {
-        match self {
-            Kind::Crate => (40.0, 40.0),
-            _ => (96.0, 86.0),
-        }
+impl PlanFootprint for Kind {
+    fn footprint(self) -> (f32, f32) {
+        let footprint = acan_iso::footprint(self);
+        (footprint.w, footprint.d)
     }
 }
 
@@ -139,8 +133,8 @@ mod tests {
     fn footprints_match_the_brief() {
         assert_eq!(Kind::Assembler.footprint(), (96.0, 86.0));
         assert_eq!(Kind::Crate.footprint(), (40.0, 40.0));
-        for kind in Kind::ALL {
-            assert_eq!(Kind::ALL[kind.index()], kind);
+        for (i, kind) in ALL.into_iter().enumerate() {
+            assert_eq!(index(kind), i);
         }
     }
 }

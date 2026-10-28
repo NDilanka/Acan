@@ -50,7 +50,8 @@ pub enum ScanError {
     ParseCancelled { path: String },
 }
 
-/// Scans the repo at `root` and returns its plant, grouped by directory.
+/// Scans the repo at `root` and returns its plant. A repo of up to forty files gets one machine per
+/// module in its large directories; a bigger repo groups by directory.
 ///
 /// # Errors
 ///

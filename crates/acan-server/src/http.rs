@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use acan_core::{
-    Command, Generation, HumanCmd, MemberId, Rejection, Seq, Stamped, TaskId, TaskState,
+    AgentId, Command, Generation, HumanCmd, MemberId, Rejection, Seq, Stamped, TaskId, TaskState,
 };
 use acan_llm::{ModelClient, UsageTotals};
 use acan_scan::Plant;
@@ -24,6 +24,7 @@ use serde_json::json;
 
 use crate::auth::Principal;
 use crate::host::{Host, SubmitError};
+use crate::mcp;
 use crate::public::{self, PublicRoot};
 use crate::stream;
 
@@ -31,6 +32,7 @@ use crate::stream;
 pub(crate) fn router<C: ModelClient + 'static>(host: Host<C>, web: Option<PublicRoot>) -> Router {
     let router = Router::new()
         .route("/health", get(health))
+        .route("/mcp", post(mcp::post::<C>))
         .route("/api/commands", post(post_command::<C>))
         .route("/api/events", get(get_events::<C>))
         .route("/api/plant", get(get_plant::<C>))
@@ -194,7 +196,7 @@ async fn get_usage<C: ModelClient + 'static>(
 
 /// Where a claimed task's worktree is, and the branch it is on.
 #[derive(Serialize)]
-struct WorktreeView {
+pub(crate) struct WorktreeView {
     task: String,
     path: String,
     branch: String,
@@ -217,30 +219,40 @@ async fn get_worktree<C: ModelClient + 'static>(
         }
     };
     let task: TaskId = task.parse().map_err(|_| ApiError::NotFound("task"))?;
-    host.read(|world| held_generation(world, task, &agent))?;
+    Ok(Json(worktree_of(&host, &agent, task).await?))
+}
+
+/// The worktree of `task` for the agent holding its lease. Shared by the HTTP route and the MCP
+/// `get_worktree` tool, so both answer the same way.
+pub(crate) async fn worktree_of<C: ModelClient>(
+    host: &Host<C>,
+    agent: &AgentId,
+    task: TaskId,
+) -> Result<WorktreeView, ApiError> {
+    host.read(|world| held_generation(world, task, agent))?;
     let workspace = host
         .workspace()
         .ok_or_else(|| ApiError::Internal(anyhow::anyhow!("the server has no git repository")))?;
     // The task lock is held across the re-read, so a release between the check above and the
     // create cannot hand this request the next claim's worktree.
     let _task = workspace.lock_task(task).await;
-    let generation = host.read(|world| held_generation(world, task, &agent))?;
+    let generation = host.read(|world| held_generation(world, task, agent))?;
     let worktree = workspace
         .worktree(task, generation)
         .await
         .map_err(|err| ApiError::Internal(err.into()))?;
-    Ok(Json(WorktreeView {
+    Ok(WorktreeView {
         task: task.to_string(),
         path: worktree.path().display().to_string(),
         branch: worktree.branch().to_owned(),
-    }))
+    })
 }
 
 /// The generation of the lease `agent` holds on `task`.
 fn held_generation(
     world: &acan_core::World,
     task: TaskId,
-    agent: &acan_core::AgentId,
+    agent: &AgentId,
 ) -> Result<Generation, ApiError> {
     match world.task(task) {
         Some(found) => match &found.state {

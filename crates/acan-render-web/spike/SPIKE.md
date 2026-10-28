@@ -15,12 +15,14 @@ Verdict: ship it. Both backends render 300 machines and 600 belts above 60 fps a
 rustup target add wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.129
 pwsh -File crates/acan-render-web/build.ps1
-node crates/acan-render-web/serve.mjs 8742
+cargo run -p acan-server -- serve --repo <repo> --web crates/acan-render-web/www
 ```
+
+`acan serve --web` serves `www/` at `/` next to the API, so the page needs no JavaScript runtime. The server prints an owner token; open `http://127.0.0.1:7311/#token=<token>` for the live origin, or `http://127.0.0.1:7311/?plant=fixture` for the demo plant with no log.
 
 `build.ps1` runs `cargo build -p acan-render-web --release --target wasm32-unknown-unknown` with `opt-level=s`, LTO, one codegen unit and `panic=abort`, set through `CARGO_PROFILE_RELEASE_*` variables. Then it runs `wasm-bindgen --target web` into `www/pkg` and prints the raw and gzip sizes.
 
-Open `http://127.0.0.1:8742/?backend=webgpu` or `?backend=webgl`. Add `&machines=N&belts=M` to change the scene size. Benchmarks run from the console: `runPanBench(10)`, `runRafBaseline(10)`, and `measureIdle(5)`. `window.spike.coldStart` holds the startup timestamps.
+Add `?backend=webgpu` or `?backend=webgl` to choose the backend. Add `&machines=N&belts=M` to change the scene size. Benchmarks run from the console: `runPanBench(10)`, `runRafBaseline(10)`, and `measureIdle(5)`. `window.spike.coldStart` holds the startup timestamps.
 
 ## Test machine
 

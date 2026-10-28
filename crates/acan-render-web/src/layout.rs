@@ -7,7 +7,7 @@
 
 use std::collections::VecDeque;
 
-use crate::kind::Kind;
+use crate::kind::{Kind, PlanFootprint};
 
 /// Positions snap to this grid, in plan units.
 pub const GRID: f32 = 8.0;

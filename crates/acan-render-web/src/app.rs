@@ -1,17 +1,25 @@
 //! The wasm surface the page drives. Pointer and key input arrive in CSS pixels, and the camera
 //! works in device pixels, so this file scales input by the device pixel ratio. Positions that
 //! cross back to JavaScript are CSS pixels.
+//!
+//! The plant is drawn in 3D from the scan JSON. The origin's log folds into a view on the next
+//! frame after it changes, and the page reads that view back as JSON for its HTML panels.
 
+use std::collections::HashMap;
+
+use acan_core::Stamped;
 use acan_render::camera::{DEFAULT_AZIMUTH, DEFAULT_ELEVATION};
 use acan_render::{Aabb, Camera, Lod, Model, Renderer, wgpu};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
-use crate::kind::Kind;
+use crate::kind::PlanFootprint;
 use crate::labels::{self, LabelSpot};
 use crate::layout::{Layout, layout};
+use crate::mirror::Mirror;
+use crate::plan::{Plan, PlantJson};
 use crate::plant::{Plant, PlantMachine, from_scan_json, rest_labels, stress};
-use crate::stand_in;
+use crate::scene;
 
 /// Space around the plant at fit, in CSS pixels.
 const FIT_MARGIN_CSS: f32 = 24.0;
@@ -28,8 +36,13 @@ pub struct App {
     camera: Camera,
     models: Vec<Model>,
     dpr: f32,
-    plant: Option<Loaded>,
     turn: Option<Turn>,
+    plant: Option<Loaded>,
+    plan: Option<Plan>,
+    mirror: Option<Mirror>,
+    view_json: String,
+    view_version: u32,
+    dirty: bool,
 }
 
 /// An ease from one azimuth to another, in degrees. `to` is not wrapped, so repeated turns add up.
@@ -46,7 +59,7 @@ struct Loaded {
     layout: Layout,
     /// Bounds of everything drawn, in plan units and height.
     bounds: Aabb,
-    /// The solid parts of every machine, each with its machine index, for label occlusion.
+    /// The solid box of every machine, each with its machine index, for label occlusion.
     occluders: Vec<(usize, Aabb)>,
     /// Each machine's label half width in CSS pixels, estimated from its name.
     label_half_px: Vec<f32>,
@@ -78,15 +91,20 @@ impl App {
         let mut renderer = Renderer::new(&instance, surface, size)
             .await
             .map_err(js_err)?;
-        let models = stand_in::models();
+        let models = scene::models();
         renderer.set_models(&models);
         Ok(App {
             renderer,
             camera: Camera::new([size[0] as f32, size[1] as f32]),
             models,
             dpr: 1.0,
-            plant: None,
             turn: None,
+            plant: None,
+            plan: None,
+            mirror: None,
+            view_json: String::new(),
+            view_version: 0,
+            dirty: false,
         })
     }
 
@@ -102,16 +120,67 @@ impl App {
         )
     }
 
-    /// Loads the scan JSON that `GET /api/plant` returns, or a fixture of the same shape, and
-    /// fits the view to it. Returns the machine count.
+    /// Sets the plant from `GET /api/plant` and fits the view to it. Returns the machine count.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the JSON is not the plant's shape.
     pub fn set_plant(&mut self, json: &str) -> Result<u32, JsError> {
         let plant = from_scan_json(json).map_err(js_err)?;
-        Ok(self.load(plant))
+        let plan_json: PlantJson = serde_json::from_str(json).map_err(js_err)?;
+        Ok(self.load(plant, Some(&plan_json)))
     }
 
-    /// Loads a generated plant of `machines` machines for the benchmark.
+    /// Loads a generated plant of `machines` machines for the benchmark. It has no log, so the
+    /// view stays empty.
     pub fn set_stress(&mut self, machines: u32) -> u32 {
-        self.load(stress(machines as usize))
+        self.load(stress(machines as usize), None)
+    }
+
+    /// Folds the log: a JSON array of stamped events from seq 0.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the JSON does not parse or the log does not replay.
+    pub fn load_log(&mut self, json: &str) -> Result<(), JsError> {
+        let log: Vec<Stamped> = serde_json::from_str(json).map_err(js_err)?;
+        self.mirror = Some(Mirror::from_log(log).map_err(js_err)?);
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// Applies one streamed event, given as its JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no log is loaded, the JSON does not parse, an event was skipped,
+    /// or the event refers to something the log never created.
+    pub fn ingest(&mut self, json: &str) -> Result<(), JsError> {
+        let event: Stamped = serde_json::from_str(json).map_err(js_err)?;
+        let mirror = self
+            .mirror
+            .as_mut()
+            .ok_or_else(|| js_err("no log is loaded"))?;
+        mirror.ingest(&event).map_err(js_err)?;
+        self.dirty = true;
+        Ok(())
+    }
+
+    /// The seq the next event will carry. The stream resumes from here.
+    pub fn next_seq(&self) -> f64 {
+        self.mirror
+            .as_ref()
+            .map_or(0.0, |mirror| mirror.next_seq().get() as f64)
+    }
+
+    /// The view as of the last frame, as JSON. Compare [`App::view_version`] to see it change.
+    pub fn view_json(&self) -> String {
+        self.view_json.clone()
+    }
+
+    /// Counts the view rebuilds, so the page redraws its panels only when the view changed.
+    pub fn view_version(&self) -> u32 {
+        self.view_version
     }
 
     /// The repository's folder name, or an empty string before a plant loads.
@@ -240,8 +309,16 @@ impl App {
         self.lod() as u32
     }
 
-    /// Draws one frame. Returns false when the browser skipped the frame.
+    /// Draws one frame, folding the log into the view first when it changed. Returns false when
+    /// the browser skipped the frame.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the surface is lost or the view cannot be encoded.
     pub fn render(&mut self) -> Result<bool, JsError> {
+        if self.dirty {
+            self.rebuild_view()?;
+        }
         self.renderer
             .render(&self.camera, self.lod())
             .map_err(js_err)
@@ -306,6 +383,13 @@ impl App {
             .collect()
     }
 
+    /// CSS-pixel position of a plan point on the ground, relative to the canvas. The page pins
+    /// its panels to the plant with it.
+    pub fn world_to_screen(&self, x: f32, y: f32) -> Vec<f32> {
+        let [px, py] = self.camera.world_to_screen([x, y, 0.0]);
+        vec![px / self.dpr, py / self.dpr]
+    }
+
     pub fn machine_name(&self, index: u32) -> String {
         self.plant
             .as_ref()
@@ -328,27 +412,40 @@ impl App {
 }
 
 impl App {
-    fn load(&mut self, plant: Plant) -> u32 {
+    /// Puts `plant` on screen. `plan_json` is the same plant's JSON when the page has one, and
+    /// the plan places its machines where the layout puts them.
+    fn load(&mut self, plant: Plant, plan_json: Option<&PlantJson>) -> u32 {
         let (kinds, edges) = plant.layout_input();
         let laid = layout(&kinds, &edges);
-        let scene = stand_in::scene(&laid, &self.models);
+        let scene = scene::plant_scene(&laid, &self.models);
         self.renderer.set_scene(&scene);
         self.camera.set_fog_bounds(scene.bounds);
-        let count = plant.machines.len() as u32;
         let occluders = scene
             .instances
             .iter()
             .enumerate()
-            .flat_map(|(machine, inst)| {
-                stand_in::occluders(Kind::ALL[usize::from(inst.kind)]).map(|part| {
-                    let world = Aabb {
-                        min: std::array::from_fn(|axis| inst.offset[axis] + part.min[axis]),
-                        max: std::array::from_fn(|axis| inst.offset[axis] + part.max[axis]),
-                    };
-                    (machine, world)
-                })
+            .map(|(machine, inst)| {
+                let model = self.models[usize::from(inst.kind)].bounds;
+                let world = Aabb {
+                    min: std::array::from_fn(|axis| inst.offset[axis] + model.min[axis]),
+                    max: std::array::from_fn(|axis| inst.offset[axis] + model.max[axis]),
+                };
+                (machine, world)
             })
             .collect();
+        let footprints: HashMap<&str, [f32; 4]> = plant
+            .machines
+            .iter()
+            .zip(&laid.machines)
+            .map(|(machine, placed)| (machine.name.as_str(), placed.footprint()))
+            .collect();
+        let count = plant.machines.len() as u32;
+        self.plan = plan_json.map(|json| {
+            Plan::new(json, |name| {
+                footprints.get(name).copied().unwrap_or([0.0; 4])
+            })
+        });
+        self.dirty = true;
         self.plant = Some(Loaded {
             repo: plant.repo,
             rest: {
@@ -370,6 +467,17 @@ impl App {
         });
         self.fit();
         count
+    }
+
+    fn rebuild_view(&mut self) -> Result<(), JsError> {
+        self.dirty = false;
+        let (Some(mirror), Some(plan)) = (&self.mirror, &self.plan) else {
+            return Ok(());
+        };
+        let view = mirror.view(plan);
+        self.view_json = serde_json::to_string(&view).map_err(js_err)?;
+        self.view_version += 1;
+        Ok(())
     }
 
     /// The zoom at which the plant fills the view at the default angles, in the current

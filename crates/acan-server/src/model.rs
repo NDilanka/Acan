@@ -16,7 +16,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-pub const SPLIT_PROMPT: &str = "You split one order into tasks for AI coding workers. Reply with one JSON object with a tasks list of two to four tasks. Each task has a title of a few words, a brief that a worker can start from without the order, and a scope key holding a list of the machines the task changes, even when there is one machine. Copy every scope name exactly from the machines list in the context. Each task is one piece of work that one worker can finish alone. Keep the tasks parallel: two tasks should not rewrite the same code. Every witness must still hold once all the tasks have landed.";
+pub const SPLIT_PROMPT: &str = "You split one order into tasks for AI coding workers. Reply with one JSON object with a tasks list of two to four tasks. Each task has a title of a few words, a brief that a worker can start from without the order, and a scope key holding a list of the machines the task changes, even when there is one machine. Copy every scope name exactly from the machines list in the context. Split by intent: each task is one feature or concern that one worker can finish alone. Tasks may touch shared code when their feature needs it, because Acan detects overlapping changes and resolves them. Every witness must still hold once all the tasks have landed.";
 
 pub const REVIEW_PROMPT: &str = "You review each worker readback against the order's witnesses. Reply with one JSON object with two keys. readbacks is a list with one entry per readback in the context. Each entry has a readback key, holding the readback id, and a witnesses key: a list with one entry per witness of the order. Each witness entry has a witness key, holding the witness id, and a judgement key. A judgement is an object with a judgement key, which is match when the readback respects the witness, disagrees when it contradicts the witness, or unclear when it does not say enough. Give a reason key for every judgement that is not match. Judge each readback on its own. question is null when every judgement is match. Otherwise write one only when the readbacks disagree about what the order means; then it has text and exactly two options.";
 
@@ -213,8 +213,8 @@ pub fn explain_request(world: &World, clash: ClashId) -> Option<ChatRequest> {
 /// A split reply: the tasks the foreman cut the order into.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SplitReply {
-    /// Two to four tasks, in the order they should be worked. Each can run in parallel with the
-    /// others.
+    /// Two to four tasks, each one feature or concern that one worker can finish alone. Tasks may
+    /// touch shared code when their feature needs it: an overlap becomes a clash, not a refusal.
     pub tasks: Vec<SplitTask>,
 }
 

@@ -199,7 +199,7 @@ pub enum SystemCmd {
         /// Completion tokens.
         output_tokens: u32,
     },
-    /// A timer tick. Expires due leases.
+    /// A timer tick. Expires due leases and lifts declare barriers past their deadline.
     Tick,
 }
 
@@ -296,6 +296,9 @@ pub enum Event {
     },
     Declared {
         decl: Declaration,
+    },
+    BarrierExpired {
+        order: OrderId,
     },
     ClashFound {
         clash: ClashId,

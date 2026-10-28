@@ -1,32 +1,17 @@
-//! The crate: a plain box with two bands and an inset lid line. It stands for anything not yet recognised.
+//! The crate: a plain bevelled box with two seam rings and a groove across its lid. It stands for anything not yet
+//! recognised.
 //!
-//! The reference puts a variant letter on the lid. The contract has no text item, so the lid is left plain.
+//! The reference puts a variant letter on the lid. The model has no text, so the lid is left plain.
 
-use crate::figure::{Figure, Ink};
-use crate::pen::{Look, Pen, Stroke};
+use crate::mesh::{Base, Finish, Part, Stroke};
+use crate::model::{Ink, Model};
+use crate::parts;
 use crate::plan::Plan;
-use crate::scene::Scene;
 
 const HEIGHT: f32 = 26.0;
 
-pub(crate) fn build() -> Figure {
-    let mut scene = Scene::new();
-
-    let mut floor = Pen::new();
-    floor.halo(
-        &Plan {
-            x: -16.0,
-            y: -16.0,
-            w: 32.0,
-            d: 32.0,
-            r: 2.0,
-        }
-        .ring(8),
-        0.0,
-        HEIGHT,
-    );
-    scene.floor(floor);
-
+pub(crate) fn build() -> Model {
+    let mut part = Part::new();
     let side = Plan {
         x: -16.0,
         y: -16.0,
@@ -34,21 +19,17 @@ pub(crate) fn build() -> Figure {
         d: 32.0,
         r: 1.5,
     };
-    let mut part = Pen::new();
-    part.solid_with(
-        &side.ring(2),
-        0.0,
+    part.slab(&Base::Plan(side, 2), 0.0, HEIGHT, 0.6, Finish::paper());
+    for z in [9.0, 18.0] {
+        parts::plan_band(&mut part, side, z, 2, Stroke::new(Ink::Lo).near());
+    }
+    parts::plan_line(
+        &mut part,
+        side.inset(3.0),
         HEIGHT,
-        Look::new(Ink::Mid).bevel(0.6),
-        |pen| {
-            for z in [9.0, 18.0] {
-                pen.seam(&side.ring(2), z, Stroke::new(Ink::Lo).near());
-            }
-        },
+        2,
+        Stroke::new(Ink::Faint),
     );
-    part.plan_outline(side.inset(3.0), HEIGHT, 2, Stroke::new(Ink::Faint));
-    part.screws(side, 2.5, HEIGHT);
-    scene.put([0.0, 0.0, 13.0], part, vec![]);
-
-    scene.finish()
+    parts::screws(&mut part, side, 2.5, HEIGHT);
+    part.finish()
 }

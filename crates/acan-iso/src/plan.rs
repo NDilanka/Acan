@@ -2,7 +2,7 @@
 
 use std::f32::consts::TAU;
 
-use crate::geom::Point;
+pub(crate) type Point = [f32; 2];
 
 /// A rectangle on the floor with rounded corners. `r` is clamped to half the shorter side.
 #[derive(Debug, Clone, Copy, PartialEq)]
