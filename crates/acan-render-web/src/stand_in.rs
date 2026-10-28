@@ -7,6 +7,7 @@
 use acan_render::model::{Aabb, Detail, Dot3, Ink, Line3, Mesh, Model, Surface};
 use acan_render::{Instance, Ribbon, Scene};
 
+use crate::bends;
 use crate::kind::Kind;
 use crate::layout::{Belt, Layout};
 
@@ -21,12 +22,8 @@ const PANEL_INSET: f32 = 4.0;
 const SCREW_RADIUS: f32 = 1.3;
 /// Width of a detail line in device pixels. The renderer draws nothing thinner than this.
 const LINE_WIDTH: f32 = 0.75;
-/// Radius of a belt's rounded corners, in plan units.
-const BELT_CORNER: f32 = 8.0;
 /// A belt stops this far short of a plinth, so its end line reads as a port on the plate edge.
 const BELT_PORT_GAP: f32 = 1.5;
-/// Segments per rounded corner.
-const CORNER_STEPS: usize = 4;
 
 /// The body shape of a kind.
 enum Form {
@@ -408,7 +405,7 @@ fn circle(radius: f32, z: f32) -> Vec<[f32; 3]> {
 
 /// The plant: a ribbon for each belt and an instance for each machine.
 pub fn scene(layout: &Layout, models: &[Model]) -> Scene {
-    let ribbons: Vec<Ribbon> = layout.belts.iter().filter_map(belt_ribbon).collect();
+    let ribbons = belt_ribbons(&layout.belts);
     let mut bounds = Aabb::EMPTY;
     for ribbon in &ribbons {
         for &[x, y] in &ribbon.centre {
@@ -442,14 +439,23 @@ pub fn scene(layout: &Layout, models: &[Model]) -> Scene {
     }
 }
 
-/// A belt is a flat ribbon on the ground along its rounded path, stopped just short of both
-/// plinths.
-fn belt_ribbon(belt: &Belt) -> Option<Ribbon> {
-    let path = trimmed(&belt.path, BELT_PORT_GAP)?;
-    Some(Ribbon {
-        centre: rounded(&path),
-        width: belt_width(belt.imports),
-    })
+/// Each belt is a flat ribbon on the ground along its rounded path, stopped just short of both
+/// plinths. A belt too short to draw is left out.
+fn belt_ribbons(belts: &[Belt]) -> Vec<Ribbon> {
+    let (paths, widths): (Vec<Vec<[f32; 2]>>, Vec<f32>) = belts
+        .iter()
+        .filter_map(|belt| {
+            Some((
+                trimmed(&belt.path, BELT_PORT_GAP)?,
+                belt_width(belt.imports),
+            ))
+        })
+        .unzip();
+    bends::round_all(&paths)
+        .into_iter()
+        .zip(widths)
+        .map(|(centre, width)| Ribbon { centre, width })
+        .collect()
 }
 
 /// A belt's width in plan units, a little wider for more imports. The widest belt still leaves
@@ -473,42 +479,6 @@ fn trimmed(path: &[[f32; 2]], gap: f32) -> Option<Vec<[f32; 2]>> {
     Some(out)
 }
 
-/// Replaces each right-angle corner with a short quadratic curve. The curve starts and ends
-/// on the two segments, at most halfway along each, so neighbouring corners never overlap.
-fn rounded(path: &[[f32; 2]]) -> Vec<[f32; 2]> {
-    if path.len() < 3 {
-        return path.to_vec();
-    }
-    let mut out = vec![path[0]];
-    for window in path.windows(3) {
-        let [a, p, b] = [window[0], window[1], window[2]];
-        let (la, lb) = (distance(a, p), distance(p, b));
-        let turn = cross(sub(p, a), sub(b, p));
-        if turn.abs() < 1e-6 || la < 1e-6 || lb < 1e-6 {
-            out.push(p);
-            continue;
-        }
-        let r = BELT_CORNER.min(la / 2.0).min(lb / 2.0);
-        let start = toward(p, a, r / la);
-        let end = toward(p, b, r / lb);
-        out.push(start);
-        for k in 1..CORNER_STEPS {
-            out.push(quadratic(start, p, end, k as f32 / CORNER_STEPS as f32));
-        }
-        out.push(end);
-    }
-    out.push(path[path.len() - 1]);
-    out
-}
-
-fn quadratic(a: [f32; 2], c: [f32; 2], b: [f32; 2], t: f32) -> [f32; 2] {
-    let u = 1.0 - t;
-    [
-        u * u * a[0] + 2.0 * u * t * c[0] + t * t * b[0],
-        u * u * a[1] + 2.0 * u * t * c[1] + t * t * b[1],
-    ]
-}
-
 /// The point a fraction `t` of the way from `from` to `to`.
 fn toward(from: [f32; 2], to: [f32; 2], t: f32) -> [f32; 2] {
     [
@@ -524,10 +494,6 @@ fn sub(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
 fn distance(a: [f32; 2], b: [f32; 2]) -> f32 {
     let v = sub(b, a);
     v[0].hypot(v[1])
-}
-
-fn cross(a: [f32; 2], b: [f32; 2]) -> f32 {
-    a[0] * b[1] - a[1] * b[0]
 }
 
 #[cfg(test)]
@@ -651,7 +617,8 @@ mod tests {
             imports: 1,
             path: vec![[0.0, 0.0], [100.0, 0.0]],
         };
-        let ribbon = belt_ribbon(&belt).expect("a long belt draws");
+        let ribbons = belt_ribbons(std::slice::from_ref(&belt));
+        let ribbon = ribbons.first().expect("a long belt draws");
         assert_eq!(
             ribbon.centre,
             vec![[BELT_PORT_GAP, 0.0], [100.0 - BELT_PORT_GAP, 0.0]]
@@ -662,7 +629,7 @@ mod tests {
             ..belt
         };
         assert!(
-            belt_ribbon(&stub).is_none(),
+            belt_ribbons(&[stub]).is_empty(),
             "a belt shorter than its gaps draws nothing"
         );
     }
@@ -675,13 +642,5 @@ mod tests {
             "the widest belt stays under a tenth of a plate"
         );
         assert!(belt_width(1) < belt_width(8));
-    }
-
-    #[test]
-    fn rounding_keeps_the_endpoints_of_a_belt() {
-        let path = [[0.0, 0.0], [50.0, 0.0], [50.0, 40.0]];
-        let curve = rounded(&path);
-        assert_eq!(curve.first(), Some(&[0.0, 0.0]));
-        assert_eq!(curve.last(), Some(&[50.0, 40.0]));
     }
 }

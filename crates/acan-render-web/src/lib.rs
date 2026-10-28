@@ -2,6 +2,7 @@
 //! models build on every target, so `cargo test` covers them on the host. `App` is the wasm
 //! surface that the page drives.
 
+pub mod bends;
 pub mod kind;
 pub mod labels;
 pub mod layout;
