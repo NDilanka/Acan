@@ -6,13 +6,31 @@ use acan_render::{Aabb, Instance, Model, Ribbon, Scene};
 use crate::bends;
 use crate::kind::{self, ALL, PlanFootprint};
 use crate::layout::{Belt, Layout};
+use crate::marks::MarkKinds;
 
 /// The gap between a belt's end and the plinth it meets, in plan units.
 const BELT_PORT_GAP: f32 = 1.5;
 
-/// One acan-iso model per kind, in [`kind::ALL`] order.
+/// One acan-iso model per kind, in [`kind::ALL`] order, then the marks: an agent's body, the
+/// ring round a waiting agent, and the clash pin. [`mark_kinds`] names the last three.
 pub fn models() -> Vec<Model> {
-    ALL.iter().map(|&kind| acan_iso::model(kind)).collect()
+    let mut out: Vec<Model> = ALL.iter().map(|&kind| acan_iso::model(kind)).collect();
+    out.extend([
+        acan_iso::agent_body(),
+        acan_iso::waiting_ring(),
+        acan_iso::clash_pin(),
+    ]);
+    out
+}
+
+/// The model kinds of the marks, which follow the machine kinds in [`models`].
+pub fn mark_kinds() -> MarkKinds {
+    let base = ALL.len() as u16;
+    MarkKinds {
+        body: base,
+        ring: base + 1,
+        pin: base + 2,
+    }
 }
 
 /// The plant: a ribbon for each belt and an instance for each machine. `models` is indexed the

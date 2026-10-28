@@ -22,7 +22,7 @@ struct Camera {
 
 struct Theme {
     palette: array<vec4<f32>, @@PALETTE_LEN@@>,
-    tints: array<vec4<f32>, 8>,
+    tints: array<vec4<f32>, @@TINT_LEN@@>,
 }
 
 @group(0) @binding(0) var<uniform> camera: Camera;
