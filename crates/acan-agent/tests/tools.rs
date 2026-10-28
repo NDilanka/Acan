@@ -1,13 +1,20 @@
 //! The worker's local tools on a real git worktree. A write is allowed only to a declared file,
-//! every path stays inside the worktree, and a commit refuses a change outside the declaration.
+//! every path stays inside the worktree, a commit refuses a change outside the declaration, no
+//! tool writes or commits a protected path even when it is declared, and the test command runs
+//! only in a locked-down container, never on the host.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command as Process;
 
 use acan_agent::{Worktree, normalize_path};
+use acan_intent::RepoPath;
 
 const DECLARED: &str = "model/store.ts";
+const APP: &str = ".acan/app.json";
+const APP_TEXT: &str = "{}\n";
+const PROTECTED_TEST: &str = "tests/protected.test.ts";
+const PROTECTED_TEST_TEXT: &str = "test('kept', () => {});\n";
 
 fn repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("temporary repository");
@@ -20,6 +27,10 @@ fn repo() -> tempfile::TempDir {
     fs::create_dir_all(root.join("model")).expect("machine directory");
     fs::write(root.join(DECLARED), "original\n").expect("fixture");
     fs::write(root.join("model/other.ts"), "other\n").expect("fixture");
+    fs::create_dir_all(root.join(".acan")).expect("contract directory");
+    fs::write(root.join(APP), APP_TEXT).expect("fixture");
+    fs::create_dir_all(root.join("tests")).expect("test directory");
+    fs::write(root.join(PROTECTED_TEST), PROTECTED_TEST_TEXT).expect("fixture");
     git(root, &["add", "-A"]);
     git(root, &["commit", "-q", "-m", "initial"]);
     dir
@@ -39,6 +50,13 @@ fn git(dir: &Path, args: &[&str]) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).expect("git prints UTF-8")
+}
+
+fn repo_paths(paths: &[&str]) -> Vec<RepoPath> {
+    paths
+        .iter()
+        .map(|path| path.parse().expect("a repo path"))
+        .collect()
 }
 
 fn worktree(root: &Path) -> Worktree {
@@ -318,18 +336,195 @@ async fn run_tests_needs_a_configured_command() {
     assert!(refused.contains("no test command"), "{refused}");
 }
 
-#[tokio::test]
-async fn run_tests_reports_pass_and_fail_as_the_gate_does() {
-    let dir = repo();
-    let passing = Worktree::new(dir.path().to_path_buf(), &[], Some("exit 0".to_owned()));
-    assert_eq!(passing.run_tests().await.expect("the command runs"), "pass");
+/// A stand-in docker CLI: `docker version` exits `version_exit`, and any other call records
+/// that it ran in `ran` and exits `run_exit`.
+fn fake_docker(dir: &Path, version_exit: u8, run_exit: u8) -> (PathBuf, PathBuf) {
+    let ran = dir.join("ran.txt");
+    #[cfg(windows)]
+    {
+        let docker = dir.join("docker.cmd");
+        fs::write(
+            &docker,
+            format!(
+                "@echo off\r\nif \"%1\"==\"version\" exit /b {version_exit}\r\necho ran> \"{}\"\r\nexit /b {run_exit}\r\n",
+                ran.display()
+            ),
+        )
+        .expect("the fake docker");
+        (docker, ran)
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let docker = dir.join("docker");
+        fs::write(
+            &docker,
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = version ]; then exit {version_exit}; fi\necho ran > '{}'\nexit {run_exit}\n",
+                ran.display()
+            ),
+        )
+        .expect("the fake docker");
+        fs::set_permissions(&docker, fs::Permissions::from_mode(0o755)).expect("executable");
+        (docker, ran)
+    }
+}
 
-    let failing = Worktree::new(dir.path().to_path_buf(), &[], Some("exit 3".to_owned()));
-    let text = failing
+/// A test command that writes a file in the worktree and one under `.acan/`.
+const WRITING_COMMAND: &str = "echo pwned > pwned.txt && echo pwned > .acan/pwned.txt";
+
+fn assert_never_ran_on_the_host(root: &Path) {
+    assert!(
+        !root.join("pwned.txt").exists() && !root.join(".acan/pwned.txt").exists(),
+        "the test command did not run on the host"
+    );
+}
+
+#[tokio::test]
+async fn run_tests_without_docker_is_isolation_unavailable_and_never_runs_on_the_host() {
+    let dir = repo();
+    let root = dir.path();
+    let elsewhere = tempfile::tempdir().expect("a directory without docker");
+    let tools = Worktree::new(root.to_path_buf(), &[], Some(WRITING_COMMAND.to_owned()))
+        .with_docker(elsewhere.path().join("no-such-docker"));
+    let refused = tools
         .run_tests()
         .await
-        .expect("a failing command is reported, not refused");
-    assert!(text.starts_with("fail:") && text.contains('3'), "{text}");
+        .expect_err("no docker means no test run");
+    assert!(refused.starts_with("isolation unavailable"), "{refused}");
+    assert_never_ran_on_the_host(root);
+}
+
+#[tokio::test]
+async fn run_tests_with_the_docker_daemon_down_is_isolation_unavailable() {
+    let dir = repo();
+    let root = dir.path();
+    let bin = tempfile::tempdir().expect("a directory for the fake docker");
+    let (docker, ran) = fake_docker(bin.path(), 1, 0);
+    let tools = Worktree::new(root.to_path_buf(), &[], Some(WRITING_COMMAND.to_owned()))
+        .with_docker(docker);
+    let refused = tools
+        .run_tests()
+        .await
+        .expect_err("a daemon that does not answer means no test run");
+    assert!(
+        refused.starts_with("isolation unavailable") && refused.contains("not reachable"),
+        "{refused}"
+    );
+    assert!(!ran.exists(), "no container was started");
+    assert_never_ran_on_the_host(root);
+}
+
+#[tokio::test]
+async fn run_tests_reports_the_container_exit_as_pass_fail_or_unavailable() {
+    let dir = repo();
+    let root = dir.path();
+    for (run_exit, expected) in [
+        (0, Ok("pass")),
+        (3, Ok("fail: exit code 3")),
+        (125, Err("isolation unavailable")),
+    ] {
+        let bin = tempfile::tempdir().expect("a directory for the fake docker");
+        let (docker, ran) = fake_docker(bin.path(), 0, run_exit);
+        let tools = Worktree::new(root.to_path_buf(), &[], Some(WRITING_COMMAND.to_owned()))
+            .with_docker(docker);
+        let outcome = tools.run_tests().await;
+        assert!(
+            ran.exists(),
+            "exit {run_exit}: the container run was asked for"
+        );
+        match (&outcome, expected) {
+            (Ok(text), Ok(start)) | (Err(text), Err(start)) => {
+                assert!(text.starts_with(start), "exit {run_exit}: {text}");
+            }
+            _ => panic!("exit {run_exit}: expected {expected:?}, got {outcome:?}"),
+        }
+    }
+    assert_never_ran_on_the_host(root);
+}
+
+#[test]
+fn the_test_container_is_locked_down_with_protected_paths_read_only() {
+    let dir = repo();
+    let root = dir.path();
+    let tools = Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned()))
+        .with_protected(&repo_paths(&[PROTECTED_TEST, "probes"]))
+        .with_image("oven/bun:1.2");
+    let host = std::path::absolute(root).expect("an absolute worktree");
+    let read_only = |source: PathBuf, target: &str| {
+        format!(
+            "type=bind,source={},target={target},readonly",
+            source.display()
+        )
+    };
+    let expected: Vec<String> = [
+        "run",
+        "--rm",
+        "--name",
+        "acan-test-1",
+        "--network",
+        "none",
+        "--read-only",
+        "--user",
+        "1000:1000",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--cpus",
+        "2",
+        "--memory",
+        "1g",
+        "--memory-swap",
+        "1g",
+        "--pids-limit",
+        "256",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,size=256m",
+        "--env",
+        "HOME=/tmp",
+        "--mount",
+        &format!("type=bind,source={},target=/work", host.display()),
+        "--mount",
+        &read_only(host.join(".git"), "/work/.git"),
+        "--mount",
+        &read_only(host.join(".acan"), "/work/.acan"),
+        "--mount",
+        &read_only(
+            host.join("tests").join("protected.test.ts"),
+            "/work/tests/protected.test.ts",
+        ),
+        "--workdir",
+        "/work",
+        "--entrypoint",
+        "sh",
+        "oven/bun:1.2",
+        "-c",
+        "bun test",
+    ]
+    .map(str::to_owned)
+    .to_vec();
+    assert_eq!(
+        tools
+            .test_container_args("acan-test-1")
+            .expect("the container arguments"),
+        expected,
+        "the missing protected directory `probes` is not mounted"
+    );
+}
+
+#[test]
+fn the_test_container_refuses_to_mount_a_protected_link() {
+    let dir = repo();
+    let root = dir.path();
+    let outside = tempfile::tempdir().expect("a directory outside the worktree");
+    link(outside.path(), &root.join("probes"), true);
+    let tools = Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned()))
+        .with_protected(&repo_paths(&["probes"]));
+    let refused = tools
+        .test_container_args("acan-test-1")
+        .expect_err("a protected link is not mounted");
+    assert!(refused.contains("link"), "{refused}");
 }
 
 #[tokio::test]
@@ -373,4 +568,240 @@ fn declare_replaces_the_files_a_write_may_touch() {
     tools
         .write_file("model/other.ts", "changed\n")
         .expect("the new declaration allows the write");
+}
+
+/// `.acan/` is protected under every spelling the tools accept, even when the task declares
+/// it, and every spelling the tools do not accept is refused before it reaches the disk.
+#[test]
+fn a_protected_path_is_never_written_even_when_declared() {
+    let dir = repo();
+    let root = dir.path();
+    let mut protected_spellings = vec![
+        ".acan/app.json",
+        "./.acan/app.json",
+        ".acan//app.json",
+        ".ACAN/app.json",
+        ".Acan/App.JSON",
+        ".acan/new.json",
+        ".acan",
+    ];
+    if cfg!(windows) {
+        protected_spellings.extend([".acan\\app.json", ".\\.acan/app.json"]);
+    }
+    let refused_spellings = [
+        "model/../.acan/app.json",
+        ".acan/../.acan/app.json",
+        "model\\..\\.acan\\app.json",
+        ".acan./app.json",
+        ".acan /app.json",
+        ".acan:stream",
+        ".acan/app.json::$DATA",
+    ];
+    let declared: Vec<String> = protected_spellings
+        .iter()
+        .chain(&refused_spellings)
+        .map(|path| (*path).to_owned())
+        .collect();
+    let tools = Worktree::new(root.to_path_buf(), &declared, None);
+
+    for path in protected_spellings {
+        let refused = tools
+            .write_file(path, "pwned\n")
+            .expect_err("a protected path is refused");
+        assert!(refused.contains("protected"), "{path:?}: {refused}");
+    }
+    for path in refused_spellings {
+        assert!(
+            tools.write_file(path, "pwned\n").is_err(),
+            "writing {path:?} is refused"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(root.join(APP)).expect("readable"),
+        APP_TEXT,
+        "the protected file is untouched"
+    );
+    assert!(
+        !root.join(".acan/new.json").exists(),
+        "no protected file was created"
+    );
+}
+
+#[test]
+fn an_extra_protected_path_covers_itself_and_everything_under_it() {
+    let dir = repo();
+    let root = dir.path();
+    let declared = [
+        PROTECTED_TEST,
+        "tests/protected.test.tsx",
+        "probes/core.json",
+        "probes.md",
+    ]
+    .map(str::to_owned);
+    let tools = Worktree::new(root.to_path_buf(), &declared, None)
+        .with_protected(&repo_paths(&[PROTECTED_TEST, "probes"]));
+
+    for path in [
+        PROTECTED_TEST,
+        "TESTS/Protected.Test.ts",
+        "probes/core.json",
+    ] {
+        let refused = tools
+            .write_file(path, "pwned\n")
+            .expect_err("a protected path is refused");
+        assert!(refused.contains("protected"), "{path:?}: {refused}");
+    }
+    for path in ["tests/protected.test.tsx", "probes.md"] {
+        tools
+            .write_file(path, "fine\n")
+            .expect("a sibling with a longer name is not protected");
+    }
+    assert_eq!(
+        fs::read_to_string(root.join(PROTECTED_TEST)).expect("readable"),
+        PROTECTED_TEST_TEXT
+    );
+    assert!(
+        !root.join("probes").exists(),
+        "no protected file was created"
+    );
+}
+
+/// A declared path under a link or junction to `.acan/` names a protected file by another name.
+#[test]
+fn a_link_or_junction_into_a_protected_directory_is_refused() {
+    let dir = repo();
+    let root = dir.path();
+    link(&root.join(".acan"), &root.join("model/settings"), true);
+    let mut declared = vec!["model/settings/app.json".to_owned()];
+    #[cfg(windows)]
+    {
+        let made = Process::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(root.join("model").join("junction"))
+            .arg(root.join(".acan"))
+            .output()
+            .expect("cmd runs");
+        assert!(made.status.success(), "the junction is created");
+        declared.push("model/junction/app.json".to_owned());
+    }
+    let tools = Worktree::new(root.to_path_buf(), &declared, None);
+    for path in &declared {
+        assert!(
+            tools.write_file(path, "pwned\n").is_err(),
+            "writing {path:?} is refused"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(root.join(APP)).expect("readable"),
+        APP_TEXT,
+        "the protected file is untouched"
+    );
+}
+
+/// Windows gives `.acan` a short name such as `ACAN~1`, which reaches the same directory.
+#[cfg(windows)]
+#[test]
+fn a_short_name_for_a_protected_directory_is_refused() {
+    use std::os::windows::process::CommandExt as _;
+
+    let dir = repo();
+    let root = dir.path();
+    let listed = Process::new("cmd")
+        .raw_arg("/C for %I in (.acan) do @echo %~snxI")
+        .current_dir(root)
+        .output()
+        .expect("cmd runs");
+    let short = String::from_utf8_lossy(&listed.stdout).trim().to_owned();
+    if short.is_empty() || short.eq_ignore_ascii_case(".acan") {
+        eprintln!("this volume makes no short names; nothing to check");
+        return;
+    }
+    let path = format!("{short}/app.json");
+    let tools = Worktree::new(root.to_path_buf(), std::slice::from_ref(&path), None);
+    let refused = tools
+        .write_file(&path, "pwned\n")
+        .expect_err("the short name is refused");
+    assert!(refused.contains("protected"), "{path}: {refused}");
+    assert_eq!(
+        fs::read_to_string(root.join(APP)).expect("readable"),
+        APP_TEXT,
+        "the protected file is untouched"
+    );
+}
+
+async fn assert_commit_refused(root: &Path, tools: &Worktree, names: &str) {
+    let refused = tools
+        .commit("touch the contract")
+        .await
+        .expect_err("the commit is refused");
+    assert!(
+        refused.contains(&format!("{names} is protected")),
+        "the refusal names the protected path: {refused}"
+    );
+    assert_eq!(
+        git(root, &["diff", "--cached", "--name-only"]),
+        "",
+        "the refused change is not staged"
+    );
+    assert_eq!(
+        git(root, &["rev-parse", "HEAD"]).trim(),
+        git(root, &["rev-parse", "main"]).trim(),
+        "the refused commit did not move HEAD"
+    );
+}
+
+#[tokio::test]
+async fn a_commit_refuses_a_changed_protected_file_even_when_declared() {
+    let dir = repo();
+    let root = dir.path();
+    fs::write(root.join(APP), "{\"pwned\": true}\n").expect("a change from outside the tools");
+    let tools = Worktree::new(root.to_path_buf(), &[APP.to_owned()], None);
+    assert_commit_refused(root, &tools, APP).await;
+}
+
+#[tokio::test]
+async fn a_commit_refuses_deleting_a_protected_file() {
+    let dir = repo();
+    let root = dir.path();
+    fs::remove_file(root.join(APP)).expect("a deletion from outside the tools");
+    let tools = Worktree::new(root.to_path_buf(), &[APP.to_owned()], None);
+    assert_commit_refused(root, &tools, APP).await;
+}
+
+/// git pairs the deleted protected file with the new declared one as a rename, and a rename
+/// lists only its new name unless rename detection is off.
+#[tokio::test]
+async fn a_commit_refuses_renaming_a_protected_file_to_a_declared_path() {
+    let dir = repo();
+    let root = dir.path();
+    fs::rename(root.join(APP), root.join("model/moved.json")).expect("a rename");
+    let tools = Worktree::new(root.to_path_buf(), &["model/moved.json".to_owned()], None);
+    assert_commit_refused(root, &tools, APP).await;
+}
+
+#[tokio::test]
+async fn a_commit_refuses_a_change_to_an_extra_protected_path() {
+    let dir = repo();
+    let root = dir.path();
+    fs::write(root.join(PROTECTED_TEST), "test('gone', () => {});\n").expect("a change");
+    let tools = Worktree::new(root.to_path_buf(), &[PROTECTED_TEST.to_owned()], None)
+        .with_protected(&repo_paths(&[PROTECTED_TEST]));
+    assert_commit_refused(root, &tools, PROTECTED_TEST).await;
+}
+
+#[tokio::test]
+async fn restore_leaves_a_protected_path_alone() {
+    let dir = repo();
+    let root = dir.path();
+    let local = ".acan/local.json";
+    fs::write(root.join(local), "{}\n").expect("an untracked protected file");
+    let tools = Worktree::new(root.to_path_buf(), &[local.to_owned()], None);
+    tools
+        .restore(&[local.to_owned()])
+        .await
+        .expect("restore succeeds");
+    assert!(
+        root.join(local).exists(),
+        "the protected file is not removed"
+    );
 }
