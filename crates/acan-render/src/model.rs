@@ -69,6 +69,8 @@ pub enum Ink {
     Mid,
     Lo,
     Faint,
+    /// The thin light line on a model's crease, drawn from its mesh at build time.
+    Edge,
     Lit,
     Red,
     Green,

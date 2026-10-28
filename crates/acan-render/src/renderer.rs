@@ -1,9 +1,8 @@
 //! The wgpu renderer. A frame has two passes. The first draws the ground, belts, halos,
-//! machines, lines and dots into colour, normal and depth targets, 4x MSAA where the device
-//! allows it. The ground writes depth and an up normal, so the edge pass treats it as a
-//! surface. The second runs the edge pass over every MSAA sample of depth and normals and
-//! resolves into the surface. Model buffers are uploaded once per model set and per scene,
-//! never per frame.
+//! machines, lines and dots into colour, object-ID and depth targets, 4x MSAA where the device
+//! allows it. The ground writes no ID, so it is object 0. The second runs the outline pass over
+//! every MSAA sample of IDs and depth and resolves into the surface. Model buffers are uploaded
+//! once per model set and per scene, never per frame.
 
 use std::mem::size_of;
 use std::ops::Range;
@@ -11,27 +10,23 @@ use std::ops::Range;
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::camera::Camera;
+use crate::camera::{Camera, NEAR_FRACTION, ORTHO_FAR, Projection};
+use crate::edges;
 use crate::geometry::{
-    self, DotVertex, HALO_WIDTH, HaloVertex, InstanceRaw, LineVertex, MeshVertex, Strokes,
+    self, DETAILS, DotVertex, HALO_WIDTH, HaloVertex, InstanceRaw, LineVertex, MeshVertex, Strokes,
 };
-use crate::model::{Mesh, Model};
+use crate::model::{Line3, Mesh, Model};
 use crate::scene::{Lod, Scene};
 use crate::theme::{self, PALETTE_LEN, TINT_LEN};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// Object IDs (three 8-bit channels) with the surface's fog in alpha.
+const ID_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 const MSAA: u32 = 4;
 /// Thinnest stroke on screen, in device pixels. Thinner strokes fade out instead.
 const MIN_STROKE_PX: f32 = 0.75;
-/// Depth step, in plan units, that makes an edge between two objects a silhouette rather than
-/// a crease.
-const SILHOUETTE_STEP: f32 = 0.5;
-const CREASE_DEGREES: f32 = 30.0;
-/// Extra depth range beyond the scene's bounding radius, so halos and belts stay in range.
-const DEPTH_MARGIN: f32 = 8.0;
-/// Depth half-range for a scene with no bounds, so the depth range stays valid when it is empty.
-const EMPTY_SCENE_RADIUS: f32 = 100.0;
+/// The depth cleared before a frame. The depth is reverse, so this is the farthest value.
+const FAR_DEPTH: f32 = 0.0;
 
 /// Why a renderer could not be created or a frame could not be drawn.
 #[non_exhaustive]
@@ -57,10 +52,11 @@ pub struct CameraUniform {
     pub right: [f32; 4],
     pub up: [f32; 4],
     pub toward: [f32; 4],
+    pub eye: [f32; 4],
     pub pivot: [f32; 4],
-    pub scene: [f32; 4],
     pub view: [f32; 4],
-    pub edge: [f32; 4],
+    pub depth: [f32; 4],
+    pub fog: [f32; 4],
     pub halo: [f32; 4],
 }
 
@@ -70,30 +66,25 @@ pub fn plant_source(samples: u32) -> String {
     include_str!("plant.wgsl")
         .replace("@@MS@@", multisampled)
         .replace("@@SAMPLES@@", &samples.to_string())
+        .replace("@@PALETTE_LEN@@", &PALETTE_LEN.to_string())
         .replace("@@GRID@@", &grid_consts())
 }
 
 /// The grid constants of `theme.rs`, as the WGSL constants that `plant.wgsl` reads.
 fn grid_consts() -> String {
     let (show_lo, show_hi) = theme::GRID_SHOW_PX;
-    let (graze_lo, graze_hi) = theme::GRID_GRAZING;
     format!(
         "const GRID_LEVELS: i32 = {};\n\
          const GRID_BASE: f32 = {:?};\n\
          const GRID_STEP: f32 = {:?};\n\
          const GRID_LEVEL_ALPHA: f32 = {:?};\n\
          const GRID_MAX_ALPHA: f32 = {:?};\n\
-         const GRID_SHOW_PX: vec2<f32> = vec2<f32>({show_lo:?}, {show_hi:?});\n\
-         const GRID_FADE_START: f32 = {:?};\n\
-         const GRID_FADE_END: f32 = {:?};\n\
-         const GRID_GRAZING: vec2<f32> = vec2<f32>({graze_lo:?}, {graze_hi:?});\n",
+         const GRID_SHOW_PX: vec2<f32> = vec2<f32>({show_lo:?}, {show_hi:?});\n",
         theme::GRID_LEVELS,
         theme::GRID_BASE,
         theme::GRID_STEP,
         theme::GRID_LEVEL_ALPHA,
         theme::GRID_MAX_ALPHA,
-        theme::GRID_FADE_START,
-        theme::GRID_FADE_END,
     )
 }
 
@@ -131,11 +122,11 @@ struct Pipelines {
     edge: wgpu::RenderPipeline,
 }
 
-/// Targets that the scene pass writes and the edge pass reads.
+/// Targets that the scene pass writes and the outline pass reads.
 struct Targets {
     /// The multisampled colour target, or `None` when the surface is drawn directly.
     colour: Option<wgpu::TextureView>,
-    normal: wgpu::TextureView,
+    id: wgpu::TextureView,
     depth: wgpu::TextureView,
 }
 
@@ -161,8 +152,6 @@ pub struct Renderer {
     instances: Option<wgpu::Buffer>,
     /// Per kind: its range inside `instances`.
     ranges: Vec<Range<u32>>,
-    centre: [f32; 3],
-    radius: f32,
 }
 
 impl Renderer {
@@ -290,8 +279,6 @@ impl Renderer {
             world_lines: None,
             instances: None,
             ranges: Vec::new(),
-            centre: [0.0; 3],
-            radius: 1.0,
         })
     }
 
@@ -327,22 +314,29 @@ impl Renderer {
 
     /// Uploads every kind's three meshes, lines, dots and halo once. Instances refer to kinds by
     /// index into this slice. Call `set_scene` afterwards, because the instance ranges depend
-    /// on the kinds.
+    /// on the kinds. Each level's feature edges are extracted here, from its mesh, and drawn
+    /// at that level's detail.
     pub fn set_models(&mut self, models: &[Model]) {
         self.models = models
             .iter()
-            .map(|model| ModelBuffers {
-                levels: model.meshes.each_ref().map(|mesh| self.mesh_buffers(mesh)),
-                lines: self.strokes(
-                    "lines",
-                    geometry::line_vertices(&model.lines),
-                    wgpu::BufferUsages::VERTEX,
-                ),
-                dots: self.strokes(
-                    "dots",
-                    geometry::dot_vertices(&model.dots),
-                    wgpu::BufferUsages::VERTEX,
-                ),
+            .map(|model| {
+                let mut lines: Vec<Line3> = model.lines.clone();
+                for (mesh, detail) in model.meshes.iter().zip(DETAILS) {
+                    lines.extend(edges::feature_lines(mesh, detail));
+                }
+                ModelBuffers {
+                    levels: model.meshes.each_ref().map(|mesh| self.mesh_buffers(mesh)),
+                    lines: self.strokes(
+                        "lines",
+                        geometry::line_vertices(&lines),
+                        wgpu::BufferUsages::VERTEX,
+                    ),
+                    dots: self.strokes(
+                        "dots",
+                        geometry::dot_vertices(&model.dots),
+                        wgpu::BufferUsages::VERTEX,
+                    ),
+                }
             })
             .collect();
         let halos: Vec<HaloVertex> = models
@@ -380,22 +374,6 @@ impl Renderer {
             &raw,
         ));
         self.ranges = ranges;
-
-        let bounds = scene.bounds;
-        if bounds.min[0] <= bounds.max[0] {
-            self.centre = bounds.centre();
-            let half = [
-                bounds.max[0] - bounds.min[0],
-                bounds.max[1] - bounds.min[1],
-                bounds.max[2] - bounds.min[2],
-            ];
-            let half_diagonal =
-                0.5 * (half[0] * half[0] + half[1] * half[1] + half[2] * half[2]).sqrt();
-            self.radius = half_diagonal + 2.0 * HALO_WIDTH + DEPTH_MARGIN;
-        } else {
-            self.centre = [0.0; 3];
-            self.radius = EMPTY_SCENE_RADIUS;
-        }
     }
 
     /// Draws one frame at the given level of detail. Returns `Ok(false)` for a frame the surface
@@ -447,7 +425,7 @@ impl Renderer {
                         },
                     }),
                     Some(wgpu::RenderPassColorAttachment {
-                        view: &self.targets.normal,
+                        view: &self.targets.id,
                         depth_slice: None,
                         resolve_target: None,
                         ops: wgpu::Operations {
@@ -459,7 +437,7 @@ impl Renderer {
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.targets.depth,
                     depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
+                        load: wgpu::LoadOp::Clear(FAR_DEPTH),
                         store: wgpu::StoreOp::Store,
                     }),
                     stencil_ops: None,
@@ -585,15 +563,24 @@ impl Renderer {
     fn uniform(&self, camera: &Camera) -> CameraUniform {
         let b = camera.basis();
         let pivot = camera.pivot();
+        let eye = camera.eye();
         let [vw, vh] = camera.viewport();
+        let d = camera.eye_distance();
+        let ortho = match camera.projection() {
+            Projection::Perspective => 0.0,
+            Projection::Orthographic => 1.0,
+        };
+        let (fog_near, fog_far) = (theme::FOG_NEAR, theme::FOG_FAR);
+        let (angle_lo, angle_hi) = theme::ANGLE_FADE;
         CameraUniform {
             right: [b.right[0], b.right[1], b.right[2], 0.0],
             up: [b.up[0], b.up[1], b.up[2], 0.0],
             toward: [b.toward[0], b.toward[1], b.toward[2], 0.0],
-            pivot: [pivot[0], pivot[1], 0.0, 0.0],
-            scene: [self.centre[0], self.centre[1], self.centre[2], self.radius],
+            eye: [eye[0], eye[1], eye[2], ortho],
+            pivot: [pivot[0], pivot[1], d, 0.0],
             view: [vw, vh, camera.zoom(), MIN_STROKE_PX],
-            edge: [SILHOUETTE_STEP, CREASE_DEGREES.to_radians().cos(), 0.0, 0.0],
+            depth: [NEAR_FRACTION * d, ORTHO_FAR * d, camera.focal(), 0.0],
+            fog: [fog_near, fog_far, angle_lo, angle_hi],
             halo: [HALO_WIDTH, 0.0, 0.0, 0.0],
         }
     }
@@ -642,7 +629,7 @@ fn sample_count(adapter: &wgpu::Adapter, surface: wgpu::TextureFormat) -> u32 {
         .get_texture_format_features(surface)
         .flags
         .contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE);
-    if resolves && supports(surface) && supports(NORMAL_FORMAT) && supports(DEPTH_FORMAT) {
+    if resolves && supports(surface) && supports(ID_FORMAT) && supports(DEPTH_FORMAT) {
         MSAA
     } else {
         1
@@ -683,7 +670,7 @@ fn targets(
                 wgpu::TextureUsages::RENDER_ATTACHMENT,
             )
         }),
-        normal: make("scene normal", NORMAL_FORMAT, sampled),
+        id: make("scene ids", ID_FORMAT, sampled),
         depth: make("scene depth", DEPTH_FORMAT, sampled),
     }
 }
@@ -732,7 +719,7 @@ fn edge_bind(
             },
             wgpu::BindGroupEntry {
                 binding: 1,
-                resource: wgpu::BindingResource::TextureView(&targets.normal),
+                resource: wgpu::BindingResource::TextureView(&targets.id),
             },
         ],
     })
@@ -765,9 +752,9 @@ impl Pipelines {
                 write_mask: wgpu::ColorWrites::ALL,
             })
         };
-        let normal = |write: bool| {
+        let ids = |write: bool| {
             Some(wgpu::ColorTargetState {
-                format: NORMAL_FORMAT,
+                format: ID_FORMAT,
                 blend: None,
                 write_mask: if write {
                     wgpu::ColorWrites::ALL
@@ -798,7 +785,7 @@ impl Pipelines {
         let mesh_instance = wgpu::VertexBufferLayout {
             array_stride: size_of::<InstanceRaw>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![3 => Float32x3, 4 => Uint32],
+            attributes: &wgpu::vertex_attr_array![3 => Float32x3, 4 => Uint32, 5 => Uint32],
         };
         let line_vertex = wgpu::VertexBufferLayout {
             array_stride: size_of::<LineVertex>() as u64,
@@ -857,7 +844,8 @@ impl Pipelines {
             })
         };
         let alpha = Some(wgpu::BlendState::ALPHA_BLENDING);
-        let less = wgpu::CompareFunction::LessEqual;
+        // Depth is reverse, so a nearer surface has the larger value.
+        let nearer = wgpu::CompareFunction::GreaterEqual;
         Self {
             grid: make(
                 "grid",
@@ -866,7 +854,7 @@ impl Pipelines {
                 "fs_grid",
                 &[],
                 depth(true, wgpu::CompareFunction::Always),
-                &[colour(None), normal(true)],
+                &[colour(None), ids(false)],
             ),
             mesh: make(
                 "mesh",
@@ -874,8 +862,8 @@ impl Pipelines {
                 "vs_mesh",
                 "fs_mesh",
                 &[Some(mesh_vertex), Some(mesh_instance)],
-                depth(true, less),
-                &[colour(None), normal(true)],
+                depth(true, nearer),
+                &[colour(None), ids(true)],
             ),
             halo: make(
                 "halo",
@@ -883,8 +871,8 @@ impl Pipelines {
                 "vs_halo",
                 "fs_halo",
                 &[Some(halo_vertex), Some(halo_instance)],
-                depth(false, less),
-                &[colour(alpha), normal(false)],
+                depth(false, nearer),
+                &[colour(alpha), ids(false)],
             ),
             line: make(
                 "lines",
@@ -892,8 +880,8 @@ impl Pipelines {
                 "vs_line",
                 "fs_line",
                 &[Some(line_vertex), Some(offset_instance.clone())],
-                depth(false, less),
-                &[colour(alpha), normal(false)],
+                depth(false, nearer),
+                &[colour(alpha), ids(false)],
             ),
             dot: make(
                 "dots",
@@ -901,8 +889,8 @@ impl Pipelines {
                 "vs_dot",
                 "fs_dot",
                 &[Some(dot_vertex), Some(offset_instance)],
-                depth(false, less),
-                &[colour(alpha), normal(false)],
+                depth(false, nearer),
+                &[colour(alpha), ids(false)],
             ),
             edge: make(
                 "edges",

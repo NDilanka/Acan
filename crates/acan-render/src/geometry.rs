@@ -12,6 +12,9 @@ use crate::theme::{dot_slot, flat_code, ink_slot};
 /// Width of the floor halo's falloff beyond a machine's plinth, in plan units.
 pub const HALO_WIDTH: f32 = 28.0;
 
+/// Object IDs are packed into three 8-bit channels of the ID target, so they run to 2^24 - 1.
+pub const MAX_OBJECT_ID: u32 = 1 << 24;
+
 /// The levels of detail in the order of their index in `Model::meshes` and in cumulative counts.
 pub const DETAILS: [Detail; 3] = [Detail::Always, Detail::Near, Detail::Close];
 
@@ -59,6 +62,8 @@ pub struct HaloVertex {
 pub struct InstanceRaw {
     pub offset: [f32; 3],
     pub tint: u32,
+    /// The object ID that the outline pass reads: 0 for the world, then one per instance.
+    pub id: u32,
 }
 
 /// Vertex data split by detail. `counts[level]` is the number of vertices drawn at that level
@@ -172,24 +177,32 @@ pub fn halo_vertices(bounds: &Aabb) -> [HaloVertex; 6] {
 }
 
 /// Instance data for the world (one identity instance at index 0) and then each kind in order.
-/// Returns the data and the instance range of each kind.
+/// Returns the data and the instance range of each kind. An instance's object ID is its index
+/// in the data, so the identity instance is ID 0, which the outline pass treats as the ground.
 pub fn instance_data(instances: &[Instance], kinds: usize) -> (Vec<InstanceRaw>, Vec<Range<u32>>) {
     let mut raw = vec![InstanceRaw {
         offset: [0.0; 3],
         tint: 0,
+        id: 0,
     }];
     let mut ranges = Vec::with_capacity(kinds);
     for kind in 0..kinds {
         let start = raw.len() as u32;
-        raw.extend(
-            instances
-                .iter()
-                .filter(|inst| usize::from(inst.kind) == kind)
-                .map(|inst| InstanceRaw {
-                    offset: inst.offset,
-                    tint: u32::from(inst.tint),
-                }),
-        );
+        for inst in instances
+            .iter()
+            .filter(|inst| usize::from(inst.kind) == kind)
+        {
+            let id = raw.len() as u32;
+            assert!(
+                id < MAX_OBJECT_ID,
+                "too many objects for the outline IDs: {id}"
+            );
+            raw.push(InstanceRaw {
+                offset: inst.offset,
+                tint: u32::from(inst.tint),
+                id,
+            });
+        }
         ranges.push(start..raw.len() as u32);
     }
     let known = instances

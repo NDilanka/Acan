@@ -4,7 +4,7 @@
 use crate::model::{Ink, Surface};
 
 /// Palette slots on the GPU.
-pub const PALETTE_LEN: usize = 22;
+pub const PALETTE_LEN: usize = 24;
 /// Tint slots. Slot 0 is the identity; instances pick a slot to tint a machine.
 pub const TINT_LEN: usize = 8;
 
@@ -29,18 +29,22 @@ pub const SLOT_GREEN: u32 = 16;
 pub const SLOT_BLUE: u32 = 17;
 /// Four agent slots. Placeholders until agents get a palette.
 pub const SLOT_AGENT0: u32 = 18;
+/// The outer outline of every object, drawn in the edge pass.
+pub const SLOT_OUTLINE: u32 = 22;
+/// The inner feature edges of a model, drawn as thin lines.
+pub const SLOT_EDGE: u32 = 23;
 
-/// Set on the code of a surface that lies on the ground, such as a belt. The edge pass treats it
-/// as ground, so its edges come from the ink lines drawn on it. Matches `FLOOR_FLAG` in the shader.
+/// Set on the code of a surface that lies on the ground. Matches `FLOOR_FLAG` in the shader.
 pub const FLOOR_FLAG: u32 = 1 << 16;
 
-/// The grid fades by ground distance from the camera target, in half view heights (H) so the
-/// look is the same at every zoom. It is full at the target and gone past `GRID_FADE_END`.
-pub const GRID_FADE_START: f32 = 1.5;
-pub const GRID_FADE_END: f32 = 4.0;
-/// The grid also thins as the view grazes the ground: the fade runs over sin(elevation) in this
-/// range.
-pub const GRID_GRAZING: (f32, f32) = (0.05, 0.35);
+/// Distance fog, in eye distances from the camera to the pivot. Nothing fades nearer than
+/// `FOG_NEAR` times the pivot's eye distance, and everything is gone past `FOG_FAR`. Fog mixes
+/// toward the page colour, so the scene recedes into white.
+pub const FOG_NEAR: f32 = 1.5;
+pub const FOG_FAR: f32 = 6.0;
+/// Lines fade as the view grazes the ground, from `ANGLE_FADE.0` to `ANGLE_FADE.1` of the
+/// absolute sine of the ray's elevation. This kills moire near the horizon, as Blender does.
+pub const ANGLE_FADE: (f32, f32) = (0.02, 0.25);
 /// Grid levels, each `GRID_STEP` times the spacing of the one before, starting at `GRID_BASE`
 /// plan units.
 pub const GRID_LEVELS: u32 = 4;
@@ -49,9 +53,10 @@ pub const GRID_STEP: f32 = 5.0;
 /// A level shows while its on-screen spacing is between these device pixels, so levels cross
 /// fade as the zoom changes.
 pub const GRID_SHOW_PX: (f32, f32) = (6.0, 30.0);
-/// The alpha one level adds on a line, and the cap on the sum over levels.
-pub const GRID_LEVEL_ALPHA: f32 = 0.07;
-pub const GRID_MAX_ALPHA: f32 = 0.14;
+/// The alpha one level adds on a line, and the cap on the sum over levels. The grid stays
+/// quiet on white paper: the finest level barely shows.
+pub const GRID_LEVEL_ALPHA: f32 = 0.05;
+pub const GRID_MAX_ALPHA: f32 = 0.12;
 
 const fn rgb(hex: u32, alpha: f32) -> [f32; 4] {
     [
@@ -86,6 +91,8 @@ const PALETTE: [[f32; 4]; PALETTE_LEN] = [
     rgb(0xf76b15, 1.0),  // agent 1 (placeholder)
     rgb(0x12a594, 1.0),  // agent 2 (placeholder)
     rgb(0xab6400, 1.0),  // agent 3 (placeholder)
+    rgb(0x6b6b6b, 0.9),  // outline
+    rgb(0x9a9a9a, 0.6),  // feature edge
 ];
 
 /// Palette slot of an ink used by a line.
@@ -95,6 +102,7 @@ pub fn ink_slot(ink: Ink) -> u32 {
         Ink::Mid => SLOT_MID,
         Ink::Lo => SLOT_LO,
         Ink::Faint => SLOT_FAINT,
+        Ink::Edge => SLOT_EDGE,
         Ink::Lit => SLOT_LIT,
         Ink::Red => SLOT_RED,
         Ink::Green => SLOT_GREEN,
@@ -159,6 +167,7 @@ mod tests {
             Ink::Mid,
             Ink::Lo,
             Ink::Faint,
+            Ink::Edge,
             Ink::Lit,
             Ink::Red,
             Ink::Green,
@@ -189,11 +198,23 @@ mod tests {
     }
 
     #[test]
-    fn palette_ends_at_the_last_agent_slot_and_the_grid_is_black() {
-        assert_eq!(ink_slot(Ink::Agent(3)) as usize, PALETTE_LEN - 1);
+    fn the_outline_and_edge_slots_come_after_the_agents() {
+        assert_eq!(ink_slot(Ink::Agent(3)), SLOT_AGENT0 + 3);
+        assert_eq!(SLOT_OUTLINE as usize, PALETTE_LEN - 2);
+        assert_eq!(SLOT_EDGE as usize, PALETTE_LEN - 1);
         let grid = PALETTE[SLOT_GRID as usize];
         assert_eq!(&grid[..3], &[0.0, 0.0, 0.0]);
         assert!(grid[3] > 0.0);
+    }
+
+    #[test]
+    fn the_outline_is_mid_grey_and_the_edge_is_lighter() {
+        let outline = PALETTE[SLOT_OUTLINE as usize];
+        let edge = PALETTE[SLOT_EDGE as usize];
+        assert!((outline[0] - 0x6b as f32 / 255.0).abs() < 1e-6);
+        assert!((outline[3] - 0.9).abs() < 1e-6);
+        assert!((edge[0] - 0x9a as f32 / 255.0).abs() < 1e-6);
+        assert!((edge[3] - 0.6).abs() < 1e-6);
     }
 
     #[test]

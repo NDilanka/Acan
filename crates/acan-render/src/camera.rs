@@ -1,5 +1,7 @@
-//! The orthographic orbit camera. The view turns around a ground point under the screen
-//! centre, so orbiting never moves the scene under the pointer.
+//! The orbit camera. The view turns around a ground point under the screen centre, so orbiting
+//! never moves the scene under the pointer. It projects in perspective, like Blender's default
+//! viewport, or orthographically. Both share one pivot, two angles and one zoom, so switching
+//! projection keeps the framing and the scale at the pivot.
 
 use crate::model::Aabb;
 use crate::theme;
@@ -8,10 +10,20 @@ use crate::theme;
 pub const DEFAULT_AZIMUTH: f32 = 45.0;
 /// Elevation of the kit's own view, in degrees.
 pub const DEFAULT_ELEVATION: f32 = 30.0;
-pub const MIN_ELEVATION: f32 = 15.0;
-pub const MAX_ELEVATION: f32 = 80.0;
+/// Vertical field of view of the perspective camera, in degrees.
+pub const VERTICAL_FOV: f32 = 35.0;
+/// The lowest tilt of each projection. A perspective view can sit nearly flat and still show
+/// the horizon. An orthographic view that flat squashes the plant into a strip.
+pub const MIN_ELEVATION_PERSPECTIVE: f32 = 5.0;
+pub const MIN_ELEVATION_ORTHOGRAPHIC: f32 = 15.0;
+pub const MAX_ELEVATION: f32 = 89.0;
 pub const MIN_ZOOM: f32 = 1e-3;
 pub const MAX_ZOOM: f32 = 200.0;
+/// The near plane, as a fraction of the eye distance.
+pub const NEAR_FRACTION: f32 = 0.01;
+/// The orthographic far plane, as a multiple of the eye distance. Every visible ground point at
+/// the lowest orthographic elevation lies inside it. The perspective far plane is at infinity.
+pub const ORTHO_FAR: f32 = 4.0;
 
 /// The screen axes and the direction toward the viewer, in world space.
 ///
@@ -38,21 +50,34 @@ impl Basis {
     }
 }
 
-/// The view: a ground pivot, two angles, a zoom and the viewport in device pixels.
+/// How the scene is projected.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Projection {
+    #[default]
+    Perspective,
+    Orthographic,
+}
+
+/// The view: a ground pivot, two angles, a zoom, a projection and the viewport in device pixels.
+///
+/// The zoom is device pixels per plan unit at the pivot in both projections. The perspective
+/// eye sits `eye_distance` from the pivot, which is the distance at which the pivot's scale is
+/// `zoom` for the vertical field of view. The orthographic view uses the same eye distance for
+/// fog, so the two projections look the same.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
     pivot: [f32; 2],
     /// Degrees in `[0, 360)`.
     azimuth: f32,
-    /// Degrees in `[MIN_ELEVATION, MAX_ELEVATION]`.
+    /// Degrees, clamped to the range of the projection.
     elevation: f32,
-    /// Device pixels per plan unit.
     zoom: f32,
     viewport: [f32; 2],
+    projection: Projection,
 }
 
 impl Camera {
-    /// A camera at the kit's angles, looking at the plan origin at zoom 1.
+    /// A perspective camera at the kit's angles, looking at the plan origin at zoom 1.
     pub fn new(viewport: [f32; 2]) -> Self {
         Self {
             pivot: [0.0; 2],
@@ -60,6 +85,7 @@ impl Camera {
             elevation: DEFAULT_ELEVATION,
             zoom: 1.0,
             viewport,
+            projection: Projection::Perspective,
         }
     }
 
@@ -92,43 +118,123 @@ impl Camera {
         self.viewport = viewport;
     }
 
+    pub fn projection(&self) -> Projection {
+        self.projection
+    }
+
+    /// Switches projection. The angles are clamped to the new projection's range, and the
+    /// pivot and zoom stay, so the framing holds.
+    pub fn set_projection(&mut self, projection: Projection) {
+        self.projection = projection;
+        self.elevation = self.elevation.clamp(self.min_elevation(), MAX_ELEVATION);
+    }
+
+    pub fn toggle_projection(&mut self) {
+        let next = match self.projection {
+            Projection::Perspective => Projection::Orthographic,
+            Projection::Orthographic => Projection::Perspective,
+        };
+        self.set_projection(next);
+    }
+
+    pub fn min_elevation(&self) -> f32 {
+        match self.projection {
+            Projection::Perspective => MIN_ELEVATION_PERSPECTIVE,
+            Projection::Orthographic => MIN_ELEVATION_ORTHOGRAPHIC,
+        }
+    }
+
     pub fn basis(&self) -> Basis {
         Basis::at(self.azimuth, self.elevation)
     }
 
-    /// Device pixel (y down) of a world point.
+    /// Distance from the eye to the pivot, in plan units. Zoom changes it: a dolly in is a
+    /// shorter distance at the same field of view.
+    pub fn eye_distance(&self) -> f32 {
+        self.viewport[1] * 0.5 / (self.zoom * half_fov_tan())
+    }
+
+    /// The perspective eye. For the orthographic view it is the equivalent eye, used for fog.
+    pub fn eye(&self) -> [f32; 3] {
+        let b = self.basis();
+        let d = self.eye_distance();
+        [
+            self.pivot[0] + d * b.toward[0],
+            self.pivot[1] + d * b.toward[1],
+            d * b.toward[2],
+        ]
+    }
+
+    /// Focal length in device pixels: the pivot's scale times the eye distance.
+    pub fn focal(&self) -> f32 {
+        self.zoom * self.eye_distance()
+    }
+
+    /// Device pixel (y down) of a world point. Points behind the eye land on garbage, so
+    /// callers project only points in front of the camera.
     pub fn world_to_screen(&self, p: [f32; 3]) -> [f32; 2] {
         let b = self.basis();
-        let d = [p[0] - self.pivot[0], p[1] - self.pivot[1], p[2]];
-        [
-            self.viewport[0] * 0.5 + self.zoom * dot(d, b.right),
-            self.viewport[1] * 0.5 - self.zoom * dot(d, b.up),
-        ]
+        let [vw, vh] = self.viewport;
+        match self.projection {
+            Projection::Perspective => {
+                let rel = sub(p, self.eye());
+                let depth = -dot(rel, b.toward);
+                let f = self.focal() / depth;
+                [
+                    vw * 0.5 + f * dot(rel, b.right),
+                    vh * 0.5 - f * dot(rel, b.up),
+                ]
+            }
+            Projection::Orthographic => {
+                let d = [p[0] - self.pivot[0], p[1] - self.pivot[1], p[2]];
+                [
+                    vw * 0.5 + self.zoom * dot(d, b.right),
+                    vh * 0.5 - self.zoom * dot(d, b.up),
+                ]
+            }
+        }
     }
 
-    /// Plan point on the ground under a device pixel.
-    pub fn ground_at(&self, px: [f32; 2]) -> [f32; 2] {
+    /// Plan point on the ground under a device pixel, or `None` where the pixel's ray rises
+    /// above the horizon.
+    pub fn ground_at(&self, px: [f32; 2]) -> Option<[f32; 2]> {
         let b = self.basis();
-        let sx = (px[0] - self.viewport[0] * 0.5) / self.zoom;
-        let sy = (self.viewport[1] * 0.5 - px[1]) / self.zoom;
-        // The view ray is pivot + sx * right + sy * up + t * toward. It reaches z = 0 at this t.
-        let t = -sy * b.up[2] / b.toward[2];
-        [
-            self.pivot[0] + sx * b.right[0] + sy * b.up[0] + t * b.toward[0],
-            self.pivot[1] + sx * b.right[1] + sy * b.up[1] + t * b.toward[1],
-        ]
+        let [vw, vh] = self.viewport;
+        let sx = px[0] - vw * 0.5;
+        let sy = vh * 0.5 - px[1];
+        match self.projection {
+            Projection::Perspective => {
+                let eye = self.eye();
+                let f = self.focal();
+                let dir: [f32; 3] = std::array::from_fn(|axis| {
+                    -f * b.toward[axis] + sx * b.right[axis] + sy * b.up[axis]
+                });
+                if dir[2] >= 0.0 {
+                    return None;
+                }
+                let t = -eye[2] / dir[2];
+                Some([eye[0] + t * dir[0], eye[1] + t * dir[1]])
+            }
+            Projection::Orthographic => {
+                let sx = sx / self.zoom;
+                let sy = sy / self.zoom;
+                let t = -sy * b.up[2] / b.toward[2];
+                Some([
+                    self.pivot[0] + sx * b.right[0] + sy * b.up[0] + t * b.toward[0],
+                    self.pivot[1] + sx * b.right[1] + sy * b.up[1] + t * b.toward[1],
+                ])
+            }
+        }
     }
 
-    /// Moves the view so the content follows a pointer drag of `delta` device pixels.
-    pub fn pan_px(&mut self, delta: [f32; 2]) {
-        let b = self.basis();
-        // Solve for the ground vector v with v . right = -dx / zoom and v . up = dy / zoom.
-        let (a11, a12) = (b.right[0], b.right[1]);
-        let (a21, a22) = (b.up[0], b.up[1]);
-        let (r1, r2) = (-delta[0] / self.zoom, delta[1] / self.zoom);
-        let det = a11 * a22 - a12 * a21;
-        self.pivot[0] += (r1 * a22 - a12 * r2) / det;
-        self.pivot[1] += (a11 * r2 - a21 * r1) / det;
+    /// Moves the view so the ground point under `from` is under `to`. The pointer drags the
+    /// scene exactly, in either projection.
+    pub fn drag_ground(&mut self, from: [f32; 2], to: [f32; 2]) {
+        let (Some(start), Some(now)) = (self.ground_at(from), self.ground_at(to)) else {
+            return;
+        };
+        self.pivot[0] += start[0] - now[0];
+        self.pivot[1] += start[1] - now[1];
     }
 
     /// Turns the view by degrees around the ground point at the screen centre.
@@ -138,7 +244,7 @@ impl Camera {
 
     pub fn set_angles(&mut self, azimuth: f32, elevation: f32) {
         self.azimuth = azimuth.rem_euclid(360.0);
-        self.elevation = elevation.clamp(MIN_ELEVATION, MAX_ELEVATION);
+        self.elevation = elevation.clamp(self.min_elevation(), MAX_ELEVATION);
     }
 
     pub fn set_zoom(&mut self, zoom: f32) {
@@ -146,26 +252,73 @@ impl Camera {
     }
 
     /// Multiplies the zoom by `factor`, keeping the ground point under `px` fixed on screen.
+    /// Above the horizon the zoom turns about the pivot.
     pub fn zoom_at(&mut self, px: [f32; 2], factor: f32) {
-        let before = self.ground_at(px);
+        let before = self.ground_at(px).unwrap_or(self.pivot);
         self.set_zoom(self.zoom * factor);
-        let after = self.ground_at(px);
+        let after = self.ground_at(px).unwrap_or(self.pivot);
         self.pivot[0] += before[0] - after[0];
         self.pivot[1] += before[1] - after[1];
     }
 
-    /// Centres the box and zooms so its projection fits with `margin_px` around it, at the
-    /// current angles.
+    /// Centres the box and zooms so every corner projects inside `margin_px`, at the current
+    /// angles and projection. The projected corners end up centred, which the 3D centre alone
+    /// does not give under perspective.
     pub fn fit(&mut self, bounds: &Aabb, margin_px: f32) {
-        let (pivot, zoom) = fit_at(
-            self.viewport,
-            bounds,
-            margin_px,
-            self.azimuth,
-            self.elevation,
-        );
-        self.pivot = pivot;
-        self.zoom = zoom;
+        const PASSES: usize = 4;
+        let b = self.basis();
+        let centre = bounds.centre();
+        // The ground point on the view ray through the box centre, so the centre lands mid-screen.
+        let t = -centre[2] / b.toward[2];
+        self.pivot = [centre[0] + t * b.toward[0], centre[1] + t * b.toward[1]];
+        for _ in 0..PASSES {
+            self.zoom = self.largest_zoom_fitting(bounds, margin_px);
+            self.centre_projected(bounds);
+        }
+        self.zoom = self.largest_zoom_fitting(bounds, margin_px);
+    }
+
+    /// Moves the pivot so the middle of the projected corners lands on the screen centre. A
+    /// pivot shift `v` moves a point's screen position by `scale * (-v·right, v·up)`, where
+    /// `scale` is the focal length over the depth at the box centre in perspective. The shift
+    /// is solved from that linear model, and the next pass corrects the error it leaves.
+    fn centre_projected(&mut self, bounds: &Aabb) {
+        let [vw, vh] = self.viewport;
+        let mut lo = [f32::INFINITY; 2];
+        let mut hi = [f32::NEG_INFINITY; 2];
+        for corner in bounds.corners() {
+            let s = self.world_to_screen(corner);
+            for axis in 0..2 {
+                lo[axis] = lo[axis].min(s[axis]);
+                hi[axis] = hi[axis].max(s[axis]);
+            }
+        }
+        let off = [
+            (lo[0] + hi[0]) * 0.5 - vw * 0.5,
+            (lo[1] + hi[1]) * 0.5 - vh * 0.5,
+        ];
+        let basis = self.basis();
+        let scale = match self.projection {
+            Projection::Perspective => {
+                let depth = -dot(sub(bounds.centre(), self.eye()), basis.toward);
+                self.focal() / depth
+            }
+            Projection::Orthographic => self.zoom,
+        };
+        if !scale.is_finite() || scale <= 0.0 {
+            return;
+        }
+        // Solve dot(v, right) = off_x / scale and dot(v, up) = -off_y / scale for the ground
+        // shift `v`. The determinant is -sin(elevation), so it is nonzero above the minimum tilt.
+        let (a, b) = (basis.right[0], basis.right[1]);
+        let (c, d) = (basis.up[0], basis.up[1]);
+        let (p, q) = (off[0] / scale, -off[1] / scale);
+        let det = a * d - b * c;
+        if det.abs() < 1e-6 {
+            return;
+        }
+        self.pivot[0] += (p * d - b * q) / det;
+        self.pivot[1] += (a * q - c * p) / det;
     }
 
     /// Returns to the kit's angles and fits the box.
@@ -174,62 +327,74 @@ impl Camera {
         self.fit(bounds, margin_px);
     }
 
-    /// The grid's alpha factor at a ground point, from 1 at the target to 0 where the grid is
-    /// gone: the distance fade times the grazing fade. Mirrors `fs_grid` in `plant.wgsl`.
-    pub fn grid_fade_at(&self, plan: [f32; 2]) -> f32 {
-        let half_height = self.viewport[1] * 0.5 / self.zoom;
-        let distance = (plan[0] - self.pivot[0]).hypot(plan[1] - self.pivot[1]);
-        grid_distance_fade(distance, half_height) * grazing_fade(self.basis().toward[2])
+    /// The largest zoom at which every corner of `bounds` projects inside the margin, found by
+    /// bisection on the geometric scale. The corners move monotonically with zoom.
+    fn largest_zoom_fitting(&self, bounds: &Aabb, margin_px: f32) -> f32 {
+        let mut probe = *self;
+        let corners = bounds.corners();
+        let [vw, vh] = self.viewport;
+        let fits = |zoom: f32, probe: &mut Camera| {
+            probe.set_zoom(zoom);
+            let toward = probe.basis().toward;
+            let eye = probe.eye();
+            corners.iter().all(|&corner| {
+                let in_front = match probe.projection() {
+                    Projection::Perspective => dot(sub(corner, eye), toward) < 0.0,
+                    Projection::Orthographic => true,
+                };
+                let s = probe.world_to_screen(corner);
+                let inside = |v: f32, lo: f32, hi: f32| v >= lo - 0.5 && v <= hi + 0.5;
+                in_front
+                    && inside(s[0], margin_px, vw - margin_px)
+                    && inside(s[1], margin_px, vh - margin_px)
+            })
+        };
+        let (mut lo, mut hi) = (MIN_ZOOM, MAX_ZOOM);
+        if fits(hi, &mut probe) {
+            return hi;
+        }
+        for _ in 0..60 {
+            let mid = (lo * hi).sqrt();
+            if fits(mid, &mut probe) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
+    /// Fog factor of a world point: 0 near the pivot's distance and 1 far past the horizon's
+    /// start. See [`fog`].
+    pub fn fog_at(&self, p: [f32; 3]) -> f32 {
+        fog(distance(p, self.eye()), self.eye_distance())
+    }
+
+    /// Whether a world point lies beyond the near plane, so it projects to a real screen spot.
+    pub fn in_front(&self, p: [f32; 3]) -> bool {
+        let depth = -dot(sub(p, self.eye()), self.basis().toward);
+        depth > NEAR_FRACTION * self.eye_distance()
     }
 }
 
-/// The grid's fade by ground distance from the target, in plan units, in a view that is
-/// `half_height` plan units tall. Measured in half heights, the fade is the same at every zoom.
-pub fn grid_distance_fade(distance: f32, half_height: f32) -> f32 {
-    1.0 - smoothstep(
-        theme::GRID_FADE_START * half_height,
-        theme::GRID_FADE_END * half_height,
+/// Distance fog from the eye. `distance` is the eye distance of a point and `eye_distance` is
+/// the eye distance of the pivot. Nothing fades within `FOG_NEAR` eye distances, and everything
+/// is gone past `FOG_FAR`. Mirrors `fog` in `plant.wgsl`.
+pub fn fog(distance: f32, eye_distance: f32) -> f32 {
+    smoothstep(
+        theme::FOG_NEAR * eye_distance,
+        theme::FOG_FAR * eye_distance,
         distance,
     )
 }
 
-/// The grid's fade as the view grazes the ground. `sin_elevation` is the z of the direction
-/// toward the viewer, which is the sine of the elevation.
-pub fn grazing_fade(sin_elevation: f32) -> f32 {
-    let (lo, hi) = theme::GRID_GRAZING;
-    smoothstep(lo, hi, sin_elevation)
+fn half_fov_tan() -> f32 {
+    (VERTICAL_FOV * 0.5).to_radians().tan()
 }
 
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
-}
-
-/// Pivot and zoom that frame `bounds` in `viewport` at the given angles.
-pub fn fit_at(
-    viewport: [f32; 2],
-    bounds: &Aabb,
-    margin_px: f32,
-    azimuth: f32,
-    elevation: f32,
-) -> ([f32; 2], f32) {
-    let b = Basis::at(azimuth, elevation);
-    let centre = bounds.centre();
-    let (mut half_right, mut half_up) = (0.0_f32, 0.0_f32);
-    for corner in bounds.corners() {
-        let d = sub(corner, centre);
-        half_right = half_right.max(dot(d, b.right).abs());
-        half_up = half_up.max(dot(d, b.up).abs());
-    }
-    let avail_w = (viewport[0] - 2.0 * margin_px).max(1.0);
-    let avail_h = (viewport[1] - 2.0 * margin_px).max(1.0);
-    let zoom = (avail_w / (2.0 * half_right.max(1e-3)))
-        .min(avail_h / (2.0 * half_up.max(1e-3)))
-        .clamp(MIN_ZOOM, MAX_ZOOM);
-    // The ground point on the view ray through the box centre, so the centre lands mid-screen.
-    let t = -centre[2] / b.toward[2];
-    let pivot = [centre[0] + t * b.toward[0], centre[1] + t * b.toward[1]];
-    (pivot, zoom)
 }
 
 fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
@@ -238,6 +403,10 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 {
 
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn distance(a: [f32; 3], b: [f32; 3]) -> f32 {
+    dot(sub(a, b), sub(a, b)).sqrt()
 }
 
 #[cfg(test)]
@@ -255,6 +424,10 @@ mod tests {
         }
     }
 
+    fn both_projections() -> [Projection; 2] {
+        [Projection::Perspective, Projection::Orthographic]
+    }
+
     #[test]
     fn default_view_matches_the_kit_projection() {
         let cam = Camera::new([800.0, 600.0]);
@@ -270,21 +443,54 @@ mod tests {
     }
 
     #[test]
-    fn orbit_keeps_the_pivot_at_the_screen_centre() {
-        let mut cam = Camera::new([800.0, 600.0]);
-        cam.pan_px([130.0, -55.0]);
-        cam.zoom_at([300.0, 200.0], 1.7);
-        let pivot = cam.pivot();
-        let before = cam.world_to_screen([pivot[0], pivot[1], 0.0]);
-        for step in 0..36 {
-            cam.orbit(10.0, if step % 2 == 0 { 4.0 } else { -3.0 });
-            let after = cam.world_to_screen([pivot[0], pivot[1], 0.0]);
-            assert!(
-                close(after, [400.0, 300.0]),
-                "pivot left the centre at step {step}"
-            );
+    fn ground_round_trips_in_both_projections() {
+        for projection in both_projections() {
+            for (azimuth, elevation, zoom) in
+                [(0.0, 5.0, 0.7), (135.0, 30.0, 2.5), (250.0, 80.0, 9.0)]
+            {
+                let mut cam = Camera::new([1440.0, 900.0]);
+                cam.set_projection(projection);
+                cam.set_angles(azimuth, elevation);
+                cam.set_zoom(zoom);
+                cam.set_pivot([40.0, -25.0]);
+                for p in [[77.0, -33.0], [-300.0, 120.0], [40.0, -25.0]] {
+                    let px = cam.world_to_screen([p[0], p[1], 0.0]);
+                    let back = cam.ground_at(px).expect("ground in view");
+                    assert!(
+                        (back[0] - p[0]).abs() < 1e-2 && (back[1] - p[1]).abs() < 1e-2,
+                        "{projection:?} at {azimuth}/{elevation}: {p:?} came back as {back:?}"
+                    );
+                }
+            }
         }
-        assert!(close(before, [400.0, 300.0]));
+    }
+
+    #[test]
+    fn the_horizon_has_no_ground_point() {
+        let mut cam = Camera::new([1440.0, 900.0]);
+        cam.set_angles(45.0, 5.0);
+        cam.set_zoom(0.4);
+        assert_eq!(cam.ground_at([720.0, 0.0]), None, "the top row sees sky");
+        assert!(cam.ground_at([720.0, 899.0]).is_some());
+    }
+
+    #[test]
+    fn orbit_keeps_the_pivot_at_the_screen_centre() {
+        for projection in both_projections() {
+            let mut cam = Camera::new([800.0, 600.0]);
+            cam.set_projection(projection);
+            cam.zoom_at([300.0, 200.0], 1.7);
+            cam.drag_ground([300.0, 200.0], [420.0, 255.0]);
+            let pivot = cam.pivot();
+            for step in 0..36 {
+                cam.orbit(10.0, if step % 2 == 0 { 4.0 } else { -3.0 });
+                let after = cam.world_to_screen([pivot[0], pivot[1], 0.0]);
+                assert!(
+                    close(after, [400.0, 300.0]),
+                    "{projection:?}: pivot left the centre at step {step}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -307,73 +513,161 @@ mod tests {
     }
 
     #[test]
-    fn elevation_clamps_between_fifteen_and_eighty() {
+    fn elevation_clamps_to_the_range_of_each_projection() {
         let mut cam = Camera::new([800.0, 600.0]);
         cam.orbit(0.0, 500.0);
         assert!((cam.elevation() - MAX_ELEVATION).abs() < 1e-4);
         cam.orbit(0.0, -500.0);
-        assert!((cam.elevation() - MIN_ELEVATION).abs() < 1e-4);
+        assert!((cam.elevation() - MIN_ELEVATION_PERSPECTIVE).abs() < 1e-4);
+        cam.set_projection(Projection::Orthographic);
+        assert!((cam.elevation() - MIN_ELEVATION_ORTHOGRAPHIC).abs() < 1e-4);
+        cam.orbit(0.0, -500.0);
+        assert!((cam.elevation() - MIN_ELEVATION_ORTHOGRAPHIC).abs() < 1e-4);
     }
 
     #[test]
-    fn pan_moves_content_with_the_pointer_at_every_angle() {
-        for azimuth in [0.0_f32, 45.0, 135.0, 250.0] {
-            let mut cam = Camera::new([800.0, 600.0]);
-            cam.set_angles(azimuth, 40.0);
-            cam.set_zoom(2.5);
-            let p = [30.0, -20.0, 0.0];
-            let before = cam.world_to_screen(p);
-            cam.pan_px([25.0, -12.0]);
-            let after = cam.world_to_screen(p);
+    fn the_key_toggles_between_the_two_projections() {
+        let mut cam = Camera::new([800.0, 600.0]);
+        assert_eq!(cam.projection(), Projection::Perspective);
+        cam.toggle_projection();
+        assert_eq!(cam.projection(), Projection::Orthographic);
+        cam.toggle_projection();
+        assert_eq!(cam.projection(), Projection::Perspective);
+    }
+
+    #[test]
+    fn toggling_keeps_the_pivot_and_the_scale_there() {
+        let mut cam = Camera::new([1440.0, 900.0]);
+        cam.set_angles(120.0, 40.0);
+        cam.set_zoom(2.2);
+        cam.set_pivot([12.0, 34.0]);
+        for projection in both_projections() {
+            cam.set_projection(projection);
+            let pivot = cam.pivot();
+            let centre = cam.world_to_screen([pivot[0], pivot[1], 0.0]);
+            assert!(close(centre, [720.0, 450.0]), "{projection:?}: {centre:?}");
+            let b = cam.basis();
+            let one_right =
+                cam.world_to_screen([pivot[0] + b.right[0], pivot[1] + b.right[1], b.right[2]]);
             assert!(
-                close(after, [before[0] + 25.0, before[1] - 12.0]),
-                "azimuth {azimuth}: {before:?} -> {after:?}"
+                ((one_right[0] - centre[0]) - 2.2).abs() < 1e-3,
+                "{projection:?} scale at the pivot is the zoom"
             );
         }
     }
 
     #[test]
-    fn zoom_keeps_the_anchor_fixed() {
-        let mut cam = Camera::new([800.0, 600.0]);
-        cam.set_angles(120.0, 55.0);
-        let anchor = [610.0, 95.0];
-        let ground = cam.ground_at(anchor);
-        cam.zoom_at(anchor, 3.0);
-        let back = cam.world_to_screen([ground[0], ground[1], 0.0]);
-        assert!(close(back, anchor));
-        assert!((cam.zoom() - 3.0).abs() < 1e-4);
+    fn the_orthographic_half_height_is_the_eye_distance_times_the_tangent() {
+        let mut cam = Camera::new([1440.0, 900.0]);
+        cam.set_zoom(3.0);
+        let half_height = cam.viewport()[1] * 0.5 / cam.zoom();
+        let expected = cam.eye_distance() * half_fov_tan();
+        assert!((half_height - expected).abs() < 1e-3);
     }
 
     #[test]
-    fn ground_at_inverts_world_to_screen_on_the_ground() {
-        let mut cam = Camera::new([800.0, 600.0]);
-        cam.set_angles(200.0, 65.0);
-        cam.set_zoom(0.8);
-        let p = [77.0, -33.0];
-        let px = cam.world_to_screen([p[0], p[1], 0.0]);
-        let back = cam.ground_at(px);
-        assert!((back[0] - p[0]).abs() < 1e-2 && (back[1] - p[1]).abs() < 1e-2);
+    fn drag_keeps_the_ground_under_the_pointer_in_both_projections() {
+        for projection in both_projections() {
+            for azimuth in [0.0_f32, 45.0, 135.0, 250.0] {
+                let mut cam = Camera::new([1440.0, 900.0]);
+                cam.set_projection(projection);
+                cam.set_angles(azimuth, 40.0);
+                cam.set_zoom(2.5);
+                let from = [300.0, 620.0];
+                let to = [340.0, 600.0];
+                let grabbed = cam.ground_at(from).expect("ground under the grab");
+                cam.drag_ground(from, to);
+                let under = cam.world_to_screen([grabbed[0], grabbed[1], 0.0]);
+                assert!(
+                    close(under, to),
+                    "{projection:?} azimuth {azimuth}: grabbed point at {under:?}, pointer at {to:?}"
+                );
+            }
+        }
     }
 
     #[test]
-    fn fit_contains_all_bounds_at_any_azimuth() {
+    fn zoom_keeps_the_anchor_fixed_in_both_projections() {
+        for projection in both_projections() {
+            let mut cam = Camera::new([800.0, 600.0]);
+            cam.set_projection(projection);
+            cam.set_angles(120.0, 55.0);
+            let anchor = [610.0, 395.0];
+            let ground = cam.ground_at(anchor).expect("ground under the anchor");
+            cam.zoom_at(anchor, 3.0);
+            let back = cam.world_to_screen([ground[0], ground[1], 0.0]);
+            assert!(close(back, anchor), "{projection:?}: {back:?}");
+            assert!((cam.zoom() - 3.0).abs() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn fit_contains_all_bounds_in_both_projections_at_any_azimuth() {
         let bounds = block();
         let margin = 24.0;
         let mut cam = Camera::new([1440.0, 900.0]);
-        for azimuth in (0..360).step_by(15) {
-            for elevation in [15.0_f32, 30.0, 60.0, 80.0] {
-                cam.set_angles(azimuth as f32, elevation);
-                cam.fit(&bounds, margin);
-                for corner in bounds.corners() {
-                    let s = cam.world_to_screen(corner);
-                    assert!(
-                        s[0] >= margin - 0.5
-                            && s[0] <= 1440.0 - margin + 0.5
-                            && s[1] >= margin - 0.5
-                            && s[1] <= 900.0 - margin + 0.5,
-                        "corner {corner:?} at {s:?} outside the margin, azimuth {azimuth}, elevation {elevation}"
-                    );
+        for projection in both_projections() {
+            cam.set_projection(projection);
+            for azimuth in (0..360).step_by(15) {
+                for elevation in [5.0_f32, 15.0, 30.0, 60.0, 89.0] {
+                    cam.set_angles(azimuth as f32, elevation);
+                    cam.fit(&bounds, margin);
+                    for corner in bounds.corners() {
+                        let s = cam.world_to_screen(corner);
+                        assert!(
+                            s[0] >= margin - 0.5
+                                && s[0] <= 1440.0 - margin + 0.5
+                                && s[1] >= margin - 0.5
+                                && s[1] <= 900.0 - margin + 0.5,
+                            "{projection:?}: corner {corner:?} at {s:?}, azimuth {azimuth}, elevation {elevation}"
+                        );
+                    }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn fit_touches_the_margin_and_centres_the_projected_box() {
+        let bounds = block();
+        let margin = 24.0;
+        let viewport = [1440.0_f32, 900.0];
+        let mut cam = Camera::new(viewport);
+        for projection in both_projections() {
+            cam.set_projection(projection);
+            cam.set_angles(DEFAULT_AZIMUTH, DEFAULT_ELEVATION);
+            cam.fit(&bounds, margin);
+            let screen: Vec<[f32; 2]> = bounds
+                .corners()
+                .iter()
+                .map(|&c| cam.world_to_screen(c))
+                .collect();
+            let lo =
+                [0, 1].map(|axis| screen.iter().map(|s| s[axis]).fold(f32::INFINITY, f32::min));
+            let hi = [0, 1].map(|axis| {
+                screen
+                    .iter()
+                    .map(|s| s[axis])
+                    .fold(f32::NEG_INFINITY, f32::max)
+            });
+            let gap = [
+                lo[0] - margin,
+                viewport[0] - margin - hi[0],
+                lo[1] - margin,
+                viewport[1] - margin - hi[1],
+            ]
+            .into_iter()
+            .fold(f32::INFINITY, f32::min);
+            assert!(
+                gap < 1.0,
+                "{projection:?}: no side reaches the margin, gap {gap}"
+            );
+            for axis in 0..2 {
+                let off = (lo[axis] + hi[axis]) * 0.5 - viewport[axis] * 0.5;
+                assert!(
+                    off.abs() < 2.0,
+                    "{projection:?}: axis {axis} off centre by {off}"
+                );
             }
         }
     }
@@ -387,92 +681,60 @@ mod tests {
         assert!((cam.elevation() - DEFAULT_ELEVATION).abs() < 1e-4);
     }
 
-    fn landscape(elevation: f32) -> Camera {
-        let mut cam = Camera::new([1440.0, 900.0]);
-        cam.set_angles(DEFAULT_AZIMUTH, elevation);
-        cam.set_zoom(2.0);
-        cam
-    }
-
-    /// Grid fade at the top edge of the screen, the middle of the top edge, and a corner.
-    fn top_edge_fade(elevation: f32) -> f32 {
-        let cam = landscape(elevation);
-        let [w, _] = cam.viewport();
-        cam.grid_fade_at(cam.ground_at([w * 0.5, 0.0]))
-    }
-
-    fn corner_fade(elevation: f32) -> f32 {
-        let cam = landscape(elevation);
-        cam.grid_fade_at(cam.ground_at([0.0, 0.0]))
-    }
-
     #[test]
-    fn grid_is_full_at_the_target_and_gone_past_its_fade_end() {
-        assert_eq!(grid_distance_fade(0.0, 1.0), 1.0);
-        assert!(grid_distance_fade(theme::GRID_FADE_END, 1.0).abs() < 1e-6);
-        assert!(grid_distance_fade(10.0, 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn grid_fade_falls_monotonically_with_distance() {
-        let mut last = 1.0;
-        for step in 0..=80 {
-            let fade = grid_distance_fade(step as f32 * 0.05, 1.0);
-            assert!((0.0..=1.0).contains(&fade), "fade {fade} at step {step}");
-            assert!(fade <= last + 1e-6, "fade rose to {fade} at step {step}");
-            last = fade;
-        }
-    }
-
-    #[test]
-    fn grid_fade_is_zoom_independent_when_distance_is_in_half_heights() {
-        let grazing = grazing_fade(DEFAULT_ELEVATION.to_radians().sin());
-        for zoom in [1.0, 4.0, 16.0] {
-            let mut cam = Camera::new([1440.0, 900.0]);
-            cam.set_zoom(zoom);
-            let [w, h] = cam.viewport();
-            for fraction in [0.0_f32, 0.5, 1.0, 2.0, 3.0] {
-                // A horizontal screen offset of `fraction` half heights is that many plan units
-                // from the target, measured in half heights.
-                let px = [w * 0.5 + fraction * h * 0.5, h * 0.5];
-                let fade = cam.grid_fade_at(cam.ground_at(px));
-                let expected = grid_distance_fade(fraction, 1.0) * grazing;
-                assert!(
-                    (fade - expected).abs() < 1e-4,
-                    "fade {fade} at {fraction} half heights, zoom {zoom}, expected {expected}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn the_grazing_fade_thins_the_grid_as_the_view_flattens() {
-        assert_eq!(grazing_fade(1.0), 1.0);
-        assert_eq!(grazing_fade(0.0), 0.0);
+    fn fog_is_zero_at_the_pivot_and_one_past_its_end() {
+        let d = 500.0;
+        assert_eq!(fog(d, d), 0.0, "nothing fades at the pivot");
+        assert_eq!(fog(theme::FOG_FAR * d, d), 1.0);
+        assert_eq!(fog(10.0 * d, d), 1.0);
         let mut last = 0.0;
-        for elevation in [15.0_f32, 18.0, 30.0, 60.0, 80.0] {
-            let fade = grazing_fade(elevation.to_radians().sin());
-            assert!(fade >= last - 1e-6, "grazing fell at elevation {elevation}");
-            last = fade;
+        for step in 0..=200 {
+            let value = fog(d * step as f32 * 0.05, d);
+            assert!((0.0..=1.0).contains(&value), "fog {value} at step {step}");
+            assert!(value >= last - 1e-6, "fog fell at step {step}");
+            last = value;
         }
-        assert!(grazing_fade(18.0_f32.to_radians().sin()) > 0.9);
     }
 
     #[test]
-    fn at_a_low_tilt_the_top_edge_is_nearly_gone_and_at_a_high_tilt_it_is_not() {
-        // Elevation 18: the top edge is about 3.2 half heights out, so most of the grid is gone.
-        assert!(top_edge_fade(18.0) < 0.3, "{}", top_edge_fade(18.0));
-        // Elevation 60: the top edge is about 1.2 half heights out, so the grid is still there.
-        assert!(top_edge_fade(60.0) > 0.9, "{}", top_edge_fade(60.0));
+    fn fog_is_measured_from_the_eye_so_the_pivot_is_clear_and_the_far_end_is_white() {
+        let mut cam = Camera::new([1440.0, 900.0]);
+        cam.set_zoom(1.0);
+        let pivot = cam.pivot();
+        assert_eq!(cam.fog_at([pivot[0], pivot[1], 0.0]), 0.0);
+        let b = cam.basis();
+        let d = cam.eye_distance();
+        let eye = cam.eye();
+        let far_point = [
+            eye[0] - theme::FOG_FAR * d * b.toward[0],
+            eye[1] - theme::FOG_FAR * d * b.toward[1],
+            eye[2] - theme::FOG_FAR * d * b.toward[2],
+        ];
+        assert!(
+            cam.fog_at(far_point) > 0.999,
+            "a point FOG_FAR eye distances away is white"
+        );
     }
 
     #[test]
-    fn at_the_kit_tilt_the_top_edge_keeps_most_of_the_grid_and_the_corners_fade() {
-        // Elevation 30: the top edge is 2 half heights out (about 10% faded), and a corner is
-        // about 2.6 half heights out (about 40% faded).
-        let top = 1.0 - top_edge_fade(30.0);
-        let corner = 1.0 - corner_fade(30.0);
-        assert!((0.05..=0.15).contains(&top), "top faded {top}");
-        assert!((0.35..=0.45).contains(&corner), "corner faded {corner}");
+    fn a_low_view_fades_the_far_ground_more_than_a_high_view() {
+        let mut low = Camera::new([1440.0, 900.0]);
+        low.set_zoom(1.0);
+        let mut high = low;
+        low.set_angles(DEFAULT_AZIMUTH, 10.0);
+        high.set_angles(DEFAULT_AZIMUTH, 70.0);
+        // Ground three eye distances behind the pivot, along the horizontal view direction.
+        let behind = |c: &Camera| {
+            let d = c.eye_distance();
+            let (sin_a, cos_a) = c.azimuth().to_radians().sin_cos();
+            let p = c.pivot();
+            c.fog_at([p[0] - 3.0 * d * cos_a, p[1] - 3.0 * d * sin_a, 0.0])
+        };
+        assert!(
+            behind(&low) > behind(&high),
+            "low {} high {}",
+            behind(&low),
+            behind(&high)
+        );
     }
 }
