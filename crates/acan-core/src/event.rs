@@ -152,7 +152,7 @@ pub enum SystemCmd {
         /// The tasks.
         tasks: Vec<TaskSpec>,
     },
-    /// The foreman reviewed readbacks.
+    /// The foreman reviewed readbacks. Legacy lane only; see [`Event::ReadbacksReviewed`].
     ReadbacksReviewed {
         /// The order.
         order: OrderId,
@@ -261,6 +261,9 @@ pub enum Event {
     ReadbackPosted {
         readback: Readback,
     },
+    /// The legacy model review of readbacks. Recorded logs keep it and replay it unchanged.
+    /// It gates claims only in the legacy lane. The scope-first lane never takes it as
+    /// authority: a model verdict is neither an observation nor a human decision.
     ReadbacksReviewed {
         order: OrderId,
         rev: OrderRev,
@@ -441,4 +444,50 @@ pub enum ReplayError {
     /// damaged or forged; nothing from this event on was applied.
     #[error("invalid event at seq {seq:?}: {why}")]
     InvalidEvent { seq: Seq, why: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A readback reviewed by the legacy model review, as a log written before the scope-first
+    /// lane stored it. These bytes must keep decoding so old logs replay.
+    const LEGACY_REVIEW: &str = r#"{"seq":7,"at":1000,"actor":{"kind":"system"},"event":{"type":"readbacks_reviewed","order":0,"rev":1,"verdicts":[[0,{"rev":1,"per_witness":{"0":{"judgement":"match"},"1":{"judgement":"disagrees","reason":"drops the default"}}}]]}}"#;
+
+    const LEGACY_READBACK: &str = r#"{"seq":8,"at":1001,"actor":{"kind":"agent","id":"worker-1"},"event":{"type":"readback_posted","readback":{"id":1,"task":0,"agent":"worker-1","summary":"keep the default","touches":[],"verdict":{"rev":1,"per_witness":{"0":{"judgement":"unclear","reason":"says too little"}}}}}}"#;
+
+    fn round_trips(line: &str) -> Stamped {
+        let stamped: Stamped = serde_json::from_str(line).expect("a legacy line decodes");
+        let again = serde_json::to_value(&stamped).expect("it encodes");
+        let original: serde_json::Value = serde_json::from_str(line).expect("valid JSON");
+        assert_eq!(again, original, "a legacy line re-encodes to the same JSON");
+        stamped
+    }
+
+    #[test]
+    fn a_legacy_model_review_still_decodes() {
+        let stamped = round_trips(LEGACY_REVIEW);
+        let Event::ReadbacksReviewed { verdicts, .. } = stamped.event else {
+            panic!("the line is a legacy review, got {:?}", stamped.event);
+        };
+        let [(readback, verdict)] = verdicts.as_slice() else {
+            panic!("one verdict, got {verdicts:?}");
+        };
+        assert_eq!(*readback, ReadbackId::new(0));
+        assert_eq!(
+            verdict.per_witness.get(&WitnessId::new(1)),
+            Some(&crate::order::Judgement::Disagrees {
+                reason: "drops the default".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn a_legacy_readback_with_a_model_verdict_still_decodes() {
+        let stamped = round_trips(LEGACY_READBACK);
+        let Event::ReadbackPosted { readback } = stamped.event else {
+            panic!("the line is a readback, got {:?}", stamped.event);
+        };
+        assert!(readback.verdict.is_some(), "the legacy verdict is kept");
+    }
 }
