@@ -310,16 +310,16 @@ pub struct BehaviorCounts {
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RulingStatus {
     /// Executed, and every probe that reached its selector satisfied it.
-    Held,
+    Held {},
     /// Executed, and the candidate violated it.
     Violated {
         /// The violating items.
         item_ids: NonEmpty<ItemId>,
     },
     /// Executed, but no probe reached its selector. Not counted as held.
-    NotReached,
+    NotReached {},
     /// Its evidence or normalization version no longer matches. Never a pass.
-    Stale,
+    Stale {},
     /// A note. Never counted as a check.
     NotEnforced {
         /// Why.

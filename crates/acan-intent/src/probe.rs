@@ -226,9 +226,9 @@ pub struct SideEffectStep {
     pub barrier: CompletionBarrier,
 }
 
-/// One step of a probe or fixture recipe.
+/// One step of a probe or fixture recipe, tagged `step` so a capture's own `kind` stays free.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(tag = "step", rename_all = "snake_case")]
 pub enum Step {
     /// Send a request.
     Http(HttpStep),
@@ -388,7 +388,7 @@ pub struct CorpusProbe {
 #[serde(tag = "status", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RouteStatus {
     /// At least one corpus probe exercises it.
-    Covered,
+    Covered {},
     /// None does, and the receipt lists it.
     Uncovered {
         /// Why not yet.
@@ -429,7 +429,7 @@ pub struct ProbeCorpus {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClockControl {
     /// No controlled clock. An `advance_time` step fails the run's setup.
-    None,
+    None {},
     /// The boot fixture serves a clock endpoint on the app port that only the runner calls.
     HttpEndpoint {
         /// The endpoint path.
@@ -559,7 +559,7 @@ pub struct RunEnv {
 #[serde(tag = "outcome", rename_all = "snake_case", deny_unknown_fields)]
 pub enum RunOutcome {
     /// Every step ran. Observations may still be incomplete.
-    Completed,
+    Completed {},
     /// The app did not become ready, or a recipe step failed.
     SetupFailed {
         /// The failing recipe step, if one failed.
@@ -579,7 +579,7 @@ pub enum RunOutcome {
         detail: String,
     },
     /// The run was cancelled. The app was stopped.
-    Cancelled,
+    Cancelled {},
     /// The container runtime was unavailable. The gate refuses; it never runs unisolated.
     IsolationUnavailable {
         /// What happened.

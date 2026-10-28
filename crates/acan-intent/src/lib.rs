@@ -10,7 +10,9 @@
 //! [`Provenance`] in their types; see [`provenance`] for what a model may and may not author.
 //!
 //! Every envelope serializes as snake_case JSON with a version tag, refuses unknown fields, and
-//! fails to decode on an unknown version.
+//! fails to decode on an unknown version. Internally tagged enums spell their fieldless variants
+//! `Name {}` rather than `Name`: serde ignores `deny_unknown_fields` on unit variants of an
+//! internally tagged enum, so `{"kind": "any", "extra": 1}` would otherwise decode.
 
 pub mod compare;
 mod episode;

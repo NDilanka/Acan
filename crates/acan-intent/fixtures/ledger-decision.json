@@ -1,0 +1,44 @@
+{
+  "event": "decision_confirmed",
+  "schema_version": "acan-ledger/1",
+  "event_seq": 1,
+  "actor": "owner",
+  "at": 1793172600000,
+  "ruling_id": "r-1",
+  "order": "o-1",
+  "scope_hash": "sha256:ab2d2883c994bc3d9c7555b4eeba14752aa8af8fd473544361960cfea13a03ba",
+  "episode_id": "sha256:f44d1581895ec11f7edc3d81d4e047d75f43f29a0304e0527ed3157593cad22b",
+  "evidence_hashes": [
+    "sha256:c62252d9035fa8453cb91eaef2f6f218ba096c0266a59f067de38124b527ff27"
+  ],
+  "selector": {
+    "surface": "http",
+    "method": "GET",
+    "route_template": "/api/links",
+    "step_context": {
+      "kind": "any"
+    },
+    "principal": {
+      "kind": "authenticated"
+    },
+    "channel": "body",
+    "field_path": "links[*].code"
+  },
+  "predicate_ast": {
+    "predicate": "equals_base",
+    "step_id": "s4",
+    "path": "body.links[*].code"
+  },
+  "accepts_hashes": [
+    "sha256:83403a25049fdcc71fef2bc4a86d076f189c86cf80e17f4d4e1991e9f8b5709b"
+  ],
+  "rejects_hashes": [
+    "sha256:645c9f12006a3d6dbf306f4ee9e73262fac5c357174f42001ee88d67e7c93265"
+  ],
+  "normalization_version": "norm/1",
+  "applicability": "standing_predicate_approval",
+  "label": "Links list stays newest first",
+  "machine_ids": [
+    "links"
+  ]
+}

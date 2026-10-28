@@ -1,0 +1,51 @@
+{
+  "version": "acan-scope-confirmation/1",
+  "order": "o-3",
+  "scope_rev": 2,
+  "scope_hash": "sha256:eaab9bc0a3a9320938e24f5d50332cf9802ed3cf10b4c26497f8c518642bd415",
+  "base_commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+  "ruling_versions": [
+    {
+      "ruling_id": "r-1",
+      "event_seq": 1
+    },
+    {
+      "ruling_id": "r-2",
+      "event_seq": 2
+    }
+  ],
+  "selector_hashes": [
+    "sha256:931f3ba2f90373777ad6c0e1fb9c81041c3aaf9a70f0a4bee88d872d55696839",
+    "sha256:2ead0d766f72d4178bf5f30f871531650609bed90b82403033085fb2273e7a6d",
+    "sha256:bc17d91ca1bb2a465a828fdf64542603f212ff69120ebb5669e7256424379be1",
+    "sha256:acef9dc8b580fe03e259af43218537fb68389c860ea44b127f0f56d12f72bb5b",
+    "sha256:357f70a2b600fff796372a081db465d3b0c7e7d4cb95788af40553c891f3e236"
+  ],
+  "example_hashes": [
+    "sha256:bfaeea723ef3fb4272e8ea6f9b028a1d8268a89d781327208212023b88f56131",
+    "sha256:5ada56ab11e8eb2c9d20c02a219d95b8f671598d7552728d5b7a2e8ccbdf9af9",
+    "sha256:03a95213148ffa2692a2b7a34e8004888c355380eeed54e2ca57ed9acb727b68"
+  ],
+  "answers": [
+    {
+      "choice_id": "c-window",
+      "option": "client"
+    }
+  ],
+  "broad_grants": [
+    {
+      "item_id": "i-login-limit",
+      "selector_hash": "sha256:931f3ba2f90373777ad6c0e1fb9c81041c3aaf9a70f0a4bee88d872d55696839",
+      "by": "owner",
+      "at": 1793259060000
+    }
+  ],
+  "budget": {
+    "repair_rounds": 2,
+    "wall_time_ms": 1800000,
+    "model_cost_micros": 2000000,
+    "max_episodes": 6
+  },
+  "by": "owner",
+  "at": 1793259060000
+}

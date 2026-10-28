@@ -1,0 +1,1047 @@
+{
+  "version": "acan-mcp/1",
+  "receipt_hash": "sha256:0e51428756f57f2901ed79c47b6ee2883116373a535b11d1b50f13410c20e0b1",
+  "receipt": {
+    "version": "acan-receipt/1",
+    "order": "o-3",
+    "scope_rev": 2,
+    "scope_hash": "sha256:eaab9bc0a3a9320938e24f5d50332cf9802ed3cf10b4c26497f8c518642bd415",
+    "prepared": {
+      "base_commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+      "overlay_hash": "sha256:c27af44102a1dd3819def6db27bb5e79c2ff5023379faf9e8feddba8a780fd64",
+      "context": {
+        "protected_head": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+        "merged_commit": "a27a5f30da19543ee34362516e29bf7561214156",
+        "effective_artifact_hashes": {
+          "bun.lock": "sha256:5dd3909fd7cc889f9d3635f02a8b1eb462eaf95a85f550fad2aae6ef409f7b54"
+        },
+        "ledger_head": {
+          "event_seq": 2,
+          "hash": "sha256:577a02a0f2ef2fd7f5ad4ffdd60afb54a567c364fc66d1c1ed82bf2ef68361bd"
+        },
+        "scope_hash": "sha256:eaab9bc0a3a9320938e24f5d50332cf9802ed3cf10b4c26497f8c518642bd415",
+        "probe_set_hash": "sha256:87b3876b1c8d04443cbe9286332a9bd16a41f4d9cf8528343af033d5addb3f90",
+        "fixture_hash": "sha256:6f94d4fb547201be9cfcb81c74188183e132a177169f64d9ba8302bb8055f5f1",
+        "runner_hash": "sha256:02b428f772fbef62ede2b5c9d022c4e49f7e17dbed2e7a396f402aad28a24b47",
+        "evaluator_version": "acan-intent/0.1.0",
+        "normalization_version": "norm/1",
+        "runtime": "bun-1.4.4",
+        "controlled_env_hash": "sha256:96f3b648e7620cf579630eeb0f7234347766890e6ea45f8d4fe429c791493989",
+        "sandbox_policy_hash": "sha256:06527e9979ae31794fa89999cfe96d54aa3012d5a5363ae02f2b717561bbcf17"
+      }
+    },
+    "gate_state": "blocked",
+    "items": [
+      {
+        "item_id": "i-login-limit",
+        "class": "obligation_fulfilled",
+        "state": "fixed",
+        "machine_id": "ratelimit",
+        "probe_hash": "sha256:762703905cfc5ffa376dfb1b89d53c9ce693dc5f3e1628b39b06935364f62b45",
+        "episode_id": "sha256:5cae95664e405e87f78315af33e159b4022d6e3f52b1e08abab26c9a130bb64a",
+        "attempts": 1,
+        "budget": 2,
+        "route_path": {
+          "machines": [
+            "server",
+            "middleware",
+            "ratelimit",
+            "auth",
+            "errors"
+          ],
+          "source": "static"
+        },
+        "sequence": [
+          {
+            "step_id": "s1",
+            "request": 1,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 401,
+            "tint": "same"
+          },
+          {
+            "step_id": "s2",
+            "request": 2,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 401,
+            "tint": "same"
+          },
+          {
+            "step_id": "s3",
+            "request": 3,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 401,
+            "tint": "same"
+          },
+          {
+            "step_id": "s4",
+            "request": 4,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 401,
+            "tint": "same"
+          },
+          {
+            "step_id": "s5",
+            "request": 5,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 401,
+            "tint": "same"
+          },
+          {
+            "step_id": "s6",
+            "request": 6,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 429,
+            "tint": "differed"
+          },
+          {
+            "step_id": "s8",
+            "request": 7,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 200,
+            "tint": "same"
+          }
+        ],
+        "evidence": [
+          {
+            "slot": "base_a",
+            "run_id": "run-basea-login",
+            "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+            "step": "s6",
+            "field": "status",
+            "value": 401,
+            "provenance": "observed"
+          },
+          {
+            "slot": "base_b",
+            "run_id": "run-baseb-login",
+            "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+            "step": "s6",
+            "field": "status",
+            "value": 401,
+            "provenance": "observed"
+          },
+          {
+            "slot": "candidate",
+            "run_id": "run-candidate-login",
+            "commit": "a27a5f30da19543ee34362516e29bf7561214156",
+            "step": "s6",
+            "field": "status",
+            "value": 429,
+            "provenance": "observed"
+          },
+          {
+            "slot": "target",
+            "step": "s6",
+            "field": "status",
+            "value": 429,
+            "provenance": "human_spec"
+          },
+          {
+            "slot": "prediction",
+            "step": "s6",
+            "field": "status",
+            "value": 429,
+            "provenance": "model_proposal"
+          }
+        ],
+        "evaluation": {
+          "authorization": {
+            "kind": "may_change",
+            "item_id": "i-login-limit"
+          },
+          "outcome": {
+            "kind": "changed",
+            "differences": [
+              {
+                "probe_hash": "sha256:762703905cfc5ffa376dfb1b89d53c9ce693dc5f3e1628b39b06935364f62b45",
+                "step_id": "s6",
+                "path": "status",
+                "base": 401,
+                "candidate": 429,
+                "episode_id": "sha256:5cae95664e405e87f78315af33e159b4022d6e3f52b1e08abab26c9a130bb64a"
+              }
+            ]
+          },
+          "obligations": [
+            {
+              "obligation_id": "obl-login-window",
+              "result": {
+                "result": "pass"
+              }
+            },
+            {
+              "obligation_id": "obl-login-429",
+              "result": {
+                "result": "pass"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "item_id": "i-retry-after",
+        "class": "obligation_failed",
+        "state": "bounced",
+        "machine_id": "ratelimit",
+        "probe_hash": "sha256:762703905cfc5ffa376dfb1b89d53c9ce693dc5f3e1628b39b06935364f62b45",
+        "episode_id": "sha256:1acc401ccb3ea61be044f545a3612c535b8aebe6d8333b3d55cc56773f59e736",
+        "attempts": 1,
+        "budget": 2,
+        "route_path": {
+          "machines": [
+            "server",
+            "middleware",
+            "ratelimit",
+            "auth",
+            "errors"
+          ],
+          "source": "static"
+        },
+        "sequence": [
+          {
+            "step_id": "s1",
+            "request": 1,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 401,
+            "tint": "same"
+          },
+          {
+            "step_id": "s2",
+            "request": 2,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 401,
+            "tint": "same"
+          },
+          {
+            "step_id": "s3",
+            "request": 3,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 401,
+            "tint": "same"
+          },
+          {
+            "step_id": "s4",
+            "request": 4,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 401,
+            "tint": "same"
+          },
+          {
+            "step_id": "s5",
+            "request": 5,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 401,
+            "tint": "same"
+          },
+          {
+            "step_id": "s6",
+            "request": 6,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 429,
+            "tint": "differed"
+          },
+          {
+            "step_id": "s8",
+            "request": 7,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 200,
+            "tint": "same"
+          }
+        ],
+        "evidence": [
+          {
+            "slot": "candidate",
+            "run_id": "run-candidate-login",
+            "commit": "a27a5f30da19543ee34362516e29bf7561214156",
+            "step": "s6",
+            "field": "header.retry-after",
+            "value": null,
+            "provenance": "observed"
+          },
+          {
+            "slot": "target",
+            "step": "s6",
+            "field": "header.retry-after",
+            "value": "60",
+            "provenance": "human_spec"
+          }
+        ],
+        "evaluation": {
+          "authorization": {
+            "kind": "may_change",
+            "item_id": "i-retry-after"
+          },
+          "outcome": {
+            "kind": "unchanged"
+          },
+          "obligations": [
+            {
+              "obligation_id": "obl-retry-after",
+              "result": {
+                "result": "fail",
+                "detail": "header.retry-after is absent at step s6"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "item_id": "chk-health",
+        "class": "preserved",
+        "state": "open",
+        "machine_id": "server",
+        "probe_hash": "sha256:ae99b31d87b1b3608a609a4ebc0bcd9a72a5078698e07b2c6733ad2e405ae8c5",
+        "attempts": 0,
+        "budget": 2,
+        "route_path": {
+          "machines": [
+            "server"
+          ],
+          "source": "static"
+        },
+        "sequence": [
+          {
+            "step_id": "s1",
+            "request": 1,
+            "run_id": "run-candidate-health",
+            "role": "candidate",
+            "status": 200,
+            "tint": "same"
+          }
+        ],
+        "evidence": [
+          {
+            "slot": "base_a",
+            "run_id": "run-basea-health",
+            "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+            "step": "s1",
+            "field": "status",
+            "value": 200,
+            "provenance": "observed"
+          },
+          {
+            "slot": "base_b",
+            "run_id": "run-baseb-health",
+            "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+            "step": "s1",
+            "field": "status",
+            "value": 200,
+            "provenance": "observed"
+          },
+          {
+            "slot": "candidate",
+            "run_id": "run-candidate-health",
+            "commit": "a27a5f30da19543ee34362516e29bf7561214156",
+            "step": "s1",
+            "field": "status",
+            "value": 200,
+            "provenance": "observed"
+          }
+        ],
+        "evaluation": {
+          "authorization": {
+            "kind": "none"
+          },
+          "outcome": {
+            "kind": "unchanged"
+          },
+          "obligations": []
+        }
+      },
+      {
+        "item_id": "d-login-error-body",
+        "class": "authorized_but_unspecified",
+        "state": "residue",
+        "machine_id": "auth",
+        "probe_hash": "sha256:762703905cfc5ffa376dfb1b89d53c9ce693dc5f3e1628b39b06935364f62b45",
+        "episode_id": "sha256:0246f2e45f5981c983725959c37ab3d5350b73f535ca37af14c2283069441a92",
+        "attempts": 0,
+        "budget": 2,
+        "route_path": {
+          "machines": [
+            "server",
+            "middleware",
+            "ratelimit",
+            "auth",
+            "errors"
+          ],
+          "source": "static"
+        },
+        "sequence": [
+          {
+            "step_id": "s1",
+            "request": 1,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 401,
+            "tint": "same"
+          },
+          {
+            "step_id": "s2",
+            "request": 2,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 401,
+            "tint": "same"
+          },
+          {
+            "step_id": "s3",
+            "request": 3,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 401,
+            "tint": "same"
+          },
+          {
+            "step_id": "s4",
+            "request": 4,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 401,
+            "tint": "same"
+          },
+          {
+            "step_id": "s5",
+            "request": 5,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 401,
+            "tint": "same"
+          },
+          {
+            "step_id": "s6",
+            "request": 6,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 429,
+            "tint": "differed"
+          },
+          {
+            "step_id": "s8",
+            "request": 7,
+            "run_id": "run-candidate-login",
+            "role": "candidate",
+            "status": 200,
+            "tint": "same"
+          }
+        ],
+        "evidence": [
+          {
+            "slot": "base_a",
+            "run_id": "run-basea-login",
+            "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+            "step": "s6",
+            "field": "body.error",
+            "value": "invalid credentials",
+            "provenance": "observed"
+          },
+          {
+            "slot": "base_b",
+            "run_id": "run-baseb-login",
+            "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+            "step": "s6",
+            "field": "body.error",
+            "value": "invalid credentials",
+            "provenance": "observed"
+          },
+          {
+            "slot": "candidate",
+            "run_id": "run-candidate-login",
+            "commit": "a27a5f30da19543ee34362516e29bf7561214156",
+            "step": "s6",
+            "field": "body.error",
+            "value": "too many attempts",
+            "provenance": "observed"
+          },
+          {
+            "slot": "target",
+            "step": "s6",
+            "field": "body.error",
+            "value": "too many attempts",
+            "provenance": "human_spec"
+          }
+        ],
+        "evaluation": {
+          "authorization": {
+            "kind": "may_change",
+            "item_id": "i-login-body"
+          },
+          "outcome": {
+            "kind": "changed",
+            "differences": [
+              {
+                "probe_hash": "sha256:762703905cfc5ffa376dfb1b89d53c9ce693dc5f3e1628b39b06935364f62b45",
+                "step_id": "s6",
+                "path": "body.error",
+                "base": "invalid credentials",
+                "candidate": "too many attempts",
+                "episode_id": "sha256:0246f2e45f5981c983725959c37ab3d5350b73f535ca37af14c2283069441a92"
+              }
+            ]
+          },
+          "obligations": [
+            {
+              "obligation_id": "obl-login-body-string",
+              "result": {
+                "result": "pass"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "item_id": "d-links-clicks",
+        "class": "out_of_scope",
+        "state": "stopped",
+        "machine_id": "links",
+        "probe_hash": "sha256:8199bdc4720dbc54756c8c7778a1dec62c5ed03a3d6489d6279de0d9eb572e5a",
+        "episode_id": "sha256:f11834e907288a4bda5dce1b104d65542010dfc746ec645386aa4d602fc37683",
+        "attempts": 2,
+        "budget": 2,
+        "route_path": {
+          "machines": [
+            "server",
+            "middleware",
+            "ratelimit",
+            "auth",
+            "links",
+            "store"
+          ],
+          "source": "static"
+        },
+        "sequence": [
+          {
+            "step_id": "s1",
+            "request": 1,
+            "run_id": "run-candidate-links",
+            "role": "candidate",
+            "status": 200,
+            "tint": "same"
+          },
+          {
+            "step_id": "s2",
+            "request": 2,
+            "run_id": "run-candidate-links",
+            "role": "candidate",
+            "status": 200,
+            "tint": "same"
+          },
+          {
+            "step_id": "s3",
+            "request": 3,
+            "run_id": "run-candidate-links",
+            "role": "candidate",
+            "status": 201,
+            "tint": "same"
+          },
+          {
+            "step_id": "s4",
+            "request": 4,
+            "run_id": "run-candidate-links",
+            "role": "candidate",
+            "status": 200,
+            "tint": "differed"
+          }
+        ],
+        "evidence": [
+          {
+            "slot": "base_a",
+            "run_id": "run-basea-links",
+            "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+            "step": "s4",
+            "field": "body.links[0].clicks",
+            "value": 0,
+            "provenance": "observed"
+          },
+          {
+            "slot": "base_b",
+            "run_id": "run-baseb-links",
+            "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+            "step": "s4",
+            "field": "body.links[0].clicks",
+            "value": 0,
+            "provenance": "observed"
+          },
+          {
+            "slot": "candidate",
+            "run_id": "run-candidate-links",
+            "commit": "a27a5f30da19543ee34362516e29bf7561214156",
+            "step": "s4",
+            "field": "body.links[0].clicks",
+            "value": null,
+            "provenance": "observed"
+          }
+        ],
+        "evaluation": {
+          "authorization": {
+            "kind": "none"
+          },
+          "outcome": {
+            "kind": "changed",
+            "differences": [
+              {
+                "probe_hash": "sha256:8199bdc4720dbc54756c8c7778a1dec62c5ed03a3d6489d6279de0d9eb572e5a",
+                "step_id": "s4",
+                "path": "body.links[0].clicks",
+                "base": 0,
+                "candidate": null,
+                "episode_id": "sha256:f11834e907288a4bda5dce1b104d65542010dfc746ec645386aa4d602fc37683"
+              }
+            ]
+          },
+          "obligations": []
+        }
+      },
+      {
+        "item_id": "d-links-sort",
+        "class": "violates_ruling",
+        "state": "bounced",
+        "machine_id": "links",
+        "probe_hash": "sha256:8199bdc4720dbc54756c8c7778a1dec62c5ed03a3d6489d6279de0d9eb572e5a",
+        "episode_id": "sha256:03612417db992b26214f1f58962bbf4ad9937acb6f82746e00fb39c99f876f28",
+        "ruling_id": "r-1",
+        "attempts": 1,
+        "budget": 2,
+        "route_path": {
+          "machines": [
+            "server",
+            "middleware",
+            "ratelimit",
+            "auth",
+            "links",
+            "store"
+          ],
+          "source": "static"
+        },
+        "sequence": [
+          {
+            "step_id": "s1",
+            "request": 1,
+            "run_id": "run-candidate-links",
+            "role": "candidate",
+            "status": 200,
+            "tint": "same"
+          },
+          {
+            "step_id": "s2",
+            "request": 2,
+            "run_id": "run-candidate-links",
+            "role": "candidate",
+            "status": 200,
+            "tint": "same"
+          },
+          {
+            "step_id": "s3",
+            "request": 3,
+            "run_id": "run-candidate-links",
+            "role": "candidate",
+            "status": 201,
+            "tint": "same"
+          },
+          {
+            "step_id": "s4",
+            "request": 4,
+            "run_id": "run-candidate-links",
+            "role": "candidate",
+            "status": 200,
+            "tint": "differed"
+          }
+        ],
+        "evidence": [
+          {
+            "slot": "base_a",
+            "run_id": "run-basea-links",
+            "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+            "step": "s4",
+            "field": "body.links[0].code",
+            "value": "b2",
+            "provenance": "observed"
+          },
+          {
+            "slot": "base_b",
+            "run_id": "run-baseb-links",
+            "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+            "step": "s4",
+            "field": "body.links[0].code",
+            "value": "b2",
+            "provenance": "observed"
+          },
+          {
+            "slot": "candidate",
+            "run_id": "run-candidate-links",
+            "commit": "a27a5f30da19543ee34362516e29bf7561214156",
+            "step": "s4",
+            "field": "body.links[0].code",
+            "value": "a1",
+            "provenance": "observed"
+          }
+        ],
+        "evaluation": {
+          "authorization": {
+            "kind": "ruling",
+            "ruling_id": "r-1"
+          },
+          "outcome": {
+            "kind": "changed",
+            "differences": [
+              {
+                "probe_hash": "sha256:8199bdc4720dbc54756c8c7778a1dec62c5ed03a3d6489d6279de0d9eb572e5a",
+                "step_id": "s4",
+                "path": "body.links[0].code",
+                "base": "b2",
+                "candidate": "a1",
+                "episode_id": "sha256:03612417db992b26214f1f58962bbf4ad9937acb6f82746e00fb39c99f876f28"
+              }
+            ]
+          },
+          "obligations": [
+            {
+              "obligation_id": "ruling-r-1",
+              "result": {
+                "result": "fail",
+                "detail": "body.links[*].code order differs from base at index 0"
+              }
+            }
+          ]
+        }
+      },
+      {
+        "item_id": "chk-dashboard",
+        "class": "unstable_base",
+        "state": "open",
+        "machine_id": "dashboard",
+        "probe_hash": "sha256:bb36b4c7d8622010106daa200016ee3467d01b5cf3ce89217fbdb2d4f50d92c7",
+        "attempts": 0,
+        "budget": 2,
+        "route_path": {
+          "machines": [
+            "server",
+            "middleware",
+            "ratelimit",
+            "auth",
+            "dashboard"
+          ],
+          "source": "static"
+        },
+        "sequence": [
+          {
+            "step_id": "s1",
+            "request": 1,
+            "run_id": "run-candidate-dashboard",
+            "role": "candidate",
+            "status": 200,
+            "tint": "unknown"
+          }
+        ],
+        "evidence": [
+          {
+            "slot": "base_a",
+            "run_id": "run-basea-dashboard",
+            "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+            "step": "s1",
+            "field": "status",
+            "value": 200,
+            "provenance": "observed"
+          },
+          {
+            "slot": "base_b",
+            "run_id": "run-baseb-dashboard",
+            "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+            "step": "s1",
+            "field": "status",
+            "value": 500,
+            "provenance": "observed"
+          },
+          {
+            "slot": "candidate",
+            "run_id": "run-candidate-dashboard",
+            "commit": "a27a5f30da19543ee34362516e29bf7561214156",
+            "step": "s1",
+            "field": "status",
+            "value": 200,
+            "provenance": "observed"
+          }
+        ],
+        "evaluation": {
+          "authorization": {
+            "kind": "none"
+          },
+          "outcome": {
+            "kind": "unknown",
+            "reason": {
+              "reason": "unstable_base"
+            }
+          },
+          "obligations": []
+        }
+      },
+      {
+        "item_id": "chk-links-delete",
+        "class": "incomparable",
+        "state": "open",
+        "machine_id": "links",
+        "probe_hash": "sha256:163893f58c800b1631b33107a5eca30e002202c84f1f7c55b2240fff48a53452",
+        "attempts": 0,
+        "budget": 2,
+        "route_path": {
+          "machines": [
+            "server",
+            "middleware",
+            "ratelimit",
+            "auth",
+            "links",
+            "store"
+          ],
+          "source": "static"
+        },
+        "sequence": [
+          {
+            "step_id": "s1",
+            "request": 1,
+            "run_id": "run-candidate-delete",
+            "role": "candidate",
+            "status": 201,
+            "tint": "same"
+          },
+          {
+            "step_id": "s2",
+            "request": 2,
+            "run_id": "run-candidate-delete",
+            "role": "candidate",
+            "status": 204,
+            "tint": "unknown"
+          },
+          {
+            "step_id": "s3",
+            "request": 3,
+            "run_id": "run-candidate-delete",
+            "role": "candidate",
+            "tint": "unknown"
+          }
+        ],
+        "evidence": [
+          {
+            "slot": "base_a",
+            "run_id": "run-basea-delete",
+            "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+            "step": "s3",
+            "field": "status",
+            "value": 404,
+            "provenance": "observed"
+          },
+          {
+            "slot": "base_b",
+            "run_id": "run-baseb-delete",
+            "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+            "step": "s3",
+            "field": "status",
+            "value": 404,
+            "provenance": "observed"
+          }
+        ],
+        "evaluation": {
+          "authorization": {
+            "kind": "none"
+          },
+          "outcome": {
+            "kind": "unknown",
+            "reason": {
+              "reason": "incomparable",
+              "detail": "base reached step s3; the candidate stopped after s2"
+            }
+          },
+          "obligations": []
+        }
+      },
+      {
+        "item_id": "chk-signup-store",
+        "class": "error",
+        "state": "open",
+        "machine_id": "store",
+        "probe_hash": "sha256:4ec9ed851c57f319a4a0e263a5771cb59ad2676511eb233ac407667c31d6b118",
+        "attempts": 0,
+        "budget": 2,
+        "route_path": {
+          "machines": [
+            "server",
+            "middleware",
+            "ratelimit",
+            "auth",
+            "store"
+          ],
+          "source": "static"
+        },
+        "sequence": [
+          {
+            "step_id": "s1",
+            "request": 1,
+            "run_id": "run-candidate-signup",
+            "role": "candidate",
+            "status": 201,
+            "tint": "same"
+          },
+          {
+            "step_id": "s2",
+            "request": 2,
+            "run_id": "run-candidate-signup",
+            "role": "candidate",
+            "tint": "unknown"
+          }
+        ],
+        "evidence": [
+          {
+            "slot": "base_a",
+            "run_id": "run-basea-signup",
+            "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+            "step": "s1",
+            "field": "status",
+            "value": 201,
+            "provenance": "observed"
+          },
+          {
+            "slot": "candidate",
+            "run_id": "run-candidate-signup",
+            "commit": "a27a5f30da19543ee34362516e29bf7561214156",
+            "step": "s1",
+            "field": "status",
+            "value": 201,
+            "provenance": "observed"
+          }
+        ],
+        "evaluation": {
+          "authorization": {
+            "kind": "none"
+          },
+          "outcome": {
+            "kind": "unknown",
+            "reason": {
+              "reason": "incomplete"
+            }
+          },
+          "obligations": []
+        }
+      }
+    ],
+    "counts": {
+      "preserved": 1,
+      "obligation_fulfilled": 1,
+      "obligation_failed": 1,
+      "authorized_but_unspecified": 1,
+      "out_of_scope": 1,
+      "violates_ruling": 1,
+      "unstable_base": 1,
+      "incomparable": 1,
+      "error": 1
+    },
+    "probes": {
+      "total": 6,
+      "run": 6,
+      "errored": 1
+    },
+    "routes": {
+      "total": 9,
+      "covered": 7,
+      "uncovered": [
+        {
+          "method": "GET",
+          "route_template": "/:code",
+          "reason": "redirect probes wait for the follow-redirect runner"
+        },
+        {
+          "method": "POST",
+          "route_template": "/api/logout",
+          "reason": "no probe yet"
+        }
+      ]
+    },
+    "behavior": {
+      "obligations_total": 7,
+      "passed": 4,
+      "failed": 2,
+      "unknown": 1
+    },
+    "masks": [
+      {
+        "probe_hash": "sha256:762703905cfc5ffa376dfb1b89d53c9ce693dc5f3e1628b39b06935364f62b45",
+        "selector": {
+          "step_id": "s8",
+          "path": "cookie.session"
+        },
+        "base_a_observation_hash": "sha256:22433364c1ddbf13b1c3658c7323ed95dcb8117d0c6c18f6612176afb1629bf5",
+        "base_b_observation_hash": "sha256:8989b5765bc27645b45144c005e85e24cbb7ff72bf6d0e9ec966f9e1dd008b4c",
+        "normalization_version": "norm/1"
+      },
+      {
+        "probe_hash": "sha256:8199bdc4720dbc54756c8c7778a1dec62c5ed03a3d6489d6279de0d9eb572e5a",
+        "selector": {
+          "step_id": "s3",
+          "path": "body.code"
+        },
+        "base_a_observation_hash": "sha256:fae2730b24ea600a75899b9f99b144a2958eda3097d757d4d890c102d6acca1a",
+        "base_b_observation_hash": "sha256:f85fd5a35f9d2e16b1adf419eaf4a24ea916ff10a86c492a086a284ee11a111f",
+        "normalization_version": "norm/1"
+      }
+    ],
+    "rulings": [
+      {
+        "ruling_id": "r-1",
+        "event_seq": 1,
+        "label": "Links list stays newest first",
+        "machine_ids": [
+          "links"
+        ],
+        "status": {
+          "status": "violated",
+          "item_ids": [
+            "d-links-sort"
+          ]
+        }
+      },
+      {
+        "ruling_id": "r-2",
+        "event_seq": 2,
+        "label": "Error pages read as plain sentences",
+        "machine_ids": [
+          "errors"
+        ],
+        "status": {
+          "status": "not_enforced",
+          "reason": {
+            "kind": "unexpressible",
+            "detail": "tone of error text has no predicate"
+          }
+        }
+      }
+    ],
+    "contests": [
+      {
+        "version": "acan-contest/1",
+        "id": "k-1",
+        "order": "o-3",
+        "agent": "worker-2",
+        "task": "t-4",
+        "target": "sha256:f11834e907288a4bda5dce1b104d65542010dfc746ec645386aa4d602fc37683",
+        "kind": "spec_conflict",
+        "reproducer": "sha256:8199bdc4720dbc54756c8c7778a1dec62c5ed03a3d6489d6279de0d9eb572e5a",
+        "rationale": "The clicks field is dropped because the new limiter reads links before counting; the scope does not allow changing the counter.",
+        "status": "open",
+        "filed_at": 1793259900000
+      }
+    ]
+  }
+}

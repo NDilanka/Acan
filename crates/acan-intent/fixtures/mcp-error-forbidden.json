@@ -1,0 +1,8 @@
+{
+  "version": "acan-mcp/1",
+  "error": {
+    "code": "forbidden",
+    "action": "confirm_scope"
+  },
+  "message": "Agent tokens cannot confirm a scope."
+}

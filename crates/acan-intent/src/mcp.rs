@@ -206,7 +206,7 @@ pub struct GetReceiptResponse {
 #[serde(tag = "code", rename_all = "snake_case", deny_unknown_fields)]
 pub enum McpErrorCode {
     /// No valid token.
-    Unauthorized,
+    Unauthorized {},
     /// The caller may not do this. Agent tokens never confirm scopes, append rulings or retire
     /// probes.
     Forbidden {

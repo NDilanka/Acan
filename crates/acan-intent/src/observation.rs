@@ -18,7 +18,7 @@ use crate::version::ObservationV1;
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum IncompleteReason {
     /// The response exceeded the output bound and was cut.
-    OutputTruncated,
+    OutputTruncated {},
     /// A capture the step needed was missing.
     CaptureMissing {
         /// The binding.
@@ -30,9 +30,9 @@ pub enum IncompleteReason {
         sink: TrustedSink,
     },
     /// The step did not run because an earlier one failed.
-    StepSkipped,
+    StepSkipped {},
     /// The step's deadline passed.
-    DeadlineExceeded,
+    DeadlineExceeded {},
 }
 
 /// Whether an observation holds everything its step should have produced.
@@ -40,7 +40,7 @@ pub enum IncompleteReason {
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Completeness {
     /// Everything was recorded.
-    Complete,
+    Complete {},
     /// Something is missing. An incomplete observation never passes.
     Incomplete {
         /// Why.
@@ -124,7 +124,7 @@ pub enum ProjectionKind {
         binding: CaptureName,
     },
     /// Replace a secret-like value with its hash, keeping its length and alphabet class.
-    RedactSecret,
+    RedactSecret {},
 }
 
 /// One projection over matching fields.

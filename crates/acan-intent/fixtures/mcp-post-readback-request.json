@@ -1,0 +1,66 @@
+{
+  "version": "acan-mcp/1",
+  "task": "t-4",
+  "scope_rev": 2,
+  "scope_hash": "sha256:eaab9bc0a3a9320938e24f5d50332cf9802ed3cf10b4c26497f8c518642bd415",
+  "summary": "Add a per-client failed-login window in ratelimit and answer 429 with Retry-After.",
+  "predictions": [
+    {
+      "selector": {
+        "surface": "http",
+        "method": "POST",
+        "route_template": "/api/login",
+        "step_context": {
+          "kind": "any"
+        },
+        "principal": {
+          "kind": "anonymous"
+        },
+        "channel": "status"
+      },
+      "predicted": {
+        "kind": "value",
+        "step_id": "s6",
+        "path": "status",
+        "value": 429
+      }
+    },
+    {
+      "selector": {
+        "surface": "http",
+        "method": "GET",
+        "route_template": "/api/links",
+        "step_context": {
+          "kind": "any"
+        },
+        "principal": {
+          "kind": "authenticated"
+        },
+        "channel": "body",
+        "field_path": "links[*].code"
+      },
+      "predicted": {
+        "kind": "unchanged"
+      }
+    },
+    {
+      "selector": {
+        "surface": "http",
+        "method": "POST",
+        "route_template": "/api/login",
+        "step_context": {
+          "kind": "any"
+        },
+        "principal": {
+          "kind": "anonymous"
+        },
+        "channel": "header",
+        "field_path": "retry-after"
+      },
+      "predicted": {
+        "kind": "change",
+        "change": "add"
+      }
+    }
+  ]
+}

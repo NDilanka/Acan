@@ -104,7 +104,7 @@ pub enum Authorization {
         item_id: ItemId,
     },
     /// Nothing allows a difference: base must be preserved.
-    None,
+    None {},
 }
 
 /// Why a comparison or a check has no answer. Never a pass.
@@ -112,20 +112,20 @@ pub enum Authorization {
 #[serde(tag = "reason", rename_all = "snake_case", deny_unknown_fields)]
 pub enum UnknownReason {
     /// Base A and base B disagreed where masking is not allowed.
-    UnstableBase,
+    UnstableBase {},
     /// The two sides have different shapes or reached different steps.
     Incomparable {
         /// What differed.
         detail: String,
     },
     /// An observation was incomplete.
-    Incomplete,
+    Incomplete {},
     /// A run failed.
-    RunFailed,
+    RunFailed {},
     /// The evidence belongs to an older commit or scope.
-    Stale,
+    Stale {},
     /// The step was skipped.
-    Skipped,
+    Skipped {},
     /// The evaluator failed.
     Error {
         /// What happened.
@@ -138,7 +138,7 @@ pub enum UnknownReason {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Outcome {
     /// The candidate matched base after normalization and masks.
-    Unchanged,
+    Unchanged {},
     /// The candidate differed.
     Changed {
         /// The differences.
@@ -156,7 +156,7 @@ pub enum Outcome {
 #[serde(tag = "result", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CheckResult {
     /// The predicate held.
-    Pass,
+    Pass {},
     /// It did not.
     Fail {
         /// Why, in words the core wrote.
@@ -203,11 +203,19 @@ pub struct Difference {
     pub step_id: StepId,
     /// The field.
     pub path: ObservationPath,
-    /// Base's value, absent if base had no such field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Base's value, absent if base had no such field. JSON `null` is an observed value.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::present_scalar",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub base: Option<Scalar>,
     /// The candidate's value, absent if it had no such field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "crate::types::present_scalar",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub candidate: Option<Scalar>,
     /// The episode this difference belongs to, once the core has matched it.
     #[serde(default, skip_serializing_if = "Option::is_none")]

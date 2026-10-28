@@ -226,7 +226,7 @@ pub struct Contest {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Predicted {
     /// No observable difference.
-    Unchanged,
+    Unchanged {},
     /// A difference of this kind.
     Change {
         /// The kind.

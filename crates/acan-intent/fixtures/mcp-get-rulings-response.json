@@ -1,0 +1,56 @@
+{
+  "version": "acan-mcp/1",
+  "ledger_head": {
+    "event_seq": 2,
+    "hash": "sha256:577a02a0f2ef2fd7f5ad4ffdd60afb54a567c364fc66d1c1ed82bf2ef68361bd"
+  },
+  "rulings": [
+    {
+      "ruling_id": "r-1",
+      "event_seq": 1,
+      "label": "Links list stays newest first",
+      "machine_ids": [
+        "links"
+      ],
+      "state": "active",
+      "enforcement": {
+        "kind": "enforced",
+        "selector": {
+          "surface": "http",
+          "method": "GET",
+          "route_template": "/api/links",
+          "step_context": {
+            "kind": "any"
+          },
+          "principal": {
+            "kind": "authenticated"
+          },
+          "channel": "body",
+          "field_path": "links[*].code"
+        },
+        "predicate": {
+          "predicate": "equals_base",
+          "step_id": "s4",
+          "path": "body.links[*].code"
+        }
+      }
+    },
+    {
+      "ruling_id": "r-2",
+      "event_seq": 2,
+      "label": "Error pages read as plain sentences",
+      "machine_ids": [
+        "errors"
+      ],
+      "state": "active",
+      "enforcement": {
+        "kind": "not_enforced",
+        "text": "Error pages read as plain sentences",
+        "reason": {
+          "kind": "unexpressible",
+          "detail": "tone of error text has no predicate"
+        }
+      }
+    }
+  ]
+}

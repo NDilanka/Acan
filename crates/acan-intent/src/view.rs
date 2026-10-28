@@ -109,8 +109,12 @@ pub struct PlantMachine {
 pub struct ExampleView {
     /// Always `target`.
     pub kind: TargetKind,
-    /// The expected base value, if the human gave one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The expected base value, if the human gave one. JSON `null` is a value.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::present_scalar",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub before: Option<Scalar>,
     /// The desired value.
     pub after: Scalar,
@@ -337,7 +341,7 @@ pub enum MarkRef {
         item_id: ItemId,
     },
     /// The order plate.
-    OrderPlate,
+    OrderPlate {},
 }
 
 /// A reference to one evidence row of one item in the snapshot.

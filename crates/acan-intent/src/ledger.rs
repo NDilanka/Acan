@@ -113,7 +113,7 @@ pub enum NotEnforcedReason {
         detail: String,
     },
     /// The human deferred the decision. The residue stays open; defer never counts as fixed.
-    Deferred,
+    Deferred {},
 }
 
 /// A human ruling the core cannot execute. Shown with a hollow `NOT ENFORCED` tag and never

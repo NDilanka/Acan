@@ -1,0 +1,8 @@
+{
+  "version": "acan-mcp/1",
+  "task": "t-4",
+  "episode_id": "sha256:f11834e907288a4bda5dce1b104d65542010dfc746ec645386aa4d602fc37683",
+  "kind": "spec_conflict",
+  "reproducer": "sha256:8199bdc4720dbc54756c8c7778a1dec62c5ed03a3d6489d6279de0d9eb572e5a",
+  "rationale": "The clicks field is dropped because the new limiter reads links before counting; the scope does not allow changing the counter."
+}

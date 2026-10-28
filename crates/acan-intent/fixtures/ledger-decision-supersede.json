@@ -1,0 +1,48 @@
+{
+  "event": "decision_confirmed",
+  "schema_version": "acan-ledger/1",
+  "event_seq": 3,
+  "prev_hash": "sha256:577a02a0f2ef2fd7f5ad4ffdd60afb54a567c364fc66d1c1ed82bf2ef68361bd",
+  "actor": "owner",
+  "at": 1793260200000,
+  "ruling_id": "r-1",
+  "order": "o-3",
+  "scope_hash": "sha256:eaab9bc0a3a9320938e24f5d50332cf9802ed3cf10b4c26497f8c518642bd415",
+  "episode_id": "sha256:03612417db992b26214f1f58962bbf4ad9937acb6f82746e00fb39c99f876f28",
+  "evidence_hashes": [
+    "sha256:1763edcf319d2ce21425faa2c54c0c5adc2aa919a8307e3d590635066b71e075"
+  ],
+  "selector": {
+    "surface": "http",
+    "method": "GET",
+    "route_template": "/api/links",
+    "step_context": {
+      "kind": "any"
+    },
+    "principal": {
+      "kind": "authenticated"
+    },
+    "channel": "body",
+    "field_path": "links[*].code"
+  },
+  "predicate_ast": {
+    "predicate": "equals_base",
+    "step_id": "s4",
+    "path": "body.links[*].code"
+  },
+  "accepts_hashes": [
+    "sha256:7b4fe60f7646fcc8922aacc731f7ccdec5e175e880dc08863855c4609be9058c"
+  ],
+  "rejects_hashes": [
+    "sha256:527057774b4dfc386d9a4dfda09a020ffba9de22cdd23c94c25fcf344c930fe8"
+  ],
+  "normalization_version": "norm/1",
+  "applicability": "exact_observation_approval",
+  "supersedes": {
+    "event_seq": 1
+  },
+  "label": "Links list stays newest first",
+  "machine_ids": [
+    "links"
+  ]
+}

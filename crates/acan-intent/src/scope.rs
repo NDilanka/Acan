@@ -27,7 +27,7 @@ use crate::version::{ScopeConfirmationV1, ScopeDraftV1, ScopeV1};
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StepContext {
     /// Every step.
-    Any,
+    Any {},
     /// One step.
     Step {
         /// The step.
@@ -42,11 +42,11 @@ pub enum StepContext {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Principal {
     /// Anyone.
-    Any,
+    Any {},
     /// Requests without a session.
-    Anonymous,
+    Anonymous {},
     /// Requests with any session.
-    Authenticated,
+    Authenticated {},
     /// Requests sent as one fixture actor.
     Actor {
         /// The actor.
@@ -150,7 +150,7 @@ impl Selector {
     #[must_use]
     pub fn is_broad(&self) -> bool {
         self.method == MethodSelector::Any
-            || self.step_context == StepContext::Any && self.principal == Principal::Any
+            || self.step_context == StepContext::Any {} && self.principal == Principal::Any {}
             || self.channel == Channel::Any
     }
 }
@@ -229,8 +229,12 @@ pub struct TargetExample {
     pub step_id: StepId,
     /// The field.
     pub path: ObservationPath,
-    /// The base value the human expects today, if they gave one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The base value the human expects today, if they gave one. JSON `null` is a value.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::present_scalar",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub before: Option<Scalar>,
     /// The value the human wants after the change.
     pub after: Scalar,

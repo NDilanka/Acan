@@ -627,6 +627,14 @@ pub enum Scalar {
     Text(String),
 }
 
+/// Decodes a present field as `Some`, so JSON `null` stays [`Scalar::Null`] and only a
+/// missing field (with `#[serde(default)]`) is `None`.
+pub(crate) fn present_scalar<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Scalar>, D::Error> {
+    Scalar::deserialize(deserializer).map(Some)
+}
+
 /// An HTTP method a probe step sends.
 #[derive(
     Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize, JsonSchema,

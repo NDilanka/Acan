@@ -257,7 +257,7 @@ pub enum GroupBy {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum WindowAnchor {
     /// At the first matching event of each group.
-    FirstMatch,
+    FirstMatch {},
     /// At one step.
     Step {
         /// The step.
