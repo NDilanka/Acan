@@ -194,43 +194,6 @@ impl EnvManifest {
     }
 }
 
-/// What a run's container may reach.
-#[derive(
-    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize, JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum SandboxNetwork {
-    /// Only the runner, on loopback. The outbound stub sink is the runner's.
-    LoopbackOnly,
-}
-
-/// The container policy every run uses. Its hash is the [`SandboxPolicyHash`].
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SandboxPolicy {
-    /// Network reach.
-    pub network: SandboxNetwork,
-    /// Memory cap.
-    pub memory_bytes: u64,
-    /// CPU cap, in thousandths of a core.
-    pub cpu_millis: u32,
-    /// Process cap.
-    pub max_pids: u32,
-    /// The worktree paths the app may write; everything else is read-only.
-    pub writable: Vec<RepoPath>,
-}
-
-impl SandboxPolicy {
-    /// The policy's identity.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`CanonicalError`] only if serialization fails.
-    pub fn sandbox_policy_hash(&self) -> Result<SandboxPolicyHash, CanonicalError> {
-        ContentHash::of(self).map(SandboxPolicyHash::from)
-    }
-}
-
 /// The complete tested context of one candidate. Land compares every field.
 ///
 /// Artifact-owned inputs (the candidate's own lockfile) are recorded in
@@ -262,7 +225,7 @@ pub struct GateContext {
     pub runtime: RuntimeId,
     /// The controlled environment ([`EnvManifest`]).
     pub controlled_env_hash: EnvHash,
-    /// The container policy the runs used ([`SandboxPolicy`]).
+    /// The container policy the runs used ([`crate::ContainerPolicy`]).
     pub sandbox_policy_hash: SandboxPolicyHash,
 }
 
@@ -382,7 +345,7 @@ mod tests {
     }
 
     #[test]
-    fn env_and_sandbox_changes_change_their_hashes() {
+    fn an_env_change_changes_its_hash() {
         let env = EnvManifest {
             vars: BTreeMap::from([("NODE_ENV".to_owned(), "test".to_owned())]),
             clock_start: UnixMillis(0),
@@ -395,21 +358,6 @@ mod tests {
         assert_ne!(
             env.env_hash().expect("hashing"),
             reseeded.env_hash().expect("hashing")
-        );
-        let policy = SandboxPolicy {
-            network: SandboxNetwork::LoopbackOnly,
-            memory_bytes: 512 << 20,
-            cpu_millis: 1000,
-            max_pids: 64,
-            writable: vec![".acan/tmp".parse().expect("a path")],
-        };
-        let roomier = SandboxPolicy {
-            memory_bytes: 1 << 30,
-            ..policy.clone()
-        };
-        assert_ne!(
-            policy.sandbox_policy_hash().expect("hashing"),
-            roomier.sandbox_policy_hash().expect("hashing")
         );
     }
 }

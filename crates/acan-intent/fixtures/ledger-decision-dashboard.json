@@ -1,0 +1,45 @@
+{
+  "event": "decision_confirmed",
+  "schema_version": "acan-ledger/1",
+  "event_seq": 3,
+  "prev_hash": "sha256:02cfdda9f465df8d84455975488b012bdf0a1e0674801daffcee2ff704d8c08a",
+  "actor": "owner",
+  "at": 1793259400000,
+  "ruling_id": "r-3",
+  "order": "o-3",
+  "scope_hash": "sha256:eaab9bc0a3a9320938e24f5d50332cf9802ed3cf10b4c26497f8c518642bd415",
+  "evidence_hashes": [
+    "sha256:4b1e7c9a2d5f8e3b6a0c1d4e7f2a5b8c3d6e9f0a1b4c7d2e5f8a3b6c9d0e1f2a"
+  ],
+  "selector": {
+    "surface": "http",
+    "method": "GET",
+    "route_template": "/dashboard",
+    "step_context": {
+      "kind": "any"
+    },
+    "principal": {
+      "kind": "authenticated"
+    },
+    "channel": "status"
+  },
+  "predicate_ast": {
+    "predicate": "status_in",
+    "step_id": "s1",
+    "statuses": [
+      200
+    ]
+  },
+  "normalization_version": "norm/1",
+  "applicability": "standing_predicate_approval",
+  "label": "Dashboard keeps answering 200",
+  "machine_ids": [
+    "dashboard"
+  ],
+  "accepts": [
+    "sha256:9c2f5a8d1e4b7c0f3a6d9e2b5c8f1a4d7e0b3c6f9a2d5e8b1c4f7a0d3e6b9c2f"
+  ],
+  "rejects": [],
+  "ruled_on": "sha256:9c2f5a8d1e4b7c0f3a6d9e2b5c8f1a4d7e0b3c6f9a2d5e8b1c4f7a0d3e6b9c2f",
+  "normalization_hash": "sha256:68055ed85b59fb375d723c22bcaf638aaaede6b7568fe25930de1194c42574a8"
+}

@@ -251,6 +251,75 @@ string_newtype!(
     }
 );
 
+/// A container image name with an optional tag, as the registry spells it: `oven/bun:1`.
+///
+/// It starts with a letter or digit, so it can never read as a command-line flag, and holds
+/// only `A-Z a-z 0-9 . _ / : -`, so it can never carry a digest, a space, or a mount field
+/// separator.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct ImageName(String);
+
+/// Longest image name accepted, the registry's own limit.
+const IMAGE_NAME_MAX: usize = 255;
+
+string_newtype!(
+    ImageName,
+    "container image name",
+    "^[A-Za-z0-9][A-Za-z0-9._/:-]{0,254}$",
+    |raw| {
+        let what = "container image name";
+        if raw.is_empty() {
+            return Err(InvalidValue::Empty { what });
+        }
+        if raw.len() > IMAGE_NAME_MAX {
+            return Err(InvalidValue::TooLong {
+                what,
+                max: IMAGE_NAME_MAX,
+            });
+        }
+        let leads = raw.starts_with(|c: char| c.is_ascii_alphanumeric());
+        let rest = raw
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '/' | ':' | '-'));
+        if leads && rest {
+            Ok(())
+        } else {
+            Err(InvalidValue::Malformed {
+                what,
+                raw: raw.to_owned(),
+            })
+        }
+    }
+);
+
+/// An absolute path inside a container, such as `/work`: one or more `/`-led segments of
+/// `A-Z a-z 0-9 . _ -`, never `.` or `..`, and never the root itself.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct ContainerPath(String);
+
+string_newtype!(
+    ContainerPath,
+    "container path",
+    "^(/[A-Za-z0-9._-]+)+$",
+    |raw| {
+        let segment_ok = |segment: &str| {
+            !segment.is_empty()
+                && segment != "."
+                && segment != ".."
+                && segment
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        };
+        match raw.strip_prefix('/') {
+            Some(rest) if rest.split('/').all(segment_ok) => Ok(()),
+            _ => Err(InvalidValue::Malformed {
+                what: "container path",
+                raw: raw.to_owned(),
+            }),
+        }
+    }
+);
+
 /// A route pattern from the app's route table: `/`, `/health`, `/api/links/:code`.
 ///
 /// Segments are literals of `A-Z a-z 0-9 . _ ~ -` or a `:name` parameter.

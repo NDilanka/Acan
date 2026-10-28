@@ -34,6 +34,7 @@ mod tests {
         let events: Vec<LedgerEvent> = [
             include_str!("../fixtures/ledger-decision.json"),
             include_str!("../fixtures/ledger-note.json"),
+            include_str!("../fixtures/ledger-decision-dashboard.json"),
             include_str!("../fixtures/ledger-decision-supersede.json"),
             include_str!("../fixtures/ledger-probe-retired.json"),
         ]

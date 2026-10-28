@@ -2,7 +2,7 @@
   "version": "acan-mcp/1",
   "ledger_head": {
     "event_seq": 2,
-    "hash": "sha256:577a02a0f2ef2fd7f5ad4ffdd60afb54a567c364fc66d1c1ed82bf2ef68361bd"
+    "hash": "sha256:02cfdda9f465df8d84455975488b012bdf0a1e0674801daffcee2ff704d8c08a"
   },
   "rulings": [
     {

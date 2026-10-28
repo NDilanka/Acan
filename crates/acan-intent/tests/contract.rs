@@ -2,16 +2,18 @@
 //! rule holds over every class, and the fixtures bind each other. The fail-closed tests of the
 //! pure stubs live beside the stubs, in the modules their owners edit.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use acan_intent::{
-    AppContract, CaptionCatalog, Card, CardRequest, Contest, ContestRequest, ContestResponse,
-    ContrastExample, Coverage, DiscrepancyEpisode, Evidence, EvidenceRef, EvidenceRow,
-    EvidenceSlot, FieldPattern, GateState, GetReceiptRequest, GetReceiptResponse,
-    GetRulingsRequest, GetRulingsResponse, GetScopeRequest, GetScopeResponse, ItemClass, ItemState,
-    LedgerEvent, MaskablePath, McpError, McpErrorCode, Observation, ObservationPath, PlantView,
-    PostReadbackRequest, PostReadbackResponse, ProbeCorpus, Receipt, RepairRound, RouteSource, Run,
-    Scope, ScopeConfirmation, ScopeDraft, ScopeItem, Selector, SlotSpec, TourView, TwinError,
+    AppContract, CaptionCatalog, Card, CardRequest, ContainerNetwork, ContainerPolicy, Contest,
+    ContestRequest, ContestResponse, ContrastExample, Coverage, DiscrepancyEpisode, Evidence,
+    EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern, GateState, GetReceiptRequest,
+    GetReceiptResponse, GetRulingsRequest, GetRulingsResponse, GetScopeRequest, GetScopeResponse,
+    ItemClass, ItemState, LedgerEvent, LedgerHash, LedgerHead, MaskablePath, McpError,
+    McpErrorCode, Observation, ObservationPath, PlantView, PostReadbackRequest,
+    PostReadbackResponse, ProbeCorpus, Receipt, RepairRound, RouteSource, RulingId, Run, Scope,
+    ScopeConfirmation, ScopeDraft, ScopeItem, Selector, SlotSpec, TourView, TwinError,
     TwinRunRequest, TwinRunResponse, TwinSaveRequest, TwinSaveResponse, Unsupported, ValueType,
     WindowMs,
 };
@@ -188,6 +190,7 @@ envelopes! {
     scope: Scope = "scope.json";
     scope_confirmation: ScopeConfirmation = "scope-confirmation.json";
     ledger_decision: LedgerEvent = "ledger-decision.json";
+    ledger_decision_dashboard: LedgerEvent = "ledger-decision-dashboard.json";
     ledger_decision_supersede: LedgerEvent = "ledger-decision-supersede.json";
     ledger_note: LedgerEvent = "ledger-note.json";
     ledger_probe_retired: LedgerEvent = "ledger-probe-retired.json";
@@ -226,8 +229,8 @@ envelopes! {
     caption_catalog: CaptionCatalog = "caption-catalog.json";
 }
 
-#[test]
-fn every_fixture_is_covered() {
+/// Every fixture except the generated schema, by file name, sorted.
+fn fixture_names() -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(fixtures())
         .expect("listing fixtures")
         .map(|entry| {
@@ -240,8 +243,13 @@ fn every_fixture_is_covered() {
         .filter(|name| name.ends_with(".json") && !name.ends_with(".schema.json"))
         .collect();
     names.sort();
+    names
+}
+
+#[test]
+fn every_fixture_is_covered() {
     let source = include_str!("contract.rs");
-    for name in names {
+    for name in fixture_names() {
         assert!(
             source.contains(&format!("\"{name}\"")),
             "{name} has no round-trip test"
@@ -665,4 +673,218 @@ fn the_unsupported_mcp_error_names_the_operation() {
     let fixture: McpError = load("mcp-error-unsupported.json");
     assert_eq!(built, fixture);
     assert!(matches!(fixture.error, McpErrorCode::Unsupported { .. }));
+}
+
+#[test]
+fn the_container_policy_round_trips_and_refuses_unknown_fields() {
+    round_trip::<ContainerPolicy>("container-policy.json");
+    refuses_unknown_fields::<ContainerPolicy>("container-policy.json");
+}
+
+#[test]
+fn every_tested_context_ran_under_the_container_policy_fixture() {
+    let policy: ContainerPolicy = load("container-policy.json");
+    let hash = policy.sandbox_policy_hash().expect("hashing the policy");
+    let receipt: Receipt = load("receipt.json");
+    let card: Card = load("card.json");
+    let example: ContrastExample = load("contrast-example.json");
+    for (name, context) in [
+        ("receipt.json", &receipt.prepared.context),
+        ("card.json", &card.prepared.context),
+        ("contrast-example.json", &example.context),
+    ] {
+        assert_eq!(
+            context.sandbox_policy_hash, hash,
+            "{name} ran under another policy"
+        );
+    }
+    let opened = ContainerPolicy {
+        network: ContainerNetwork::None {},
+        ..policy
+    };
+    let mut current = receipt.prepared.context.clone();
+    current.sandbox_policy_hash = opened.sandbox_policy_hash().expect("hashing");
+    assert_ne!(
+        current, receipt.prepared.context,
+        "a policy change kept the context"
+    );
+}
+
+/// The demo's ruling log, one fixture per event, in log order.
+const LEDGER: [&str; 5] = [
+    "ledger-decision.json",
+    "ledger-note.json",
+    "ledger-decision-dashboard.json",
+    "ledger-decision-supersede.json",
+    "ledger-probe-retired.json",
+];
+
+/// What one fixture says about one event of the demo's ruling log.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Claim {
+    /// The chain hash through the event.
+    Hash(LedgerHash),
+    /// The ruling lineage the event belongs to, or `None` for an event outside every lineage.
+    Ruling(Option<RulingId>),
+}
+
+type Claims = BTreeMap<u64, BTreeMap<Claim, BTreeSet<String>>>;
+
+fn claim(claims: &mut Claims, seq: u64, what: Claim, name: &str) {
+    claims
+        .entry(seq)
+        .or_default()
+        .entry(what)
+        .or_default()
+        .insert(name.to_owned());
+}
+
+/// Records every ledger event, ledger head and ruling reference in `value`.
+fn ledger_claims(name: &str, value: &Value, claims: &mut Claims) {
+    if let Ok(event) = serde_json::from_value::<LedgerEvent>(value.clone()) {
+        let seq = event.event_seq();
+        let hash = event.chain_hash().expect("hashing an event");
+        claim(claims, seq, Claim::Hash(hash), name);
+        if let Some(prev) = event.prev_hash() {
+            let before = seq
+                .checked_sub(1)
+                .unwrap_or_else(|| panic!("{name} is event 0 and names an event before it"));
+            claim(claims, before, Claim::Hash(prev), name);
+        }
+        let (ruling, supersedes) = match &event {
+            LedgerEvent::DecisionConfirmed(decision) => {
+                (Some(decision.ruling_id.clone()), decision.supersedes)
+            }
+            LedgerEvent::NoteRecorded(note) => (Some(note.ruling_id.clone()), note.supersedes),
+            LedgerEvent::ProbeRetired(_) => (None, None),
+        };
+        if let Some(replaced) = supersedes {
+            assert!(replaced.event_seq < seq, "{name} supersedes a later event");
+            claim(
+                claims,
+                replaced.event_seq,
+                Claim::Ruling(ruling.clone()),
+                name,
+            );
+        }
+        claim(claims, seq, Claim::Ruling(ruling), name);
+    }
+    match value {
+        Value::Object(map) => {
+            if let Some(head) = map.get("ledger_head") {
+                let head: LedgerHead = serde_json::from_value(head.clone()).expect("a ledger head");
+                assert_eq!(
+                    head.hash.is_some(),
+                    head.event_seq > 0,
+                    "{name} has a ledger head whose hash does not fit its sequence"
+                );
+                if let Some(hash) = head.hash {
+                    claim(claims, head.event_seq, Claim::Hash(hash), name);
+                }
+            }
+            if let (Some(Value::String(ruling)), Some(seq)) = (
+                map.get("ruling_id"),
+                map.get("event_seq").and_then(Value::as_u64),
+            ) {
+                let ruling = ruling.parse().expect("a ruling id");
+                claim(claims, seq, Claim::Ruling(Some(ruling)), name);
+            }
+            map.values()
+                .for_each(|child| ledger_claims(name, child, claims));
+        }
+        Value::Array(items) => items
+            .iter()
+            .for_each(|child| ledger_claims(name, child, claims)),
+        _ => {}
+    }
+}
+
+#[test]
+fn the_ledger_fixtures_are_one_chain() {
+    let mut prev = None;
+    for (name, seq) in LEDGER.into_iter().zip(1_u64..) {
+        let event: LedgerEvent = load(name);
+        assert_eq!(event.event_seq(), seq, "{name} is out of sequence");
+        assert_eq!(
+            event.prev_hash(),
+            prev,
+            "{name} does not chain to the event before it"
+        );
+        prev = Some(event.chain_hash().expect("hashing an event"));
+    }
+}
+
+/// Every claimed event that is outside the fixture ledger, or that two claims make into two
+/// different events.
+fn ledger_problems(claims: &Claims) -> Vec<String> {
+    let last = u64::try_from(LEDGER.len()).expect("a small ledger");
+    claims
+        .iter()
+        .filter_map(|(seq, said)| {
+            let hashes = said.keys().filter(|c| matches!(c, Claim::Hash(_))).count();
+            let rulings = said
+                .keys()
+                .filter(|c| matches!(c, Claim::Ruling(_)))
+                .count();
+            if !(1..=last).contains(seq) {
+                Some(format!(
+                    "event {seq} is not in the fixture ledger: {said:?}"
+                ))
+            } else if hashes > 1 || rulings > 1 {
+                Some(format!("event {seq} is two different events: {said:?}"))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Every fixture describes the one demo repository, so all of them claim the same ruling log:
+/// a sequence number names one event, with one chain hash and one ruling lineage.
+#[test]
+fn fixtures_that_name_a_ledger_event_agree_on_it() {
+    let mut claims = Claims::new();
+    for name in fixture_names() {
+        ledger_claims(&name, &raw(&name), &mut claims);
+    }
+    let problems = ledger_problems(&claims);
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn a_reused_event_sequence_is_caught() {
+    let mut claims = Claims::new();
+    ledger_claims("receipt.json", &raw("receipt.json"), &mut claims);
+    let mut reused = raw("ledger-decision-supersede.json");
+    reused["event_seq"] = json!(3);
+    ledger_claims("reused", &reused, &mut claims);
+    let problems = ledger_problems(&claims);
+    assert!(
+        problems
+            .iter()
+            .any(|problem| problem.starts_with("event 3 is two different events")),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn a_decision_rules_only_on_examples_retained_before_it() {
+    let example: ContrastExample = load("contrast-example.json");
+    let hash = example
+        .contrast_example_hash()
+        .expect("hashing the example");
+    let mut ruled = 0;
+    for name in LEDGER {
+        let LedgerEvent::DecisionConfirmed(decision) = load(name) else {
+            continue;
+        };
+        if decision.accepts.contains(&hash) || decision.rejects.contains(&hash) {
+            ruled += 1;
+            assert!(
+                example.context.ledger_head.event_seq < decision.event_seq,
+                "{name} rules on an example retained after it"
+            );
+        }
+    }
+    assert!(ruled > 0, "no decision lists the example fixture");
 }

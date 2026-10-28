@@ -193,8 +193,10 @@ digest! {
     OverlayHash;
     /// The hash of an [`crate::EnvManifest`]: variables, clock, and seed.
     EnvHash;
-    /// The hash of a [`crate::SandboxPolicy`].
+    /// The hash of a [`crate::ContainerPolicy`]: the isolation every run and test command had.
     SandboxPolicyHash;
+    /// A container image's registry digest, which pins the exact image content.
+    ImageDigest;
     /// A discrepancy episode's identity: the hash of its [`crate::EpisodeKey`].
     EpisodeId;
     /// A repair round's identity: the hash of its [`crate::RoundKey`].

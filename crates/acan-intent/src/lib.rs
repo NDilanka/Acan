@@ -17,6 +17,7 @@
 
 pub mod admit;
 pub mod compare;
+mod container;
 mod episode;
 mod error;
 mod expr;
@@ -39,6 +40,10 @@ mod verdict;
 mod version;
 mod view;
 
+pub use container::{
+    ContainerImage, ContainerNetwork, ContainerPolicy, ContainerUser, MissingProtected,
+    MountPolicy, Privileges, RootFilesystem,
+};
 pub use episode::{
     CandidateAttempt, Contest, ContestKind, ContestStatus, DiscrepancyEpisode, EpisodeKey,
     EpisodeState, EvidenceRevision, Predicted, Prediction, ProposedValue, ScopeRevision,
@@ -51,13 +56,14 @@ pub use expr::{
 };
 pub use gate::{
     EnvManifest, FixtureSetManifest, GateContext, LedgerHead, OverlayManifest, PreparedCommit,
-    ProbeSetEntry, ProbeSetManifest, RunnerManifest, SandboxNetwork, SandboxPolicy,
+    ProbeSetEntry, ProbeSetManifest, RunnerManifest,
 };
 pub use hash::{
     ArtifactHash, CanonicalError, ContentHash, ContrastExampleHash, EnvHash, EpisodeId,
-    EvidenceHash, ExampleHash, FixtureHash, FixtureSetHash, LedgerHash, NormalizationHash,
-    ObservationHash, OverlayHash, PredicateHash, ProbeHash, ProbeSetHash, ReceiptHash, ResultId,
-    RoundId, RunnerHash, SandboxPolicyHash, ScopeHash, SelectorHash, canonical_json,
+    EvidenceHash, ExampleHash, FixtureHash, FixtureSetHash, ImageDigest, LedgerHash,
+    NormalizationHash, ObservationHash, OverlayHash, PredicateHash, ProbeHash, ProbeSetHash,
+    ReceiptHash, ResultId, RoundId, RunnerHash, SandboxPolicyHash, ScopeHash, SelectorHash,
+    canonical_json,
 };
 pub use ledger::{
     Applicability, ContrastExample, DecisionConfirmed, Expectation, ExpectationStatus,
@@ -100,11 +106,11 @@ pub use twin::{
 };
 pub use types::{
     ActorName, AgentRef, CaptureName, CatalogVersion, Channel, ChoiceId, ClientName, CommitSha,
-    ContestId, EvaluatorVersion, Evidence, FieldPath, FieldPattern, FixtureId, HttpMethod,
-    HumanRef, InvalidValue, ItemId, MachineId, MaskablePath, MethodSelector, ModelRef, MustKeepId,
-    NonEmpty, NormalizationVersion, ObligationId, ObservationPath, OptionKey, OrderRef,
-    PathPattern, RepoPath, RouteTemplate, RulingId, RunId, RunnerBuild, RuntimeId, Scalar,
-    ScopeRev, SlotName, StepId, Surface, TaskRef, TemplateId, TrustedSink, UnixMillis,
+    ContainerPath, ContestId, EvaluatorVersion, Evidence, FieldPath, FieldPattern, FixtureId,
+    HttpMethod, HumanRef, ImageName, InvalidValue, ItemId, MachineId, MaskablePath, MethodSelector,
+    ModelRef, MustKeepId, NonEmpty, NormalizationVersion, ObligationId, ObservationPath, OptionKey,
+    OrderRef, PathPattern, RepoPath, RouteTemplate, RulingId, RunId, RunnerBuild, RuntimeId,
+    Scalar, ScopeRev, SlotName, StepId, Surface, TaskRef, TemplateId, TrustedSink, UnixMillis,
 };
 pub use verdict::{
     Authorization, CheckResult, Comparison, Difference, Evaluation, ItemClass, ItemState,

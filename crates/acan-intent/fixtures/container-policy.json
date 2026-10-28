@@ -1,0 +1,26 @@
+{
+  "image": {
+    "name": "oven/bun:1",
+    "digest": "sha256:3e8a6f2c1d9b4a7e5f0c8d2b6a1e9f4c7d3b8a5e2f6c0d9b4a7e1f8c5d2b6a3e"
+  },
+  "user": "1000:1000",
+  "cpus_milli": 2000,
+  "memory_bytes": 1073741824,
+  "pids": 256,
+  "timeout_ms": 120000,
+  "tmp_bytes": 268435456,
+  "network": {
+    "kind": "loopback_published",
+    "port": 3000
+  },
+  "root": "read_only",
+  "privileges": "dropped",
+  "mounts": {
+    "workdir": "/work",
+    "protected": [
+      ".acan",
+      "test"
+    ],
+    "missing_protected": "masked"
+  }
+}

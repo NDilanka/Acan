@@ -1,6 +1,6 @@
 {
   "version": "acan-mcp/1",
-  "receipt_hash": "sha256:512d502e43eae8a619c716130e566dc9bfac3c3b87939774f6912edd2de816c5",
+  "receipt_hash": "sha256:857e03cb7b4baadaad3beafc566d9309bee763b930eb8beec9e0ee001ece6901",
   "receipt": {
     "version": "acan-receipt/1",
     "order": "o-3",
@@ -16,7 +16,7 @@
         },
         "ledger_head": {
           "event_seq": 3,
-          "hash": "sha256:91ad7e4508aba91735b1e9348d2adcb093bffd90c4884a05dab20e18c0fa692f"
+          "hash": "sha256:dfd226635be9d2a3e4ba3bb2b0cfac331f520bfa1e5166349e3ffae0d0656151"
         },
         "scope_hash": "sha256:eaab9bc0a3a9320938e24f5d50332cf9802ed3cf10b4c26497f8c518642bd415",
         "probe_set_hash": "sha256:08cbc55fe91e0a7d35d66a97b619a7931d518dccb0a3268d75ab7b9eac74af03",
@@ -24,7 +24,7 @@
         "evaluator_version": "acan-intent/0.1.0",
         "runtime": "bun-1.4.4",
         "controlled_env_hash": "sha256:96f3b648e7620cf579630eeb0f7234347766890e6ea45f8d4fe429c791493989",
-        "sandbox_policy_hash": "sha256:06527e9979ae31794fa89999cfe96d54aa3012d5a5363ae02f2b717561bbcf17",
+        "sandbox_policy_hash": "sha256:47fce79ea90015907ea46731aa4aeae2ce3821c64b7104aee750b72a76c170a6",
         "overlay_hash": "sha256:c27af44102a1dd3819def6db27bb5e79c2ff5023379faf9e8feddba8a780fd64",
         "fixture_set_hash": "sha256:29007a22a25a34d8c43c2e3aba058bc33e54d60e6db3aae1c2ae84eb5459cf94"
       }
