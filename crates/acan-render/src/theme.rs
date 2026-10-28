@@ -5,7 +5,7 @@
 use crate::model::{Ink, Surface};
 
 /// Palette slots on the GPU.
-pub const PALETTE_LEN: usize = 22;
+pub const PALETTE_LEN: usize = 21;
 /// Tint slots. Slot 0 is the identity; instances pick a slot to tint a machine.
 pub const TINT_LEN: usize = 8;
 
@@ -28,14 +28,25 @@ pub const SLOT_AGENT0: u32 = 13;
 /// The opaque fill of a belt and the fine line along its sides and ends.
 pub const SLOT_BELT: u32 = 17;
 pub const SLOT_BELT_EDGE: u32 = 18;
-/// The outer outline of every object, drawn in the edge pass.
-pub const SLOT_OUTLINE: u32 = 19;
-/// The inner feature edges of a model, drawn as thin lines.
+/// The contours and creases the renderer strokes from a model's mesh.
+pub const SLOT_LINE: u32 = 19;
+/// A seam: the light painted line of `Ink::Edge`.
 pub const SLOT_EDGE: u32 = 20;
-/// The outer outline of a machine that is small on screen. The outline eases from this to
-/// `SLOT_OUTLINE` over `LOD_FADE_PX`, like the inner lines, so a dense field reads as light
-/// blocks and not as dark speckle.
-pub const SLOT_OUTLINE_FAR: u32 = 21;
+/// Width of a contour or crease in device pixels, at every zoom.
+pub const LINE_PX: f32 = 0.9;
+/// The line ink eases in as a machine grows on screen, from its size at `LINE_FADE_PX.0` to
+/// `LINE_FADE_PX.1` device pixels, on a log scale. The size is measured as for the seams'
+/// level of detail. Zoomed in, every edge has the full ink. Zoomed out, a machine keeps a light
+/// contour and ground contact, which hold it apart from the ground, while its inner creases
+/// fade, so a small machine reads as a soft block and not as a knot of lines.
+pub const LINE_FADE_PX: (f32, f32) = (40.0, 480.0);
+/// The ink's opacity on a machine at `LINE_FADE_PX.0` or smaller: on the contour and at an
+/// open boundary, and on an inner crease, where both faces turn toward the eye.
+pub const CONTOUR_FAR_ALPHA: f32 = 0.5;
+pub const CREASE_FAR_ALPHA: f32 = 0.0;
+/// Lines are moved this many device pixels toward the eye before the depth test, at their own
+/// distance, so a line wins against the surface it lies on.
+pub const LINE_LIFT_PX: f32 = 1.0;
 
 /// Paper shading, as darkness below white. The light is fixed to the camera, from its left,
 /// so a face keeps its tone at every azimuth. A top is nearly white, a side facing the light
@@ -83,7 +94,7 @@ pub const BELT_EDGE_FLOOR: f32 = 0.35;
 
 /// Inner lines (feature edges and painted detail) fade out as a machine shrinks on screen.
 /// The size is the screen length of `LOD_REFERENCE` plan units at the machine. Below
-/// `LOD_FADE_PX.0` device pixels a machine is only its outline.
+/// `LOD_FADE_PX.0` device pixels a machine is only its contours and creases.
 pub const LOD_REFERENCE: f32 = 96.0;
 pub const LOD_FADE_PX: (f32, f32) = (30.0, 60.0);
 
@@ -117,9 +128,8 @@ const PALETTE: [[f32; 4]; PALETTE_LEN] = [
     rgb(0xab6400, 1.0),  // agent 3 (placeholder)
     rgb(0xe9e9e9, 1.0),  // belt
     rgb(0xb8b8b8, 1.0),  // belt edge
-    rgb(0x6b6b6b, 0.9),  // outline
-    rgb(0x9a9a9a, 0.6),  // feature edge
-    rgb(0x8a8a8a, 0.85), // outline of a far machine
+    rgb(0x767676, 1.0),  // contour and crease
+    rgb(0xa8a8a8, 1.0),  // seam
 ];
 
 /// Palette slot of an ink used by a line.
@@ -184,8 +194,12 @@ pub fn wgsl_consts() -> String {
         u("SLOT_GRID", SLOT_GRID),
         u("SLOT_BELT", SLOT_BELT),
         u("SLOT_BELT_EDGE", SLOT_BELT_EDGE),
-        u("SLOT_OUTLINE", SLOT_OUTLINE),
-        u("SLOT_OUTLINE_FAR", SLOT_OUTLINE_FAR),
+        u("SLOT_LINE", SLOT_LINE),
+        f("LINE_PX", LINE_PX),
+        pair("LINE_FADE_PX", LINE_FADE_PX),
+        f("CONTOUR_FAR_ALPHA", CONTOUR_FAR_ALPHA),
+        f("CREASE_FAR_ALPHA", CREASE_FAR_ALPHA),
+        f("LINE_LIFT_PX", LINE_LIFT_PX),
         f("PAPER_TOP", PAPER_TOP),
         f("PAPER_LIT", PAPER_LIT),
         f("PAPER_DARK", PAPER_DARK),
@@ -225,6 +239,11 @@ const _: () = assert!(GRID_MINOR_ALPHA < GRID_MAJOR_ALPHA);
 const _: () = assert!(PAPER_TOP > 0.0, "a top never matches the page");
 const _: () = assert!(PAPER_TOP < PAPER_LIT && PAPER_LIT < PAPER_DARK);
 const _: () = assert!(PAPER_DARK < 0.2, "no face turns dark");
+const _: () = assert!(LINE_FADE_PX.0 > 0.0 && LINE_FADE_PX.0 < LINE_FADE_PX.1);
+const _: () = assert!(
+    0.0 <= CREASE_FAR_ALPHA && CREASE_FAR_ALPHA < CONTOUR_FAR_ALPHA && CONTOUR_FAR_ALPHA < 1.0,
+    "a small machine keeps its contour longer than its creases"
+);
 
 #[cfg(test)]
 mod tests {
@@ -269,9 +288,10 @@ mod tests {
     fn the_grid_stays_under_the_line_art() {
         let grid = PALETTE[SLOT_GRID as usize];
         assert_eq!(&grid[..3], &[0.0, 0.0, 0.0]);
-        let faintest_line = [SLOT_EDGE, SLOT_OUTLINE, SLOT_OUTLINE_FAR, SLOT_BELT_EDGE]
+        let faintest_line = [SLOT_EDGE, SLOT_LINE, SLOT_BELT_EDGE]
             .map(|slot| ink(PALETTE[slot as usize]))
             .into_iter()
+            .chain([CONTOUR_FAR_ALPHA * ink(PALETTE[SLOT_LINE as usize])])
             .fold(f32::INFINITY, f32::min);
         assert!(
             GRID_MAJOR_ALPHA < faintest_line,
@@ -280,14 +300,25 @@ mod tests {
     }
 
     #[test]
-    fn the_outline_is_darker_than_the_inner_edges() {
-        let outline = PALETTE[SLOT_OUTLINE as usize];
-        let edge = PALETTE[SLOT_EDGE as usize];
-        assert!(ink(outline) > ink(edge));
-        assert!(ink(outline) < 0.7, "the outline is grey, not black");
-        let far = PALETTE[SLOT_OUTLINE_FAR as usize];
-        assert!(ink(far) < ink(outline), "a far outline is lighter");
-        assert!(ink(far) > ink(edge));
+    fn the_inks_lines_are_drawn_in_are_near_grey() {
+        // Lines draw as the grey of their ink's luminance, so a slight tint is all they lose.
+        let slots = [Ink::Hi, Ink::Mid, Ink::Lo, Ink::Faint, Ink::Edge]
+            .map(ink_slot)
+            .into_iter()
+            .chain([SLOT_LINE]);
+        for slot in slots {
+            let [r, g, b, _] = PALETTE[slot as usize];
+            let spread = r.max(g).max(b) - r.min(g).min(b);
+            assert!(spread <= 6.0 / 255.0, "slot {slot} is tinted by {spread}");
+        }
+    }
+
+    #[test]
+    fn a_crease_is_darker_than_a_seam() {
+        let line = PALETTE[SLOT_LINE as usize];
+        let seam = PALETTE[SLOT_EDGE as usize];
+        assert!(ink(line) > ink(seam));
+        assert!(ink(line) < 0.7, "the line is grey, not black");
     }
 
     #[test]
@@ -309,10 +340,10 @@ mod tests {
             "SLOT_GRID",
             "SLOT_BELT",
             "SLOT_BELT_EDGE",
-            "SLOT_OUTLINE",
+            "SLOT_LINE",
         ] {
             assert!(consts.contains(&format!("const {name}: u32")), "{name}");
         }
-        assert!(consts.contains(&format!("const SLOT_OUTLINE: u32 = {SLOT_OUTLINE}u;")));
+        assert!(consts.contains(&format!("const SLOT_LINE: u32 = {SLOT_LINE}u;")));
     }
 }

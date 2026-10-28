@@ -20,8 +20,9 @@ const SLAB_STEP: f32 = 3.0;
 /// The painted panel on a slab top sits this far inside the top's edge.
 const PANEL_INSET: f32 = 4.0;
 const SCREW_RADIUS: f32 = 1.3;
-/// Width of a detail line in device pixels. The renderer draws nothing thinner than this.
-const LINE_WIDTH: f32 = 0.75;
+/// Width of a seam in device pixels. The renderer draws a stroke this thin at its floor width
+/// with lighter ink, so it keeps the same weight on the page.
+const SEAM_WIDTH: f32 = 0.6;
 /// A belt stops this far short of a plinth, so its end line reads as a port on the plate edge.
 const BELT_PORT_GAP: f32 = 1.5;
 
@@ -140,7 +141,7 @@ fn model(kind: Kind) -> Model {
                     [-px, py, top],
                 ],
                 true,
-                Ink::Faint,
+                Ink::Edge,
                 Detail::Near,
             ));
             let sites = [
@@ -163,7 +164,7 @@ fn model(kind: Kind) -> Model {
             let seam = s.plinth + s.body / 2.0;
             // A painted circle inside the top would read as a second rim, so a cylinder's
             // only top line is its crease.
-            lines.push(stroke(circle(r, seam), true, Ink::Faint, Detail::Near));
+            lines.push(stroke(circle(r, seam), true, Ink::Edge, Detail::Near));
             for k in 0..s.screws {
                 let a = std::f32::consts::TAU * k as f32 / s.screws as f32;
                 let (sn, cs) = a.sin_cos();
@@ -388,7 +389,7 @@ fn stroke(points: Vec<[f32; 3]>, closed: bool, tone: Ink, detail: Detail) -> Lin
         points,
         closed,
         tone,
-        width: LINE_WIDTH,
+        width: SEAM_WIDTH,
         detail,
     }
 }
@@ -501,6 +502,7 @@ mod tests {
     use super::*;
     use crate::layout::layout;
     use crate::plant::{from_scan_json, stress};
+    use acan_render::edges::{Edge, Fold, edges};
 
     const FIXTURE: &str = include_str!("../www/fixtures/demo-plant.json");
 
@@ -540,22 +542,53 @@ mod tests {
     }
 
     #[test]
-    fn a_cylinder_top_has_one_rim_line() {
+    fn a_cylinder_seen_from_the_side_draws_two_contour_lines_and_its_rims() {
         let model = model(Kind::Tank);
-        let top = model.bounds.max[2];
-        let r = 0.36 * 86.0;
-        let rims = acan_render::edges::feature_lines(&model.meshes[0], Detail::Always)
+        let s = shape(Kind::Tank);
+        let (w, d) = Kind::Tank.footprint();
+        let Form::Cylinder { radius } = s.form else {
+            panic!("a tank is a cylinder");
+        };
+        let r = radius * w.min(d);
+        let (bottom, top) = (s.plinth, s.plinth + s.body);
+        // Off to one side and above the top, so the whole top rim faces the eye.
+        let eye = [600.0, 37.0, top + 150.0];
+        let shown: Vec<Edge> = edges(&model.meshes[0])
             .into_iter()
-            .chain(model.lines.iter().cloned())
-            .filter(|line| {
-                line.points
+            .filter(|e| e.shows_from(eye))
+            .collect();
+        let on_wall = |p: [f32; 3]| (p[0].hypot(p[1]) - r).abs() < 1e-3;
+        let at = |z: f32| {
+            move |e: &&Edge| {
+                e.ends
                     .iter()
-                    .all(|p| (p[2] - top).abs() < 2.0 && (p[0].hypot(p[1]) - r).abs() < 3.0)
+                    .all(|&p| on_wall(p) && (p[2] - z).abs() < 1e-3)
+            }
+        };
+        let sides = shown
+            .iter()
+            .filter(|e| {
+                e.ends.iter().all(|&p| on_wall(p)) && (e.ends[0][2] - e.ends[1][2]).abs() > 1.0
             })
-            .count();
+            .collect::<Vec<_>>();
+        assert_eq!(sides.len(), 2, "two contour lines down the wall: {sides:?}");
+        assert!(sides.iter().all(|e| e.fold == Fold::Smooth));
+        let top_rim: Vec<&Edge> = shown.iter().filter(at(top)).collect();
         assert_eq!(
-            rims, CYLINDER_SEGMENTS,
-            "one crease segment per side of the rim, nothing else"
+            top_rim.len(),
+            CYLINDER_SEGMENTS,
+            "the whole top rim faces the eye"
+        );
+        let foot: Vec<&Edge> = shown.iter().filter(at(bottom)).collect();
+        // A perspective eye sees a little less than half of a cylinder's foot.
+        assert!(
+            (CYLINDER_SEGMENTS / 2 - 2..=CYLINDER_SEGMENTS / 2).contains(&foot.len()),
+            "the front half of the foot: {}",
+            foot.len()
+        );
+        assert!(
+            top_rim.iter().chain(&foot).all(|e| e.fold == Fold::Crease),
+            "rims are creases"
         );
     }
 

@@ -5,6 +5,7 @@ use std::ops::Range;
 
 use bytemuck::{Pod, Zeroable};
 
+use crate::edges::{self, Fold};
 use crate::model::{Aabb, Detail, Dot3, Line3, Mesh};
 use crate::scene::{Instance, Ribbon};
 use crate::theme::{SHADOW_REACH, SHADOW_SHIFT, dot_slot, flat_code, ink_slot};
@@ -12,11 +13,14 @@ use crate::theme::{SHADOW_REACH, SHADOW_SHIFT, dot_slot, flat_code, ink_slot};
 /// A ribbon's miter never stretches its width by more than this at a sharp turn.
 const MAX_MITER: f32 = 2.0;
 
-/// Object IDs are packed into three 8-bit channels of the ID target, so they run to 2^24 - 1.
-pub const MAX_OBJECT_ID: u32 = 1 << 24;
+/// Strokes and dots are quads of four vertices, drawn by `quad_indices`. Instanced over every
+/// machine, a shared corner is fetched and shaded once instead of twice.
+pub const QUAD_CORNERS: u32 = 4;
 
-/// The levels of detail in the order of their index in `Model::meshes` and in cumulative counts.
-pub const DETAILS: [Detail; 3] = [Detail::Always, Detail::Near, Detail::Close];
+/// The corners of a stroke segment. `x` is 0 at the first end and 1 at the second. `y` is -1
+/// or 1 across the stroke.
+const SEGMENT_CORNERS: [[f32; 2]; QUAD_CORNERS as usize] =
+    [[0.0, -1.0], [1.0, -1.0], [1.0, 1.0], [0.0, 1.0]];
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
@@ -26,16 +30,28 @@ pub struct MeshVertex {
     pub code: u32,
 }
 
-/// One end of a stroke segment. Each segment is six vertices: two corners at each end.
+/// One corner of a painted stroke segment. Each segment is four vertices, one per corner in
+/// `SEGMENT_CORNERS`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
 pub struct LineVertex {
     pub a: [f32; 3],
     pub b: [f32; 3],
-    /// `x` is 0 at `a` and 1 at `b`. `y` is -1 or 1 across the stroke.
     pub corner: [f32; 2],
     pub width: f32,
     pub tone: u32,
+}
+
+/// One corner of a mesh edge's stroke. Each edge is four vertices, like a painted segment.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
+pub struct EdgeVertex {
+    pub ends: [[f32; 3]; 2],
+    /// The outward normals of the two faces that meet at the edge.
+    pub normals: [[f32; 3]; 2],
+    pub corner: [f32; 2],
+    /// 1 for a crease, 0 for a smooth edge that draws only on the contour.
+    pub crease: u32,
 }
 
 /// One corner of a disc. `tangent` and `bitangent` span the disc, scaled by its radius.
@@ -77,8 +93,6 @@ pub struct HaloVertex {
 pub struct InstanceRaw {
     pub offset: [f32; 3],
     pub tint: u32,
-    /// The object ID that the outline pass reads: 0 for the world, then one per instance.
-    pub id: u32,
 }
 
 /// Vertex data split by detail. `counts[level]` is the number of vertices drawn at that level
@@ -113,14 +127,6 @@ pub fn mesh_vertices(mesh: &Mesh) -> Vec<MeshVertex> {
 }
 
 pub fn line_vertices(lines: &[Line3]) -> Strokes<LineVertex> {
-    const CORNERS: [[f32; 2]; 6] = [
-        [0.0, -1.0],
-        [1.0, -1.0],
-        [1.0, 1.0],
-        [0.0, -1.0],
-        [1.0, 1.0],
-        [0.0, 1.0],
-    ];
     let mut buckets: [Vec<LineVertex>; 3] = Default::default();
     for line in lines {
         let segments =
@@ -129,7 +135,7 @@ pub fn line_vertices(lines: &[Line3]) -> Strokes<LineVertex> {
         for s in 0..segments {
             let a = line.points[s];
             let b = line.points[(s + 1) % line.points.len()];
-            for corner in CORNERS {
+            for corner in SEGMENT_CORNERS {
                 bucket.push(LineVertex {
                     a,
                     b,
@@ -143,15 +149,26 @@ pub fn line_vertices(lines: &[Line3]) -> Strokes<LineVertex> {
     cumulative(buckets)
 }
 
+/// The stroke of every edge of each level's mesh, drawn at that level of detail.
+pub fn edge_vertices(meshes: &[Mesh; 3]) -> Strokes<EdgeVertex> {
+    cumulative(meshes.each_ref().map(|mesh| {
+        edges::edges(mesh)
+            .iter()
+            .flat_map(|edge| {
+                SEGMENT_CORNERS.map(|corner| EdgeVertex {
+                    ends: edge.ends,
+                    normals: edge.normals,
+                    corner,
+                    crease: u32::from(edge.fold == Fold::Crease),
+                })
+            })
+            .collect()
+    }))
+}
+
 pub fn dot_vertices(dots: &[Dot3]) -> Strokes<DotVertex> {
-    const CORNERS: [[f32; 2]; 6] = [
-        [-1.0, -1.0],
-        [1.0, -1.0],
-        [1.0, 1.0],
-        [-1.0, -1.0],
-        [1.0, 1.0],
-        [-1.0, 1.0],
-    ];
+    const CORNERS: [[f32; 2]; QUAD_CORNERS as usize] =
+        [[-1.0, -1.0], [1.0, -1.0], [1.0, 1.0], [-1.0, 1.0]];
     let mut buckets: [Vec<DotVertex>; 3] = Default::default();
     for dot in dots {
         let (tangent, bitangent) = disc_axes(dot.normal, dot.radius);
@@ -167,6 +184,13 @@ pub fn dot_vertices(dots: &[Dot3]) -> Strokes<DotVertex> {
         }
     }
     cumulative(buckets)
+}
+
+/// The indices of `quads` quads of `QUAD_CORNERS` vertices each, two triangles a quad.
+pub fn quad_indices(quads: u32) -> Vec<u32> {
+    (0..quads)
+        .flat_map(|q| [0, 1, 2, 0, 2, 3].map(|i| q * QUAD_CORNERS + i))
+        .collect()
 }
 
 /// Six vertices covering `bounds` plus the contact shadow's reach and its shift.
@@ -267,42 +291,26 @@ fn sub2(a: [f32; 2], b: [f32; 2]) -> [f32; 2] {
     [a[0] - b[0], a[1] - b[1]]
 }
 
-/// Instance data for the world (one identity instance at index 0) and then each kind in order.
-/// Returns the data and the instance range of each kind. An instance's object ID is its index
-/// in the data, so the identity instance is ID 0, which the outline pass treats as the ground.
+/// Instance data grouped kind by kind, and the instance range of each kind.
 pub fn instance_data(instances: &[Instance], kinds: usize) -> (Vec<InstanceRaw>, Vec<Range<u32>>) {
-    let mut raw = vec![InstanceRaw {
-        offset: [0.0; 3],
-        tint: 0,
-        id: 0,
-    }];
+    let mut raw = Vec::with_capacity(instances.len());
     let mut ranges = Vec::with_capacity(kinds);
     for kind in 0..kinds {
         let start = raw.len() as u32;
-        for inst in instances
-            .iter()
-            .filter(|inst| usize::from(inst.kind) == kind)
-        {
-            let id = raw.len() as u32;
-            assert!(
-                id < MAX_OBJECT_ID,
-                "too many objects for the outline IDs: {id}"
-            );
-            raw.push(InstanceRaw {
-                offset: inst.offset,
-                tint: u32::from(inst.tint),
-                id,
-            });
-        }
+        raw.extend(
+            instances
+                .iter()
+                .filter(|inst| usize::from(inst.kind) == kind)
+                .map(|inst| InstanceRaw {
+                    offset: inst.offset,
+                    tint: u32::from(inst.tint),
+                }),
+        );
         ranges.push(start..raw.len() as u32);
     }
-    let known = instances
-        .iter()
-        .filter(|i| usize::from(i.kind) < kinds)
-        .count();
     assert_eq!(
-        raw.len() - 1,
-        known,
+        raw.len(),
+        instances.len(),
         "every instance must name a model kind below {kinds}"
     );
     (raw, ranges)
@@ -383,8 +391,8 @@ mod tests {
             true,
             Detail::Always,
         );
-        assert_eq!(line_vertices(&[open]).vertices.len(), 2 * 6);
-        assert_eq!(line_vertices(&[closed]).vertices.len(), 3 * 6);
+        assert_eq!(line_vertices(&[open]).vertices.len(), 2 * 4);
+        assert_eq!(line_vertices(&[closed]).vertices.len(), 3 * 4);
     }
 
     #[test]
@@ -395,10 +403,21 @@ mod tests {
             stroke(vec![[0.0; 3], [3.0, 0.0, 0.0]], false, Detail::Near),
         ];
         let strokes = line_vertices(&lines);
-        assert_eq!(strokes.counts, [6, 12, 18]);
+        assert_eq!(strokes.counts, [4, 8, 12]);
         assert_eq!(strokes.vertices[0].b, [2.0, 0.0, 0.0]);
-        assert_eq!(strokes.vertices[6].b, [3.0, 0.0, 0.0]);
-        assert_eq!(strokes.vertices[12].b, [1.0, 0.0, 0.0]);
+        assert_eq!(strokes.vertices[4].b, [3.0, 0.0, 0.0]);
+        assert_eq!(strokes.vertices[8].b, [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn a_quad_is_two_triangles_over_its_own_four_corners() {
+        assert_eq!(quad_indices(2), [0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7]);
+        // Both triangles turn the same way, so together they cover the quad without crossing.
+        let turn = |[a, b, c]: [usize; 3]| {
+            let [p, q, r] = [a, b, c].map(|i| SEGMENT_CORNERS[i]);
+            (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+        };
+        assert!(turn([0, 1, 2]) > 0.0 && turn([0, 2, 3]) > 0.0);
     }
 
     #[test]
@@ -460,17 +479,45 @@ mod tests {
     }
 
     #[test]
-    fn instances_group_by_kind_after_the_identity_instance() {
+    fn instances_group_by_kind() {
         let inst = |kind: u16, x: f32| Instance {
             offset: [x, 0.0, 0.0],
             kind,
             tint: 0,
         };
         let (raw, ranges) = instance_data(&[inst(1, 1.0), inst(0, 2.0), inst(1, 3.0)], 2);
-        assert_eq!(raw[0].offset, [0.0; 3]);
-        assert_eq!(ranges, vec![1..2, 2..4]);
-        assert_eq!(raw[2].offset[0], 1.0);
-        assert_eq!(raw[3].offset[0], 3.0);
+        assert_eq!(ranges, vec![0..1, 1..3]);
+        let xs: Vec<f32> = raw.iter().map(|r| r.offset[0]).collect();
+        assert_eq!(xs, [2.0, 1.0, 3.0]);
+    }
+
+    #[test]
+    #[should_panic(expected = "every instance must name a model kind")]
+    fn an_instance_of_an_unknown_kind_panics() {
+        let stray = Instance {
+            offset: [0.0; 3],
+            kind: 5,
+            tint: 0,
+        };
+        instance_data(&[stray], 2);
+    }
+
+    #[test]
+    fn each_level_draws_its_own_mesh_edges_after_the_levels_before() {
+        let tri = |z: f32| Mesh {
+            positions: vec![[0.0, 0.0, z], [1.0, 0.0, z], [0.0, 1.0, z]],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            surfaces: vec![Surface::Paper; 3],
+            indices: vec![0, 1, 2],
+        };
+        let strokes = edge_vertices(&[tri(0.0), Mesh::default(), tri(2.0)]);
+        assert_eq!(
+            strokes.counts,
+            [12, 12, 24],
+            "three boundary creases a level"
+        );
+        assert!(strokes.vertices.iter().all(|v| v.crease == 1));
+        assert!(strokes.vertices[12..].iter().all(|v| v.ends[0][2] == 2.0));
     }
 
     #[test]

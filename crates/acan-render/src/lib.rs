@@ -1,7 +1,7 @@
 //! The Acan plant renderer. The scene is 3D meshes on an infinite grid, drawn by wgpu with a
-//! perspective orbit camera (or orthographic on request), four-tone paper shading, feature
-//! edges, and an object-ID outline pass. The model shape is the shared contract in
-//! `ui-figure-contract-v2`.
+//! perspective orbit camera (or orthographic on request), four-tone paper shading, and one
+//! anti-aliased stroke for every contour and crease, found from each mesh's edges. The model
+//! shape is the shared contract in `ui-figure-contract-v2`.
 
 pub mod camera;
 pub mod edges;

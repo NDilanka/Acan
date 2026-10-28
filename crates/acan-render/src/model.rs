@@ -33,6 +33,7 @@ pub struct Mesh {
 pub struct Line3 {
     pub points: Vec<[f32; 3]>,
     pub closed: bool,
+    /// Lines are grey: a coloured ink draws as the grey of its luminance.
     pub tone: Ink,
     /// Stroke width in device pixels at every zoom. The renderer keeps it at least 0.75 px.
     pub width: f32,
@@ -67,7 +68,8 @@ pub enum Ink {
     Mid,
     Lo,
     Faint,
-    /// The thin light line on a model's crease, drawn from its mesh at build time.
+    /// A seam: a light painted line where two parts of a surface meet. Lighter than the
+    /// contours and creases the renderer strokes from the mesh.
     Edge,
     Lit,
     Red,

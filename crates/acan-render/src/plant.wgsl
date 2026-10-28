@@ -27,20 +27,16 @@ struct Theme {
 @group(0) @binding(0) var<uniform> camera: Camera;
 @group(0) @binding(1) var<uniform> theme: Theme;
 
-// Depth and object IDs from the scene pass, one value per MSAA sample. The ID's alpha holds the
-// fog of the surface. Read by the edge pass only.
-@group(1) @binding(0) var depth_tex: texture_depth_@@MS@@2d;
-@group(1) @binding(1) var id_tex: texture_@@MS@@2d<f32>;
+// The line pass's ink, resolved to one sample per pixel. Read by the ink pass only.
+@group(1) @binding(0) var ink_tex: texture_2d<f32>;
 
-// MSAA samples per pixel in the scene targets: 1 or 4. The renderer fills this in.
-const SAMPLES: i32 = @@SAMPLES@@;
 // Palette slots and tuning constants from `theme.rs`, written in by the renderer.
 @@THEME@@
 // The ground is depth-tested this far below z = 0, so surfaces that lie on it pass the test.
 const GROUND_Z: f32 = -0.05;
 // Faces whose normal is steeper than this are tops.
 const TOP_NZ: f32 = 0.7;
-// Lines and dots sit this far toward the viewer, so they never z-fight the surface under them.
+// Dots sit this far toward the viewer, so they never z-fight the surface under them.
 const LIFT: f32 = 0.05;
 
 // Depth is reverse: 1 at the near plane and smaller farther away, cleared to 0. Perspective puts
@@ -99,17 +95,6 @@ fn paper_grey(n: vec3<f32>) -> f32 {
     return 1.0 - mix(side, PAPER_TOP, up);
 }
 
-// An object ID in three 8-bit channels. The alpha carries the fog for the outline pass.
-fn id_colour(id: u32, fog: f32) -> vec4<f32> {
-    let bytes = vec3<f32>(f32(id & 255u), f32((id >> 8u) & 255u), f32((id >> 16u) & 255u));
-    return vec4<f32>(bytes / 255.0, fog);
-}
-
-struct FragOut {
-    @location(0) colour: vec4<f32>,
-    @location(1) id: vec4<f32>,
-}
-
 // Mesh pass: one draw per kind per level, instanced.
 
 struct MeshIn {
@@ -118,7 +103,6 @@ struct MeshIn {
     @location(2) code: u32,
     @location(3) offset: vec3<f32>,
     @location(4) tint: u32,
-    @location(5) id: u32,
 }
 
 struct MeshOut {
@@ -127,7 +111,6 @@ struct MeshOut {
     @location(1) @interpolate(flat) code: u32,
     @location(2) @interpolate(flat) tint: u32,
     @location(3) world: vec3<f32>,
-    @location(4) @interpolate(flat) id: u32,
 }
 
 @vertex
@@ -139,12 +122,11 @@ fn vs_mesh(v: MeshIn) -> MeshOut {
     out.code = v.code;
     out.tint = v.tint;
     out.world = p;
-    out.id = v.id;
     return out;
 }
 
 @fragment
-fn fs_mesh(v: MeshOut) -> FragOut {
+fn fs_mesh(v: MeshOut) -> @location(0) vec4<f32> {
     let n = normalize(v.normal);
     var ink = vec4<f32>(vec3<f32>(paper_grey(n)), 1.0);
     if (v.code != 0u) {
@@ -153,7 +135,7 @@ fn fs_mesh(v: MeshOut) -> FragOut {
     ink = ink * theme.tints[v.tint];
     let fog = fog_at(v.world);
     let page = theme.palette[SLOT_PAGE].rgb;
-    return FragOut(vec4<f32>(mix(ink.rgb, page, fog), ink.a), id_colour(v.id, fog));
+    return vec4<f32>(mix(ink.rgb, page, fog), ink.a);
 }
 
 // Ground: one full-screen triangle. Each pixel's view ray meets the ground at a plan point, and
@@ -228,7 +210,6 @@ fn grid_alpha(ground: vec2<f32>) -> f32 {
 
 struct GridOut {
     @location(0) colour: vec4<f32>,
-    @location(1) id: vec4<f32>,
     @builtin(frag_depth) depth: f32,
 }
 
@@ -246,7 +227,7 @@ fn fs_grid(@builtin(position) frag: vec4<f32>) -> GridOut {
     let page = theme.palette[SLOT_PAGE].rgb;
     let ink = theme.palette[SLOT_GRID].rgb;
     let depth = select(0.0, clamp(ndc_depth(vec3<f32>(g, GROUND_Z)), 0.0, 1.0), ray.hit);
-    return GridOut(vec4<f32>(mix(page, ink, alpha), 1.0), vec4<f32>(0.0), depth);
+    return GridOut(vec4<f32>(mix(page, ink, alpha), 1.0), depth);
 }
 
 // Belts: flat opaque ribbons on the ground. The side and end lines are drawn in the fill, from the
@@ -284,7 +265,7 @@ fn vs_ribbon(v: RibbonIn) -> RibbonOut {
 }
 
 @fragment
-fn fs_ribbon(v: RibbonOut) -> FragOut {
+fn fs_ribbon(v: RibbonOut) -> @location(0) vec4<f32> {
     // Plan units per device pixel along each axis's screen gradient. The gradient length, unlike
     // fwidth, is the true screen distance across the belt, so a slanted belt reads its real width.
     let per_px_across = max(length(vec2<f32>(dpdx(v.across), dpdy(v.across))), 1e-6);
@@ -299,7 +280,7 @@ fn fs_ribbon(v: RibbonOut) -> FragOut {
     let colour = mix(fill, edge.rgb, edge.a * line * shown);
     let fog = fog_at(v.world);
     let page = theme.palette[SLOT_PAGE].rgb;
-    return FragOut(vec4<f32>(mix(colour, page, fog), 1.0), vec4<f32>(0.0));
+    return vec4<f32>(mix(colour, page, fog), 1.0);
 }
 
 // Contact shadow: a short soft falloff on the ground around each footprint, pushed a little
@@ -330,7 +311,7 @@ fn vs_halo(v: HaloIn) -> HaloOut {
 }
 
 @fragment
-fn fs_halo(v: HaloOut) -> FragOut {
+fn fs_halo(v: HaloOut) -> @location(0) vec4<f32> {
     let shifted = v.local - SHADOW_SHIFT * normalize(camera.right.xy);
     let q = max(max(v.rect.xy - shifted, shifted - v.rect.zw), vec2<f32>(0.0));
     let fade = 1.0 - smoothstep(0.0, SHADOW_REACH, length(q));
@@ -338,11 +319,26 @@ fn fs_halo(v: HaloOut) -> FragOut {
     let page = theme.palette[SLOT_PAGE].rgb;
     let fog = fog_at(v.world);
     let alpha = halo.a * fade * fade * (1.0 - fog);
-    return FragOut(vec4<f32>(mix(halo.rgb, page, fog), alpha), vec4<f32>(0.0));
+    return vec4<f32>(mix(halo.rgb, page, fog), alpha);
 }
 
-// Lines: each segment is six vertices. The vertex shader widens it to a constant device-pixel
-// width, and the fragment shader anti-aliases the edge.
+// Lines: every mesh edge that draws, then the painted lines. Each segment is a quad. The
+// vertex shader lays a quad over the segment on screen, wider than the stroke by a pixel of
+// anti-aliasing on every side, and the fragment shader cuts the stroke out of the quad by its
+// distance to the segment, so every end is a round cap. Lines draw into the ink target, where
+// they meet by max, so a joint or a crossing is never darker than one line. The target holds
+// one channel, how much a line darkens the page, so a line is grey: a coloured ink draws as
+// the grey of its luminance.
+
+struct EdgeIn {
+    @location(0) a: vec3<f32>,
+    @location(1) b: vec3<f32>,
+    @location(2) normal_a: vec3<f32>,
+    @location(3) normal_b: vec3<f32>,
+    @location(4) corner: vec2<f32>,
+    @location(5) crease: u32,
+    @location(6) offset: vec3<f32>,
+}
 
 struct LineIn {
     @location(0) a: vec3<f32>,
@@ -353,78 +349,151 @@ struct LineIn {
     @location(5) offset: vec3<f32>,
 }
 
-struct LineOut {
+struct StrokeOut {
     @builtin(position) clip: vec4<f32>,
-    @location(0) across: f32,
-    @location(1) half_px: f32,
-    @location(2) cover: f32,
-    @location(3) @interpolate(flat) tone: u32,
-    @location(4) world: vec3<f32>,
+    // The segment's ends in device px from the viewport's middle, y up: one in xy, one in zw.
+    @location(0) @interpolate(flat) ends: vec4<f32>,
+    // The ink. Its alpha is the ink's opacity times the share of the stroke that shows, faded by
+    // the fog at the segment's middle.
+    @location(1) @interpolate(flat) ink: vec4<f32>,
+    @location(2) @interpolate(flat) half_px: f32,
 }
 
-// How much of a machine's inner line art shows, from its size on screen at its origin.
-fn detail_shown(origin: vec3<f32>) -> f32 {
+// A machine's size on screen, as the device px that `LOD_REFERENCE` plan units span at its origin.
+fn screen_size(origin: vec3<f32>) -> f32 {
     var px_per_unit = camera.view.z;
     if (!is_ortho()) {
         px_per_unit = camera.depth.z / max(depth_of(origin), camera.depth.x);
     }
-    return smoothstep(LOD_FADE_PX[0], LOD_FADE_PX[1], px_per_unit * LOD_REFERENCE);
+    return px_per_unit * LOD_REFERENCE;
 }
 
-@vertex
-fn vs_line(v: LineIn) -> LineOut {
-    let shown = detail_shown(v.offset);
-    if (shown <= 0.0) {
-        // Every corner of the segment lands on one point, so it rasterizes nothing.
-        var gone: LineOut;
-        gone.clip = vec4<f32>(0.0, 0.0, 0.0, 1.0);
-        return gone;
+// How much of a machine's painted detail shows.
+fn detail_shown(origin: vec3<f32>) -> f32 {
+    return smoothstep(LOD_FADE_PX[0], LOD_FADE_PX[1], screen_size(origin));
+}
+
+// How far a machine's line ink has eased in, from 0 when it is small on screen to 1 when large.
+fn line_strength(origin: vec3<f32>) -> f32 {
+    let size = max(screen_size(origin), 1e-3);
+    return clamp(log2(size / LINE_FADE_PX[0]) / log2(LINE_FADE_PX[1] / LINE_FADE_PX[0]), 0.0, 1.0);
+}
+
+// The point moved `LINE_LIFT_PX` device px toward the eye at its own distance, along its ray, so
+// it stays on the same pixel.
+fn lifted(p: vec3<f32>) -> vec3<f32> {
+    if (is_ortho()) {
+        return p + camera.toward.xyz * (LINE_LIFT_PX / camera.view.z);
     }
-    let lift = camera.toward.xyz * LIFT;
-    let pa = v.a + v.offset + lift;
-    let pb = v.b + v.offset + lift;
+    return p + normalize(camera.eye.xyz - p) * (LINE_LIFT_PX * depth_of(p) / camera.depth.z);
+}
+
+// Whether a mesh edge draws, before the depth test. A smooth edge draws on the contour, where
+// one face turns toward the eye and the other away. A crease draws when either face turns
+// toward the eye. Mirrors `Edge::shows_from` in `edges.rs`.
+fn edge_shows(front_a: bool, front_b: bool, crease: bool) -> bool {
+    return front_a != front_b || (crease && (front_a || front_b));
+}
+
+fn faces_eye(normal: vec3<f32>, at: vec3<f32>) -> bool {
+    var to_eye = camera.toward.xyz;
+    if (!is_ortho()) {
+        to_eye = camera.eye.xyz - at;
+    }
+    return dot(normal, to_eye) > 0.0;
+}
+
+// Every corner lands on one point, so the segment rasterizes nothing.
+fn no_stroke() -> StrokeOut {
+    var gone: StrokeOut;
+    gone.clip = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    return gone;
+}
+
+fn stroke(
+    a: vec3<f32>,
+    b: vec3<f32>,
+    half_px: f32,
+    ink: vec4<f32>,
+    corner: vec2<f32>,
+) -> StrokeOut {
+    let pa = lifted(a);
+    let pb = lifted(b);
     let ca = to_clip(pa);
     let cb = to_clip(pb);
     let view = camera.view.xy;
-    // The stroke's direction on screen, in device px, from the ends after the perspective divide.
-    let delta = (cb.xy / cb.w - ca.xy / ca.w) * view * 0.5;
+    let sa = ca.xy / ca.w * view * 0.5;
+    let sb = cb.xy / cb.w * view * 0.5;
+    let delta = sb - sa;
     let len = length(delta);
     var dir = vec2<f32>(1.0, 0.0);
     if (len > 1e-6) {
         dir = delta / len;
     }
     let normal = vec2<f32>(-dir.y, dir.x);
-
-    let min_px = camera.view.w;
-    let half_px = max(v.width, min_px) * 0.5;
-    let across = v.corner.y * half_px;
+    // The coverage reaches zero half a pixel past the stroke's edge.
+    let reach = half_px + 0.5;
+    let shift = (normal * corner.y + dir * (corner.x * 2.0 - 1.0)) * reach;
 
     // Clip space is linear along a segment, so the interpolated point is exact. An offset of
-    // `across` px is 2 / view times that in NDC, and NDC is clip over w.
-    let base = mix(ca, cb, v.corner.x);
-    let shift = normal * across * 2.0 / view * base.w;
-    var out: LineOut;
-    out.clip = vec4<f32>(base.xy + shift, base.z, base.w);
-    out.across = across;
+    // `shift` px is 2 / view times that in NDC, and NDC is clip over w.
+    let base = mix(ca, cb, corner.x);
+    var out: StrokeOut;
+    out.clip = vec4<f32>(base.xy + shift * 2.0 / view * base.w, base.z, base.w);
+    out.ends = vec4<f32>(sa, sb);
+    out.ink = vec4<f32>(ink.rgb, ink.a * (1.0 - fog_at(0.5 * (pa + pb))));
     out.half_px = half_px;
-    out.cover = min(v.width / min_px, 1.0) * shown;
-    out.tone = v.tone;
-    out.world = mix(pa, pb, v.corner.x);
     return out;
 }
 
-@fragment
-fn fs_line(v: LineOut) -> FragOut {
-    let coverage = clamp(v.half_px - abs(v.across) + 0.5, 0.0, 1.0) * v.cover;
-    if (coverage <= 0.0) {
-        discard;
+@vertex
+fn vs_edge(v: EdgeIn) -> StrokeOut {
+    let a = v.a + v.offset;
+    let b = v.b + v.offset;
+    let mid = 0.5 * (a + b);
+    let front_a = faces_eye(v.normal_a, mid);
+    let front_b = faces_eye(v.normal_b, mid);
+    if (!edge_shows(front_a, front_b, v.crease != 0u)) {
+        return no_stroke();
     }
-    let ink = theme.palette[v.tone];
-    let page = theme.palette[SLOT_PAGE].rgb;
-    let fog = fog_at(v.world);
-    return FragOut(vec4<f32>(mix(ink.rgb, page, fog), ink.a * coverage), vec4<f32>(0.0));
+    // An open boundary has one face, so both its normals are the same.
+    let outer = front_a != front_b || all(v.normal_a == v.normal_b);
+    let far = select(CREASE_FAR_ALPHA, CONTOUR_FAR_ALPHA, outer);
+    var ink = theme.palette[SLOT_LINE];
+    ink.a = ink.a * mix(far, 1.0, line_strength(v.offset));
+    if (ink.a <= 0.0) {
+        return no_stroke();
+    }
+    return stroke(a, b, 0.5 * LINE_PX, ink, v.corner);
 }
 
+@vertex
+fn vs_line(v: LineIn) -> StrokeOut {
+    let shown = detail_shown(v.offset);
+    if (shown <= 0.0) {
+        return no_stroke();
+    }
+    // A stroke thinner than the floor draws at the floor with its ink thinned to match.
+    let min_px = camera.view.w;
+    var ink = theme.palette[v.tone];
+    ink.a = ink.a * min(v.width / min_px, 1.0) * shown;
+    return stroke(v.a + v.offset, v.b + v.offset, 0.5 * max(v.width, min_px), ink, v.corner);
+}
+
+const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
+
+// The ink a stroke lays on the page, as how much it darkens it.
+@fragment
+fn fs_stroke(v: StrokeOut) -> @location(0) vec4<f32> {
+    let p = vec2<f32>(v.clip.x - 0.5 * camera.view.x, 0.5 * camera.view.y - v.clip.y);
+    let a = v.ends.xy;
+    let ab = v.ends.zw - a;
+    let t = clamp(dot(p - a, ab) / max(dot(ab, ab), 1e-6), 0.0, 1.0);
+    let coverage = clamp(v.half_px - distance(p, a + t * ab) + 0.5, 0.0, 1.0);
+    // No discard: under the max blend a zero changes nothing, and a discard costs more.
+    let alpha = coverage * v.ink.a;
+    return vec4<f32>((1.0 - dot(v.ink.rgb, LUMA)) * alpha, 0.0, 0.0, alpha);
+}
 // Dots: a disc is a square of corners in its own plane, cut to a circle in the fragment shader.
 
 struct DotIn {
@@ -455,7 +524,7 @@ fn vs_dot(v: DotIn) -> DotOut {
 }
 
 @fragment
-fn fs_dot(v: DotOut) -> FragOut {
+fn fs_dot(v: DotOut) -> @location(0) vec4<f32> {
     let r = length(v.uv);
     let aa = max(fwidth(r), 1e-4);
     let coverage = clamp((1.0 - r) / aa + 0.5, 0.0, 1.0);
@@ -465,83 +534,14 @@ fn fs_dot(v: DotOut) -> FragOut {
     let ink = theme.palette[v.tone];
     let page = theme.palette[SLOT_PAGE].rgb;
     let fog = fog_at(v.world);
-    return FragOut(vec4<f32>(mix(ink.rgb, page, fog), ink.a * coverage), vec4<f32>(0.0));
+    return vec4<f32>(mix(ink.rgb, page, fog), ink.a * coverage);
 }
 
-// Outline pass: a full-screen triangle that reads the object ID and depth at every MSAA sample.
-// A sample is on the outline when a 1-pixel neighbour is another object that lies farther away,
-// or is the ground. The mark falls on the object's own side of the edge, so the line is one
-// device pixel wide. Its coverage is the share of samples marked, which anti-aliases it.
-
-const DIRS: array<vec2<i32>, 4> = array<vec2<i32>, 4>(
-    vec2<i32>(1, 0),
-    vec2<i32>(0, 1),
-    vec2<i32>(-1, 0),
-    vec2<i32>(0, -1),
-);
-
-struct Texel {
-    id: u32,
-    depth: f32,
-    fog: f32,
-}
-
-fn texel(p: vec2<i32>, s: i32) -> Texel {
-    let c = textureLoad(id_tex, p, s);
-    let bytes = vec3<u32>(round(c.rgb * 255.0));
-    let id = bytes.r | (bytes.g << 8u) | (bytes.b << 16u);
-    return Texel(id, textureLoad(depth_tex, p, s), c.a);
-}
-
-// 1 where sample `s` of pixel `p` is on the outline, else 0. The ground (ID 0) is never outlined.
-fn sample_mark(p: vec2<i32>, dims: vec2<i32>, s: i32) -> f32 {
-    let c = texel(p, s);
-    if (c.id == 0u) {
-        return 0.0;
-    }
-    for (var k = 0; k < 4; k = k + 1) {
-        let q = clamp(p + DIRS[k], vec2<i32>(0), dims - vec2<i32>(1));
-        let o = texel(q, s);
-        if (o.id != c.id && (o.id == 0u || o.depth < c.depth)) {
-            return 1.0;
-        }
-    }
-    return 0.0;
-}
-
+// Ink pass: a full-screen triangle that lays the resolved line ink on the frame. Its blend
+// multiplies the frame by one minus the ink, so a line darkens paper, a shaded side and a belt
+// alike.
 @fragment
-fn fs_edge(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
-    let dims = vec2<i32>(textureDimensions(depth_tex));
-    let p = vec2<i32>(frag.xy);
-    // Most pixels lie inside one object, and their sample-0 neighbours share its ID. Those skip
-    // the per-sample work.
-    let centre = texel(p, 0);
-    var interior = true;
-    for (var k = 0; k < 4; k = k + 1) {
-        let q = clamp(p + DIRS[k], vec2<i32>(0), dims - vec2<i32>(1));
-        if (texel(q, 0).id != centre.id) {
-            interior = false;
-        }
-    }
-    if (interior) {
-        discard;
-    }
-    var cover = 0.0;
-    for (var s = 0; s < SAMPLES; s = s + 1) {
-        cover = cover + sample_mark(p, dims, s);
-    }
-    cover = cover / f32(SAMPLES);
-    if (cover <= 0.0) {
-        discard;
-    }
-    // The object's scale at this pixel, from its reverse depth: near over distance, so the focal
-    // length times the depth over the near plane is device px per plan unit.
-    var px_per_unit = camera.view.z;
-    if (!is_ortho()) {
-        px_per_unit = camera.depth.z * centre.depth / camera.depth.x;
-    }
-    let near = smoothstep(LOD_FADE_PX[0], LOD_FADE_PX[1], px_per_unit * LOD_REFERENCE);
-    let outline = mix(theme.palette[SLOT_OUTLINE_FAR], theme.palette[SLOT_OUTLINE], near);
-    let page = theme.palette[SLOT_PAGE].rgb;
-    return vec4<f32>(mix(outline.rgb, page, centre.fog), outline.a * cover);
+fn fs_ink(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let ink = textureLoad(ink_tex, vec2<i32>(frag.xy), 0).r;
+    return vec4<f32>(vec3<f32>(ink), 0.0);
 }

@@ -1,8 +1,10 @@
-//! The wgpu renderer. A frame has two passes. The first draws the ground, belts, contact
-//! shadows, machines, lines and dots into colour, object-ID and depth targets, 4x MSAA where the device
-//! allows it. The ground writes no ID, so it is object 0. The second runs the outline pass over
-//! every MSAA sample of IDs and depth and resolves into the surface. Model buffers are uploaded
-//! once per model set and per scene, never per frame.
+//! The wgpu renderer. A frame has three passes, 4x MSAA where the device allows it. The scene
+//! pass draws the ground, belts, contact shadows, machines and dots into colour and depth, and
+//! resolves the colour into the surface. The line pass strokes every mesh edge that draws and
+//! every painted line into a one-channel ink target, tested against the scene's depth, and
+//! blends them by max so lines join without dark spots. The ink pass multiplies the ink onto the
+//! surface once.
+//! Model buffers are uploaded once per model set and per scene, never per frame.
 
 use std::mem::size_of;
 use std::ops::Range;
@@ -11,23 +13,28 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::camera::{Camera, NEAR_FRACTION, ORTHO_FAR, Projection};
-use crate::edges;
 use crate::geometry::{
-    self, DETAILS, DotVertex, HaloVertex, InstanceRaw, LineVertex, MeshVertex, RibbonVertex,
+    self, DotVertex, EdgeVertex, HaloVertex, InstanceRaw, LineVertex, MeshVertex, RibbonVertex,
     Strokes,
 };
-use crate::model::{Line3, Mesh, Model};
+use crate::model::{Mesh, Model};
 use crate::scene::{Lod, Scene};
 use crate::theme::{self, PALETTE_LEN, TINT_LEN};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-/// Object IDs (three 8-bit channels) with the surface's fog in alpha.
-const ID_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// Line ink, as how much it darkens the frame. One channel, so lines are grey: under MSAA the
+/// line pass is bound by its target's bandwidth, and RGBA ink was measurably slower on a large
+/// plant zoomed out.
+const INK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 const MSAA: u32 = 4;
 /// Thinnest stroke on screen, in device pixels. Thinner strokes fade out instead.
 const MIN_STROKE_PX: f32 = 0.75;
 /// The depth cleared before a frame. The depth is reverse, so this is the farthest value.
 const FAR_DEPTH: f32 = 0.0;
+/// Machine faces are pushed back by this many device pixels' worth of their own depth slope.
+/// A line that lies on a face steep to the view, such as the facet next to a cylinder's
+/// contour, then wins the depth test across its whole width.
+const MESH_SLOPE_BIAS: f32 = 2.0;
 
 /// Why a renderer could not be created or a frame could not be drawn.
 #[non_exhaustive]
@@ -60,12 +67,9 @@ pub struct CameraUniform {
     pub fog: [f32; 4],
 }
 
-/// The shader source for a scene target with `samples` MSAA samples per pixel.
-pub fn plant_source(samples: u32) -> String {
-    let multisampled = if samples > 1 { "multisampled_" } else { "" };
+/// The shader source, with the theme's constants written in.
+pub fn plant_source() -> String {
     include_str!("plant.wgsl")
-        .replace("@@MS@@", multisampled)
-        .replace("@@SAMPLES@@", &samples.to_string())
         .replace("@@PALETTE_LEN@@", &PALETTE_LEN.to_string())
         .replace("@@THEME@@", &theme::wgsl_consts())
 }
@@ -85,12 +89,13 @@ struct MeshBuffers {
 
 struct StrokeBuffers {
     buffer: wgpu::Buffer,
-    /// Cumulative vertex counts by level of detail.
+    /// Cumulative vertex counts by level of detail, four to a quad.
     counts: [u32; 3],
 }
 
 struct ModelBuffers {
     levels: [MeshBuffers; 3],
+    edges: StrokeBuffers,
     lines: StrokeBuffers,
     dots: StrokeBuffers,
 }
@@ -100,17 +105,24 @@ struct Pipelines {
     ribbon: wgpu::RenderPipeline,
     mesh: wgpu::RenderPipeline,
     halo: wgpu::RenderPipeline,
-    line: wgpu::RenderPipeline,
     dot: wgpu::RenderPipeline,
     edge: wgpu::RenderPipeline,
+    line: wgpu::RenderPipeline,
+    ink: wgpu::RenderPipeline,
 }
 
-/// Targets that the scene pass writes and the outline pass reads.
+/// The multisampled targets that resolve into the surface and the ink.
+struct Multisampled {
+    colour: wgpu::TextureView,
+    ink: wgpu::TextureView,
+}
+
 struct Targets {
-    /// The multisampled colour target, or `None` when the surface is drawn directly.
-    colour: Option<wgpu::TextureView>,
-    id: wgpu::TextureView,
+    /// `None` when the scene is drawn at one sample, straight into the surface and the ink.
+    msaa: Option<Multisampled>,
     depth: wgpu::TextureView,
+    /// The line ink at one sample per pixel, which the ink pass reads.
+    ink: wgpu::TextureView,
 }
 
 pub struct Renderer {
@@ -122,12 +134,15 @@ pub struct Renderer {
     samples: u32,
     camera_buf: wgpu::Buffer,
     uniform_bind: wgpu::BindGroup,
-    edge_layout: wgpu::BindGroupLayout,
-    edge_bind: wgpu::BindGroup,
+    ink_layout: wgpu::BindGroupLayout,
+    ink_bind: wgpu::BindGroup,
     targets: Targets,
     pipelines: Pipelines,
     clear: wgpu::Color,
     models: Vec<ModelBuffers>,
+    /// The indices of as many quads as the largest stroke buffer holds, shared by every stroke
+    /// and dot draw.
+    quads: Option<wgpu::Buffer>,
     /// Six halo vertices per kind, kind by kind.
     halos: Option<wgpu::Buffer>,
     ribbons: Option<(wgpu::Buffer, u32)>,
@@ -219,23 +234,23 @@ impl Renderer {
                 },
             ],
         });
-        let edge_layout = edge_layout(&device, samples);
+        let ink_layout = ink_layout(&device);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("plant"),
-            source: wgpu::ShaderSource::Wgsl(plant_source(samples).into()),
+            source: wgpu::ShaderSource::Wgsl(plant_source().into()),
         });
         let pipelines = Pipelines::new(
             &device,
             &shader,
             &uniform_layout,
-            &edge_layout,
+            &ink_layout,
             format,
             samples,
         );
 
         let targets = targets(&device, format, samples, config.width, config.height);
-        let edge_bind = edge_bind(&device, &edge_layout, &targets);
+        let ink_bind = ink_bind(&device, &ink_layout, &targets);
         Ok(Self {
             adapter_info: adapter.get_info(),
             device,
@@ -245,8 +260,8 @@ impl Renderer {
             samples,
             camera_buf,
             uniform_bind,
-            edge_layout,
-            edge_bind,
+            ink_layout,
+            ink_bind,
             targets,
             pipelines,
             clear: wgpu::Color {
@@ -256,6 +271,7 @@ impl Renderer {
                 a: page[3] as f64,
             },
             models: Vec::new(),
+            quads: None,
             halos: None,
             ribbons: None,
             instances: None,
@@ -290,36 +306,36 @@ impl Renderer {
             self.config.width,
             self.config.height,
         );
-        self.edge_bind = edge_bind(&self.device, &self.edge_layout, &self.targets);
+        self.ink_bind = ink_bind(&self.device, &self.ink_layout, &self.targets);
     }
 
-    /// Uploads every kind's three meshes, lines, dots and halo once. Instances refer to kinds by
-    /// index into this slice. Call `set_scene` afterwards, because the instance ranges depend
-    /// on the kinds. Each level's feature edges are extracted here, from its mesh, and drawn
-    /// at that level's detail.
+    /// Uploads every kind's three meshes, edges, lines, dots and halo once. Instances refer to
+    /// kinds by index into this slice. Call `set_scene` afterwards, because the instance ranges
+    /// depend on the kinds. Each level's edges are found here, from its mesh, and drawn at that
+    /// level's detail.
     pub fn set_models(&mut self, models: &[Model]) {
         self.models = models
             .iter()
-            .map(|model| {
-                let mut lines: Vec<Line3> = model.lines.clone();
-                for (mesh, detail) in model.meshes.iter().zip(DETAILS) {
-                    lines.extend(edges::feature_lines(mesh, detail));
-                }
-                ModelBuffers {
-                    levels: model.meshes.each_ref().map(|mesh| self.mesh_buffers(mesh)),
-                    lines: self.strokes(
-                        "lines",
-                        geometry::line_vertices(&lines),
-                        wgpu::BufferUsages::VERTEX,
-                    ),
-                    dots: self.strokes(
-                        "dots",
-                        geometry::dot_vertices(&model.dots),
-                        wgpu::BufferUsages::VERTEX,
-                    ),
-                }
+            .map(|model| ModelBuffers {
+                levels: model.meshes.each_ref().map(|mesh| self.mesh_buffers(mesh)),
+                edges: self.strokes("edges", geometry::edge_vertices(&model.meshes)),
+                lines: self.strokes("lines", geometry::line_vertices(&model.lines)),
+                dots: self.strokes("dots", geometry::dot_vertices(&model.dots)),
             })
             .collect();
+        let most = self
+            .models
+            .iter()
+            .flat_map(|m| [&m.edges, &m.lines, &m.dots])
+            .map(|s| s.counts[2])
+            .max()
+            .unwrap_or(0);
+        self.quads = Some(upload(
+            &self.device,
+            "stroke quads",
+            wgpu::BufferUsages::INDEX,
+            &geometry::quad_indices(most / geometry::QUAD_CORNERS),
+        ));
         let halos: Vec<HaloVertex> = models
             .iter()
             .flat_map(|model| geometry::halo_vertices(&model.bounds))
@@ -394,30 +410,23 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("frame"),
             });
-        let scene_colour = self.targets.colour.as_ref().unwrap_or(&surface_view);
+        let (scene_view, scene_resolve, ink_view, ink_resolve) = match &self.targets.msaa {
+            Some(msaa) => (
+                &msaa.colour,
+                Some(&surface_view),
+                &msaa.ink,
+                Some(&self.targets.ink),
+            ),
+            None => (&surface_view, None, &self.targets.ink, None),
+        };
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene"),
-                color_attachments: &[
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: scene_colour,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(self.clear),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    }),
-                    Some(wgpu::RenderPassColorAttachment {
-                        view: &self.targets.id,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    }),
-                ],
+                color_attachments: &[Some(attachment(
+                    scene_view,
+                    scene_resolve,
+                    wgpu::LoadOp::Clear(self.clear),
+                ))],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.targets.depth,
                     depth_ops: Some(wgpu::Operations {
@@ -433,33 +442,39 @@ impl Renderer {
             self.draw_scene(&mut pass, lod);
         }
         {
-            let (view, resolve) = match &self.targets.colour {
-                Some(msaa) => (msaa, Some(&surface_view)),
-                None => (&surface_view, None),
-            };
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("edges"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view,
-                    depth_slice: None,
-                    resolve_target: resolve,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: if resolve.is_some() {
-                            wgpu::StoreOp::Discard
-                        } else {
-                            wgpu::StoreOp::Store
-                        },
-                    },
-                })],
+                label: Some("lines"),
+                color_attachments: &[Some(attachment(
+                    ink_view,
+                    ink_resolve,
+                    wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                ))],
+                // Read-only: lines test against the scene's depth and leave it as it is.
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &self.targets.depth,
+                    depth_ops: None,
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_bind_group(0, &self.uniform_bind, &[]);
+            self.draw_strokes(&mut pass, &self.pipelines.edge, lod, |m| &m.edges);
+            self.draw_strokes(&mut pass, &self.pipelines.line, lod, |m| &m.lines);
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ink"),
+                color_attachments: &[Some(attachment(&surface_view, None, wgpu::LoadOp::Load))],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipelines.edge);
+            pass.set_pipeline(&self.pipelines.ink);
             pass.set_bind_group(0, &self.uniform_bind, &[]);
-            pass.set_bind_group(1, &self.edge_bind, &[]);
+            pass.set_bind_group(1, &self.ink_bind, &[]);
             pass.draw(0..3, 0..1);
         }
         self.queue.submit([encoder.finish()]);
@@ -511,29 +526,33 @@ impl Renderer {
             }
         }
 
-        pass.set_pipeline(&self.pipelines.line);
-        for (model, range) in self.models.iter().zip(&self.ranges) {
-            let count = model.lines.counts[lod as usize];
-            if count == 0 || range.is_empty() {
-                continue;
-            }
-            pass.set_vertex_buffer(0, model.lines.buffer.slice(..));
-            pass.set_vertex_buffer(1, instances.slice(..));
-            pass.draw(0..count, range.clone());
-        }
-
-        pass.set_pipeline(&self.pipelines.dot);
-        for (model, range) in self.models.iter().zip(&self.ranges) {
-            let count = model.dots.counts[lod as usize];
-            if count == 0 || range.is_empty() {
-                continue;
-            }
-            pass.set_vertex_buffer(0, model.dots.buffer.slice(..));
-            pass.set_vertex_buffer(1, instances.slice(..));
-            pass.draw(0..count, range.clone());
-        }
+        self.draw_strokes(pass, &self.pipelines.dot, lod, |m| &m.dots);
     }
 
+    /// Draws one kind of stroke of every model, instanced over the model's machines.
+    fn draw_strokes(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        pipeline: &wgpu::RenderPipeline,
+        lod: Lod,
+        strokes: impl Fn(&ModelBuffers) -> &StrokeBuffers,
+    ) {
+        let (Some(instances), Some(quads)) = (&self.instances, &self.quads) else {
+            return;
+        };
+        pass.set_pipeline(pipeline);
+        pass.set_index_buffer(quads.slice(..), wgpu::IndexFormat::Uint32);
+        for (model, range) in self.models.iter().zip(&self.ranges) {
+            let strokes = strokes(model);
+            let quad_count = strokes.counts[lod as usize] / geometry::QUAD_CORNERS;
+            if quad_count == 0 || range.is_empty() {
+                continue;
+            }
+            pass.set_vertex_buffer(0, strokes.buffer.slice(..));
+            pass.set_vertex_buffer(1, instances.slice(..));
+            pass.draw_indexed(0..6 * quad_count, 0, range.clone());
+        }
+    }
     fn uniform(&self, camera: &Camera) -> CameraUniform {
         let b = camera.basis();
         let pivot = camera.pivot();
@@ -582,14 +601,14 @@ impl Renderer {
         }
     }
 
-    fn strokes<V: Pod>(
-        &self,
-        label: &str,
-        strokes: Strokes<V>,
-        usage: wgpu::BufferUsages,
-    ) -> StrokeBuffers {
+    fn strokes<V: Pod>(&self, label: &str, strokes: Strokes<V>) -> StrokeBuffers {
         StrokeBuffers {
-            buffer: upload(&self.device, label, usage, &strokes.vertices),
+            buffer: upload(
+                &self.device,
+                label,
+                wgpu::BufferUsages::VERTEX,
+                &strokes.vertices,
+            ),
             counts: strokes.counts,
         }
     }
@@ -598,16 +617,19 @@ impl Renderer {
 /// 4x when the surface format and both targets support it with resolve, otherwise 1.
 fn sample_count(adapter: &wgpu::Adapter, surface: wgpu::TextureFormat) -> u32 {
     let supports = |format: wgpu::TextureFormat| {
-        adapter
-            .get_texture_format_features(format)
-            .flags
-            .sample_count_supported(MSAA)
+        let flags = adapter.get_texture_format_features(format).flags;
+        flags.sample_count_supported(MSAA)
     };
-    let resolves = adapter
-        .get_texture_format_features(surface)
-        .flags
-        .contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE);
-    if resolves && supports(surface) && supports(ID_FORMAT) && supports(DEPTH_FORMAT) {
+    let resolves = |format: wgpu::TextureFormat| {
+        let flags = adapter.get_texture_format_features(format).flags;
+        flags.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE)
+    };
+    if resolves(surface)
+        && resolves(INK_FORMAT)
+        && supports(surface)
+        && supports(INK_FORMAT)
+        && supports(DEPTH_FORMAT)
+    {
         MSAA
     } else {
         1
@@ -621,7 +643,10 @@ fn targets(
     width: u32,
     height: u32,
 ) -> Targets {
-    let make = |label: &str, format: wgpu::TextureFormat, usage: wgpu::TextureUsages| {
+    let make = |label: &str,
+                format: wgpu::TextureFormat,
+                sample_count: u32,
+                usage: wgpu::TextureUsages| {
         device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -631,7 +656,7 @@ fn targets(
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
-                sample_count: samples,
+                sample_count,
                 dimension: wgpu::TextureDimension::D2,
                 format,
                 usage,
@@ -639,67 +664,72 @@ fn targets(
             })
             .create_view(&wgpu::TextureViewDescriptor::default())
     };
-    let sampled = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
+    let drawn = wgpu::TextureUsages::RENDER_ATTACHMENT;
     Targets {
-        colour: (samples > 1).then(|| {
-            make(
-                "scene colour",
-                format,
-                wgpu::TextureUsages::RENDER_ATTACHMENT,
-            )
+        msaa: (samples > 1).then(|| Multisampled {
+            colour: make("scene colour", format, samples, drawn),
+            ink: make("line ink", INK_FORMAT, samples, drawn),
         }),
-        id: make("scene ids", ID_FORMAT, sampled),
-        depth: make("scene depth", DEPTH_FORMAT, sampled),
+        depth: make("scene depth", DEPTH_FORMAT, samples, drawn),
+        ink: make(
+            "resolved ink",
+            INK_FORMAT,
+            1,
+            drawn | wgpu::TextureUsages::TEXTURE_BINDING,
+        ),
     }
 }
 
-fn edge_layout(device: &wgpu::Device, samples: u32) -> wgpu::BindGroupLayout {
-    let multisampled = samples > 1;
+/// A colour attachment that resolves into \`resolve\` when there is one and then keeps nothing
+/// of its own.
+fn attachment<'a>(
+    view: &'a wgpu::TextureView,
+    resolve: Option<&'a wgpu::TextureView>,
+    load: wgpu::LoadOp<wgpu::Color>,
+) -> wgpu::RenderPassColorAttachment<'a> {
+    wgpu::RenderPassColorAttachment {
+        view,
+        depth_slice: None,
+        resolve_target: resolve,
+        ops: wgpu::Operations {
+            load,
+            store: if resolve.is_some() {
+                wgpu::StoreOp::Discard
+            } else {
+                wgpu::StoreOp::Store
+            },
+        },
+    }
+}
+
+fn ink_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("edge inputs"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Depth,
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled,
-                },
-                count: None,
+        label: Some("ink input"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
             },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled,
-                },
-                count: None,
-            },
-        ],
+            count: None,
+        }],
     })
 }
 
-fn edge_bind(
+fn ink_bind(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     targets: &Targets,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("edge inputs"),
+        label: Some("ink input"),
         layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: wgpu::BindingResource::TextureView(&targets.depth),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: wgpu::BindingResource::TextureView(&targets.id),
-            },
-        ],
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureView(&targets.ink),
+        }],
     })
 }
 
@@ -708,7 +738,7 @@ impl Pipelines {
         device: &wgpu::Device,
         shader: &wgpu::ShaderModule,
         uniform_layout: &wgpu::BindGroupLayout,
-        edge_layout: &wgpu::BindGroupLayout,
+        ink_layout: &wgpu::BindGroupLayout,
         format: wgpu::TextureFormat,
         samples: u32,
     ) -> Self {
@@ -717,9 +747,9 @@ impl Pipelines {
             bind_group_layouts: &[Some(uniform_layout)],
             immediate_size: 0,
         });
-        let edge_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("edge"),
-            bind_group_layouts: &[Some(uniform_layout), Some(edge_layout)],
+        let ink_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("ink"),
+            bind_group_layouts: &[Some(uniform_layout), Some(ink_layout)],
             immediate_size: 0,
         });
 
@@ -730,29 +760,37 @@ impl Pipelines {
                 write_mask: wgpu::ColorWrites::ALL,
             })
         };
-        let ids = |write: bool| {
-            Some(wgpu::ColorTargetState {
-                format: ID_FORMAT,
-                blend: None,
-                write_mask: if write {
-                    wgpu::ColorWrites::ALL
-                } else {
-                    wgpu::ColorWrites::empty()
-                },
-            })
+        let max = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::One,
+            dst_factor: wgpu::BlendFactor::One,
+            operation: wgpu::BlendOperation::Max,
         };
-        let depth = |write: bool, compare: wgpu::CompareFunction| {
-            Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(write),
-                depth_compare: Some(compare),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            })
+        let ink = Some(wgpu::ColorTargetState {
+            format: INK_FORMAT,
+            blend: Some(wgpu::BlendState {
+                color: max,
+                alpha: max,
+            }),
+            write_mask: wgpu::ColorWrites::ALL,
+        });
+        let multiply = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::OneMinusSrc,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::Zero,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
         };
-        let multisample = wgpu::MultisampleState {
-            count: samples,
-            ..Default::default()
+        let depth = |write: bool, compare: wgpu::CompareFunction| wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(write),
+            depth_compare: Some(compare),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
         };
 
         let mesh_vertex = wgpu::VertexBufferLayout {
@@ -763,7 +801,17 @@ impl Pipelines {
         let mesh_instance = wgpu::VertexBufferLayout {
             array_stride: size_of::<InstanceRaw>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![3 => Float32x3, 4 => Uint32, 5 => Uint32],
+            attributes: &wgpu::vertex_attr_array![3 => Float32x3, 4 => Uint32],
+        };
+        let edge_vertex = wgpu::VertexBufferLayout {
+            array_stride: size_of::<EdgeVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32x3, 4 => Float32x2, 5 => Uint32],
+        };
+        let edge_instance = wgpu::VertexBufferLayout {
+            array_stride: size_of::<InstanceRaw>() as u64,
+            step_mode: wgpu::VertexStepMode::Instance,
+            attributes: &wgpu::vertex_attr_array![6 => Float32x3],
         };
         let line_vertex = wgpu::VertexBufferLayout {
             array_stride: size_of::<LineVertex>() as u64,
@@ -796,12 +844,17 @@ impl Pipelines {
             attributes: &wgpu::vertex_attr_array![2 => Float32x3],
         };
 
+        let scene_samples = wgpu::MultisampleState {
+            count: samples,
+            ..Default::default()
+        };
         let make = |label: &str,
                     layout: &wgpu::PipelineLayout,
-                    vs: &str,
-                    fs: &str,
+                    (vs, fs): (&str, &str),
                     buffers: &[Option<wgpu::VertexBufferLayout>],
+                    primitive: wgpu::PrimitiveState,
                     depth_state: Option<wgpu::DepthStencilState>,
+                    multisample: wgpu::MultisampleState,
                     targets: &[Option<wgpu::ColorTargetState>]|
          -> wgpu::RenderPipeline {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -813,7 +866,7 @@ impl Pipelines {
                     compilation_options: Default::default(),
                     buffers,
                 },
-                primitive: wgpu::PrimitiveState::default(),
+                primitive,
                 depth_stencil: depth_state,
                 multisample,
                 fragment: Some(wgpu::FragmentState {
@@ -827,17 +880,28 @@ impl Pipelines {
             })
         };
         let alpha = Some(wgpu::BlendState::ALPHA_BLENDING);
+        let triangles = wgpu::PrimitiveState::default();
         // Depth is reverse, so a nearer surface has the larger value.
         let nearer = wgpu::CompareFunction::GreaterEqual;
+        let mesh_depth = wgpu::DepthStencilState {
+            // Reverse depth again: a push away from the eye is negative.
+            bias: wgpu::DepthBiasState {
+                constant: 0,
+                slope_scale: -MESH_SLOPE_BIAS,
+                clamp: 0.0,
+            },
+            ..depth(true, nearer)
+        };
         Self {
             grid: make(
                 "grid",
                 &scene_layout,
-                "vs_full",
-                "fs_grid",
+                ("vs_full", "fs_grid"),
                 &[],
-                depth(true, wgpu::CompareFunction::Always),
-                &[colour(None), ids(false)],
+                triangles,
+                Some(depth(true, wgpu::CompareFunction::Always)),
+                scene_samples,
+                &[colour(None)],
             ),
             // Belts and shadows lie on the ground, which is drawn first and lies under them, so
             // they skip the depth test. Testing them against the ground's per-pixel depth lets
@@ -845,61 +909,83 @@ impl Pipelines {
             ribbon: make(
                 "ribbons",
                 &scene_layout,
-                "vs_ribbon",
-                "fs_ribbon",
+                ("vs_ribbon", "fs_ribbon"),
                 &[Some(ribbon_vertex)],
-                depth(true, wgpu::CompareFunction::Always),
-                &[colour(None), ids(false)],
+                triangles,
+                Some(depth(true, wgpu::CompareFunction::Always)),
+                scene_samples,
+                &[colour(None)],
             ),
+            // Back faces are culled. With the slope bias, a back wall could otherwise win the
+            // depth test along the far edge of the top in front of it. The camera's screen axes
+            // turn a face that winds counter-clockwise from outside clockwise on screen.
             mesh: make(
                 "mesh",
                 &scene_layout,
-                "vs_mesh",
-                "fs_mesh",
+                ("vs_mesh", "fs_mesh"),
                 &[Some(mesh_vertex), Some(mesh_instance)],
-                depth(true, nearer),
-                &[colour(None), ids(true)],
+                wgpu::PrimitiveState {
+                    front_face: wgpu::FrontFace::Cw,
+                    cull_mode: Some(wgpu::Face::Back),
+                    ..triangles
+                },
+                Some(mesh_depth),
+                scene_samples,
+                &[colour(None)],
             ),
             halo: make(
                 "halo",
                 &scene_layout,
-                "vs_halo",
-                "fs_halo",
+                ("vs_halo", "fs_halo"),
                 &[Some(halo_vertex), Some(halo_instance)],
-                depth(false, wgpu::CompareFunction::Always),
-                &[colour(alpha), ids(false)],
-            ),
-            line: make(
-                "lines",
-                &scene_layout,
-                "vs_line",
-                "fs_line",
-                &[Some(line_vertex), Some(offset_instance.clone())],
-                depth(false, nearer),
-                &[colour(alpha), ids(false)],
+                triangles,
+                Some(depth(false, wgpu::CompareFunction::Always)),
+                scene_samples,
+                &[colour(alpha)],
             ),
             dot: make(
                 "dots",
                 &scene_layout,
-                "vs_dot",
-                "fs_dot",
-                &[Some(dot_vertex), Some(offset_instance)],
-                depth(false, nearer),
-                &[colour(alpha), ids(false)],
+                ("vs_dot", "fs_dot"),
+                &[Some(dot_vertex), Some(offset_instance.clone())],
+                triangles,
+                Some(depth(false, nearer)),
+                scene_samples,
+                &[colour(alpha)],
             ),
             edge: make(
                 "edges",
-                &edge_pipeline_layout,
-                "vs_full",
-                "fs_edge",
+                &scene_layout,
+                ("vs_edge", "fs_stroke"),
+                &[Some(edge_vertex), Some(edge_instance)],
+                triangles,
+                Some(depth(false, nearer)),
+                scene_samples,
+                std::slice::from_ref(&ink),
+            ),
+            line: make(
+                "lines",
+                &scene_layout,
+                ("vs_line", "fs_stroke"),
+                &[Some(line_vertex), Some(offset_instance)],
+                triangles,
+                Some(depth(false, nearer)),
+                scene_samples,
+                &[ink],
+            ),
+            ink: make(
+                "ink",
+                &ink_pipeline_layout,
+                ("vs_full", "fs_ink"),
                 &[],
+                triangles,
                 None,
-                &[colour(alpha)],
+                wgpu::MultisampleState::default(),
+                &[colour(Some(multiply))],
             ),
         }
     }
 }
-
 fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
