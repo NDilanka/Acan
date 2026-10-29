@@ -1606,12 +1606,10 @@ fn crossed_evidence_is_refused_at_admission() {
         crossed("candidate run record")
     );
 
-    let mut stored = observations_for(
-        &example.probe,
-        &example.fixture,
-        &example.candidate.run,
-        &[],
-    );
+    let mut stored: Vec<(ObservationHash, Observation)> = runs[2]
+        .observations()
+        .map(|(hash, observation)| (*hash, observation.clone()))
+        .collect();
     let mut value = serde_json::to_value(&stored[0].1).expect("encoding");
     value["channels"]["body"]["error"] = json!("another error");
     let edited: Observation = serde_json::from_value(value).expect("decoding");
@@ -1646,11 +1644,11 @@ fn crossed_evidence_is_refused_at_admission() {
         crossed("context")
     );
 
-    let another_contrast = compare::Contrast {
-        candidate: &runs[0],
-        ..contrast
-    };
-    let another_comparison = comparison_of(&another_contrast);
+    let another_comparison = comparison_of(&edited_contrast);
+    assert_ne!(
+        another_comparison, comparison,
+        "the edited candidate must change the comparison"
+    );
     assert_eq!(
         refused_as(&example, contrast, &another_comparison),
         crossed("comparison")
