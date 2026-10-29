@@ -3,6 +3,7 @@
   "order": "o-3",
   "scope_rev": 2,
   "scope_hash": "sha256:ed58ef8d58d4e29959f80110656bbaeb9d82ad3e12eb5baa5f80ac6bf5ce2d3e",
+  "semantic_scope_hash": "sha256:ed041ad8fec2a30904cb353098bb99fb1e6bfb05916c71eb395794b9b5ffad38",
   "base_commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
   "ruling_versions": [
     {

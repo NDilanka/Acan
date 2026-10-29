@@ -10,11 +10,11 @@ use acan_intent::admit::{
 };
 use acan_intent::{
     AppContract, CaptionCatalog, Card, CardRequest, ContainerNetwork, ContainerPolicy, Contest,
-    ContestRequest, ContestResponse, ContrastExample, CorpusProbe, Coverage, DiscrepancyEpisode,
-    Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern, Fixture, GateState,
-    GetReceiptRequest, GetReceiptResponse, GetRulingsRequest, GetRulingsResponse, GetScopeRequest,
-    GetScopeResponse, ItemClass, ItemState, LedgerEvent, LedgerHash, LedgerHead, MaskablePath,
-    McpError, McpErrorCode, Observation, ObservationHash, ObservationPath, PlantView,
+    ContestRequest, ContestResponse, ContestStatus, ContrastExample, CorpusProbe, Coverage,
+    DiscrepancyEpisode, Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern, Fixture,
+    GateState, GetReceiptRequest, GetReceiptResponse, GetRulingsRequest, GetRulingsResponse,
+    GetScopeRequest, GetScopeResponse, ItemClass, ItemState, LedgerEvent, LedgerHash, LedgerHead,
+    MaskablePath, McpError, McpErrorCode, Observation, ObservationHash, ObservationPath, PlantView,
     PostReadbackRequest, PostReadbackResponse, ProbeCorpus, Receipt, RepairRound, RouteSource,
     RulingId, Run, Scope, ScopeConfirmation, ScopeDraft, ScopeItem, Selector, SlotSpec, Step,
     StepId, TourView, TwinError, TwinRunRequest, TwinRunResponse, TwinSaveRequest,
@@ -1441,4 +1441,87 @@ fn a_decision_rules_only_on_examples_retained_before_it() {
         }
     }
     assert!(ruled > 0, "no decision lists the example fixture");
+}
+
+/// The scope fixture with one edit to its JSON, decoded again.
+fn edited_scope(edit: impl FnOnce(&mut Value)) -> Scope {
+    let mut value = raw("scope.json");
+    edit(&mut value);
+    serde_json::from_value(value).expect("the edited scope still decodes")
+}
+
+#[test]
+fn a_predicate_or_change_kind_moves_the_semantic_scope_digest() {
+    let scope: Scope = load("scope.json");
+    let digest = scope.semantic_scope_hash().expect("hashing");
+    let allowed = edited_scope(|v| {
+        v["body"]["may"][0]["acceptance"][0]["predicate"]["policy"]["allowed_count"] = json!(6);
+    });
+    assert_ne!(allowed.semantic_scope_hash().expect("hashing"), digest);
+    let changed = edited_scope(|v| v["body"]["may"][0]["change"] = json!("remove"));
+    assert_ne!(changed.semantic_scope_hash().expect("hashing"), digest);
+    let moved = edited_scope(|v| v["body"]["must_keep"][0]["machine_ids"] = json!(["plant-b"]));
+    assert_ne!(moved.semantic_scope_hash().expect("hashing"), digest);
+}
+
+#[test]
+fn prose_alone_does_not_move_the_semantic_scope_digest() {
+    let scope: Scope = load("scope.json");
+    let digest = scope.semantic_scope_hash().expect("hashing");
+    let reworded = edited_scope(|v| {
+        v["body"]["may"][0]["acceptance"][0]["text"] = json!("Reworded for the card");
+        v["body"]["must_keep"][0]["text"] = json!("Reworded rule");
+        v["body"]["open"][0]["question"] = json!("Reworded question?");
+        v["body"]["open"][0]["options"][0]["label"] = json!("Reworded answer");
+    });
+    assert_eq!(reworded.semantic_scope_hash().expect("hashing"), digest);
+    assert_ne!(
+        reworded.scope_hash().expect("hashing"),
+        scope.scope_hash().expect("hashing"),
+        "the document digest still covers wording"
+    );
+}
+
+#[test]
+fn a_contest_rationale_does_not_move_the_semantic_receipt_identity() {
+    let scope: Scope = load("scope.json");
+    let receipt: Receipt = load("receipt.json");
+    let identity = receipt.semantic_hash(&scope).expect("hashing");
+    let mut reasoned = receipt.clone();
+    reasoned.contests[0].rationale = "A different reason with the same claim.".to_owned();
+    assert_ne!(
+        reasoned.receipt_hash().expect("hashing"),
+        receipt.receipt_hash().expect("hashing"),
+        "the document identity still covers the rationale"
+    );
+    assert_eq!(reasoned.semantic_hash(&scope).expect("hashing"), identity);
+
+    let mut retargeted = receipt.clone();
+    retargeted.contests[0].status = ContestStatus::Rejected;
+    assert_ne!(retargeted.semantic_hash(&scope).expect("hashing"), identity);
+}
+
+#[test]
+fn the_scope_confirmation_binds_the_scope_semantically() {
+    let scope: Scope = load("scope.json");
+    let confirmation: ScopeConfirmation = load("scope-confirmation.json");
+    let expected = scope.semantic_scope_hash().expect("hashing");
+    assert_eq!(
+        confirmation.semantic_scope_hash,
+        Some(expected),
+        "scope-confirmation.json must bind the scope's semantic digest"
+    );
+}
+
+#[test]
+fn scope_wording_does_not_move_the_semantic_receipt_identity() {
+    let scope: Scope = load("scope.json");
+    let receipt: Receipt = load("receipt.json");
+    let reworded = edited_scope(|v| {
+        v["body"]["may"][0]["acceptance"][0]["text"] = json!("Reworded for the card");
+    });
+    assert_eq!(
+        receipt.semantic_hash(&reworded).expect("hashing"),
+        receipt.semantic_hash(&scope).expect("hashing")
+    );
 }

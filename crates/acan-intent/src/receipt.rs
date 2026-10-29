@@ -307,8 +307,10 @@ fn hashing(err: CanonicalError) -> ReceiptError {
 }
 
 /// The scope, its confirmation and the prepared commit must name the same revision and base,
-/// and the confirmation must list the scope's selectors and examples in scope order. Those
-/// hashes never cover wording, so a wording edit cannot change them.
+/// and the confirmation must list the scope's selectors and examples in scope order. The
+/// confirmation must also bind the scope's semantic digest, which covers every executable field,
+/// so a changed predicate or change kind is refused under the old confirmation. None of these
+/// hashes covers wording, so a wording edit cannot change them.
 fn bind(inputs: &ReceiptInputs<'_>) -> Result<(), ReceiptError> {
     let (scope, confirmation) = (inputs.scope, inputs.confirmation);
     if confirmation.order != scope.order {
@@ -317,6 +319,12 @@ fn bind(inputs: &ReceiptInputs<'_>) -> Result<(), ReceiptError> {
     if confirmation.scope_rev != scope.rev {
         return Err(inconsistent(
             "the confirmation is for another scope revision",
+        ));
+    }
+    let executable = scope.semantic_scope_hash().map_err(hashing)?;
+    if confirmation.semantic_scope_hash != Some(executable) {
+        return Err(inconsistent(
+            "the confirmation does not bind this scope's executable content",
         ));
     }
     if confirmation.base_commit != scope.base_commit

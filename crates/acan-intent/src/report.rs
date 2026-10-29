@@ -17,6 +17,7 @@ use crate::ledger::NotEnforcedReason;
 use crate::observation::Mask;
 use crate::probe::{RoutePath, RunRole};
 use crate::provenance::{EvidenceAddress, Provenance};
+use crate::scope::Scope;
 use crate::types::{
     CommitSha, Evidence, HttpMethod, InvalidValue, ItemId, MachineId, NonEmpty, ObservationPath,
     OrderRef, RouteTemplate, RulingId, RunId, ScopeRev, StepId,
@@ -462,6 +463,33 @@ impl Receipt {
     /// Returns [`CanonicalError`] only if serialization fails.
     pub fn receipt_hash(&self) -> Result<ReceiptHash, CanonicalError> {
         ContentHash::of(self).map(ReceiptHash::from)
+    }
+
+    /// The receipt's semantic identity: the receipt with model prose left out. The scope enters
+    /// as its [`Scope::semantic_scope_hash`], so wording does not move it, and each contest loses
+    /// its `rationale`. Classes, counts, denominators, and each contest's id, target and status
+    /// stay in. `scope` must be the scope this receipt was built from.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] only if serialization fails.
+    pub fn semantic_hash(&self, scope: &Scope) -> Result<ReceiptHash, CanonicalError> {
+        let mut value = serde_json::to_value(self)?;
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "scope_hash".to_owned(),
+                serde_json::to_value(scope.semantic_scope_hash()?)?,
+            );
+            let contests = object
+                .get_mut("contests")
+                .and_then(serde_json::Value::as_array_mut);
+            for contest in contests.into_iter().flatten() {
+                if let Some(contest) = contest.as_object_mut() {
+                    contest.remove("rationale");
+                }
+            }
+        }
+        ContentHash::of(&value).map(ReceiptHash::from)
     }
 
     /// The tested merged commit.
