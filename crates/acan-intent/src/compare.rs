@@ -3,21 +3,86 @@
 //! Every input is admitted ([`ObservedRun`]) and every output is [`CoreDerived`]; a decoded
 //! observation, mask or comparison never reaches these functions.
 //!
-//! Every function here returns [`Unsupported`] until its owner implements it.
+//! How a comparison decides, in order:
+//! - A run that did not complete, an incomplete observation, or runs whose step sequences differ
+//!   is [`Outcome::Unknown`]. Nothing is compared past them.
+//! - Each relation of the plan must hold on base A, base B and the candidate, judged on the
+//!   original values. A relation that holds on one base and not the other is an unstable base.
+//!   A relation whose truth changes between base A and the candidate is a difference, at the
+//!   field that breaks it.
+//! - Base A and base B must agree on every value outside a mask. A disagreement outside a mask
+//!   is an unstable base, not a difference.
+//! - Candidate against base A, on canonical values. A value under a mask is not compared, but
+//!   its format must still match base A's, so a masked field keeps its format. Structure,
+//!   presence and status are never masked.
+//!
+//! Canonical values replace a captured identity with `<capture:BINDING>` and a redacted secret
+//! with `<redacted:LENGTH:CLASS:DIGEST>`. A difference shows the canonical values, so a session
+//! token is never printed.
 
-use crate::error::Unsupported;
-use crate::observation::{CanonicalRun, Mask, ObservedRun};
-use crate::probe::{CorpusProbe, Fixture};
+use std::collections::{BTreeMap, BTreeSet};
+use std::str::FromStr;
+
+use serde_json::{Map, Value};
+
+use crate::expr::StringFormat;
+use crate::hash::{CanonicalError, ContentHash, ProbeHash};
+use crate::observation::{
+    CanonicalObservation, CanonicalRun, Channels, Completeness, IncompleteReason, Mask,
+    MaskSelector, NormalizationPlan, Observation, ObservedRun, ProjectionKind, Relation, StepPath,
+};
+use crate::probe::{
+    CaptureKind, CaptureOutcome, CaptureSource, CaptureStep, CorpusProbe, Fixture, RunOutcome, Step,
+};
 use crate::provenance::CoreDerived;
-use crate::verdict::Comparison;
+use crate::types::{
+    CaptureName, Evidence, MaskablePath, ObservationPath, PathPattern, StepId, TrustedSink,
+};
+use crate::verdict::{Comparison, Difference, Outcome, UnknownReason};
 
 /// Why a comparison could not be made. Never a pass.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum CompareError {
-    /// Not implemented in this build.
-    #[error(transparent)]
-    Unsupported(#[from] Unsupported),
+    /// The run belongs to another probe or fixture than the one it is compared under.
+    #[error("the run is not of this probe and fixture: {detail}")]
+    WrongSpec {
+        /// What does not match.
+        detail: String,
+    },
+    /// A captured value cannot be read back from its source, or does not hash to the
+    /// fingerprint the run recorded.
+    #[error("the captured value of {binding} does not match its recorded fingerprint")]
+    CaptureUnreadable {
+        /// The binding.
+        binding: CaptureName,
+    },
+    /// A value has no canonical JSON form, so it has no hash.
+    #[error("a value has no canonical JSON form: {detail}")]
+    Unhashable {
+        /// The serializer's message.
+        detail: String,
+    },
+    /// A path cannot be written as an observation path.
+    #[error("the path {path} cannot be addressed")]
+    Unaddressable {
+        /// The path.
+        path: String,
+    },
+    /// A mask does not belong to this contrast, or names a field the plan does not allow masking.
+    #[error("a mask does not belong to this contrast: {detail}")]
+    ForeignMask {
+        /// What does not match.
+        detail: String,
+    },
+}
+
+impl From<CanonicalError> for CompareError {
+    fn from(err: CanonicalError) -> Self {
+        Self::Unhashable {
+            detail: err.to_string(),
+        }
+    }
 }
 
 /// One run with everything run-wide normalization reads: the probe and its plan, the fixture
@@ -61,29 +126,975 @@ pub struct Contrast<'a> {
 ///
 /// Returns [`CompareError`] when the run cannot be normalized, such as a capture whose value
 /// does not match its fingerprint.
-pub fn canonicalize(_context: &RunContext<'_>) -> Result<CoreDerived<CanonicalRun>, CompareError> {
-    Err(Unsupported("P01: canonicalize").into())
+pub fn canonicalize(context: &RunContext<'_>) -> Result<CoreDerived<CanonicalRun>, CompareError> {
+    canonical_run(context).map(CoreDerived::derived)
+}
+
+fn canonical_run(context: &RunContext<'_>) -> Result<CanonicalRun, CompareError> {
+    let plan = &context.probe.normalization;
+    let captures = captured_values(context)?;
+    let canon = Canon {
+        plan,
+        captures: &captures,
+    };
+    let observations = context
+        .run
+        .observations()
+        .map(|(hash, observation)| {
+            Ok(CanonicalObservation {
+                observation_hash: *hash,
+                step_id: observation.step_id.clone(),
+                channels: canonical_channels(&observation.channels, &canon)?,
+            })
+        })
+        .collect::<Result<Vec<_>, CompareError>>()?;
+    Ok(CanonicalRun {
+        run_id: context.run.run().id.clone(),
+        normalization_hash: plan.normalization_hash()?,
+        observations,
+    })
+}
+
+fn context<'a>(contrast: &Contrast<'a>, run: &'a ObservedRun) -> RunContext<'a> {
+    RunContext {
+        probe: contrast.probe,
+        fixture: contrast.fixture,
+        run,
+    }
 }
 
 /// Derives masks from base A and base B only. The candidate run is never read.
 ///
+/// A mask is a leaf value that differs between the two base runs and that the plan's maskable
+/// paths allow masking. Structure, presence and status never produce one. When the two base
+/// runs do not have the same sequence, or either did not complete, there are no masks: the
+/// comparison reports the contrast as unknown.
+///
 /// # Errors
 ///
-/// Returns [`CompareError`] when the base runs cannot be compared.
-pub fn derive_masks(_contrast: &Contrast<'_>) -> Result<Vec<CoreDerived<Mask>>, CompareError> {
-    Err(Unsupported("P01: derive_masks").into())
+/// Returns [`CompareError`] when a base run cannot be normalized.
+pub fn derive_masks(contrast: &Contrast<'_>) -> Result<Vec<CoreDerived<Mask>>, CompareError> {
+    let base_a = canonical_run(&context(contrast, contrast.base_a))?;
+    let base_b = canonical_run(&context(contrast, contrast.base_b))?;
+    let comparable = [contrast.base_a, contrast.base_b]
+        .iter()
+        .all(|run| matches!(run.run().outcome, RunOutcome::Completed {}))
+        && shape_mismatch(&base_a, &base_b).is_none();
+    if !comparable {
+        return Ok(Vec::new());
+    }
+    let plan = &contrast.probe.normalization;
+    let probe_hash = contrast.probe.spec.probe_hash()?;
+    let plan_hash = plan.normalization_hash()?;
+    let mut masks = Vec::new();
+    for (a, b) in base_a.observations.iter().zip(&base_b.observations) {
+        for found in step_differences(&a.channels, &b.channels) {
+            if found.kind != Kind::Leaf || !maskable(plan, &found.path) || !scalar_pair(&found) {
+                continue;
+            }
+            masks.push(CoreDerived::derived(Mask {
+                probe_hash,
+                selector: MaskSelector {
+                    step_id: a.step_id.clone(),
+                    path: parse_path(&found.path)?,
+                },
+                base_a_observation_hash: a.observation_hash,
+                base_b_observation_hash: b.observation_hash,
+                normalization_version: plan.version.clone(),
+                normalization_hash: plan_hash,
+            }));
+        }
+    }
+    Ok(masks)
 }
 
 /// Compares the candidate against base under `masks`.
 ///
 /// # Errors
 ///
-/// Returns [`CompareError`] when the runs cannot be compared.
+/// Returns [`CompareError`] when the runs cannot be normalized, or a mask does not belong to
+/// this contrast: another probe, another normalization plan, a field the plan does not allow
+/// masking, or base observations it was not derived from.
 pub fn compare(
-    _contrast: &Contrast<'_>,
-    _masks: &[CoreDerived<Mask>],
+    contrast: &Contrast<'_>,
+    masks: &[CoreDerived<Mask>],
 ) -> Result<CoreDerived<Comparison>, CompareError> {
-    Err(Unsupported("P01: compare").into())
+    let probe_hash = contrast.probe.spec.probe_hash()?;
+    let base_a = canonical_run(&context(contrast, contrast.base_a))?;
+    let base_b = canonical_run(&context(contrast, contrast.base_b))?;
+    let candidate = canonical_run(&context(contrast, contrast.candidate))?;
+    let masked = masked_fields(contrast, masks, &base_a, &base_b)?;
+    let outcome = judge(
+        contrast,
+        [&base_a, &base_b, &candidate],
+        &masked,
+        probe_hash,
+    )?;
+    Ok(CoreDerived::derived(Comparison {
+        probe_hash,
+        base_a,
+        base_b,
+        candidate,
+        outcome,
+    }))
+}
+
+/// The bindings a run captured, resolved from their source steps and checked against the
+/// fingerprints the run recorded. A capture that did not bind is absent from the map.
+pub(crate) fn captured_values(
+    context: &RunContext<'_>,
+) -> Result<BTreeMap<CaptureName, Value>, CompareError> {
+    check_spec(context)?;
+    let mut captured = BTreeMap::new();
+    for step in context
+        .fixture
+        .recipe
+        .iter()
+        .chain(context.probe.spec.steps.iter())
+    {
+        let Step::Capture(capture) = step else {
+            continue;
+        };
+        let outcome = context.run.run().captures.iter().find(|outcome| {
+            outcome.step_id() == &capture.id && outcome.binding() == &capture.binding
+        });
+        let Some(CaptureOutcome::Captured { value_hash, .. }) = outcome else {
+            continue;
+        };
+        let value = read_source(context.run, capture)?;
+        if ContentHash::of(&value)? != value_hash.content() {
+            return Err(CompareError::CaptureUnreadable {
+                binding: capture.binding.clone(),
+            });
+        }
+        captured.insert(capture.binding.clone(), value);
+    }
+    Ok(captured)
+}
+
+fn check_spec(context: &RunContext<'_>) -> Result<(), CompareError> {
+    let run = context.run.run();
+    if context.probe.spec.fixture != context.fixture.id {
+        return Err(CompareError::WrongSpec {
+            detail: "the probe starts from another fixture".to_owned(),
+        });
+    }
+    if run.probe != context.probe.spec.probe_hash()?
+        || run.env.fixture_hash != context.fixture.fixture_hash()?
+    {
+        return Err(CompareError::WrongSpec {
+            detail: "the run records another probe or fixture".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn read_source(run: &ObservedRun, capture: &CaptureStep) -> Result<Value, CompareError> {
+    let unreadable = || CompareError::CaptureUnreadable {
+        binding: capture.binding.clone(),
+    };
+    let (_, observation) = run
+        .observations()
+        .find(|(_, observation)| observation.step_id == capture.from)
+        .ok_or_else(unreadable)?;
+    let channels = &observation.channels;
+    let value = match &capture.source {
+        CaptureSource::Header { name } => channels
+            .headers
+            .get(name)
+            .map(|text| Value::String(text.clone())),
+        CaptureSource::Cookie { name } => channels
+            .cookies
+            .get(name)
+            .map(|text| Value::String(text.clone())),
+        CaptureSource::Body { path } => {
+            let separator = if path.as_str().starts_with('[') {
+                ""
+            } else {
+                "."
+            };
+            let parsed: ObservationPath = format!("body{separator}{}", path.as_str())
+                .parse()
+                .map_err(|_| unreadable())?;
+            match channels.lookup(&parsed) {
+                Evidence::Present { value } => Some(value),
+                Evidence::Missing {} => None,
+            }
+        }
+    };
+    value.ok_or_else(unreadable)
+}
+
+/// The inputs canonical values are built from: the plan and the run's captured values.
+struct Canon<'a> {
+    plan: &'a NormalizationPlan,
+    captures: &'a BTreeMap<CaptureName, Value>,
+}
+
+/// Shortest captured text a substring replacement may match, so a short value never rewrites
+/// unrelated text.
+const MIN_IDENTITY_TEXT: usize = 8;
+
+fn canonical_channels(channels: &Channels, canon: &Canon<'_>) -> Result<Channels, CompareError> {
+    let text_map = |prefix: &str, map: &BTreeMap<String, String>| {
+        map.iter()
+            .map(|(name, text)| {
+                let path = format!("{prefix}.{name}");
+                let value = canonical_tree(&path, Value::String(text.clone()), canon)?;
+                let text = match value {
+                    Value::String(text) => text,
+                    other => other.to_string(),
+                };
+                Ok((name.clone(), text))
+            })
+            .collect::<Result<BTreeMap<_, _>, CompareError>>()
+    };
+    Ok(Channels {
+        status: channels.status,
+        headers: text_map("header", &channels.headers)?,
+        cookies: text_map("cookie", &channels.cookies)?,
+        body: channels
+            .body
+            .as_ref()
+            .map(|body| canonical_tree("body", body.clone(), canon))
+            .transpose()?,
+        side_effects: channels
+            .side_effects
+            .iter()
+            .map(|(sink, snapshot)| {
+                let path = format!("side_effect.{}", sink_name(*sink));
+                Ok((*sink, canonical_tree(&path, snapshot.clone(), canon)?))
+            })
+            .collect::<Result<BTreeMap<TrustedSink, Value>, CompareError>>()?,
+    })
+}
+
+fn canonical_tree(path: &str, value: Value, canon: &Canon<'_>) -> Result<Value, CompareError> {
+    match value {
+        Value::Object(map) => {
+            let mut out = Map::new();
+            for (key, child) in map {
+                let child_path = format!("{path}.{key}");
+                out.insert(key, canonical_tree(&child_path, child, canon)?);
+            }
+            Ok(Value::Object(out))
+        }
+        Value::Array(items) => {
+            let mut out = Vec::with_capacity(items.len());
+            for (index, child) in items.into_iter().enumerate() {
+                out.push(canonical_tree(&format!("{path}[{index}]"), child, canon)?);
+            }
+            Ok(Value::Array(out))
+        }
+        leaf => canon_leaf(path, leaf, canon),
+    }
+}
+
+fn canon_leaf(path: &str, value: Value, canon: &Canon<'_>) -> Result<Value, CompareError> {
+    let mut value = value;
+    for projection in &canon.plan.projections {
+        if !matches_pattern(projection.path.as_str(), path) {
+            continue;
+        }
+        value = match &projection.kind {
+            ProjectionKind::CanonicalIdentity { binding } => match canon.captures.get(binding) {
+                Some(captured) => replace_identity(value, captured, binding),
+                None => value,
+            },
+            ProjectionKind::RedactSecret {} => redact(&value)?,
+        };
+    }
+    for typed in &canon.plan.typed_captures {
+        if typed.kind == CaptureKind::Opaque {
+            continue;
+        }
+        if let Some(captured) = canon.captures.get(&typed.binding) {
+            value = replace_identity(value, captured, &typed.binding);
+        }
+    }
+    Ok(value)
+}
+
+fn replace_identity(value: Value, captured: &Value, binding: &CaptureName) -> Value {
+    if value == *captured {
+        return Value::String(placeholder(binding));
+    }
+    if let (Value::String(text), Value::String(secret)) = (&value, captured)
+        && secret.len() >= MIN_IDENTITY_TEXT
+        && text.contains(secret.as_str())
+    {
+        return Value::String(text.replace(secret.as_str(), &placeholder(binding)));
+    }
+    value
+}
+
+fn placeholder(binding: &CaptureName) -> String {
+    format!("<capture:{binding}>")
+}
+
+/// Replaces a secret with a marker that keeps its length and alphabet class and carries a digest
+/// of the value, so two equal secrets still compare equal.
+fn redact(value: &Value) -> Result<Value, CompareError> {
+    let text = match value {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    };
+    let class = if text.chars().all(|c| c.is_ascii_hexdigit()) {
+        "hex"
+    } else if text.chars().all(|c| c.is_ascii_alphanumeric()) {
+        "alnum"
+    } else {
+        "other"
+    };
+    let digest = ContentHash::of(value)?;
+    Ok(Value::String(format!(
+        "<redacted:{}:{class}:{digest}>",
+        text.chars().count()
+    )))
+}
+
+pub(crate) fn sink_name(sink: TrustedSink) -> &'static str {
+    match sink {
+        TrustedSink::Store => "store",
+        TrustedSink::OutboundHttp => "outbound_http",
+    }
+}
+
+/// The channel roots of one observation: each header, cookie, the status, and each body or
+/// sink tree, keyed by its concrete path.
+fn roots(channels: &Channels) -> BTreeMap<String, Value> {
+    let mut out = BTreeMap::new();
+    if let Some(status) = channels.status {
+        out.insert("status".to_owned(), Value::from(status));
+    }
+    for (name, text) in &channels.headers {
+        out.insert(format!("header.{name}"), Value::String(text.clone()));
+    }
+    for (name, text) in &channels.cookies {
+        out.insert(format!("cookie.{name}"), Value::String(text.clone()));
+    }
+    if let Some(body) = &channels.body {
+        out.insert("body".to_owned(), body.clone());
+    }
+    for (sink, snapshot) in &channels.side_effects {
+        out.insert(
+            format!("side_effect.{}", sink_name(*sink)),
+            snapshot.clone(),
+        );
+    }
+    out
+}
+
+/// One place two observations disagree. A leaf disagreement has a value on both sides; any other
+/// disagreement is structural (presence, shape, cardinality) and never masked.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Leaf,
+    Structure,
+}
+
+struct Found {
+    path: String,
+    kind: Kind,
+    base: Option<Value>,
+    candidate: Option<Value>,
+}
+
+fn step_differences(base: &Channels, other: &Channels) -> Vec<Found> {
+    let (base, other) = (roots(base), roots(other));
+    let keys: BTreeSet<&String> = base.keys().chain(other.keys()).collect();
+    let mut out = Vec::new();
+    for key in keys {
+        walk(key, base.get(key), other.get(key), &mut out);
+    }
+    out
+}
+
+fn is_leaf(value: &Value) -> bool {
+    !matches!(value, Value::Object(_) | Value::Array(_))
+}
+
+fn walk(path: &str, base: Option<&Value>, other: Option<&Value>, out: &mut Vec<Found>) {
+    match (base, other) {
+        (None, None) => {}
+        (Some(x), Some(y)) if x == y => {}
+        (Some(Value::Object(x)), Some(Value::Object(y))) => {
+            let keys: BTreeSet<&String> = x.keys().chain(y.keys()).collect();
+            for key in keys {
+                walk(&format!("{path}.{key}"), x.get(key), y.get(key), out);
+            }
+        }
+        (Some(Value::Array(x)), Some(Value::Array(y))) if x.len() == y.len() => {
+            for (index, (p, q)) in x.iter().zip(y).enumerate() {
+                walk(&format!("{path}[{index}]"), Some(p), Some(q), out);
+            }
+        }
+        (Some(x), Some(y)) if is_leaf(x) && is_leaf(y) => out.push(Found {
+            path: path.to_owned(),
+            kind: Kind::Leaf,
+            base: Some(x.clone()),
+            candidate: Some(y.clone()),
+        }),
+        (x, y) => out.push(Found {
+            path: path.to_owned(),
+            kind: Kind::Structure,
+            base: x.cloned(),
+            candidate: y.cloned(),
+        }),
+    }
+}
+
+/// A token of a path or pattern: an object key or a bracketed index.
+#[derive(PartialEq, Eq)]
+enum Token<'a> {
+    Key(&'a str),
+    Index(&'a str),
+}
+
+fn tokens(path: &str) -> Vec<Token<'_>> {
+    let mut out = Vec::new();
+    let mut rest = path;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix('[') {
+            let close = after.find(']').unwrap_or(after.len());
+            out.push(Token::Index(&after[..close]));
+            rest = after.get(close + 1..).unwrap_or_default();
+        } else {
+            let key = rest.strip_prefix('.').unwrap_or(rest);
+            let end = key.find(['.', '[']).unwrap_or(key.len());
+            out.push(Token::Key(&key[..end]));
+            rest = &key[end..];
+        }
+    }
+    out
+}
+
+/// Whether a concrete path matches a pattern. `[*]` matches any index; every other token
+/// matches exactly.
+pub(crate) fn matches_pattern(pattern: &str, path: &str) -> bool {
+    let (pattern, path) = (tokens(pattern), tokens(path));
+    pattern.len() == path.len()
+        && pattern.iter().zip(&path).all(|(p, q)| match (p, q) {
+            (Token::Index("*"), Token::Index(_)) => true,
+            (Token::Key(a), Token::Key(b)) | (Token::Index(a), Token::Index(b)) => a == b,
+            _ => false,
+        })
+}
+
+/// Whether a concrete path lies on, above or below a pattern's matches: one of the two has the
+/// other as a prefix. A structural change above a pattern (an element removed from an array the
+/// pattern reads into) therefore overlaps it, and an equality check on that pattern fails.
+pub(crate) fn overlaps(pattern: &str, path: &str) -> bool {
+    let (pattern, path) = (tokens(pattern), tokens(path));
+    let shared = pattern.len().min(path.len());
+    pattern[..shared]
+        .iter()
+        .zip(&path[..shared])
+        .all(|(p, q)| match (p, q) {
+            (Token::Index("*"), Token::Index(_)) => true,
+            (Token::Key(a), Token::Key(b)) | (Token::Index(a), Token::Index(b)) => a == b,
+            _ => false,
+        })
+}
+
+fn maskable(plan: &NormalizationPlan, path: &str) -> bool {
+    plan.maskable_paths
+        .iter()
+        .any(|maskable: &MaskablePath| matches_pattern(maskable.as_str(), path))
+}
+
+/// Whether both sides of a disagreement are strings or numbers. Booleans carry control flow and
+/// nulls carry presence, so neither ever masks.
+fn scalar_pair(found: &Found) -> bool {
+    [found.base.as_ref(), found.candidate.as_ref()]
+        .iter()
+        .all(|value| matches!(value, Some(Value::String(_) | Value::Number(_))))
+}
+
+fn parse_path(path: &str) -> Result<ObservationPath, CompareError> {
+    ObservationPath::from_str(path).map_err(|_| CompareError::Unaddressable {
+        path: path.to_owned(),
+    })
+}
+
+fn shape_mismatch(a: &CanonicalRun, b: &CanonicalRun) -> Option<String> {
+    if a.observations.len() != b.observations.len() {
+        return Some(format!(
+            "{} and {} observations",
+            a.observations.len(),
+            b.observations.len()
+        ));
+    }
+    a.observations
+        .iter()
+        .zip(&b.observations)
+        .find(|(x, y)| x.step_id != y.step_id)
+        .map(|(x, y)| format!("step {} is not step {}", x.step_id, y.step_id))
+}
+
+/// The masked fields of a contrast, checked against the base runs they were derived from.
+fn masked_fields(
+    contrast: &Contrast<'_>,
+    masks: &[CoreDerived<Mask>],
+    base_a: &CanonicalRun,
+    base_b: &CanonicalRun,
+) -> Result<BTreeSet<(StepId, String)>, CompareError> {
+    let plan = &contrast.probe.normalization;
+    let probe_hash = contrast.probe.spec.probe_hash()?;
+    let plan_hash = plan.normalization_hash()?;
+    let mut fields = BTreeSet::new();
+    for mask in masks {
+        let mask = mask.value();
+        let foreign = |detail: &str| CompareError::ForeignMask {
+            detail: detail.to_owned(),
+        };
+        if mask.probe_hash != probe_hash {
+            return Err(foreign("the mask is for another probe"));
+        }
+        if mask.normalization_hash != plan_hash || mask.normalization_version != plan.version {
+            return Err(foreign("the mask is for another normalization plan"));
+        }
+        let path = mask.selector.path.as_str();
+        if !maskable(plan, path) {
+            return Err(foreign("the field is not maskable under the plan"));
+        }
+        let step = &mask.selector.step_id;
+        let scalar = canonical_evidence(base_a, step, &mask.selector.path);
+        if !matches!(
+            scalar,
+            Evidence::Present {
+                value: Value::String(_) | Value::Number(_)
+            }
+        ) {
+            return Err(foreign(
+                "the masked field is not a string or number in base A",
+            ));
+        }
+        let base_hash = |run: &CanonicalRun| {
+            run.observations
+                .iter()
+                .find(|observation| &observation.step_id == step)
+                .map(|observation| observation.observation_hash)
+        };
+        if base_hash(base_a) != Some(mask.base_a_observation_hash)
+            || base_hash(base_b) != Some(mask.base_b_observation_hash)
+        {
+            return Err(foreign("the mask names other base observations"));
+        }
+        fields.insert((step.clone(), path.to_owned()));
+    }
+    Ok(fields)
+}
+
+/// Decides the outcome of a contrast from its canonical runs, in the order the module docs
+/// give.
+fn judge(
+    contrast: &Contrast<'_>,
+    [a, b, c]: [&CanonicalRun; 3],
+    masked: &BTreeSet<(StepId, String)>,
+    probe_hash: ProbeHash,
+) -> Result<Outcome, CompareError> {
+    let observed = [contrast.base_a, contrast.base_b, contrast.candidate];
+    if observed
+        .iter()
+        .any(|run| !matches!(run.run().outcome, RunOutcome::Completed {}))
+    {
+        return Ok(unknown(UnknownReason::RunFailed {}));
+    }
+    if let Some(reason) = observed.iter().find_map(|run| incomplete_reason(run)) {
+        return Ok(unknown(reason));
+    }
+    if let Some(detail) = shape_mismatch(a, b).or_else(|| shape_mismatch(a, c)) {
+        return Ok(unknown(UnknownReason::Incomparable { detail }));
+    }
+    let mut differences = Differences::default();
+    for relation in &contrast.probe.normalization.relations {
+        let (Some(in_a), Some(in_b), Some(in_c)) = (
+            violations(contrast.base_a, relation)?,
+            violations(contrast.base_b, relation)?,
+            violations(contrast.candidate, relation)?,
+        ) else {
+            return Ok(unknown(UnknownReason::Incomparable {
+                detail: "a relation names a step the run does not have".to_owned(),
+            }));
+        };
+        if in_a.is_empty() != in_b.is_empty() {
+            return Ok(unstable());
+        }
+        if in_a.is_empty() != in_c.is_empty() {
+            let at = if in_c.is_empty() { &in_a } else { &in_c };
+            for located in at {
+                let base = canonical_evidence(a, &located.step_id, &located.path);
+                let candidate = canonical_evidence(c, &located.step_id, &located.path);
+                differences.add(Difference {
+                    probe_hash,
+                    step_id: located.step_id.clone(),
+                    path: located.path.clone(),
+                    base,
+                    candidate,
+                    episode_id: None,
+                });
+            }
+        }
+    }
+    for (x, y) in a.observations.iter().zip(&b.observations) {
+        for found in step_differences(&x.channels, &y.channels) {
+            let is_masked = found.kind == Kind::Leaf
+                && masked.contains(&(x.step_id.clone(), found.path.clone()));
+            if !is_masked {
+                return Ok(unstable());
+            }
+        }
+    }
+    for (x, z) in a.observations.iter().zip(&c.observations) {
+        for found in step_differences(&x.channels, &z.channels) {
+            let is_masked = found.kind == Kind::Leaf
+                && masked.contains(&(x.step_id.clone(), found.path.clone()));
+            if !is_masked {
+                differences.add(found_difference(probe_hash, &x.step_id, &found)?);
+            }
+        }
+    }
+    for (step, path) in masked {
+        let (Some(base), Some(candidate)) = (
+            original_at(contrast.base_a, step, path)?,
+            original_at(contrast.candidate, step, path)?,
+        ) else {
+            continue;
+        };
+        if format_of(&base) != format_of(&candidate) {
+            differences.add(Difference {
+                probe_hash,
+                step_id: step.clone(),
+                path: parse_path(path)?,
+                base: canonical_evidence(a, step, &parse_path(path)?),
+                candidate: canonical_evidence(c, step, &parse_path(path)?),
+                episode_id: None,
+            });
+        }
+    }
+    let differences = differences.into_vec();
+    Ok(if differences.is_empty() {
+        Outcome::Unchanged {}
+    } else {
+        Outcome::Changed { differences }
+    })
+}
+
+fn unknown(reason: UnknownReason) -> Outcome {
+    Outcome::Unknown { reason }
+}
+
+fn unstable() -> Outcome {
+    unknown(UnknownReason::UnstableBase {})
+}
+
+/// Why a run cannot be judged because one of its observations is incomplete. A skipped step
+/// is named as such, whichever observation comes first.
+pub(crate) fn incomplete_reason(run: &ObservedRun) -> Option<UnknownReason> {
+    let mut found = None;
+    for (_, observation) in run.observations() {
+        match incomplete_observation(observation) {
+            Some(UnknownReason::Skipped {}) => return Some(UnknownReason::Skipped {}),
+            Some(reason) => found = Some(reason),
+            None => {}
+        }
+    }
+    found
+}
+
+/// Why one observation cannot be judged, if it is incomplete.
+pub(crate) fn incomplete_observation(observation: &Observation) -> Option<UnknownReason> {
+    let Completeness::Incomplete { reasons } = &observation.completeness else {
+        return None;
+    };
+    if reasons
+        .iter()
+        .any(|reason| matches!(reason, IncompleteReason::StepSkipped {}))
+    {
+        Some(UnknownReason::Skipped {})
+    } else {
+        Some(UnknownReason::Incomplete {})
+    }
+}
+
+fn found_difference(
+    probe_hash: ProbeHash,
+    step_id: &StepId,
+    found: &Found,
+) -> Result<Difference, CompareError> {
+    Ok(Difference {
+        probe_hash,
+        step_id: step_id.clone(),
+        path: parse_path(&found.path)?,
+        base: evidence(found.base.as_ref()),
+        candidate: evidence(found.candidate.as_ref()),
+        episode_id: None,
+    })
+}
+
+fn evidence(value: Option<&Value>) -> Evidence {
+    value.map_or(Evidence::Missing {}, |value| Evidence::Present {
+        value: value.clone(),
+    })
+}
+
+fn canonical_evidence(run: &CanonicalRun, step_id: &StepId, path: &ObservationPath) -> Evidence {
+    run.observations
+        .iter()
+        .find(|observation| &observation.step_id == step_id)
+        .map_or(Evidence::Missing {}, |observation| {
+            observation.channels.lookup(path)
+        })
+}
+
+/// The original value at `path` in the step's observation of `run`, if both exist.
+fn original_at(
+    run: &ObservedRun,
+    step: &StepId,
+    path: &str,
+) -> Result<Option<Value>, CompareError> {
+    let parsed = parse_path(path)?;
+    Ok(
+        match run
+            .observed(step, &parsed)
+            .map(|observed| observed.value().clone())
+        {
+            Some(Evidence::Present { value }) => Some(value),
+            Some(Evidence::Missing {}) | None => None,
+        },
+    )
+}
+
+/// The differences the comparison reports, once per field.
+#[derive(Default)]
+struct Differences {
+    list: Vec<Difference>,
+    seen: BTreeSet<(StepId, ObservationPath)>,
+}
+
+impl Differences {
+    fn add(&mut self, difference: Difference) {
+        if self
+            .seen
+            .insert((difference.step_id.clone(), difference.path.clone()))
+        {
+            self.list.push(difference);
+        }
+    }
+
+    fn into_vec(self) -> Vec<Difference> {
+        self.list
+    }
+}
+
+/// A value a relation's fields hold, with the field it came from.
+#[derive(Clone)]
+struct Located {
+    step_id: StepId,
+    path: ObservationPath,
+    value: Value,
+}
+
+/// A concrete path and value, for every node of the observed tree that the pattern matches.
+fn expand(
+    channels: &Channels,
+    pattern: &PathPattern,
+) -> Result<Vec<(ObservationPath, Value)>, CompareError> {
+    let mut nodes = Vec::new();
+    for (path, value) in roots(channels) {
+        flatten(&path, &value, &mut nodes);
+    }
+    nodes
+        .into_iter()
+        .filter(|(path, _)| matches_pattern(pattern.as_str(), path))
+        .map(|(path, value)| Ok((parse_path(&path)?, value)))
+        .collect()
+}
+
+pub(crate) fn flatten(path: &str, value: &Value, out: &mut Vec<(String, Value)>) {
+    out.push((path.to_owned(), value.clone()));
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                flatten(&format!("{path}.{key}"), child, out);
+            }
+        }
+        Value::Array(items) => {
+            for (index, child) in items.iter().enumerate() {
+                flatten(&format!("{path}[{index}]"), child, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn locate<'a>(
+    run: &ObservedRun,
+    paths: impl Iterator<Item = &'a StepPath>,
+) -> Result<Option<Vec<Located>>, CompareError> {
+    let mut out = Vec::new();
+    for step_path in paths {
+        let Some((_, observation)) = run
+            .observations()
+            .find(|(_, observation)| observation.step_id == step_path.step_id)
+        else {
+            return Ok(None);
+        };
+        for (path, value) in expand(&observation.channels, &step_path.path)? {
+            out.push(Located {
+                step_id: step_path.step_id.clone(),
+                path,
+                value,
+            });
+        }
+    }
+    Ok(Some(out))
+}
+
+/// The fields that break `relation` in one run, judged on original values. `None` when the
+/// relation names a step the run does not have.
+fn violations(
+    run: &ObservedRun,
+    relation: &Relation,
+) -> Result<Option<Vec<Located>>, CompareError> {
+    Ok(match relation {
+        Relation::Equal { paths } => locate(run, paths.iter())?.map(|values| {
+            values.first().map_or_else(Vec::new, |first| {
+                values
+                    .iter()
+                    .filter(|located| located.value != first.value)
+                    .cloned()
+                    .collect()
+            })
+        }),
+        Relation::Unique { paths } => locate(run, paths.iter())?.map(|values| {
+            let mut seen: Vec<&Value> = Vec::new();
+            let mut broken = Vec::new();
+            for located in &values {
+                if seen.contains(&&located.value) {
+                    broken.push(located.clone());
+                } else {
+                    seen.push(&located.value);
+                }
+            }
+            broken
+        }),
+        Relation::References { from, to } => {
+            let from_values = locate(run, std::iter::once(from))?;
+            let to_values = locate(run, std::iter::once(to))?;
+            match (from_values, to_values) {
+                (Some(from_values), Some(to_values)) => Some(
+                    from_values
+                        .into_iter()
+                        .filter(|from| !to_values.iter().any(|to| to.value == from.value))
+                        .collect(),
+                ),
+                _ => None,
+            }
+        }
+    })
+}
+
+/// A coarse format class: JSON type, plus the string format where one applies.
+#[derive(Debug, PartialEq, Eq)]
+enum Format {
+    Null,
+    Boolean,
+    Integer,
+    Number,
+    Text(Option<StringFormat>),
+    Array,
+    Object,
+}
+
+fn format_of(value: &Value) -> Format {
+    match value {
+        Value::Null => Format::Null,
+        Value::Bool(_) => Format::Boolean,
+        Value::Number(number) if number.is_i64() || number.is_u64() => Format::Integer,
+        Value::Number(_) => Format::Number,
+        Value::String(text) => Format::Text(string_format(text)),
+        Value::Array(_) => Format::Array,
+        Value::Object(_) => Format::Object,
+    }
+}
+
+/// The most specific format a string has, for display: the first of the formats it matches.
+fn string_format(text: &str) -> Option<StringFormat> {
+    [
+        StringFormat::Uuid,
+        StringFormat::DateTime,
+        StringFormat::Uri,
+        StringFormat::Hex,
+        StringFormat::ShortCode,
+    ]
+    .into_iter()
+    .find(|format| text_has_format(text, *format))
+}
+
+/// Whether `text` has `format`. A string can have several formats (`1234` is both hex and a
+/// short code), so a schema check asks about one format at a time.
+pub(crate) fn text_has_format(text: &str, format: StringFormat) -> bool {
+    match format {
+        StringFormat::Uuid => is_uuid(text),
+        StringFormat::DateTime => is_datetime(text),
+        StringFormat::Uri => is_uri(text),
+        StringFormat::Hex => {
+            !text.is_empty()
+                && text
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        }
+        StringFormat::ShortCode => {
+            !text.is_empty() && text.bytes().all(|b| b.is_ascii_alphanumeric())
+        }
+    }
+}
+
+fn is_uuid(text: &str) -> bool {
+    text.len() == 36
+        && text.bytes().enumerate().all(|(index, byte)| match index {
+            8 | 13 | 18 | 23 => byte == b'-',
+            _ => byte.is_ascii_hexdigit(),
+        })
+}
+
+/// RFC 3339: `YYYY-MM-DDTHH:MM:SS`, an optional fraction, then `Z` or a numeric offset.
+fn is_datetime(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    if bytes.len() < 20
+        || !bytes[..19]
+            .iter()
+            .enumerate()
+            .all(|(index, byte)| match index {
+                4 | 7 => *byte == b'-',
+                10 => *byte == b'T',
+                13 | 16 => *byte == b':',
+                _ => byte.is_ascii_digit(),
+            })
+    {
+        return false;
+    }
+    let mut rest = &bytes[19..];
+    if let Some(fraction) = rest.strip_prefix(b".") {
+        let digits = fraction.iter().take_while(|b| b.is_ascii_digit()).count();
+        if digits == 0 {
+            return false;
+        }
+        rest = &fraction[digits..];
+    }
+    match rest {
+        b"Z" => true,
+        [b'+' | b'-', h1, h2, b':', m1, m2] => [h1, h2, m1, m2].iter().all(|b| b.is_ascii_digit()),
+        _ => false,
+    }
+}
+
+fn is_uri(text: &str) -> bool {
+    text.split_once("://").is_some_and(|(scheme, rest)| {
+        !scheme.is_empty() && scheme.bytes().all(|b| b.is_ascii_alphanumeric()) && !rest.is_empty()
+    })
 }
 
 #[cfg(test)]
@@ -92,6 +1103,7 @@ pub(crate) mod tests {
     use crate::hash::ObservationHash;
     use crate::observation::Observation;
     use crate::probe::{ProbeCorpus, Run};
+    use serde_json::json;
 
     pub(crate) fn corpus() -> ProbeCorpus {
         serde_json::from_str(include_str!("../fixtures/probe-corpus.json")).expect("corpus")
@@ -106,30 +1118,124 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn every_comparison_stub_fails_closed() {
-        let corpus = corpus();
-        let run = admitted_run();
-        let context = RunContext {
-            probe: &corpus.probes[0],
-            fixture: &corpus.fixtures[0],
-            run: &run,
-        };
-        let contrast = Contrast {
-            probe: &corpus.probes[0],
-            fixture: &corpus.fixtures[0],
-            base_a: &run,
-            base_b: &run,
-            candidate: &run,
-        };
-        let failed = |op| Err(CompareError::Unsupported(Unsupported(op)));
+    fn patterns_match_every_index_and_nothing_else() {
+        assert!(matches_pattern("body.links[*].code", "body.links[3].code"));
+        assert!(!matches_pattern("body.links[*].code", "body.links.code"));
+        assert!(!matches_pattern("body.links[*]", "body.links[3].code"));
+        assert!(matches_pattern("header.retry-after", "header.retry-after"));
+        assert!(!matches_pattern("cookie.session", "cookie.sessions"));
+    }
+
+    #[test]
+    fn a_value_that_names_no_identity_is_kept() {
+        let captured = Value::String("abcdefghijklmnop".to_owned());
+        let binding: CaptureName = "alice".parse().expect("a binding");
         assert_eq!(
-            canonicalize(&context).map(drop),
-            failed("P01: canonicalize")
+            replace_identity(captured.clone(), &captured, &binding),
+            Value::String("<capture:alice>".to_owned())
         );
+        let short = Value::String("abc".to_owned());
         assert_eq!(
-            derive_masks(&contrast).map(drop),
-            failed("P01: derive_masks")
+            replace_identity(Value::String("xabcx".to_owned()), &short, &binding),
+            Value::String("xabcx".to_owned())
         );
-        assert_eq!(compare(&contrast, &[]).map(drop), failed("P01: compare"));
+    }
+
+    #[test]
+    fn formats_separate_the_shapes_a_mask_must_keep() {
+        assert_eq!(
+            format_of(&Value::String(
+                "3f2b8c1e-5d4a-4b6c-8d9e-0f1a2b3c4d5e".to_owned()
+            )),
+            Format::Text(Some(StringFormat::Uuid))
+        );
+        assert_ne!(
+            format_of(&Value::String("hello world".to_owned())),
+            format_of(&Value::String(
+                "3f2b8c1e-5d4a-4b6c-8d9e-0f1a2b3c4d5e".to_owned()
+            ))
+        );
+        assert_ne!(format_of(&Value::Null), format_of(&Value::from(0)));
+    }
+
+    #[test]
+    fn a_change_in_shape_or_presence_is_structure_and_never_a_leaf() {
+        let mut out = Vec::new();
+        walk(
+            "body.items",
+            Some(&json!([1, 2])),
+            Some(&json!([1, 2, 3])),
+            &mut out,
+        );
+        walk("body.gone", Some(&json!("x")), None, &mut out);
+        walk(
+            "body.kind",
+            Some(&json!({"a": 1})),
+            Some(&json!("a")),
+            &mut out,
+        );
+        assert_eq!(out.len(), 3);
+        assert!(out.iter().all(|found| found.kind == Kind::Structure));
+
+        let mut value = Vec::new();
+        walk(
+            "body.list",
+            Some(&json!([1, 2])),
+            Some(&json!([1, 3])),
+            &mut value,
+        );
+        assert_eq!(value.len(), 1);
+        assert_eq!(value[0].path, "body.list[1]");
+        assert!(value[0].kind == Kind::Leaf);
+    }
+
+    #[test]
+    fn only_a_string_or_number_pair_can_be_masked() {
+        let pair = |base: Option<Value>, candidate: Option<Value>| Found {
+            path: "body.x".to_owned(),
+            kind: Kind::Leaf,
+            base,
+            candidate,
+        };
+        assert!(scalar_pair(&pair(Some(json!("a")), Some(json!("b")))));
+        assert!(scalar_pair(&pair(Some(json!(1)), Some(json!(2)))));
+        assert!(!scalar_pair(&pair(Some(json!(true)), Some(json!(false)))));
+        assert!(!scalar_pair(&pair(Some(Value::Null), Some(json!("b")))));
+        assert!(!scalar_pair(&pair(Some(json!("a")), None)));
+    }
+
+    #[test]
+    fn a_redacted_secret_hides_its_value_and_equal_secrets_stay_equal() {
+        let secret = Value::String("0123456789abcdef".to_owned());
+        let marked = redact(&secret).expect("a hash");
+        let text = marked.as_str().expect("text");
+        assert!(text.starts_with("<redacted:16:hex:"), "{text}");
+        assert!(!text.contains("0123456789abcdef"), "{text}");
+        assert_eq!(redact(&secret).expect("a hash"), marked);
+        assert_ne!(
+            redact(&Value::String("fedcba9876543210".to_owned())).expect("a hash"),
+            marked
+        );
+    }
+
+    #[test]
+    fn a_path_above_or_below_a_pattern_overlaps_it() {
+        assert!(overlaps("body.links[*].code", "body.links"));
+        assert!(overlaps("body.links[*].code", "body.links[2].code.extra"));
+        assert!(!overlaps("body.links[*].code", "body.other"));
+        assert!(!overlaps("body.links[*].code", "header.links"));
+    }
+
+    #[test]
+    fn a_string_format_is_checked_one_format_at_a_time() {
+        assert!(text_has_format(
+            "2024-01-02T03:04:05.678+05:30",
+            StringFormat::DateTime
+        ));
+        assert!(!text_has_format("2024-01-02", StringFormat::DateTime));
+        assert!(text_has_format("https://example.test/a", StringFormat::Uri));
+        assert!(!text_has_format("example.test", StringFormat::Uri));
+        assert!(text_has_format("1234", StringFormat::Hex));
+        assert!(text_has_format("1234", StringFormat::ShortCode));
     }
 }

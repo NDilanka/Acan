@@ -145,7 +145,10 @@ struct State {
 impl State {
     fn apply(&mut self, event: &LedgerEvent) -> Result<(), FoldError> {
         let seq = event.event_seq();
-        let expected = self.last.as_ref().map_or(1, |(last, _)| last.event_seq() + 1);
+        let expected = self
+            .last
+            .as_ref()
+            .map_or(1, |(last, _)| last.event_seq() + 1);
         if seq < expected {
             return match &self.last {
                 Some((last, _)) if last == event => Ok(()),
@@ -158,9 +161,7 @@ impl State {
                 expected,
             });
         }
-        let chain = event
-            .chain_hash()
-            .map_err(|err| unhashable(seq, &err))?;
+        let chain = event.chain_hash().map_err(|err| unhashable(seq, &err))?;
         match (&self.last, event.prev_hash()) {
             (None, None) => {}
             (Some((_, previous)), Some(prev)) if prev == *previous => {}
@@ -373,7 +374,10 @@ mod tests {
         assert_eq!(first, second);
         let folded = first.value();
         assert_eq!(folded.head.event_seq, 5);
-        assert_eq!(folded.head.hash, Some(events[4].chain_hash().expect("hashing")));
+        assert_eq!(
+            folded.head.hash,
+            Some(events[4].chain_hash().expect("hashing"))
+        );
         let statuses: Vec<_> = folded
             .expectations
             .iter()
@@ -438,7 +442,11 @@ mod tests {
         let mut log = events[..4].to_vec();
         let mut fork = decision(&events[3..4]);
         fork.supersedes = Some(crate::ledger::Supersedes { event_seq: 1 });
-        let again = chained(LedgerEvent::DecisionConfirmed(Box::new(fork)), 5, log.last());
+        let again = chained(
+            LedgerEvent::DecisionConfirmed(Box::new(fork)),
+            5,
+            log.last(),
+        );
         log.push(again);
         assert_eq!(
             fold(&log),
@@ -469,7 +477,11 @@ mod tests {
         let events = chain();
         let mut log = events[..1].to_vec();
         let plain = decision(&events[0..1]);
-        let second = chained(LedgerEvent::DecisionConfirmed(Box::new(plain)), 2, log.last());
+        let second = chained(
+            LedgerEvent::DecisionConfirmed(Box::new(plain)),
+            2,
+            log.last(),
+        );
         log.push(second);
         assert_eq!(
             fold(&log),
@@ -502,7 +514,10 @@ mod tests {
         ];
         let folded = fold(&log).expect("a decision supersedes its lineage's note");
         assert!(folded.value().notes[0].superseded);
-        assert_eq!(folded.value().expectations[0].status, ExpectationStatus::Active);
+        assert_eq!(
+            folded.value().expectations[0].status,
+            ExpectationStatus::Active
+        );
     }
 
     #[test]
@@ -511,6 +526,7 @@ mod tests {
         assert_eq!(folded.value().head.event_seq, 0);
         assert_eq!(folded.value().head.hash, None);
         assert!(folded.value().expectations.is_empty());
+        assert_eq!(folded.value(), &FoldedLedger::empty());
     }
 
     #[test]
