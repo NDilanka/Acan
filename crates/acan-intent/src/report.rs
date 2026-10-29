@@ -8,7 +8,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::episode::{Contest, EpisodeKey};
+use crate::episode::{Contest, ContestKind, ContestStatus, EpisodeKey};
 use crate::gate::PreparedCommit;
 use crate::hash::{
     CanonicalError, ContentHash, EpisodeId, ObservationHash, ProbeHash, ReceiptHash, ScopeHash,
@@ -19,11 +19,12 @@ use crate::probe::{RoutePath, RunRole};
 use crate::provenance::{EvidenceAddress, Provenance};
 use crate::scope::{Scope, Selector};
 use crate::types::{
-    CommitSha, Evidence, HttpMethod, InvalidValue, ItemId, MachineId, NonEmpty, ObligationId,
-    ObservationPath, OrderRef, RouteTemplate, RulingId, RunId, ScopeRev, StepId,
+    AgentRef, CommitSha, ContestId, Evidence, HttpMethod, InvalidValue, ItemId, MachineId,
+    NonEmpty, ObligationId, ObservationPath, OrderRef, RouteTemplate, RulingId, RunId, ScopeRev,
+    StepId, TaskRef, UnixMillis,
 };
 use crate::verdict::{CheckResult, Evaluation, ItemClass, ItemState, UnknownReason};
-use crate::version::ReceiptV1;
+use crate::version::{ContestV1, ReceiptV1};
 
 /// Items per class. Core-derived: the fields are private to this crate and no public
 /// constructor exists, so a count can only come from the core's classification. A decoded
@@ -490,30 +491,16 @@ impl Receipt {
     }
 
     /// The receipt's semantic identity: the receipt with model prose left out. The scope enters
-    /// as its [`Scope::semantic_scope_hash`], so wording does not move it, and each contest loses
-    /// its `rationale`. Classes, counts, denominators, and each contest's id, target and status
-    /// stay in. `scope` must be the scope this receipt was built from.
+    /// as its [`Scope::semantic_scope_hash`], so wording does not move it, and each contest's
+    /// `rationale` is the only prose it leaves out. `scope` must be the scope this receipt was
+    /// built from.
     ///
     /// # Errors
     ///
     /// Returns [`CanonicalError`] only if serialization fails.
     pub fn semantic_hash(&self, scope: &Scope) -> Result<ReceiptHash, CanonicalError> {
-        let mut value = serde_json::to_value(self)?;
-        if let Some(object) = value.as_object_mut() {
-            object.insert(
-                "scope_hash".to_owned(),
-                serde_json::to_value(scope.semantic_scope_hash()?)?,
-            );
-            let contests = object
-                .get_mut("contests")
-                .and_then(serde_json::Value::as_array_mut);
-            for contest in contests.into_iter().flatten() {
-                if let Some(contest) = contest.as_object_mut() {
-                    contest.remove("rationale");
-                }
-            }
-        }
-        ContentHash::of(&value).map(ReceiptHash::from)
+        let view = SemanticReceipt::new(self, scope.semantic_scope_hash()?);
+        ContentHash::of(&view).map(ReceiptHash::from)
     }
 
     /// The tested merged commit.
@@ -583,8 +570,117 @@ impl Receipt {
     }
 }
 
+/// The receipt's semantic content, digested by [`Receipt::semantic_hash`]. Each projection
+/// destructures its struct, so a new field fails to compile until it is digested or named as
+/// prose there.
+#[derive(Serialize)]
+struct SemanticReceipt<'a> {
+    version: &'a ReceiptV1,
+    order: &'a OrderRef,
+    scope_rev: &'a ScopeRev,
+    scope_hash: ScopeHash,
+    prepared: &'a PreparedCommit,
+    gate_state: &'a GateState,
+    items: &'a [ReceiptItem],
+    counts: &'a ClassCounts,
+    probes: &'a ProbeCounts,
+    routes: &'a RouteCounts,
+    behavior: &'a BehaviorCounts,
+    masks: &'a [Mask],
+    rulings: &'a [RulingCheck],
+    contests: Vec<SemanticContest<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    not_reached: Option<&'a [NotReached]>,
+}
+
+/// A contest without its `rationale`, the model's own reason for filing it.
+#[derive(Serialize)]
+struct SemanticContest<'a> {
+    version: &'a ContestV1,
+    id: &'a ContestId,
+    order: &'a OrderRef,
+    agent: &'a AgentRef,
+    task: &'a TaskRef,
+    target: &'a EpisodeId,
+    kind: &'a ContestKind,
+    reproducer: &'a ProbeHash,
+    status: &'a ContestStatus,
+    filed_at: &'a UnixMillis,
+}
+
+impl<'a> SemanticReceipt<'a> {
+    fn new(receipt: &'a Receipt, scope_hash: ScopeHash) -> Self {
+        let Receipt {
+            version,
+            order,
+            scope_rev,
+            scope_hash: _,
+            prepared,
+            gate_state,
+            items,
+            counts,
+            probes,
+            routes,
+            behavior,
+            masks,
+            rulings,
+            contests,
+            not_reached,
+        } = receipt;
+        Self {
+            version,
+            order,
+            scope_rev,
+            scope_hash,
+            prepared,
+            gate_state,
+            items,
+            counts,
+            probes,
+            routes,
+            behavior,
+            masks,
+            rulings,
+            contests: contests.iter().map(SemanticContest::from).collect(),
+            not_reached: (!not_reached.is_empty()).then_some(not_reached.as_slice()),
+        }
+    }
+}
+
+impl<'a> From<&'a Contest> for SemanticContest<'a> {
+    fn from(contest: &'a Contest) -> Self {
+        let Contest {
+            version,
+            id,
+            order,
+            agent,
+            task,
+            target,
+            kind,
+            reproducer,
+            rationale: _,
+            status,
+            filed_at,
+        } = contest;
+        Self {
+            version,
+            id,
+            order,
+            agent,
+            task,
+            target,
+            kind,
+            reproducer,
+            status,
+            filed_at,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use serde_json::{Value, json};
 
     use super::*;
@@ -664,5 +760,33 @@ mod tests {
         assert_ne!(missing.value, null.value);
         assert_eq!(empty.value, Evidence::Present { value: json!([]) });
         assert!(missing.address().is_some());
+    }
+
+    #[test]
+    fn the_semantic_view_names_every_receipt_field_but_contest_prose() {
+        let value = receipt();
+        let typed: Receipt = serde_json::from_value(value.clone()).expect("decoding");
+        let view =
+            serde_json::to_value(SemanticReceipt::new(&typed, typed.scope_hash)).expect("encoding");
+        let keys = |object: &Value| -> BTreeSet<String> {
+            object
+                .as_object()
+                .expect("an object")
+                .keys()
+                .cloned()
+                .collect()
+        };
+        let mut contest = keys(&value["contests"][0]);
+        contest.remove("rationale");
+        assert_eq!(
+            keys(&view),
+            keys(&value),
+            "the view names every receipt field"
+        );
+        assert_eq!(
+            keys(&view["contests"][0]),
+            contest,
+            "each contest leaves out only its rationale"
+        );
     }
 }

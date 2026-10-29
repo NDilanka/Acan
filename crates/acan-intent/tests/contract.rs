@@ -11,17 +11,17 @@ use acan_intent::admit::{
 use acan_intent::compare;
 use acan_intent::{
     AppContract, CaptionCatalog, CaptureOutcome, Card, CardRequest, CommitSha, Comparison,
-    ContainerNetwork, ContainerPolicy, ContentHash, Contest, ContestRequest, ContestResponse,
-    ContestStatus, ContrastExample, CoreDerived, CorpusProbe, Coverage, DiscrepancyEpisode,
-    EpisodeKey, Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern, Fixture, GateState,
-    GetReceiptRequest, GetReceiptResponse, GetRulingsRequest, GetRulingsResponse, GetScopeRequest,
-    GetScopeResponse, ItemClass, ItemState, LedgerEvent, LedgerHash, LedgerHead, MaskablePath,
-    McpError, McpErrorCode, NotReached, Observation, ObservationHash, ObservationPath, ObservedRun,
-    PlantView, PostReadbackRequest, PostReadbackResponse, ProbeCorpus, Receipt, RepairRound,
-    RouteSource, RulingId, Run, RunManifest, RunOutcome, RunRole, Scope, ScopeConfirmation,
-    ScopeDraft, ScopeItem, Selector, SlotSpec, Step, StepId, TourView, TwinError, TwinRunRequest,
-    TwinRunResponse, TwinSaveRequest, TwinSaveResponse, Unsupported, ValueType, WindowMs,
-    canonical_episode_selector,
+    ContainerNetwork, ContainerPolicy, ContentHash, Contest, ContestKind, ContestRequest,
+    ContestResponse, ContestStatus, ContrastExample, CoreDerived, CorpusProbe, Coverage,
+    DiscrepancyEpisode, EpisodeKey, Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern,
+    Fixture, GateState, GetReceiptRequest, GetReceiptResponse, GetRulingsRequest,
+    GetRulingsResponse, GetScopeRequest, GetScopeResponse, ItemClass, ItemState, LedgerEvent,
+    LedgerHash, LedgerHead, MaskablePath, McpError, McpErrorCode, NotReached, Observation,
+    ObservationHash, ObservationPath, ObservedRun, PlantView, PostReadbackRequest,
+    PostReadbackResponse, ProbeCorpus, Receipt, RepairRound, RouteSource, RulingId, Run,
+    RunManifest, RunOutcome, RunRole, Scope, ScopeConfirmation, ScopeDraft, ScopeItem, Selector,
+    SlotSpec, Step, StepId, TourView, TwinError, TwinRunRequest, TwinRunResponse, TwinSaveRequest,
+    TwinSaveResponse, Unsupported, ValueType, WindowMs, canonical_episode_selector,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -1711,6 +1711,31 @@ fn a_contest_rationale_does_not_move_the_semantic_receipt_identity() {
     let mut retargeted = receipt.clone();
     retargeted.contests[0].status = ContestStatus::Rejected;
     assert_ne!(retargeted.semantic_hash(&scope).expect("hashing"), identity);
+}
+
+#[test]
+fn every_other_contest_field_moves_the_semantic_receipt_identity() {
+    let scope: Scope = load("scope.json");
+    let receipt: Receipt = load("receipt.json");
+    let identity = receipt.semantic_hash(&scope).expect("hashing");
+    let moves = |edit: fn(&mut Contest)| {
+        let mut changed = receipt.clone();
+        edit(&mut changed.contests[0]);
+        changed.semantic_hash(&scope).expect("hashing") != identity
+    };
+    assert!(
+        moves(|c| c.id = "k-2".parse().expect("a contest id")),
+        "the id"
+    );
+    assert!(
+        moves(|c| c.target = ContentHash::of_bytes(b"another episode").into()),
+        "the target"
+    );
+    assert!(moves(|c| c.kind = ContestKind::ProposedChange), "the kind");
+    assert!(
+        moves(|c| c.reproducer = ContentHash::of_bytes(b"another probe").into()),
+        "the reproducer"
+    );
 }
 
 #[test]
