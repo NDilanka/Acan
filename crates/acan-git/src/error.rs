@@ -54,4 +54,39 @@ pub enum Error {
     /// Git printed an id that `acan-core` rejects.
     #[error(transparent)]
     ParseId(#[from] acan_core::ParseIdError),
+    /// Git printed a commit or path the `acan-intent` contract rejects, such as a path no
+    /// portable checkout can hold.
+    #[error(transparent)]
+    Contract(#[from] acan_intent::InvalidValue),
+    /// A manifest has no canonical JSON form.
+    #[error(transparent)]
+    Canonical(#[from] acan_intent::CanonicalError),
+    /// A protected path in the protected head is a symlink or a submodule, which cannot be
+    /// restored as a read-only file.
+    #[error("protected path {path} in the protected head has mode {mode}, not a regular file")]
+    ProtectedNotAFile {
+        /// The path in the protected head.
+        path: String,
+        /// Its git mode.
+        mode: String,
+    },
+    /// The prepared tree holds a symlink or a submodule, which a materialized run cannot
+    /// carry byte for byte.
+    #[error("{path} has mode {mode}; only regular files can be materialized")]
+    UnsupportedEntry {
+        /// The path in the prepared tree.
+        path: String,
+        /// Its git mode.
+        mode: String,
+    },
+    /// Two paths of the prepared tree differ only in case, so a case-insensitive
+    /// filesystem would hold one file where the tree has two.
+    #[error("{0} collides with another path of the prepared tree when case is ignored")]
+    CaseCollision(String),
+    /// The directory to materialize into exists and is not empty.
+    #[error("materialize target is not empty: {0}")]
+    TargetNotEmpty(PathBuf),
+    /// After restoring, the protected files on disk differ from the protected head's.
+    #[error("protected inputs in {0} do not match the protected head after restoring")]
+    OverlayMismatch(PathBuf),
 }
