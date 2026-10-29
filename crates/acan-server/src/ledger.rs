@@ -92,6 +92,13 @@ pub(crate) enum LedgerError {
         /// The head the log has.
         actual: LedgerHead,
     },
+    /// The event is already the log's head, and `expected` is not the head it was appended
+    /// after. Nothing was written.
+    #[error("event {event_seq} is already logged")]
+    Duplicate {
+        /// The event's sequence number.
+        event_seq: u64,
+    },
     /// The event's sequence number or `prev_hash` does not follow the expected head. Nothing
     /// was written.
     #[error("event {event_seq} does not chain onto {expected:?}")]
@@ -145,18 +152,21 @@ pub(crate) fn head(log: &Path) -> Result<LedgerHead, LedgerError> {
 
 /// Appends `event` after `expected` and returns the new head.
 ///
-/// Re-appending the event that is already the head writes nothing and returns the current
-/// head, so retrying an append whose outcome is unknown, after a crash or an error, cannot land
-/// it twice. Any other event must name `expected`, which must be the log's current head, and
-/// follow it by sequence number and `prev_hash`. Concurrent appends are serialized by the lock
-/// file, so of two writers that read the same head only one lands.
+/// `expected` must be the log's current head, and `event` must follow it by sequence number
+/// and `prev_hash`. Concurrent appends are serialized by the lock file, so of two writers that
+/// read the same head only one lands.
+///
+/// Retrying an append whose outcome is unknown, after a crash or an error, is safe: when
+/// `event` is already the head and `expected` is the head it was appended after, nothing is
+/// written and the current head is returned. Any other re-append of the head is refused with
+/// [`LedgerError::Duplicate`].
 ///
 /// # Errors
 ///
 /// Returns [`LedgerError`] when the existing log does not verify, the head moved past
-/// `expected`, the event does not chain onto `expected` or does not round-trip, or the write
-/// fails. The log is unchanged unless the error came after the rename, which a retry of the
-/// same event then reports as success.
+/// `expected`, the event does not chain onto `expected` or does not round-trip, the event is a
+/// refused duplicate, or the write fails. The log is unchanged unless the error came after the
+/// rename, which a retry of the same event then reports as success.
 pub(crate) fn append(
     log: &Path,
     expected: &LedgerHead,
@@ -164,8 +174,13 @@ pub(crate) fn append(
 ) -> Result<LedgerHead, LedgerError> {
     let _lock = lock(log)?;
     let current = Verified::read(log)?;
+    let event_seq = event.event_seq();
     if current.events.last() == Some(event) {
-        return Ok(current.head);
+        return if *expected == head_before(event) {
+            Ok(current.head)
+        } else {
+            Err(LedgerError::Duplicate { event_seq })
+        };
     }
     if *expected != current.head {
         return Err(LedgerError::StaleHead {
@@ -173,7 +188,6 @@ pub(crate) fn append(
             actual: current.head,
         });
     }
-    let event_seq = event.event_seq();
     if Some(event_seq) != current.head.event_seq.checked_add(1)
         || event.prev_hash() != current.head.hash
     {
@@ -300,6 +314,15 @@ fn verify_line(line_no: u64, line: &[u8], prev: &LedgerHead) -> Result<LedgerEve
 /// [`LedgerEvent::chain_hash`].
 fn chain_hash(line: &[u8]) -> LedgerHash {
     LedgerHash::from(ContentHash::of_bytes(line))
+}
+
+/// The head the log had just before `event` was appended. Only an event already in a verified
+/// log is asked for it, and such an event has a sequence number of at least 1.
+fn head_before(event: &LedgerEvent) -> LedgerHead {
+    LedgerHead {
+        event_seq: event.event_seq().saturating_sub(1),
+        hash: event.prev_hash(),
+    }
 }
 
 /// Takes the exclusive append lock. The OS releases it when the returned file closes, even if

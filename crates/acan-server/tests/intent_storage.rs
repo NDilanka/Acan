@@ -178,16 +178,20 @@ fn a_duplicate_append_writes_nothing() {
     let (_dir, log) = log_with(&events[..1]);
     let once = fs::read(&log).expect("the log reads");
 
-    let retried =
-        ledger::append(&log, &EMPTY, &events[0]).expect("a retry of the head is a duplicate");
+    let retried = ledger::append(&log, &EMPTY, &events[0])
+        .expect("a retry of the append that wrote the head is not an error");
     assert_eq!(retried, head_of(&events[0]));
-    let repeated = ledger::append(&log, &head_of(&events[0]), &events[0])
-        .expect("re-appending the head is a duplicate");
-    assert_eq!(repeated, head_of(&events[0]));
+    assert!(
+        matches!(
+            ledger::append(&log, &head_of(&events[0]), &events[0]),
+            Err(LedgerError::Duplicate { event_seq: 1 })
+        ),
+        "re-appending the head after reading it back is refused"
+    );
     assert_eq!(
         fs::read(&log).expect("the log reads"),
         once,
-        "a duplicate writes nothing"
+        "neither call writes anything"
     );
 
     ledger::append(&log, &head_of(&events[0]), &events[1]).expect("the next event appends");
@@ -485,6 +489,32 @@ fn a_missing_observation_is_an_error_not_a_default() {
             Err(ObservationError::Missing { hash: missing }) if missing == hash
         ),
         "a lost file is missing, not empty"
+    );
+}
+
+#[test]
+fn a_crash_before_rename_leaves_no_observation() {
+    let dir = tempfile::tempdir().expect("temporary directory");
+    let store = dir.path().join("observations");
+    fs::create_dir_all(&store).expect("the store exists");
+    let observation = observation();
+    let hash = observation.observation_hash().expect("hashing");
+    let staged = canonical_json(&observation).expect("canonical JSON");
+    fs::write(store.join("crashed.json.1-0.tmp"), &staged)
+        .expect("leaving a temporary file behind");
+
+    assert!(
+        matches!(
+            observations::get(&store, &hash),
+            Err(ObservationError::Missing { hash: missing }) if missing == hash
+        ),
+        "a temporary file that was never renamed is not the observation"
+    );
+
+    observations::put(&store, &observation).expect("the observation stores");
+    assert_eq!(
+        observations::get(&store, &hash).expect("the stored observation reads back"),
+        observation
     );
 }
 
