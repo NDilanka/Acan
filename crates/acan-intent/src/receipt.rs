@@ -30,7 +30,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::compare::Contrast;
-use crate::episode::{Contest, DiscrepancyEpisode, EpisodeState};
+use crate::episode::{Contest, DiscrepancyEpisode, EpisodeState, canonical_episode_selector};
 use crate::expr::{Operand, Predicate, ValueRef};
 use crate::gate::PreparedCommit;
 use crate::hash::{CanonicalError, ContentHash, ProbeHash};
@@ -161,6 +161,7 @@ pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>,
             class,
             state: state_of(episode),
             machine_id: rule.machine_ids.first().clone(),
+            selector: Some(canonical_episode_selector(&rule.selector)),
             probe_hash: hashes[probe],
             episode_id: episode.map(|episode| episode.id),
             ruling_id: None,
@@ -290,6 +291,9 @@ pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>,
     };
     receipt
         .check_counts()
+        .map_err(|err| inconsistent(&err.to_string()))?;
+    receipt
+        .check_episode_ids()
         .map_err(|err| inconsistent(&err.to_string()))?;
     Ok(CoreDerived::derived(receipt))
 }
@@ -890,6 +894,7 @@ fn item_for(inputs: &ReceiptInputs<'_>, placement: Placement<'_, '_>) -> Receipt
         class,
         state: state_of(episode),
         machine_id: item.machine_ids.first().clone(),
+        selector: Some(canonical_episode_selector(&item.selector)),
         probe_hash: hashes[probe],
         episode_id: episode.map(|episode| episode.id),
         ruling_id: None,
@@ -959,6 +964,7 @@ fn ruling(
             class: ItemClass::ViolatesRuling,
             state: ItemState::Open,
             machine_id: expectation.machine_ids.first().clone(),
+            selector: Some(canonical_episode_selector(&expectation.selector)),
             probe_hash: hashes[index],
             episode_id: None,
             ruling_id: Some(expectation.ruling_id.clone()),
@@ -1008,6 +1014,7 @@ fn out_of_scope(
         class: ItemClass::OutOfScope,
         state: state_of(episode),
         machine_id: result.contrast.probe.route_path.machines.first().clone(),
+        selector: selector.as_ref().map(canonical_episode_selector),
         probe_hash: hashes[claim.probe],
         episode_id: episode.map(|episode| episode.id),
         ruling_id: None,

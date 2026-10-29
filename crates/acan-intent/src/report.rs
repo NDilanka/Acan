@@ -8,7 +8,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::episode::Contest;
+use crate::episode::{Contest, EpisodeKey};
 use crate::gate::PreparedCommit;
 use crate::hash::{
     CanonicalError, ContentHash, EpisodeId, ObservationHash, ProbeHash, ReceiptHash, ScopeHash,
@@ -17,12 +17,12 @@ use crate::ledger::NotEnforcedReason;
 use crate::observation::Mask;
 use crate::probe::{RoutePath, RunRole};
 use crate::provenance::{EvidenceAddress, Provenance};
-use crate::scope::Scope;
+use crate::scope::{Scope, Selector};
 use crate::types::{
     CommitSha, Evidence, HttpMethod, InvalidValue, ItemId, MachineId, NonEmpty, ObservationPath,
     OrderRef, RouteTemplate, RulingId, RunId, ScopeRev, StepId,
 };
-use crate::verdict::{Evaluation, ItemClass, ItemState, UnknownReason};
+use crate::verdict::{CheckResult, Evaluation, ItemClass, ItemState, UnknownReason};
 use crate::version::ReceiptV1;
 
 /// Items per class. Core-derived: the fields are private to this crate and no public
@@ -288,6 +288,11 @@ pub struct ReceiptItem {
     pub state: ItemState,
     /// The machine its mark goes on.
     pub machine_id: MachineId,
+    /// The canonical episode selector of what this item checks: [`crate::canonical_episode_selector`] of
+    /// its scope selector, or of the difference's selector for an item no scope selector names.
+    /// Its episode id, when present, is the hash of an [`EpisodeKey`] built from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<Selector>,
     /// The probe that checked it.
     pub probe_hash: ProbeHash,
     /// Its episode, if it failed.
@@ -502,6 +507,44 @@ impl Receipt {
     #[must_use]
     pub fn base_commit(&self) -> &CommitSha {
         &self.prepared.base_commit
+    }
+
+    /// Checks that every item's episode id is the hash of its [`EpisodeKey`]: the order, the
+    /// item's selector, and either no obligation or one of its failing obligations. An item with
+    /// no selector has no key to check.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidValue`] for the first item whose episode id matches no such key.
+    pub fn check_episode_ids(&self) -> Result<(), InvalidValue> {
+        for item in &self.items {
+            let (Some(episode), Some(selector)) = (item.episode_id, item.selector.as_ref()) else {
+                continue;
+            };
+            let failing = item
+                .evaluation
+                .obligations
+                .iter()
+                .filter(|check| matches!(check.result, CheckResult::Fail { .. }))
+                .map(|check| Some(check.obligation_id.clone()));
+            let keys = std::iter::once(None).chain(failing);
+            let matched = keys.into_iter().any(|obligation_id| {
+                EpisodeKey {
+                    order: self.order.clone(),
+                    selector: selector.clone(),
+                    obligation_id,
+                }
+                .episode_id()
+                .is_ok_and(|id| id == episode)
+            });
+            if !matched {
+                return Err(InvalidValue::Malformed {
+                    what: "episode id",
+                    raw: item.item_id.to_string(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Checks that `counts` are exactly the classes of `items`. Every reader of a stored receipt

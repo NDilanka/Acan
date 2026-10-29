@@ -47,6 +47,7 @@ pub use container::{
 pub use episode::{
     CandidateAttempt, Contest, ContestKind, ContestStatus, DiscrepancyEpisode, EpisodeKey,
     EpisodeState, EvidenceRevision, Predicted, Prediction, ProposedValue, ScopeRevision,
+    canonical_episode_selector,
 };
 pub use error::Unsupported;
 pub use expr::{

@@ -11,14 +11,15 @@ use acan_intent::admit::{
 use acan_intent::{
     AppContract, CaptionCatalog, Card, CardRequest, ContainerNetwork, ContainerPolicy, Contest,
     ContestRequest, ContestResponse, ContestStatus, ContrastExample, CorpusProbe, Coverage,
-    DiscrepancyEpisode, Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern, Fixture,
-    GateState, GetReceiptRequest, GetReceiptResponse, GetRulingsRequest, GetRulingsResponse,
-    GetScopeRequest, GetScopeResponse, ItemClass, ItemState, LedgerEvent, LedgerHash, LedgerHead,
-    MaskablePath, McpError, McpErrorCode, Observation, ObservationHash, ObservationPath, PlantView,
-    PostReadbackRequest, PostReadbackResponse, ProbeCorpus, Receipt, RepairRound, RouteSource,
-    RulingId, Run, Scope, ScopeConfirmation, ScopeDraft, ScopeItem, Selector, SlotSpec, Step,
-    StepId, TourView, TwinError, TwinRunRequest, TwinRunResponse, TwinSaveRequest,
-    TwinSaveResponse, Unsupported, ValueType, WindowMs,
+    DiscrepancyEpisode, EpisodeKey, Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern,
+    Fixture, GateState, GetReceiptRequest, GetReceiptResponse, GetRulingsRequest,
+    GetRulingsResponse, GetScopeRequest, GetScopeResponse, ItemClass, ItemState, LedgerEvent,
+    LedgerHash, LedgerHead, MaskablePath, McpError, McpErrorCode, Observation, ObservationHash,
+    ObservationPath, PlantView, PostReadbackRequest, PostReadbackResponse, ProbeCorpus, Receipt,
+    RepairRound, RouteSource, RulingId, Run, Scope, ScopeConfirmation, ScopeDraft, ScopeItem,
+    Selector, SlotSpec, Step, StepId, TourView, TwinError, TwinRunRequest, TwinRunResponse,
+    TwinSaveRequest, TwinSaveResponse, Unsupported, ValueType, WindowMs,
+    canonical_episode_selector,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -1499,6 +1500,60 @@ fn a_contest_rationale_does_not_move_the_semantic_receipt_identity() {
     let mut retargeted = receipt.clone();
     retargeted.contests[0].status = ContestStatus::Rejected;
     assert_ne!(retargeted.semantic_hash(&scope).expect("hashing"), identity);
+}
+
+#[test]
+fn a_receipt_item_episode_id_is_the_hash_of_its_own_selector_and_order() {
+    let scope: Scope = load("scope.json");
+    let receipt: Receipt = load("receipt.json");
+    let selector = canonical_episode_selector(&scope.body.may[0].selector);
+    let episode = EpisodeKey {
+        order: receipt.order.clone(),
+        selector: selector.clone(),
+        obligation_id: None,
+    }
+    .episode_id()
+    .expect("hashing the key");
+    let mut item = receipt.items[0].clone();
+    item.episode_id = Some(episode);
+    item.selector = Some(selector);
+    let mut consistent = receipt.clone();
+    consistent.items = vec![item];
+    consistent
+        .check_episode_ids()
+        .expect("the item's episode id is the hash of its key");
+
+    let mut crossed = consistent.clone();
+    crossed.items[0].selector = Some(scope.body.may[1].selector.clone());
+    assert!(
+        crossed.check_episode_ids().is_err(),
+        "an episode id under another selector is refused"
+    );
+    let mut reordered = consistent.clone();
+    reordered.order = serde_json::from_value(json!("o-9")).expect("an order");
+    assert!(
+        reordered.check_episode_ids().is_err(),
+        "an episode id under another order is refused"
+    );
+    let mut unkeyed = consistent.clone();
+    unkeyed.items[0].selector = None;
+    unkeyed
+        .check_episode_ids()
+        .expect("an item with no selector has no key to check");
+}
+
+#[test]
+fn a_must_keep_selector_is_keyed_by_its_canonical_form() {
+    let scope: Scope = load("scope.json");
+    let canonical = canonical_episode_selector(&scope.body.must_keep[0].selector);
+    let value = serde_json::to_value(&canonical).expect("encoding the selector");
+    assert_eq!(value["step_context"], json!({ "kind": "any" }));
+    assert_eq!(value["principal"], json!({ "kind": "authenticated" }));
+    assert_eq!(
+        canonical_episode_selector(&canonical),
+        canonical,
+        "canonicalizing twice changes nothing"
+    );
 }
 
 #[test]
