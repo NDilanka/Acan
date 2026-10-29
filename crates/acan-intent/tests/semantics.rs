@@ -495,6 +495,38 @@ fn a_masked_field_keeps_its_format_against_the_candidate() {
 }
 
 #[test]
+fn a_masked_field_still_passes_through_its_uniqueness_relation() {
+    let with_codes = |codes: [&str; 2]| {
+        let mut hits = sequence(SIX_FAILURES);
+        hit_mut(&mut hits, "s8").body = json!({
+            "links": [{ "code": codes[0] }, { "code": codes[1] }]
+        });
+        hits
+    };
+    let trio = Trio::new(
+        with_codes(["aaaa1111", "bbbb2222"]),
+        with_codes(["cccc3333", "dddd4444"]),
+        with_codes(["eeee5555", "eeee5555"]),
+    );
+    assert_eq!(trio.masks().len(), 2, "both base-only codes are maskable");
+    assert_eq!(
+        differences(&trio.comparison()),
+        vec![("s8".to_owned(), "body.links[1].code".to_owned())],
+        "a duplicate code breaks the unique relation although the codes are masked"
+    );
+
+    let distinct = Trio::new(
+        with_codes(["aaaa1111", "bbbb2222"]),
+        with_codes(["cccc3333", "dddd4444"]),
+        with_codes(["eeee5555", "ffff6666"]),
+    );
+    assert!(matches!(
+        distinct.comparison().value().outcome,
+        Outcome::Unchanged {}
+    ));
+}
+
+#[test]
 fn a_status_difference_between_bases_is_unstable_and_never_masks() {
     let trio = Trio::new(
         sequence(SIX_FAILURES),
