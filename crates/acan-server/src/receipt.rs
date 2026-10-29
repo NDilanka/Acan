@@ -8,6 +8,7 @@
 
 use std::collections::BTreeSet;
 use std::iter;
+use std::num::TryFromIntError;
 
 use acan_intent::{
     Authorization, CanonicalError, CatalogVersion, CheckResult, Coverage, Difference, Evidence,
@@ -56,8 +57,14 @@ pub(crate) enum PlantViewError {
     #[error("machine {0} is not in the plant")]
     UnknownMachine(MachineId),
     /// A count does not fit the view's integer type.
-    #[error("{0} does not fit a plant view")]
-    TooMany(&'static str),
+    #[error("{what} does not fit a plant view")]
+    TooMany {
+        /// The count that is too large.
+        what: &'static str,
+        /// Why the conversion failed.
+        #[source]
+        source: TryFromIntError,
+    },
     /// A value the view needs is not valid.
     #[error(transparent)]
     Invalid(#[from] InvalidValue),
@@ -123,7 +130,7 @@ pub(crate) fn render_markdown(receipt: &Receipt) -> Result<String, RenderError> 
     write_unknowns(&mut doc, receipt)?;
     write_stale(&mut doc, receipt);
     write_masks(&mut doc, receipt);
-    write_rulings(&mut doc, receipt)?;
+    write_rulings(&mut doc, receipt);
     write_items(&mut doc, receipt)?;
     write_contests(&mut doc, receipt)?;
     write_context(&mut doc, receipt)?;
@@ -254,7 +261,9 @@ fn ensure_machines_known(
 /// A machine's coverage and probes come from the receipt alone. A probe passes through a machine
 /// when its item's route path names it. Coverage is `uncovered` when no probe passes through it
 /// or every route template of it is uncovered, `partial` when some route template is, and
-/// `covered` otherwise.
+/// `covered` otherwise. A route is matched by its template alone, since the caller's route list
+/// has no method. A template that is uncovered for one method counts as uncovered, which errs
+/// toward showing less coverage.
 fn plant_machine(receipt: &Receipt, input: &MachineInput) -> Result<PlantMachine, PlantViewError> {
     let probes: BTreeSet<ProbeHash> = receipt
         .items
@@ -300,8 +309,10 @@ fn plant_machine(receipt: &Receipt, input: &MachineInput) -> Result<PlantMachine
     Ok(PlantMachine {
         machine_id: input.machine_id.clone(),
         coverage,
-        probes: u32::try_from(probes.len())
-            .map_err(|_| PlantViewError::TooMany("probes through a machine"))?,
+        probes: u32::try_from(probes.len()).map_err(|source| PlantViewError::TooMany {
+            what: "probes through a machine",
+            source,
+        })?,
         routes: input.routes.clone(),
         rulings,
     })
@@ -331,8 +342,12 @@ fn plant_counts(receipt: &Receipt) -> Result<PlantCounts, PlantViewError> {
         probes_total: receipt.probes.total,
         routes_covered: receipt.routes.covered,
         routes_total: receipt.routes.total,
-        masks_applied: u32::try_from(receipt.masks.len())
-            .map_err(|_| PlantViewError::TooMany("masks"))?,
+        masks_applied: u32::try_from(receipt.masks.len()).map_err(|source| {
+            PlantViewError::TooMany {
+                what: "masks",
+                source,
+            }
+        })?,
         behavior: receipt.behavior,
     })
 }
@@ -848,7 +863,7 @@ fn write_masks(doc: &mut Doc, receipt: &Receipt) {
     );
 }
 
-fn write_rulings(doc: &mut Doc, receipt: &Receipt) -> Result<(), RenderError> {
+fn write_rulings(doc: &mut Doc, receipt: &Receipt) {
     doc.heading(2, "Rulings");
     doc.para(format!(
         "Rulings: {}. A NOT ENFORCED ruling is a note: it is shown and never counted as a check.",
@@ -899,7 +914,6 @@ fn write_rulings(doc: &mut Doc, receipt: &Receipt) -> Result<(), RenderError> {
         }
         doc.block();
     }
-    Ok(())
 }
 
 fn write_items(doc: &mut Doc, receipt: &Receipt) -> Result<(), RenderError> {
