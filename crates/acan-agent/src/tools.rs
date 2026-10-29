@@ -365,7 +365,10 @@ impl Worktree {
         // Hooks written under `.git` would run on the host at the next commit, so the policy
         // keeps it read-only unless `readonly_git` turns that off.
         let guarded_git = policy.mounts.readonly_git.then_some(".git");
-        for relative in guarded_git.into_iter().chain(protected.iter().map(String::as_str)) {
+        for relative in guarded_git
+            .into_iter()
+            .chain(protected.iter().map(String::as_str))
+        {
             let (path, existing) = match self.existing_real(relative)? {
                 Some(real) => (real, true),
                 None => (relative.to_owned(), false),
