@@ -43,12 +43,20 @@ const OTHER_ORIGINAL: &str = "export const other = 1;\n";
 const OTHER_CHANGED: &str = "export const other = 2;\n";
 /// Passes when the built commit carries the file, so the gate checks the commit, not the disk.
 const WITNESS: &str = "git cat-file -e HEAD:model/store.ts";
-/// The longest one step may take. A worker's write waits on clearance, and clearance waits on the
-/// settlement, so this bounds every wait in the scenario.
-const WAIT: Duration = Duration::from_secs(20);
+/// The longest one step of a scenario may take. A step spans git work in the origin and the
+/// worker, which runs several times slower on a loaded host, so the bound is generous. A stalled
+/// step still fails, and the panic names the step and what the origin showed.
+const WAIT: Duration = Duration::from_secs(120);
+/// How long a worker waits for a claim, a verdict, or build clearance. A worker that gives up
+/// releases its claim, and the origin then dissolves a clash the scenario is still holding open
+/// while it waits on worktrees, so this outlasts the scenario's own waits.
+const WORKER_WAIT: Duration = Duration::from_secs(600);
 const POLL: Duration = Duration::from_millis(20);
 /// How long the test lets the workers run after the gate opens, to show nothing is cleared.
 const HOLD: Duration = Duration::from_millis(300);
+/// The scenarios run one at a time. Each starts an origin and its own git work, so in parallel
+/// they slow each other's git calls, and the deadlines would then measure that contention.
+static SCENARIO: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// The foreman answers by the shape of its request: a review carries readbacks, an explanation
 /// carries a clash, and a split carries a machine. It splits the order into `tasks` tasks on one
@@ -224,7 +232,7 @@ fn worker_config(base: &str, token: &str, repo: &Path) -> WorkerConfig {
         repo: repo.to_path_buf(),
         test_command: None,
         max_steps: 5,
-        wait: WAIT,
+        wait: WORKER_WAIT,
         heartbeat: Duration::from_secs(1),
         poll: POLL,
     }
@@ -486,24 +494,67 @@ async fn events(running: &Running) -> Vec<Stamped> {
         .expect("the log is JSON")
 }
 
-/// Polls the stored log until `done` accepts it. A timeout names the wait that stalled.
+/// The origin's view of a stored log: how many events it holds, the last one, and each task's
+/// state. A failure prints this, so a stalled step shows what the origin had done.
+fn describe(log: &[Stamped], world: &World) -> String {
+    let last = log.last().map_or_else(
+        || "none".to_owned(),
+        |stamped| format!("{:?}", stamped.event),
+    );
+    let tasks: Vec<String> = world
+        .orders()
+        .flat_map(|order| world.tasks_of(order.id))
+        .map(|task| format!("{}: {:?}", task.id, task.state))
+        .collect();
+    format!(
+        "{} event(s), last {last}; tasks [{}]",
+        log.len(),
+        tasks.join("; ")
+    )
+}
+
+/// The origin's current view, read through the owner's events route.
+async fn origin_view(running: &Running) -> String {
+    let log = events(running).await;
+    let origin = Origin::replay(log.iter().cloned()).expect("the stored log replays");
+    describe(&log, origin.world())
+}
+
+/// Polls the stored log until `done` accepts it. A timeout names the wait that stalled and the
+/// origin's view on the last read.
 async fn settle<T>(
     running: &Running,
     what: &str,
     done: impl Fn(&[Stamped], &World) -> Option<T>,
 ) -> T {
-    timeout(WAIT, async {
+    let mut last = String::from("no read of the stored log");
+    let outcome = timeout(WAIT, async {
         loop {
             let log = events(running).await;
             let origin = Origin::replay(log.iter().cloned()).expect("the stored log replays");
             if let Some(found) = done(&log, origin.world()) {
                 return found;
             }
+            last = describe(&log, origin.world());
             sleep(POLL).await;
         }
     })
-    .await
-    .unwrap_or_else(|_| panic!("timed out waiting for {what}"))
+    .await;
+    outcome.unwrap_or_else(|_| {
+        panic!("timed out after {WAIT:?} waiting for {what}; the origin showed {last}")
+    })
+}
+
+/// Waits for a worker to finish within `WAIT`. A worker that does not finish fails the test with
+/// the origin's view, which shows the step the worker was waiting in.
+async fn finished(running: &Running, worker: JoinHandle<Outcome>, who: &str) -> Outcome {
+    match timeout(WAIT, worker).await {
+        Ok(joined) => joined.unwrap_or_else(|err| panic!("{who} panicked: {err}")),
+        Err(_) => panic!(
+            "{who} did not finish within {WAIT:?}; the origin showed {}",
+            origin_view(running).await
+        ),
+    }
 }
 
 fn tasks_of_world(world: &World) -> Vec<TaskId> {
@@ -567,17 +618,27 @@ fn cleared_after_clash(log: &[Stamped]) -> bool {
 
 /// Waits until the task's worktree is checked out. Git creates the directory and the `.git`
 /// file before it writes the index, so a status read in that window lists every file as deleted.
+/// A timeout names the path and the last read of it.
 async fn wait_for_checkout(path: &Path) {
-    timeout(WAIT, async {
+    let mut last = String::from("no read of the worktree yet");
+    let outcome = timeout(WAIT, async {
         loop {
-            if path.join(".git").exists() && git_status(path) == Some(String::new()) {
+            let git_file = path.join(".git").exists();
+            let status = git_status(path);
+            if git_file && status == Some(String::new()) {
                 return;
             }
+            last = format!(".git present: {git_file}; git status: {status:?}");
             sleep(POLL).await;
         }
     })
-    .await
-    .unwrap_or_else(|_| panic!("the worktree {} was never checked out", path.display()));
+    .await;
+    outcome.unwrap_or_else(|_| {
+        panic!(
+            "the worktree {} was not checked out within {WAIT:?}; last seen: {last}",
+            path.display()
+        )
+    });
 }
 
 /// The porcelain status of `dir`, or `None` while git cannot report it.
@@ -596,6 +657,7 @@ fn git_status(dir: &Path) -> Option<String> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_workers_on_one_file_clash_before_either_writes() {
+    let _scenario = SCENARIO.lock().await;
     let repo = user_repo();
     let root = repo.path();
     let running = start_origin(root, 2).await;
@@ -682,7 +744,12 @@ async fn two_workers_on_one_file_clash_before_either_writes() {
     .await;
     let status = response.status();
     let body = response.text().await.unwrap_or_default();
-    assert!(status.is_success(), "the clash settles: {status} {body}");
+    if !status.is_success() {
+        panic!(
+            "the clash settles while both tasks are declared: {status} {body}; the origin showed {}",
+            origin_view(&running).await
+        );
+    }
 
     settle(&running, "the first task to be cleared", |log, world| {
         let cleared = log.iter().any(
@@ -696,10 +763,7 @@ async fn two_workers_on_one_file_clash_before_either_writes() {
         "the second task waits for the first to land"
     );
 
-    let outcome = timeout(WAIT, first_worker)
-        .await
-        .expect("the first worker finishes in time")
-        .expect("the first worker does not panic");
+    let outcome = finished(&running, first_worker, "the first worker").await;
     assert!(
         matches!(&outcome.exit, Exit::Built { task, .. } if task == &first_task.to_string()),
         "the first worker builds its task: {}",
@@ -784,6 +848,7 @@ async fn narrow(running: &Running, clash: ClashId, task: TaskId) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_narrowed_task_redeclares_without_the_file_it_gave_up_and_lands() {
+    let _scenario = SCENARIO.lock().await;
     let repo = user_repo();
     let root = repo.path();
     let running = start_origin(root, 2).await;
@@ -794,10 +859,7 @@ async fn a_narrowed_task_redeclares_without_the_file_it_gave_up_and_lands() {
 
     narrow(&running, clash, second).await;
 
-    let narrowed = timeout(WAIT, two)
-        .await
-        .expect("the narrowed worker finishes in time")
-        .expect("the narrowed worker does not panic");
+    let narrowed = finished(&running, two, "the narrowed worker").await;
     assert!(
         matches!(&narrowed.exit, Exit::Built { task, .. } if task == &second.to_string()),
         "the narrowed worker builds its task: {}",
@@ -825,10 +887,7 @@ async fn a_narrowed_task_redeclares_without_the_file_it_gave_up_and_lands() {
         "the narrowed worker wrote its change to the file it kept"
     );
 
-    let built = timeout(WAIT, one)
-        .await
-        .expect("the other worker finishes in time")
-        .expect("the other worker does not panic");
+    let built = finished(&running, one, "the other worker").await;
     assert!(
         matches!(&built.exit, Exit::Built { .. }),
         "the other worker builds: {}",
@@ -839,6 +898,7 @@ async fn a_narrowed_task_redeclares_without_the_file_it_gave_up_and_lands() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_narrowed_task_that_cannot_go_on_without_the_file_releases_with_the_reason() {
+    let _scenario = SCENARIO.lock().await;
     let repo = user_repo();
     let root = repo.path();
     let running = start_origin(root, 2).await;
@@ -852,10 +912,7 @@ async fn a_narrowed_task_that_cannot_go_on_without_the_file_releases_with_the_re
 
     narrow(&running, clash, second).await;
 
-    let narrowed = timeout(WAIT, two)
-        .await
-        .expect("the narrowed worker finishes in time")
-        .expect("the narrowed worker does not panic");
+    let narrowed = finished(&running, two, "the narrowed worker").await;
     assert!(
         matches!(
             &narrowed.exit,
@@ -884,6 +941,7 @@ async fn a_narrowed_task_that_cannot_go_on_without_the_file_releases_with_the_re
 /// earlier, so the claim is released with both places named.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_narrowed_task_narrowed_again_is_not_planned_back_onto_a_file_it_gave_up() {
+    let _scenario = SCENARIO.lock().await;
     let repo = user_repo();
     let root = repo.path();
     let running = start_origin(root, 2).await;
@@ -908,10 +966,7 @@ async fn a_narrowed_task_narrowed_again_is_not_planned_back_onto_a_file_it_gave_
     .await;
     narrow(&running, other, second).await;
 
-    let narrowed = timeout(WAIT, two)
-        .await
-        .expect("the narrowed worker finishes in time")
-        .expect("the narrowed worker does not panic");
+    let narrowed = finished(&running, two, "the narrowed worker").await;
     let expected = format!("no plan without {FILE}, {OTHER} was accepted");
     assert!(
         matches!(
@@ -947,6 +1002,7 @@ async fn running_world(running: &Running) -> World {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn mcp_refuses_a_wrong_or_member_token_as_the_http_routes_do() {
+    let _scenario = SCENARIO.lock().await;
     let repo = user_repo();
     let running = start_origin(repo.path(), 2).await;
     let base = base_url(&running);
@@ -988,6 +1044,7 @@ async fn mcp_refuses_a_wrong_or_member_token_as_the_http_routes_do() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tools_list_offers_the_nine_tools() {
+    let _scenario = SCENARIO.lock().await;
     let repo = user_repo();
     let running = start_origin(repo.path(), 2).await;
     let response = mcp_post(
@@ -1024,6 +1081,7 @@ async fn tools_list_offers_the_nine_tools() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stale_fence_is_refused_with_the_rejection_text() {
+    let _scenario = SCENARIO.lock().await;
     let repo = user_repo();
     let root = repo.path();
     let running = start_origin(root, 2).await;
@@ -1049,12 +1107,14 @@ async fn a_stale_fence_is_refused_with_the_rejection_text() {
         .await
         .expect("the readback call completes");
     assert!(matches!(posted, Reply::Done(_)), "the readback is accepted");
-    timeout(WAIT, async {
+    let mut seen = String::from("no read of the task");
+    let matched = timeout(WAIT, async {
         loop {
             let detail = mcp
                 .call("get_task", json!({ "task": task.to_string() }))
                 .await
                 .expect("get_task completes");
+            seen = format!("{detail:?}");
             if let Reply::Done(detail) = detail
                 && detail["your_readback"]["status"] == "match"
             {
@@ -1063,8 +1123,10 @@ async fn a_stale_fence_is_refused_with_the_rejection_text() {
             sleep(POLL).await;
         }
     })
-    .await
-    .expect("the foreman matches the readback");
+    .await;
+    matched.unwrap_or_else(|_| {
+        panic!("the foreman matches the readback within {WAIT:?}; get_task showed {seen}")
+    });
     let claimed = mcp
         .call("claim_task", json!({ "task": task.to_string() }))
         .await
@@ -1171,6 +1233,7 @@ impl ModelClient for AnnouncedEdit {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lost_claim_stops_the_work_and_nothing_is_written() {
+    let _scenario = SCENARIO.lock().await;
     let repo = user_repo();
     let root = repo.path();
     // One worker alone: a sibling task nobody claims would hold the declare barrier for its
@@ -1234,10 +1297,7 @@ async fn a_lost_claim_stops_the_work_and_nothing_is_written() {
         "the claim is released: {released:?}"
     );
 
-    let outcome = timeout(WAIT, worker)
-        .await
-        .expect("the worker stops once its lease is refused")
-        .expect("the worker does not panic");
+    let outcome = finished(&running, worker, "the worker").await;
     assert!(
         matches!(&outcome.exit, Exit::Lost { task: lost, .. } if lost == &task.to_string()),
         "the worker reports the loss: {}",
@@ -1257,6 +1317,7 @@ async fn a_lost_claim_stops_the_work_and_nothing_is_written() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_model_error_releases_the_claim() {
+    let _scenario = SCENARIO.lock().await;
     let repo = user_repo();
     // One worker alone: a sibling task nobody claims would hold the declare barrier for its
     // whole deadline, so the order splits into one task.
@@ -1276,10 +1337,7 @@ async fn a_model_error_releases_the_claim() {
         };
         run(&config, &model).await
     });
-    let outcome = timeout(WAIT, worker)
-        .await
-        .expect("the worker finishes after the model fails")
-        .expect("the worker does not panic");
+    let outcome = finished(&running, worker, "the failing worker").await;
     assert!(
         matches!(&outcome.exit, Exit::Failed { reason } if reason.contains("the edit step failed")),
         "the worker names the failed step: {}",
@@ -1303,6 +1361,7 @@ async fn a_model_error_releases_the_claim() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_envelope_is_checked_before_any_method_runs() {
+    let _scenario = SCENARIO.lock().await;
     let repo = user_repo();
     let running = start_origin(repo.path(), 2).await;
     let bad_request = reqwest::StatusCode::BAD_REQUEST;
