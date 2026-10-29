@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::{fmt, mem};
 
+use acan_intent::{ContestStatus, EpisodeState, OrderRef, ScopeRevision};
 use serde::{Deserialize, Serialize};
 
 use crate::clash::{
@@ -18,11 +19,14 @@ use crate::ids::{
 };
 use crate::index::CodeIndex;
 use crate::job::Job;
+use crate::lane::{self, LaneRun, PendingContrast, ScopeLane, ScopedReadback};
 use crate::lease::{self, Claim, DECLARE_BARRIER_MS};
 use crate::member::{self, AgentPrincipal, Member, Role, SettleRight};
 use crate::order::{
     self, Order, OrderPhase, OrderState, Question, Readback, Stage, Task, TaskState, Witness,
 };
+use crate::repair::{self, LaneVerdict};
+use crate::ruling::{self, Append, Ledger};
 
 /// Which repository a world tracks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +110,11 @@ pub struct World {
     pub(crate) clash_keys: BTreeMap<ClashKey, ClashId>,
     pub(crate) gates: BTreeMap<GateRunId, GateRun>,
     pub(crate) usage: ModelUsage,
+    pub(crate) lanes: BTreeMap<OrderId, ScopeLane>,
+    // Shares the readback id counter with the legacy readbacks, so a claim's readback id
+    // names exactly one readback of either kind.
+    pub(crate) scoped_readbacks: BTreeMap<ReadbackId, ScopedReadback>,
+    pub(crate) ledger: Ledger,
 }
 
 impl World {
@@ -212,6 +221,75 @@ impl World {
     #[must_use]
     pub fn usage(&self) -> &ModelUsage {
         &self.usage
+    }
+
+    /// The scope-first state of an order. `None` for an order in the legacy lane.
+    #[must_use]
+    pub fn lane(&self, order: OrderId) -> Option<&ScopeLane> {
+        self.lanes.get(&order)
+    }
+
+    /// Every scope-first order's lane, in order id order.
+    pub fn lanes(&self) -> impl Iterator<Item = &ScopeLane> {
+        self.lanes.values()
+    }
+
+    /// The ruling log.
+    #[must_use]
+    pub fn ledger(&self) -> &Ledger {
+        &self.ledger
+    }
+
+    /// A scope-first readback by id.
+    #[must_use]
+    pub fn scoped_readback(&self, id: ReadbackId) -> Option<&ScopedReadback> {
+        self.scoped_readbacks.get(&id)
+    }
+
+    /// The scope-first readbacks of a task, in id order.
+    pub fn scoped_readbacks_of(&self, task: TaskId) -> impl Iterator<Item = &ScopedReadback> {
+        self.scoped_readbacks
+            .values()
+            .filter(move |r| r.task == task)
+    }
+
+    /// How many contests were ever filed in this world.
+    #[must_use]
+    pub fn contests_filed(&self) -> usize {
+        self.lanes.values().map(|lane| lane.contests.len()).sum()
+    }
+
+    /// The scope-first runs the host still has to prepare or answer with a receipt: every
+    /// current gating run without a receipt. The host's side of the lane; no [`Job`] covers it.
+    #[must_use]
+    pub fn pending_contrasts(&self) -> Vec<PendingContrast<'_>> {
+        self.lanes
+            .values()
+            .flat_map(|l| {
+                l.runs
+                    .iter()
+                    .filter(|(run, r)| r.receipt.is_none() && lane::is_gating(self, r.task, **run))
+                    .map(|(run, r)| PendingContrast {
+                        order: l.order,
+                        task: r.task,
+                        run: *run,
+                        head: &r.head,
+                        prepared: r.prepared.as_ref(),
+                    })
+            })
+            .collect()
+    }
+
+    fn lane_of_run(&self, run: GateRunId) -> Option<&ScopeLane> {
+        let task = self.gates.get(&run)?.task;
+        let order = self.tasks.get(&task)?.order;
+        self.lanes.get(&order)
+    }
+
+    fn lane_of_run_mut(&mut self, run: GateRunId) -> Option<&mut LaneRun> {
+        let task = self.gates.get(&run)?.task;
+        let order = self.tasks.get(&task)?.order;
+        self.lanes.get_mut(&order)?.runs.get_mut(&run)
     }
 
     /// The order's lifecycle phase, derived from its tasks, questions and clashes.
@@ -404,7 +482,11 @@ impl World {
     }
 
     /// The readbacks the order's `Review` job covers, ignoring whether a question is open.
+    /// None for a scope-first order: the model review authorizes nothing there.
     pub(crate) fn unreviewed(&self, order: &Order) -> BTreeSet<ReadbackId> {
+        if self.lanes.contains_key(&order.id) {
+            return BTreeSet::new();
+        }
         self.readbacks
             .values()
             .filter(|r| {
@@ -519,6 +601,9 @@ impl World {
             clash_keys: BTreeMap::new(),
             gates: BTreeMap::new(),
             usage: ModelUsage::default(),
+            lanes: BTreeMap::new(),
+            scoped_readbacks: BTreeMap::new(),
+            ledger: Ledger::default(),
         }
     }
 
@@ -551,7 +636,8 @@ impl World {
     /// creates one twice. The origin never records one; a damaged or forged log can, and the
     /// decide functions rely on these references.
     fn check(&self, stamped: &Stamped) -> Result<(), ReplayError> {
-        self.check_refs(&stamped.event)
+        check_signer(stamped)
+            .and_then(|()| self.check_refs(&stamped.event))
             .map_err(|why| ReplayError::InvalidEvent {
                 seq: stamped.seq,
                 why,
@@ -611,6 +697,9 @@ impl World {
             }
             Event::LeaseGranted { task, readback, .. } => {
                 known(&self.tasks, task, "task")?;
+                if self.scoped_readbacks.contains_key(readback) {
+                    return Ok(());
+                }
                 known(&self.readbacks, readback, "readback")
             }
             Event::LeaseRenewed { task, .. }
@@ -649,6 +738,72 @@ impl World {
             Event::OrderCancelled { order } | Event::BarrierExpired { order } => {
                 known(&self.orders, order, "order")
             }
+            Event::ScopeRevised {
+                order,
+                scope,
+                scope_hash,
+            } => {
+                known(&self.orders, order, "order")?;
+                if scope.scope_hash().ok() != Some(*scope_hash) {
+                    return Err(format!("the scope of order {order} does not have its hash"));
+                }
+                match self.lanes.get(order) {
+                    Some(lane) if scope.rev <= lane.scope.rev => {
+                        Err(format!("order {order} revises its scope backwards"))
+                    }
+                    _ => Ok(()),
+                }
+            }
+            Event::ScopeConfirmed {
+                order,
+                confirmation,
+            } => {
+                let lane = self
+                    .lanes
+                    .get(order)
+                    .ok_or_else(|| format!("order {order} has no scope"))?;
+                if confirmation.scope_rev != lane.scope.rev
+                    || confirmation.scope_hash != lane.scope_hash
+                {
+                    return Err(format!("order {order} confirms another scope revision"));
+                }
+                Ok(())
+            }
+            Event::ScopedReadbackPosted { readback } => {
+                known(&self.tasks, &readback.task, "task")?;
+                fresh(&self.readbacks, &readback.id, "readback")?;
+                fresh(&self.scoped_readbacks, &readback.id, "readback")
+            }
+            Event::CandidatePrepared { run, .. } | Event::ReceiptRecorded { run, .. } => self
+                .lane_of_run(*run)
+                .filter(|lane| lane.runs.contains_key(run))
+                .map(drop)
+                .ok_or_else(|| format!("unknown scope-first run {run}")),
+            Event::ContestFiled { contest } => {
+                let lane = lane_named(&self.lanes, &contest.order)?;
+                if !lane.episodes.contains_key(&contest.target) {
+                    return Err(format!("unknown episode {}", contest.target));
+                }
+                if self
+                    .lanes
+                    .values()
+                    .any(|l| l.contests.contains_key(&contest.id))
+                {
+                    return Err(format!("contest {} already exists", contest.id));
+                }
+                Ok(())
+            }
+            Event::ContestResolved { order, contest, .. } => self
+                .lanes
+                .get(order)
+                .filter(|lane| lane.contests.contains_key(contest))
+                .map(drop)
+                .ok_or_else(|| format!("unknown contest {contest}")),
+            Event::RulingRecorded { event } => match self.ledger.check_append(event) {
+                Ok(Append::Next) => Ok(()),
+                Ok(Append::Duplicate) => Err("the ruling is already recorded".to_owned()),
+                Err(refusal) => Err(refusal.to_string()),
+            },
         }
     }
 
@@ -894,6 +1049,18 @@ impl World {
                 witnesses,
             } => {
                 bump(&mut self.ids.gate, run.get());
+                let order = self.tasks.get(task).map(|t| t.order);
+                if let Some(lane) = order.and_then(|o| self.lanes.get_mut(&o)) {
+                    lane.runs.insert(
+                        *run,
+                        LaneRun {
+                            task: *task,
+                            head: head.clone(),
+                            prepared: None,
+                            receipt: None,
+                        },
+                    );
+                }
                 let started = GateRun {
                     id: *run,
                     task: *task,
@@ -962,8 +1129,106 @@ impl World {
                 count.output += u64::from(*output_tokens);
                 count.calls = count.calls.saturating_add(1);
             }
+            Event::ScopeRevised {
+                order,
+                scope,
+                scope_hash,
+            } => match self.lanes.get_mut(order) {
+                Some(lane) => {
+                    lane.lineage.push(ScopeRevision {
+                        rev: scope.rev,
+                        scope_hash: *scope_hash,
+                    });
+                    lane.scope = (**scope).clone();
+                    lane.scope_hash = *scope_hash;
+                    lane.confirmation = None;
+                }
+                None => {
+                    let lane = ScopeLane::opened(*order, (**scope).clone(), *scope_hash);
+                    self.lanes.insert(*order, lane);
+                }
+            },
+            Event::ScopeConfirmed {
+                order,
+                confirmation,
+            } => {
+                if let Some(lane) = self.lanes.get_mut(order) {
+                    lane.budget.get_or_insert(confirmation.budget);
+                    lane.confirmation = Some((**confirmation).clone());
+                }
+            }
+            Event::ScopedReadbackPosted { readback } => {
+                bump(&mut self.ids.readback, readback.id.get());
+                self.scoped_readbacks
+                    .insert(readback.id, (**readback).clone());
+            }
+            Event::CandidatePrepared { run, prepared } => {
+                if let Some(lane_run) = self.lane_of_run_mut(*run) {
+                    lane_run.prepared = Some((**prepared).clone());
+                }
+            }
+            Event::ReceiptRecorded { run, record } => self.record_receipt(*run, record),
+            Event::ContestFiled { contest } => {
+                if let Some(lane) = order_named(&contest.order).and_then(|o| self.lanes.get_mut(&o))
+                {
+                    if let Some(episode) = lane.episodes.get_mut(&contest.target) {
+                        episode.contested_from = Some(episode.state);
+                        episode.state = EpisodeState::Contested;
+                    }
+                    lane.contests
+                        .insert(contest.id.clone(), (**contest).clone());
+                }
+            }
+            Event::ContestResolved {
+                order,
+                contest,
+                status,
+                ..
+            } => {
+                if let Some(lane) = self.lanes.get_mut(order)
+                    && let Some(filed) = lane.contests.get_mut(contest)
+                {
+                    filed.status = *status;
+                    if let Some(episode) = lane.episodes.get_mut(&filed.target) {
+                        let before = episode.contested_from.take();
+                        episode.state = match status {
+                            ContestStatus::Upheld => EpisodeState::Residue,
+                            ContestStatus::Rejected | ContestStatus::Open => {
+                                before.unwrap_or(episode.state)
+                            }
+                        };
+                    }
+                }
+            }
+            Event::RulingRecorded { event } => self.ledger.append((**event).clone()),
         }
         self.next_seq = stamped.seq.next();
+    }
+
+    fn record_receipt(&mut self, run: GateRunId, record: &repair::ReceiptRecord) {
+        let task = self.gates.get(&run).map(|g| g.task);
+        let order = task.and_then(|t| self.tasks.get(&t)).map(|t| t.order);
+        let Some(lane) = order.and_then(|o| self.lanes.get_mut(&o)) else {
+            return;
+        };
+        for episode in &record.episodes {
+            lane.episodes.insert(episode.id, episode.clone());
+        }
+        if let Some(answer) = &record.answered
+            && let Some(round) = lane.rounds.last_mut()
+            && round.key.round == answer.round
+        {
+            round.result = Some(answer.result.clone());
+        }
+        if let Some(opened) = &record.opened {
+            lane.rounds.push(opened.clone());
+        }
+        if matches!(record.verdict, LaneVerdict::Stopped { .. }) {
+            lane.stopped = true;
+        }
+        if let Some(lane_run) = lane.runs.get_mut(&run) {
+            lane_run.receipt = Some(record.clone());
+        }
     }
 
     /// Replaces a claimed task's stage with `f(stage)`. Does nothing for an unclaimed task.
@@ -1019,6 +1284,35 @@ impl World {
             other => other,
         };
     }
+}
+
+/// Refuses a stored human-only event whose actor is not the member it names.
+fn check_signer(stamped: &Stamped) -> Result<(), String> {
+    let signer = match &stamped.event {
+        Event::RulingRecorded { event } => Some(event.actor().as_str()),
+        Event::ScopeConfirmed { confirmation, .. } => Some(confirmation.by.as_str()),
+        Event::ContestResolved { by, .. } => Some(by.as_str()),
+        Event::ScopeRevised { .. } => None,
+        _ => return Ok(()),
+    };
+    match (&stamped.actor, signer) {
+        (Actor::Member(member), Some(signer)) if member.as_str() == signer => Ok(()),
+        (Actor::Member(_), None) => Ok(()),
+        _ => Err("only the member who signs it records this event".to_owned()),
+    }
+}
+
+fn order_named(order: &OrderRef) -> Option<OrderId> {
+    order.as_str().parse().ok()
+}
+
+fn lane_named<'w>(
+    lanes: &'w BTreeMap<OrderId, ScopeLane>,
+    order: &OrderRef,
+) -> Result<&'w ScopeLane, String> {
+    order_named(order)
+        .and_then(|id| lanes.get(&id))
+        .ok_or_else(|| format!("order {order} has no scope"))
 }
 
 fn bump(counter: &mut u64, seen: u32) {
@@ -1224,6 +1518,15 @@ fn decide_human(world: &World, member: &MemberId, cmd: HumanCmd) -> Result<Vec<E
             clash::decide_settle(world, member, clash, choice)
         }
         HumanCmd::CancelOrder { order } => order::decide_cancel(world, member, order),
+        HumanCmd::ReviseScope { order, scope } => lane::decide_revise(world, member, order, *scope),
+        HumanCmd::ConfirmScope {
+            order,
+            confirmation,
+        } => lane::decide_confirm(world, member, order, *confirmation),
+        HumanCmd::ResolveContest { contest, status } => {
+            repair::decide_resolve_contest(world, member, &contest, status)
+        }
+        HumanCmd::RecordRuling { event } => ruling::decide_record(world, member, *event),
     }
 }
 
@@ -1248,6 +1551,39 @@ fn decide_agent(
         AgentCmd::ReportBuilt { fence, head } => {
             gate::decide_report_built(world, ctx, agent, fence, head)
         }
+        AgentCmd::PostScopedReadback {
+            task,
+            scope_rev,
+            scope_hash,
+            summary,
+            predictions,
+        } => lane::decide_readback(
+            world,
+            agent,
+            task,
+            scope_rev,
+            scope_hash,
+            summary,
+            predictions,
+        ),
+        AgentCmd::FileContest {
+            fence,
+            episode,
+            kind,
+            reproducer,
+            rationale,
+        } => repair::decide_file_contest(
+            world,
+            ctx,
+            agent,
+            fence,
+            repair::ContestDraft {
+                episode,
+                kind,
+                reproducer,
+                rationale,
+            },
+        ),
     }
 }
 
@@ -1286,5 +1622,11 @@ fn decide_system(world: &World, ctx: &Ctx<'_>, cmd: SystemCmd) -> Result<Vec<Eve
             output_tokens,
         }]),
         SystemCmd::Tick => Ok(Vec::new()),
+        SystemCmd::CandidatePrepared { run, prepared } => {
+            lane::decide_prepared(world, run, *prepared)
+        }
+        SystemCmd::ReceiptReady { run, receipt } => {
+            repair::decide_receipt(world, ctx, run, *receipt)
+        }
     }
 }
