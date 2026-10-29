@@ -16,8 +16,8 @@ use std::time::Duration;
 
 use acan_core::{
     AgentCmd, AgentId, Check, Command, CommitId, DeclarationInput, Event, Fence, FilePath,
-    GateVerdict, HumanCmd, Locus, MachineKey, Origin, Settlement, Stage, Stamped, TaskId,
-    TaskState, WitnessOutcome, WitnessSpec, World,
+    GateVerdict, Generation, HumanCmd, LEASE_TTL_MS, Locus, MachineKey, Origin, Settlement, Stage,
+    Stamped, TaskId, TaskState, WitnessOutcome, WitnessSpec, World,
 };
 use acan_llm::{ChatRequest, ChatResponse, LlmError, ModelClient, Role, UsageLedger};
 use serde_json::Value;
@@ -35,11 +35,13 @@ const LANDED: &str = "landed.txt";
 const AGENT_CONTENT: &str = "written by the agent\n";
 /// Passes when the built commit carries the file, so it checks the commit rather than the disk.
 const WITNESS_COMMAND: &str = "git cat-file -e HEAD:landed.txt";
-/// The longest one step of a chain may take. Measured on this Windows checkout, claim to land
-/// takes 4.4 to 6.8 seconds idle, and the slowest single step (witness result) took 2.3 seconds.
-/// Fifteen seconds leaves more than twice that, so a real stall still fails quickly.
-const WAIT: Duration = Duration::from_secs(15);
+/// The longest one step of a chain may take. Idle, claim to land takes 4.4 to 6.8 seconds. While
+/// another workspace build runs, one witness starts pwsh and git in 2 to 5 seconds, and a chain
+/// has many such steps, so the budget is generous. It stays finite, so a real stall still fails.
+const WAIT: Duration = Duration::from_secs(120);
 const POLL: Duration = Duration::from_millis(20);
+/// A sixth of the lease, so the test agent renews well before a lapse and can miss a few.
+const LEASE_RENEWAL: Duration = Duration::from_millis(LEASE_TTL_MS / 6);
 
 #[tokio::test]
 async fn an_order_is_gated_in_its_worktree_and_lands_on_the_protected_branch() {
@@ -60,7 +62,7 @@ async fn an_order_is_gated_in_its_worktree_and_lands_on_the_protected_branch() {
     );
     let fence = claim(&running, task).await;
     let worktree = worktree_dir(root, task);
-    wait_for_dir(&worktree).await;
+    wait_for_worktree(root, task, fence.generation).await;
 
     let response = worktree_route(&running, AGENT_TOKEN, task).await;
     assert_eq!(response.status(), reqwest::StatusCode::OK);
@@ -130,7 +132,7 @@ async fn a_failing_witness_sends_the_task_back_to_building_and_lands_nothing() {
     post_order(&running).await;
     read_back(&running, task).await;
     let fence = claim(&running, task).await;
-    wait_for_dir(&worktree_dir(root, task)).await;
+    wait_for_worktree(root, task, fence.generation).await;
     let protected_before = git(root, &["rev-parse", "main"]);
 
     build(
@@ -199,7 +201,7 @@ async fn a_conflicting_land_reports_the_files_and_reopens_the_task() {
     post_order(&running).await;
     read_back(&running, task).await;
     let fence = claim(&running, task).await;
-    wait_for_dir(&worktree_dir(root, task)).await;
+    wait_for_worktree(root, task, fence.generation).await;
 
     // The user lands a different version of the same file while the agent works.
     let user_commit = commit_on_protected(root, LANDED, "written by the user\n");
@@ -240,7 +242,7 @@ async fn a_land_onto_a_protected_branch_that_moved_merges_only_the_gated_commit(
     post_order(&running).await;
     read_back(&running, task).await;
     let fence = claim(&running, task).await;
-    wait_for_dir(&worktree_dir(root, task)).await;
+    wait_for_worktree(root, task, fence.generation).await;
 
     // The user lands a different file while the agent works, so the land is a real merge.
     let user_commit = commit_on_protected(root, "user.txt", "written by the user\n");
@@ -281,7 +283,7 @@ async fn a_reclaim_after_a_refused_land_starts_from_the_protected_head_the_user_
     post_order(&running).await;
     read_back(&running, task).await;
     let fence = claim(&running, task).await;
-    wait_for_dir(&worktree_dir(root, task)).await;
+    wait_for_worktree(root, task, fence.generation).await;
 
     let user_commit = commit_on_protected(root, LANDED, "written by the user\n");
     build(&running, root, task, fence, LANDED, AGENT_CONTENT).await;
@@ -310,7 +312,7 @@ async fn a_reclaim_after_a_refused_land_starts_from_the_protected_head_the_user_
     .await;
 
     let fence = claim(&running, task).await;
-    wait_for_dir(&worktree_dir(root, task)).await;
+    wait_for_worktree(root, task, fence.generation).await;
     assert_eq!(
         git(&worktree_dir(root, task), &["rev-parse", "HEAD"]).trim(),
         user_commit.to_string(),
@@ -343,7 +345,7 @@ async fn a_reclaim_without_waiting_for_cleanup_starts_at_the_protected_head() {
     read_back(&running, task).await;
     let fence = claim(&running, task).await;
     let worktree = worktree_dir(root, task);
-    wait_for_dir(&worktree).await;
+    wait_for_worktree(root, task, fence.generation).await;
     let old = commit_file(&worktree, "old.txt", "from the old claim\n");
     let protected = git(root, &["rev-parse", "main"]);
 
@@ -408,14 +410,7 @@ async fn a_queued_task_keeps_its_branch_until_it_lands() {
     post_order(&running).await;
     read_back(&running, task).await;
     let fence = claim(&running, task).await;
-    wait_for_dir(&worktree_dir(root, task)).await;
-    // The loop records the generation as it creates the worktree. Committing before that races
-    // the creation's own git.
-    settle(&running, "the claimed worktree to be recorded", |_, _| {
-        let recorded = git_config(root, "branch.acan/t-0.acanGeneration");
-        (!recorded.trim().is_empty()).then_some(())
-    })
-    .await;
+    wait_for_worktree(root, task, fence.generation).await;
     let built = build(&running, root, task, fence, LANDED, AGENT_CONTENT).await;
 
     let generation = settle(&running, "the task to queue", |_, world| {
@@ -468,9 +463,8 @@ async fn a_serialized_waiter_builds_on_its_landed_predecessor_and_lands_cleanly(
     review(&running, second).await;
     let first_fence = claim(&running, first).await;
     let second_fence = claim(&running, second).await;
-    for task in [first, second] {
-        wait_for_dir(&worktree_dir(root, task)).await;
-    }
+    wait_for_worktree(root, first, first_fence.generation).await;
+    wait_for_worktree(root, second, second_fence.generation).await;
     let cut_at = git(root, &["rev-parse", "main"]);
 
     declare(&running, first_fence, LANDED).await;
@@ -620,7 +614,9 @@ fn user_repo() -> tempfile::TempDir {
     dir
 }
 
-/// Runs git in `dir` and returns its stdout. Panics with git's stderr when the command fails.
+/// Runs git in `dir` and returns its stdout. Panics with the exit status, stdout and stderr when
+/// the command fails. Git reports some failures only on stdout, such as `commit` with nothing
+/// staged under `-q`, so stderr alone can be empty.
 ///
 /// A lock held by the server's own git is contention, not a failure of the command, so it is
 /// retried. The server and these tests share the repository's index.
@@ -635,10 +631,15 @@ fn git(dir: &Path, args: &[&str]) -> String {
         if output.status.success() {
             return String::from_utf8(output.stdout).expect("git prints UTF-8");
         }
+        let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let locked = stderr.contains("index.lock");
         if !locked || attempt == 5 {
-            panic!("git {args:?} failed: {stderr}");
+            panic!(
+                "git {args:?} in {} failed with {}\nstdout: {stdout}\nstderr: {stderr}",
+                dir.display(),
+                output.status
+            );
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -810,13 +811,35 @@ async fn review(running: &Running, task: TaskId) {
 /// worktree on the job loop; the caller waits for it.
 async fn claim(running: &Running, task: TaskId) -> Fence {
     agent_command(running, AgentCmd::Claim { task }).await;
-    settle(running, "the claim", |_, world| {
+    let fence = settle(running, "the claim", |_, world| {
         match &world.task(task)?.state {
             TaskState::Claimed { claim, .. } => Some(claim.fence(task)),
             _ => None,
         }
     })
-    .await
+    .await;
+    keep_lease(running, fence);
+    fence
+}
+
+/// Renews `fence`'s lease on a timer, as a worker does, until the test's runtime ends. A
+/// lease lapses 60 seconds after its last renewal, and a chain under load can run longer.
+///
+/// A renewal the origin rejects means the claim is over, because the task landed, was released,
+/// or was claimed again. The test's own steps check that outcome, so the rejection is ignored.
+fn keep_lease(running: &Running, fence: Fence) {
+    let writer = running.writer.clone();
+    tokio::spawn(async move {
+        loop {
+            sleep(LEASE_RENEWAL).await;
+            let _ = writer
+                .submit(Command::Agent {
+                    agent: agent(),
+                    cmd: AgentCmd::Renew { fence },
+                })
+                .await;
+        }
+    });
 }
 
 /// The scripted agent's build: declare the file, wait for the build to start, write and commit
@@ -917,14 +940,23 @@ async fn worktree_route(running: &Running, token: &str, task: TaskId) -> reqwest
         .expect("the worktree request is sent")
 }
 
-async fn wait_for_dir(path: &Path) {
+/// Waits until the loop has finished creating `task`'s worktree at `generation`.
+///
+/// The directory appears before `git worktree add` has written the worktree, so a directory check
+/// lets a commit run against the enclosing repository. The generation is recorded last, once the
+/// worktree is complete.
+async fn wait_for_worktree(root: &Path, task: TaskId, generation: Generation) {
+    let key = format!("branch.acan/{task}.acanGeneration");
+    let expected = generation.get().to_string();
     timeout(WAIT, async {
-        while !path.is_dir() {
+        while git_config(root, &key).trim() != expected {
             sleep(POLL).await;
         }
     })
     .await
-    .unwrap_or_else(|_| panic!("the worktree {} was never created", path.display()));
+    .unwrap_or_else(|_| {
+        panic!("the worktree of {task} at generation {expected} was never recorded")
+    });
 }
 
 fn in_state(world: &World, task: TaskId, state: impl Fn(&TaskState) -> bool) -> bool {
