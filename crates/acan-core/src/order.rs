@@ -483,6 +483,9 @@ pub(crate) fn decide_readback(
     if !matches!(t.state, TaskState::Open | TaskState::Claimed { .. }) {
         return Err(Rejection::wrong_state("task", t.state.name()));
     }
+    if world.lane(t.order).is_some() {
+        return Err(Rejection::wrong_state("order", "scope-first"));
+    }
     if summary.trim().is_empty() {
         return Err(Rejection::invalid("a readback needs a summary"));
     }
@@ -655,7 +658,7 @@ pub(crate) fn decide_cancel(
     Ok(events)
 }
 
-fn end_leases(world: &World, order: OrderId, why: LeaseEnd) -> Vec<Event> {
+pub(crate) fn end_leases(world: &World, order: OrderId, why: LeaseEnd) -> Vec<Event> {
     world
         .tasks_of(order)
         .filter_map(|t| match &t.state {

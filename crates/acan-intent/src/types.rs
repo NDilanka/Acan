@@ -457,11 +457,13 @@ fn parse_channel_path(raw: &str, wildcards: Wildcards) -> Option<Channel> {
         rest.strip_prefix('.')
             .is_some_and(|key| !key.is_empty() && key_len(key.as_bytes()) == key.len())
     };
+    // A field part is `.key...` or `[n]...`; `.[n]` is refused so an array root has one
+    // spelling, the one the lookup walks.
     let optional_field = |rest: &str| {
         rest.is_empty()
             || rest
                 .strip_prefix('.')
-                .is_some_and(|f| valid_field(f, wildcards))
+                .is_some_and(|f| !f.starts_with('[') && valid_field(f, wildcards))
             || (rest.starts_with('[') && valid_field(rest, wildcards))
     };
     match head {
@@ -490,7 +492,7 @@ pub struct ObservationPath(String);
 string_newtype!(
     ObservationPath,
     "observation path",
-    "^(status|(header|cookie)\\.[A-Za-z0-9_$-]+|body([.\\[].*)?|side_effect\\.(store|outbound_http)([.\\[].*)?)$",
+    "^(status|(header|cookie)\\.[A-Za-z0-9_$-]+|body((\\.[A-Za-z0-9_$-]|\\[).*)?|side_effect\\.(store|outbound_http)((\\.[A-Za-z0-9_$-]|\\[).*)?)$",
     |raw| {
         parse_channel_path(raw, Wildcards::Refused)
             .map(|_| ())
@@ -521,7 +523,7 @@ pub struct PathPattern(String);
 string_newtype!(
     PathPattern,
     "observation path pattern",
-    "^(status|(header|cookie)\\.[A-Za-z0-9_$-]+|body([.\\[].*)?|side_effect\\.(store|outbound_http)([.\\[].*)?)$",
+    "^(status|(header|cookie)\\.[A-Za-z0-9_$-]+|body((\\.[A-Za-z0-9_$-]|\\[).*)?|side_effect\\.(store|outbound_http)((\\.[A-Za-z0-9_$-]|\\[).*)?)$",
     |raw| {
         parse_channel_path(raw, Wildcards::Allowed)
             .map(|_| ())
@@ -592,7 +594,7 @@ pub struct MaskablePath(String);
 string_newtype!(
     MaskablePath,
     "maskable path pattern (any channel but status)",
-    "^((header|cookie)\\.[A-Za-z0-9_$-]+|body([.\\[].*)?|side_effect\\.(store|outbound_http)([.\\[].*)?)$",
+    "^((header|cookie)\\.[A-Za-z0-9_$-]+|body((\\.[A-Za-z0-9_$-]|\\[).*)?|side_effect\\.(store|outbound_http)((\\.[A-Za-z0-9_$-]|\\[).*)?)$",
     |raw| {
         match parse_channel_path(raw, Wildcards::Allowed) {
             Some(Channel::Status) | None => Err(InvalidValue::Malformed {

@@ -112,8 +112,13 @@ pub struct RequestTemplate {
     /// Extra headers by lowercase name. The runner sets host, content type and session itself.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub headers: BTreeMap<String, Template>,
-    /// A JSON body. String leaves may hold `${capture}` placeholders.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// A JSON body. String leaves may hold `${capture}` placeholders. Absent sends no body;
+    /// JSON `null` is a present body and sends `null`.
+    #[serde(
+        default,
+        deserialize_with = "crate::types::present_json",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub body: Option<serde_json::Value>,
 }
 
@@ -630,6 +635,24 @@ pub enum CaptureOutcome {
     },
 }
 
+impl CaptureOutcome {
+    /// The capture step.
+    #[must_use]
+    pub fn step_id(&self) -> &StepId {
+        match self {
+            Self::Captured { step_id, .. } | Self::Missing { step_id, .. } => step_id,
+        }
+    }
+
+    /// The binding.
+    #[must_use]
+    pub fn binding(&self) -> &CaptureName {
+        match self {
+            Self::Captured { binding, .. } | Self::Missing { binding, .. } => binding,
+        }
+    }
+}
+
 /// One run of one probe against one commit in one role. Written by the runner, never a model.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -650,7 +673,7 @@ pub struct Run {
     pub runner: RunnerHash,
     /// How it ended.
     pub outcome: RunOutcome,
-    /// One entry per capture step.
+    /// One entry per capture step the run reached, in sequence order. See [`crate::admit`].
     pub captures: Vec<CaptureOutcome>,
     /// When the app was started.
     pub started_at: UnixMillis,

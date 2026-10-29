@@ -2,7 +2,7 @@
   "event": "decision_confirmed",
   "schema_version": "acan-ledger/1",
   "event_seq": 4,
-  "prev_hash": "sha256:dfd226635be9d2a3e4ba3bb2b0cfac331f520bfa1e5166349e3ffae0d0656151",
+  "prev_hash": "sha256:2b12b2acbe23918444d81c6f18d6f9dd17191102e7e93378551b412ab8916983",
   "actor": "owner",
   "at": 1793260200000,
   "ruling_id": "r-1",

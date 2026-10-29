@@ -228,8 +228,8 @@ impl Observation {
     }
 }
 
-/// One run admitted as evidence: its record and every observation of its sequence, recipe
-/// steps first, each with the hash it was stored under.
+/// One run admitted as evidence: its record and one observation per HTTP and side-effect step
+/// it reached, recipe steps first, each with the hash it was stored under.
 ///
 /// Built only by [`crate::admit::observed_run`], which checks the observations against the
 /// stored hashes and the run record. It does not decode, so stored or model-written JSON can
@@ -241,10 +241,6 @@ pub struct ObservedRun {
 }
 
 impl ObservedRun {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "P01 admits runs through admit.rs")
-    )]
     pub(crate) fn admitted(run: Run, observations: Vec<(ObservationHash, Observation)>) -> Self {
         Self { run, observations }
     }
@@ -477,6 +473,31 @@ mod tests {
         assert_eq!(lookup("body.items[1]"), Evidence::Missing {});
         assert_eq!(lookup("header.retry-after"), Evidence::Missing {});
         assert_eq!(lookup("status"), present(json!(429)));
+    }
+
+    #[test]
+    fn array_roots_have_one_spelling_and_keep_null_elements() {
+        for refused in ["body.[0]", "side_effect.store.[0]", "body.items.[0]"] {
+            assert!(refused.parse::<ObservationPath>().is_err(), "{refused}");
+            assert!(refused.parse::<PathPattern>().is_err(), "{refused}");
+            assert!(refused.parse::<MaskablePath>().is_err(), "{refused}");
+        }
+        assert!("body.[*]".parse::<PathPattern>().is_err());
+        assert!("body[*].code".parse::<PathPattern>().is_ok());
+        let mut observation = observation();
+        observation.channels.body = Some(json!([null, { "code": "a" }]));
+        observation
+            .channels
+            .side_effects
+            .insert(TrustedSink::Store, json!([null, 7]));
+        let lookup = |path: &str| observation.lookup(&at(path));
+        assert_eq!(lookup("body[0]"), present(Value::Null));
+        assert_eq!(lookup("body[1].code"), present(json!("a")));
+        assert_eq!(lookup("body[2]"), Evidence::Missing {});
+        assert_eq!(lookup("side_effect.store[0]"), present(Value::Null));
+        assert_eq!(lookup("side_effect.store[1]"), present(json!(7)));
+        assert_eq!(lookup("side_effect.store[2]"), Evidence::Missing {});
+        assert_eq!(lookup("side_effect.outbound_http[0]"), Evidence::Missing {});
     }
 
     #[test]

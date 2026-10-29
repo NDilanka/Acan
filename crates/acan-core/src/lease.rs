@@ -3,6 +3,7 @@
 //! ```text
 //! Open --Claim: registered agent, readback matched at current rev, no open question-->
 //!     Claimed, generation = last + 1                         [LeaseGranted]
+//!     (scope-first order: the agent's readback acknowledged at the confirmed scope instead)
 //! Claimed --Renew(fence): generation current, now < expires_at--> Claimed [LeaseRenewed]
 //! Claimed --Release(fence)--> Open                           [LeaseEnded Released]
 //! Claimed --now >= expires_at (Tick or any command)--> Open  [LeaseEnded Expired]
@@ -23,6 +24,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::{Event, Rejection};
 use crate::ids::{AgentId, Generation, ReadbackId, TaskId, Timestamp};
+use crate::lane;
 use crate::order::{Order, Stage, TaskState};
 use crate::world::{Ctx, World};
 
@@ -129,7 +131,12 @@ pub(crate) fn decide_claim(
     let order = world
         .order(t.order)
         .ok_or_else(|| Rejection::unknown("order", t.order))?;
-    let readback = matched_readback(world, order, agent, task)?;
+    // A scope-first claim rests only on the lane's own acknowledgement; a legacy model
+    // verdict on the same task is never read.
+    let readback = match world.lane(t.order) {
+        Some(lane) => lane::acknowledged_readback(world, lane, agent, task)?,
+        None => matched_readback(world, order, agent, task)?,
+    };
     let generation = t
         .last_generation
         .unwrap_or(Generation::ZERO)

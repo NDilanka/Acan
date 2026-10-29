@@ -913,7 +913,7 @@
     "ObservationPath": {
       "description": "observation path",
       "type": "string",
-      "pattern": "^(status|(header|cookie)\\.[A-Za-z0-9_$-]+|body([.\\[].*)?|side_effect\\.(store|outbound_http)([.\\[].*)?)$"
+      "pattern": "^(status|(header|cookie)\\.[A-Za-z0-9_$-]+|body((\\.[A-Za-z0-9_$-]|\\[).*)?|side_effect\\.(store|outbound_http)((\\.[A-Za-z0-9_$-]|\\[).*)?)$"
     },
     "OpenChoiceView": {
       "description": "A question pin.",

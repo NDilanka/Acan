@@ -1,6 +1,6 @@
 {
   "version": "acan-mcp/1",
-  "receipt_hash": "sha256:857e03cb7b4baadaad3beafc566d9309bee763b930eb8beec9e0ee001ece6901",
+  "receipt_hash": "sha256:ed447d4ce3bd6a843f8e3374adbc176c44eec09dfca847bd981615b3c9baf195",
   "receipt": {
     "version": "acan-receipt/1",
     "order": "o-3",
@@ -16,7 +16,7 @@
         },
         "ledger_head": {
           "event_seq": 3,
-          "hash": "sha256:dfd226635be9d2a3e4ba3bb2b0cfac331f520bfa1e5166349e3ffae0d0656151"
+          "hash": "sha256:2b12b2acbe23918444d81c6f18d6f9dd17191102e7e93378551b412ab8916983"
         },
         "scope_hash": "sha256:eaab9bc0a3a9320938e24f5d50332cf9802ed3cf10b4c26497f8c518642bd415",
         "probe_set_hash": "sha256:08cbc55fe91e0a7d35d66a97b619a7931d518dccb0a3268d75ab7b9eac74af03",

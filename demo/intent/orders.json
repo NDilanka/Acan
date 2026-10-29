@@ -1,0 +1,68 @@
+{
+  "schema": "acan-demo-orders/1",
+  "repo": "acan-demo",
+  "orders": [
+    {
+      "id": "o-1",
+      "machine": "ratelimit",
+      "sentence": "Limit each signed-in user to ten requests per 60 seconds on the link API, counting failed requests too, and answer over-limit requests with 429."
+    },
+    {
+      "id": "o-2",
+      "machine": "middleware",
+      "sentence": "Write one audit event for every request under /api/, recording the method, the path, the signed-in user or anonymous, and the final status, and never the password, the authorization header or the session cookie."
+    },
+    {
+      "id": "o-3",
+      "machine": "links",
+      "sentence": "Let a link owner set an expiry time when creating a link, and answer requests for an expired link with 404."
+    },
+    {
+      "id": "o-4",
+      "machine": "links",
+      "sentence": "Let a user choose a custom short code when creating a link, using 3 to 32 letters, digits or underscores, and answer 409 when the code is already in use."
+    },
+    {
+      "id": "o-5",
+      "machine": "links",
+      "sentence": "Paginate GET /api/links with a limit of up to 100 and an opaque cursor, and return the next cursor whenever more links exist."
+    },
+    {
+      "id": "o-6",
+      "machine": "auth",
+      "sentence": "Let a user delete their own account, which revokes every session they hold and deletes the links they own."
+    },
+    {
+      "id": "o-7",
+      "machine": "dashboard",
+      "sentence": "Show each link's clicks in the last 24 hours on the dashboard, next to its total clicks."
+    },
+    {
+      "id": "o-8",
+      "machine": "ratelimit",
+      "sentence": "Send a Retry-After header on every 429 response, in whole seconds rounded up."
+    },
+    {
+      "id": "o-9",
+      "machine": "middleware",
+      "supersedes": "o-2",
+      "sentence": "Stop writing audit events for anonymous requests, and keep writing them for signed-in requests."
+    },
+    {
+      "id": "o-10",
+      "machine": "auth",
+      "sentence": "Add POST /api/logout-all, which revokes every session of the signed-in user and returns how many were revoked."
+    },
+    {
+      "id": "o-11",
+      "machine": "auth",
+      "sentence": "Require passwords of at least 12 characters at signup and answer 400 to shorter ones."
+    },
+    {
+      "id": "o-12",
+      "machine": "ratelimit",
+      "supersedes": "o-1",
+      "sentence": "Change the link API rate limit window from 60 seconds to 120 seconds."
+    }
+  ]
+}

@@ -6,6 +6,10 @@
 use std::borrow::Cow;
 use std::fmt;
 
+use acan_intent::{
+    Contest, ContestId, ContestKind, ContestStatus, EpisodeId, LedgerEvent, Prediction,
+    PreparedCommit, ProbeHash, Receipt, Scope, ScopeConfirmation, ScopeHash, ScopeRev,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::clash::{
@@ -17,11 +21,13 @@ use crate::ids::{
     OrderRev, QuestionId, ReadbackId, Seq, TaskId, Timestamp, WitnessId,
 };
 use crate::index::Locus;
+use crate::lane::ScopedReadback;
 use crate::lease::{Fence, Lease, LeaseEnd};
 use crate::member::{AgentPrincipal, Member, Role};
 use crate::order::{
     Question, QuestionDraft, Readback, ReadbackVerdict, TaskSpec, Witness, WitnessSpec,
 };
+use crate::repair::ReceiptRecord;
 use crate::world::{Step, WorldRef};
 
 /// A command with the principal the host authenticated.
@@ -92,6 +98,33 @@ pub enum HumanCmd {
         /// The order.
         order: OrderId,
     },
+    /// Poster or owner. Sets the order's scope revision. The first one moves an order with no
+    /// claimed task into the scope-first lane; a newer one voids the confirmation.
+    ReviseScope {
+        /// The order.
+        order: OrderId,
+        /// The new revision.
+        scope: Box<Scope>,
+    },
+    /// Poster or owner. Confirms the order's current scope revision.
+    ConfirmScope {
+        /// The order.
+        order: OrderId,
+        /// The confirmation, signed by the caller.
+        confirmation: Box<ScopeConfirmation>,
+    },
+    /// Poster or owner. Answers a contest.
+    ResolveContest {
+        /// The contest.
+        contest: ContestId,
+        /// `upheld` or `rejected`.
+        status: ContestStatus,
+    },
+    /// Appends one ruling to the ruling log, signed by the caller.
+    RecordRuling {
+        /// The ruling.
+        event: Box<LedgerEvent>,
+    },
 }
 
 /// What an agent can ask for. These are the MCP tool arguments.
@@ -135,6 +168,32 @@ pub enum AgentCmd {
         fence: Fence,
         /// The commit to test.
         head: CommitId,
+    },
+    /// Reads back a scope-first task at the scope revision the agent read.
+    PostScopedReadback {
+        /// The task.
+        task: TaskId,
+        /// The revision read.
+        scope_rev: ScopeRev,
+        /// Its hash.
+        scope_hash: ScopeHash,
+        /// The plan in the agent's words.
+        summary: String,
+        /// What the agent predicts. Scored, never evidence.
+        predictions: Vec<Prediction>,
+    },
+    /// Objects to one discrepancy episode of the caller's order.
+    FileContest {
+        /// The caller's fence.
+        fence: Fence,
+        /// The episode.
+        episode: EpisodeId,
+        /// What the agent claims.
+        kind: ContestKind,
+        /// The probe that shows it.
+        reproducer: ProbeHash,
+        /// Why.
+        rationale: String,
     },
 }
 
@@ -201,6 +260,20 @@ pub enum SystemCmd {
     },
     /// A timer tick. Expires due leases and lifts declare barriers past their deadline.
     Tick,
+    /// The host prepared the merged commit a scope-first run tests.
+    CandidatePrepared {
+        /// The run.
+        run: GateRunId,
+        /// The prepared commit and its tested context.
+        prepared: Box<PreparedCommit>,
+    },
+    /// The receipt of a prepared scope-first run.
+    ReceiptReady {
+        /// The run.
+        run: GateRunId,
+        /// The receipt.
+        receipt: Box<Receipt>,
+    },
 }
 
 /// Who caused an event.
@@ -364,6 +437,46 @@ pub enum Event {
         input_tokens: u32,
         output_tokens: u32,
     },
+    /// A human set the order's scope revision. Clears any confirmation.
+    ScopeRevised {
+        order: OrderId,
+        scope: Box<Scope>,
+        scope_hash: ScopeHash,
+    },
+    /// A human confirmed the current scope revision.
+    ScopeConfirmed {
+        order: OrderId,
+        confirmation: Box<ScopeConfirmation>,
+    },
+    /// An agent read back a scope-first task; the acknowledgement is derived from it.
+    ScopedReadbackPosted {
+        readback: Box<ScopedReadback>,
+    },
+    /// The merged commit a scope-first run tests.
+    CandidatePrepared {
+        run: GateRunId,
+        prepared: Box<PreparedCommit>,
+    },
+    /// A scope-first run's receipt and everything the core decided from it.
+    ReceiptRecorded {
+        run: GateRunId,
+        record: Box<ReceiptRecord>,
+    },
+    /// An agent contested an episode.
+    ContestFiled {
+        contest: Box<Contest>,
+    },
+    /// A human answered a contest.
+    ContestResolved {
+        order: OrderId,
+        contest: ContestId,
+        status: ContestStatus,
+        by: MemberId,
+    },
+    /// A human ruling appended to the ruling log.
+    RulingRecorded {
+        event: Box<LedgerEvent>,
+    },
 }
 
 /// Why the origin refused a command. A refused command appends nothing.
@@ -405,6 +518,24 @@ pub enum Rejection {
     /// The command is malformed.
     #[error("invalid command: {why}")]
     Invalid { why: String },
+    /// The command names a scope revision that is not the order's current one.
+    #[error("stale scope; current is revision {} ({current_hash})", current_rev.0)]
+    StaleScope {
+        current_rev: ScopeRev,
+        current_hash: ScopeHash,
+    },
+    /// The order's current scope revision has no confirmation.
+    #[error("the scope of order {order} is not confirmed")]
+    ScopeNotConfirmed { order: OrderId },
+    /// The order's repair budget ran out.
+    #[error("the repair budget of order {order} is exhausted")]
+    BudgetExhausted { order: OrderId },
+    /// The agent has no scope-first readback of the task.
+    #[error("no readback of task {task}")]
+    NotReadBack { task: TaskId },
+    /// The evidence is for another commit, context or ruling log revision.
+    #[error("stale evidence: {detail}")]
+    StaleEvidence { detail: String },
 }
 
 impl Rejection {
