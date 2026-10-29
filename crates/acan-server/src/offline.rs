@@ -2,8 +2,10 @@
 //!
 //! Each job kind gets the plainest reply that moves it forward: a split into one task on the
 //! order's machine, a review that matches every witness for every readback, and a generic
-//! clash explanation with no suggestion. Token counts are estimates, so the usage panel shows
-//! the calls a live provider would have taken.
+//! clash explanation with no suggestion. Scope and probe drafts get no reply at all. Token counts
+//! are estimates, so the usage panel shows the calls a live provider would have taken. Every reply
+//! here is recorded with provider `offline`, and the replies serve tests and the server without a
+//! routing file.
 
 use std::time::Duration;
 
@@ -47,6 +49,8 @@ impl ModelClient for Offline {
             Ask::Split => split(&context),
             Ask::Review => review(&context),
             Ask::Explain => explain(),
+            // A scope or probe draft gains no authority from a built-in reply, so none is given.
+            Ask::Scope | Ask::Probe => return Err(LlmError::NoScriptedReply { role }),
         }
         .to_string();
         let prompt_chars: usize = request.last_user_text().map_or(0, str::len);
