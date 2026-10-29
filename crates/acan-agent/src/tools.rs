@@ -143,8 +143,8 @@ impl Worktree {
         self
     }
 
-    /// Runs the test command in the image `name`. The image has no digest pin; use [`Worktree::with_policy`]
-    /// to pin one.
+    /// Runs the test command in the image `name`. The image has no digest pin; use
+    /// [`Worktree::with_policy`] to pin one.
     #[must_use]
     pub fn with_image(mut self, name: ImageName) -> Self {
         self.policy.image = ContainerImage { name, digest: None };
