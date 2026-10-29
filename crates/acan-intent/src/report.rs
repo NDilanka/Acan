@@ -288,9 +288,10 @@ pub struct ReceiptItem {
     pub state: ItemState,
     /// The machine its mark goes on.
     pub machine_id: MachineId,
-    /// The canonical episode selector of what this item checks: [`crate::canonical_episode_selector`] of
-    /// its scope selector, or of the difference's selector for an item no scope selector names.
-    /// Its episode id, when present, is the hash of an [`EpisodeKey`] built from it.
+    /// The canonical episode selector of what this item checks:
+    /// [`crate::canonical_episode_selector`] of its scope selector, or of the difference's
+    /// selector for an item no scope selector names. Its episode id, when present, is the hash
+    /// of an [`EpisodeKey`] built from it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selector: Option<Selector>,
     /// The probe that checked it.
@@ -545,8 +546,7 @@ impl Receipt {
                 .iter()
                 .filter(|check| matches!(check.result, CheckResult::Fail { .. }))
                 .map(|check| Some(check.obligation_id.clone()));
-            let keys = std::iter::once(None).chain(failing);
-            let matched = keys.into_iter().any(|obligation_id| {
+            let matched = std::iter::once(None).chain(failing).any(|obligation_id| {
                 EpisodeKey {
                     order: self.order.clone(),
                     selector: selector.clone(),

@@ -135,8 +135,12 @@ pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>,
         let reaching = reaching_probes(inputs, &rule.selector);
         let judged = judge_obligations(inputs, rule.obligations.iter(), &reaching);
         if reaching.is_empty() {
-            let item_id = ItemId::from_str(rule.id.as_str())
-                .map_err(|_| inconsistent("a must-keep id is not an item id"))?;
+            let item_id = ItemId::from_str(rule.id.as_str()).map_err(|_| {
+                inconsistent(&format!(
+                    "must-keep id {} is not an item id",
+                    rule.id.as_str()
+                ))
+            })?;
             not_reached.push(unreached(item_id, &rule.selector, &judged));
         }
         let covered: Vec<usize> = (0..claims.len())
@@ -163,8 +167,12 @@ pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>,
         let claimed: Vec<&Claim> = covered.iter().map(|&index| &claims[index]).collect();
         let episode = episode_for(inputs.episodes, &rule.selector, &failing_ids(&judged));
         must_items.push(ReceiptItem {
-            item_id: ItemId::from_str(rule.id.as_str())
-                .map_err(|_| inconsistent("a must-keep id is not an item id"))?,
+            item_id: ItemId::from_str(rule.id.as_str()).map_err(|_| {
+                inconsistent(&format!(
+                    "must-keep id {} is not an item id",
+                    rule.id.as_str()
+                ))
+            })?,
             class,
             state: state_of(episode),
             machine_id: rule.machine_ids.first().clone(),
