@@ -93,8 +93,9 @@ pub use provenance::{
 };
 pub use repair::{RepairRound, ResultKey, RoundKey, RoundNumber, RoundResult};
 pub use report::{
-    BehaviorCounts, ClassCounts, EvidenceRow, EvidenceSlot, GateState, ProbeCounts, Receipt,
-    ReceiptItem, RouteCounts, RulingCheck, RulingStatus, SequenceStep, StepTint, UncoveredRoute,
+    BehaviorCounts, ClassCounts, EvidenceRow, EvidenceSlot, GateState, NotReached, ProbeCounts,
+    Receipt, ReceiptItem, RouteCounts, RulingCheck, RulingStatus, SequenceStep, StepTint,
+    UncoveredRoute,
 };
 pub use scope::{
     BroadGrantAck, Change, ChoiceAnswer, ChoiceOption, ItemProvenance, MustKeep, OpenChoice,

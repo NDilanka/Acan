@@ -14,11 +14,11 @@ use acan_intent::{
     DiscrepancyEpisode, EpisodeKey, Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern,
     Fixture, GateState, GetReceiptRequest, GetReceiptResponse, GetRulingsRequest,
     GetRulingsResponse, GetScopeRequest, GetScopeResponse, ItemClass, ItemState, LedgerEvent,
-    LedgerHash, LedgerHead, MaskablePath, McpError, McpErrorCode, Observation, ObservationHash,
-    ObservationPath, PlantView, PostReadbackRequest, PostReadbackResponse, ProbeCorpus, Receipt,
-    RepairRound, RouteSource, RulingId, Run, Scope, ScopeConfirmation, ScopeDraft, ScopeItem,
-    Selector, SlotSpec, Step, StepId, TourView, TwinError, TwinRunRequest, TwinRunResponse,
-    TwinSaveRequest, TwinSaveResponse, Unsupported, ValueType, WindowMs,
+    LedgerHash, LedgerHead, MaskablePath, McpError, McpErrorCode, NotReached, Observation,
+    ObservationHash, ObservationPath, PlantView, PostReadbackRequest, PostReadbackResponse,
+    ProbeCorpus, Receipt, RepairRound, RouteSource, RulingId, Run, Scope, ScopeConfirmation,
+    ScopeDraft, ScopeItem, Selector, SlotSpec, Step, StepId, TourView, TwinError, TwinRunRequest,
+    TwinRunResponse, TwinSaveRequest, TwinSaveResponse, Unsupported, ValueType, WindowMs,
     canonical_episode_selector,
 };
 use serde::Serialize;
@@ -1540,6 +1540,47 @@ fn a_receipt_item_episode_id_is_the_hash_of_its_own_selector_and_order() {
     unkeyed
         .check_episode_ids()
         .expect("an item with no selector has no key to check");
+}
+
+#[test]
+fn an_unreached_item_is_named_by_id_with_its_unchecked_obligations() {
+    let scope: Scope = load("scope.json");
+    let receipt: Receipt = load("receipt.json");
+    assert!(
+        serde_json::to_value(&receipt)
+            .expect("encoding the receipt")
+            .get("not_reached")
+            .is_none(),
+        "a receipt with nothing unreached keeps its bytes"
+    );
+    let item = &scope.body.may[1];
+    let mut unreached = receipt.clone();
+    unreached.not_reached.push(NotReached {
+        item_id: item.id.clone(),
+        selector: canonical_episode_selector(&item.selector),
+        obligation_ids: item
+            .acceptance
+            .iter()
+            .map(|p| p.obligation_id.clone())
+            .collect(),
+    });
+    let value = serde_json::to_value(&unreached).expect("encoding the receipt");
+    assert_eq!(
+        value["not_reached"][0]["item_id"],
+        serde_json::to_value(&item.id).expect("encoding the id")
+    );
+    assert_eq!(
+        value["not_reached"][0]["obligation_ids"]
+            .as_array()
+            .map(Vec::len),
+        Some(item.acceptance.iter().count())
+    );
+    assert_ne!(
+        unreached.receipt_hash().expect("hashing"),
+        receipt.receipt_hash().expect("hashing")
+    );
+    let decoded: Receipt = serde_json::from_value(value).expect("decoding the receipt");
+    assert_eq!(decoded, unreached);
 }
 
 #[test]

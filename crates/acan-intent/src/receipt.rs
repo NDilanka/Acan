@@ -40,8 +40,9 @@ use crate::predicate::{self, RetainedExample, method_admits, principal_admits};
 use crate::probe::{ProbeCorpus, RouteStatus, RunOutcome, RunRole};
 use crate::provenance::{CoreDerived, Provenance};
 use crate::report::{
-    BehaviorCounts, ClassCounts, EvidenceRow, EvidenceSlot, GateState, ProbeCounts, Receipt,
-    ReceiptItem, RouteCounts, RulingCheck, RulingStatus, SequenceStep, StepTint, UncoveredRoute,
+    BehaviorCounts, ClassCounts, EvidenceRow, EvidenceSlot, GateState, NotReached, ProbeCounts,
+    Receipt, ReceiptItem, RouteCounts, RulingCheck, RulingStatus, SequenceStep, StepTint,
+    UncoveredRoute,
 };
 use crate::scope::{Change, PredicateRef, Scope, ScopeConfirmation, ScopeItem, Selector};
 use crate::types::{
@@ -128,10 +129,16 @@ pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>,
     let mut must_items = Vec::new();
     let mut may_items = Vec::new();
     let mut ruling_items = Vec::new();
+    let mut not_reached = Vec::new();
 
     for rule in &inputs.scope.body.must_keep {
         let reaching = reaching_probes(inputs, &rule.selector);
         let judged = judge_obligations(inputs, rule.obligations.iter(), &reaching);
+        if reaching.is_empty() {
+            let item_id = ItemId::from_str(rule.id.as_str())
+                .map_err(|_| inconsistent("a must-keep id is not an item id"))?;
+            not_reached.push(unreached(item_id, &rule.selector, &judged));
+        }
         let covered: Vec<usize> = (0..claims.len())
             .filter(|&index| claims[index].covered_by(&rule.selector))
             .collect();
@@ -183,6 +190,9 @@ pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>,
     for item in &inputs.scope.body.may {
         let reaching = reaching_probes(inputs, &item.selector);
         let judged = judge_obligations(inputs, item.acceptance.iter(), &reaching);
+        if reaching.is_empty() {
+            not_reached.push(unreached(item.id.clone(), &item.selector, &judged));
+        }
         let covered: Vec<usize> = (0..claims.len())
             .filter(|&index| {
                 owners[index] == Owner::Unclaimed
@@ -288,6 +298,7 @@ pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>,
             .collect(),
         rulings,
         contests: inputs.contests.to_vec(),
+        not_reached,
     };
     receipt
         .check_counts()
@@ -834,6 +845,18 @@ fn claimed_in<'c>(claimed: &[&'c Claim], probe: usize) -> Vec<&'c Claim> {
         .copied()
         .filter(|claim| claim.probe == probe)
         .collect()
+}
+
+/// A scope item or rule no probe reached, with every obligation it has, all unchecked.
+fn unreached(item_id: ItemId, selector: &Selector, judged: &[Judged]) -> NotReached {
+    NotReached {
+        item_id,
+        selector: canonical_episode_selector(selector),
+        obligation_ids: judged
+            .iter()
+            .map(|judgment| judgment.obligation_id.clone())
+            .collect(),
+    }
 }
 
 fn obligation_checks(judged: &[Judged]) -> Vec<ObligationCheck> {

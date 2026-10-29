@@ -19,8 +19,8 @@ use crate::probe::{RoutePath, RunRole};
 use crate::provenance::{EvidenceAddress, Provenance};
 use crate::scope::{Scope, Selector};
 use crate::types::{
-    CommitSha, Evidence, HttpMethod, InvalidValue, ItemId, MachineId, NonEmpty, ObservationPath,
-    OrderRef, RouteTemplate, RulingId, RunId, ScopeRev, StepId,
+    CommitSha, Evidence, HttpMethod, InvalidValue, ItemId, MachineId, NonEmpty, ObligationId,
+    ObservationPath, OrderRef, RouteTemplate, RulingId, RunId, ScopeRev, StepId,
 };
 use crate::verdict::{CheckResult, Evaluation, ItemClass, ItemState, UnknownReason};
 use crate::version::ReceiptV1;
@@ -425,6 +425,20 @@ pub struct RulingCheck {
     pub status: RulingStatus,
 }
 
+/// A scope item or must-keep rule that no probe reached. It has no receipt item, because a receipt
+/// item needs the probe that checked it, and it carries no probe hash for the same reason. Its
+/// obligations count as unknown in [`BehaviorCounts`], never as passed.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NotReached {
+    /// The scope item or must-keep rule.
+    pub item_id: ItemId,
+    /// Its canonical episode selector, as on [`ReceiptItem::selector`].
+    pub selector: Selector,
+    /// The obligations no probe checked.
+    pub obligation_ids: Vec<ObligationId>,
+}
+
 /// The receipt of one candidate. Core-derived: every class, count and denominator is a pure
 /// function of observations, masks, the scope and the expectations.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
@@ -458,6 +472,10 @@ pub struct Receipt {
     pub rulings: Vec<RulingCheck>,
     /// Every contest filed in the order.
     pub contests: Vec<Contest>,
+    /// Scope items and must-keep rules no probe reached, each with its unchecked obligations. They
+    /// count as unknown in [`Receipt::behavior`]; this list names them by item id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_reached: Vec<NotReached>,
 }
 
 impl Receipt {
