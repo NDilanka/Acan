@@ -19,11 +19,22 @@ pub struct Instance {
 }
 
 /// A straight thin line in space, in one tint, drawn like a hue line. It is for a mark that links
-/// two points, such as a drone's beam to its target.
+/// two points, such as a drone's beam to its target. Its start is measured from `origin` and turns
+/// and grows about it as an instance does, so a beam that starts on a drone stays on the drone's
+/// eye while the drone grows. A beam between two world points has zero `origin`, zero `grow` and
+/// zero `turn`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Beam {
+    /// The start, in the frame of `origin` before `turn` and `grow` apply.
     pub from: [f32; 3],
+    /// The end, in world units. It is not turned or grown.
     pub to: [f32; 3],
+    /// The point the start is measured from, in world units.
+    pub origin: [f32; 3],
+    /// How the start grows about `origin`, as an instance's `grow` does.
+    pub grow: [f32; 2],
+    /// The angle the start turns about `origin`, as an instance's `turn` does.
+    pub turn: f32,
     /// Index into the theme's tint slots, as an instance's tint is.
     pub tint: u8,
 }

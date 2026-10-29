@@ -84,6 +84,8 @@ pub struct RibbonVertex {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable, PartialEq)]
 pub struct HueVertex {
+    /// Where the stroke starts. A belt's start is a world point. A beam's start is in the frame of
+    /// `origin`, as [`Beam::from`] is.
     pub a: [f32; 3],
     pub b: [f32; 3],
     pub corner: [f32; 2],
@@ -92,6 +94,12 @@ pub struct HueVertex {
     /// The stroke's opacity, which fades toward a belt's ends.
     pub alpha: f32,
     pub tint: u32,
+    /// The point `a` is measured from. A belt has zero here, so its start is the world point.
+    pub origin: [f32; 3],
+    /// How `a` grows about `origin`. Zero keeps it at plan size.
+    pub grow: [f32; 2],
+    /// The angle `a` turns about `origin`.
+    pub turn: f32,
 }
 
 /// A contact shadow quad: one corner, with the footprint it falls around.
@@ -248,6 +256,9 @@ pub fn hue_vertices(lines: &[HueLine]) -> Vec<HueVertex> {
                     width: HUE_PX,
                     alpha,
                     tint: u32::from(line.tint),
+                    origin: [0.0; 3],
+                    grow: [0.0; 2],
+                    turn: 0.0,
                 });
             }
         }
@@ -271,6 +282,9 @@ pub fn beam_vertices(beams: &[Beam]) -> Vec<HueVertex> {
                 width: BEAM_PX,
                 alpha: BEAM_ALPHA,
                 tint: u32::from(beam.tint),
+                origin: beam.origin,
+                grow: beam.grow,
+                turn: beam.turn,
             })
         })
         .collect()
@@ -635,12 +649,36 @@ mod tests {
         let beam = Beam {
             from: [1.0, 2.0, 3.0],
             to: [4.0, 5.0, 6.0],
+            origin: [7.0, 8.0, 9.0],
+            grow: [20.0, 24.0],
+            turn: 0.5,
             tint: 2,
         };
         let vertices = beam_vertices(&[beam]);
         assert_eq!(vertices.len(), QUAD_CORNERS as usize);
         assert!(vertices.iter().all(|v| v.a == beam.from && v.b == beam.to));
         assert!(vertices.iter().all(|v| v.tint == 2 && v.width == BEAM_PX));
+        assert!(
+            vertices
+                .iter()
+                .all(|v| v.origin == beam.origin && v.grow == beam.grow && v.turn == beam.turn),
+            "the start follows the drone it is measured from"
+        );
+    }
+
+    #[test]
+    fn a_belt_stroke_starts_at_its_world_point_with_no_turn_or_grow() {
+        let line = HueLine {
+            centre: vec![[1.0, 2.0], [3.0, 4.0]],
+            tint: 1,
+        };
+        let vertices = hue_vertices(&[line]);
+        assert!(!vertices.is_empty());
+        assert!(
+            vertices
+                .iter()
+                .all(|v| v.origin == [0.0; 3] && v.grow == [0.0; 2] && v.turn == 0.0)
+        );
     }
 
     #[test]

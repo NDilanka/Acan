@@ -1,25 +1,28 @@
-//! The agents' drone is a small construction drone that hovers over the plinth it works on, drawn as
-//! line art. A shaded body carries the agent's hue. Two ducted-fan nacelles sit at its sides, each on
-//! a strut, with a swept fin behind. An eye sits on the nose, a lamp on top and a grille on the back.
+//! The agents' drone is a small construction drone that hovers over the machine it works on, drawn as
+//! line art. Its shell and its two ducted-fan nacelles carry a light tint of the agent's hue under dark
+//! painted lines. Its glass eye and the lamp on its crown carry the full hue. Two struts hold the
+//! nacelles to the body, a swept fin sits behind, and a grille sits on the back.
 //!
-//! The model is built at heading zero, nose toward +x. Its origin is the plinth top under the drone,
-//! so the shadow lies on the origin. The renderer turns the drone to the heading its agent faces.
+//! The drone is three models. The shell and the accent share one centre at the origin, so the renderer
+//! places the centre over the machine, turns the drone to face its target, and grows it about the
+//! centre. The shadow is a third model, one dot the renderer sets on the plinth top under the centre.
+//! Every model is built at heading zero, nose toward +x.
 
 use std::f32::consts::{PI, TAU};
 
 use crate::model::{Aabb, Detail, Dot3, Ink, Line3, Mesh, Model, Surface};
 
-/// The body's radius, in plan units.
-pub const BODY_RADIUS: f32 = 0.42;
+/// The drone's radius in plan units. Its body is 0.4 of a footprint 60 units wide, near the middle of
+/// the kit's footprints, which run from 18 to 96 units across.
+pub const BODY_RADIUS: f32 = 12.0;
 /// The design draws the body at radius 9, and every other measure is its design value times this.
 const SCALE: f32 = BODY_RADIUS / 9.0;
-/// The body's centre above the plinth top, so the drone hovers clear of it. The design hangs the
-/// body at 30 units over a radius of 9.
-pub const DRONE_HOVER: f32 = 30.0 * SCALE;
-/// The drone's crown above the plinth top, in plan units. The renderer's screen floor measures it.
-pub const BOT_HEIGHT: f32 = DRONE_HOVER + BODY_RADIUS;
-/// The shadow's radius on the plinth top. It is soft, so the disc reads wider than the body.
-const SHADOW_RADIUS: f32 = 0.9;
+/// The drone's full height, which is its body's diameter. The renderer's screen floor measures it.
+pub const BOT_HEIGHT: f32 = 2.0 * BODY_RADIUS;
+/// The eye sits this far from the centre, on the nose. A beam starts here, so it turns with the drone.
+pub const EYE_DISTANCE: f32 = BODY_RADIUS;
+/// The shadow's radius on the plinth top. It is a soft halo, so it reads as light on the ground.
+pub const SHADOW_RADIUS: f32 = 0.9 * BODY_RADIUS;
 /// The beacon's radius at its target. The renderer sets its on-screen size each frame.
 pub const BEACON_RADIUS: f32 = 0.07;
 const NACELLE_SIDE: f32 = (9.0 + 3.4) * SCALE;
@@ -32,6 +35,8 @@ const BLADES: usize = 14;
 const GLASS_DEG: f32 = 31.0;
 const BEZEL_DEG: f32 = 40.0;
 const INNER_DEG: f32 = 20.0;
+/// The lamp on the crown is a small sphere whose centre sits on the body's top.
+const LAMP_RADIUS: f32 = 1.1 * SCALE;
 /// A seam or a band that would cross the eye is cut where it passes this cosine from the nose.
 const NOSE_CLEAR: f32 = 0.72;
 /// Half the thickness of the fin, each side of its plane.
@@ -39,13 +44,14 @@ const FIN_HALF: f32 = 0.03;
 /// The fin's outline, counter-clockwise in its plane, as (nose, up) in units of the body radius.
 const FIN: [(f32, f32); 4] = [(-0.7, 0.2), (-1.4, 0.5), (-1.5, 0.2), (-0.5, -0.2)];
 const BODY_SEGMENTS: usize = 24;
-/// The body's bands from the nose to the tail, as (from, to, surface, steps). The glass and the
-/// bezel are caps whose edges fall on band boundaries, so no triangle takes two surfaces.
-const BANDS: [(f32, f32, Surface, usize); 3] = [
-    (0.0, GLASS_DEG, Surface::Ink(Ink::Hi), 3),
+/// The shell's bands from the bezel to the tail, as (from, to, surface, steps) in degrees from the nose.
+const SHELL_BANDS: [(f32, f32, Surface, usize); 2] = [
     (GLASS_DEG, BEZEL_DEG, Surface::Ink(Ink::Mid), 1),
     (BEZEL_DEG, 180.0, Surface::Paper, 14),
 ];
+/// The glass cap. Its edge falls on the bezel's edge, so the two models meet without a gap.
+const GLASS_BANDS: [(f32, f32, Surface, usize); 1] = [(0.0, GLASS_DEG, Surface::Paper, 3)];
+const LAMP_BANDS: [(f32, f32, Surface, usize); 1] = [(0.0, 180.0, Surface::Paper, 4)];
 /// A dot or a line sits this far proud of the surface under it, so it never z-fights the surface.
 const PROUD: f32 = 0.004;
 /// The stroke weight of a painted line, in the kit's weight.
@@ -53,10 +59,11 @@ const WEIGHT: f32 = 0.6;
 const NOSE: V = [1.0, 0.0, 0.0];
 const SIDE: V = [0.0, 1.0, 0.0];
 const UP: V = [0.0, 0.0, 1.0];
+const ORIGIN: V = [0.0, 0.0, 0.0];
 
 type V = [f32; 3];
 
-/// What the drone is made of, counted as it is built. The tests check these counts.
+/// What the drone's shell is made of, counted as it is built. The tests check these counts.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DroneParts {
     pub nacelles: usize,
@@ -66,21 +73,35 @@ pub struct DroneParts {
     pub eyes: usize,
     pub vents: usize,
     pub grille: usize,
-    pub lamps: usize,
-    pub shadows: usize,
     pub seams: usize,
 }
 
-/// An agent's drone, at heading zero with its nose toward +x.
+/// A drone's shell: its body, nacelles, fin, grille and painted lines. It takes the agent's light
+/// tint, and its line art stays dark.
 #[must_use]
 pub fn agent_body() -> Model {
-    drone().0
+    shell().0
 }
 
-/// The drone's parts, counted as its model is built.
+/// A drone's accent: the glass of its eye and the lamp on its crown. It takes the agent's full hue.
+#[must_use]
+pub fn agent_accent() -> Model {
+    accent()
+}
+
+/// A drone's shadow: one soft dot on the plinth top, centred on the origin, which the renderer sets
+/// under the drone's centre.
+#[must_use]
+pub fn agent_shadow() -> Model {
+    let mut build = Build::default();
+    build.dot(ORIGIN, UP, SHADOW_RADIUS, Ink::Shadow);
+    finish(build).0
+}
+
+/// The drone's shell parts, counted as its model is built.
 #[must_use]
 pub fn drone_parts() -> DroneParts {
-    drone().1
+    shell().1
 }
 
 /// The marker at a drone's target on a machine is a small sphere, centred on its origin, which the
@@ -90,26 +111,35 @@ pub fn beacon() -> Model {
     let mut build = Build::default();
     sphere(
         &mut build,
-        [0.0; 3],
+        ORIGIN,
         BEACON_RADIUS,
         &[(0.0, 180.0, Surface::Paper, 4)],
     );
     finish(build).0
 }
 
-fn drone() -> (Model, DroneParts) {
+fn shell() -> (Model, DroneParts) {
     let mut build = Build::default();
-    let centre = at(0.0, 0.0, 0.0);
-    sphere(&mut build, centre, BODY_RADIUS, &BANDS);
+    sphere(&mut build, ORIGIN, BODY_RADIUS, &SHELL_BANDS);
     nacelle(&mut build, 1.0);
     nacelle(&mut build, -1.0);
     fin(&mut build);
     eye(&mut build);
-    lamp(&mut build);
     grille(&mut build);
     seams(&mut build);
-    shadow(&mut build);
     finish(build)
+}
+
+fn accent() -> Model {
+    let mut build = Build::default();
+    sphere(&mut build, ORIGIN, BODY_RADIUS, &GLASS_BANDS);
+    sphere(
+        &mut build,
+        [0.0, 0.0, BODY_RADIUS],
+        LAMP_RADIUS,
+        &LAMP_BANDS,
+    );
+    finish(build).0
 }
 
 /// The painted and solid parts of a drone or beacon as they are built.
@@ -186,9 +216,9 @@ fn finish(build: Build) -> (Model, DroneParts) {
     (model, build.parts)
 }
 
-/// A point `nose`, `side` and `up` from the body's centre, in the frame of heading zero.
+/// A point `nose`, `side` and `up` from the drone's centre, in the frame of heading zero.
 fn at(nose: f32, side: f32, up: f32) -> V {
-    [nose, side, DRONE_HOVER + up]
+    [nose, side, up]
 }
 
 /// A unit direction from the body's centre, `degrees` from the nose and `phi` round the nose axis.
@@ -375,7 +405,7 @@ fn fin(build: &mut Build) {
     build.parts.fins += 1;
 }
 
-/// The eye on the nose. The glass and bezel are caps of the body, so here are their rings, the two
+/// The eye on the nose. The glass is the accent model's cap, so here are the rings round it, the two
 /// vents above and below, and the eye dot at the nose's pole.
 fn eye(build: &mut Build) {
     let centre = at(0.0, 0.0, 0.0);
@@ -406,14 +436,9 @@ fn eye(build: &mut Build) {
         add3(centre, scale3(NOSE, BODY_RADIUS + PROUD)),
         NOSE,
         1.6 * SCALE,
-        Ink::Lo,
+        Ink::Hi,
     );
     build.parts.eyes += 1;
-}
-
-fn lamp(build: &mut Build) {
-    build.dot(at(0.0, 0.0, BODY_RADIUS + PROUD), UP, 1.1 * SCALE, Ink::Hi);
-    build.parts.lamps += 1;
 }
 
 /// A small dotted grille on the back of the upper shell.
@@ -467,7 +492,7 @@ fn seam(build: &mut Build, centre: V, dirs: &[V]) {
     let kept: Vec<bool> = dirs.iter().map(|&d| dot3(d, NOSE) <= NOSE_CLEAR).collect();
     let point = |d: V| add3(centre, scale3(d, BODY_RADIUS));
     if kept.iter().all(|&k| k) {
-        build.line(dirs.iter().map(|&d| point(d)).collect(), true, Ink::Edge);
+        build.line(dirs.iter().map(|&d| point(d)).collect(), true, Ink::Mid);
         build.parts.seams += 1;
         return;
     }
@@ -483,16 +508,10 @@ fn seam(build: &mut Build, centre: V, dirs: &[V]) {
         }
         let finished = std::mem::take(&mut run);
         if finished.len() > 1 {
-            build.line(finished, false, Ink::Edge);
+            build.line(finished, false, Ink::Mid);
             build.parts.seams += 1;
         }
     }
-}
-
-/// The soft contact shadow on the plinth top, under the body's centre.
-fn shadow(build: &mut Build) {
-    build.dot([0.0; 3], UP, SHADOW_RADIUS, Ink::Shadow);
-    build.parts.shadows += 1;
 }
 
 fn add3(a: V, b: V) -> V {
@@ -528,23 +547,39 @@ mod tests {
     use super::*;
     use crate::marks::winds_outward;
 
+    fn mesh_heights(model: &Model) -> (f32, f32) {
+        model.meshes[0]
+            .positions
+            .iter()
+            .map(|p| p[2])
+            .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), z| {
+                (lo.min(z), hi.max(z))
+            })
+    }
+
     #[test]
-    fn the_drone_hovers_over_its_plinth_and_its_crown_is_bot_height() {
-        let drone = agent_body();
+    fn the_shell_is_centred_on_the_origin_with_its_radius_above_and_below() {
+        let shell = agent_body();
+        let (lowest, highest) = mesh_heights(&shell);
         assert!(
-            drone.bounds.min[2].abs() < 1e-4,
-            "the shadow lies on the plinth top"
+            (highest - BODY_RADIUS).abs() < 1e-4,
+            "the crown is one radius above the centre: {highest}"
         );
-        let heights = drone.meshes[0].positions.iter().map(|p| p[2]);
-        let (lowest, highest) = heights.fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), z| {
-            (lo.min(z), hi.max(z))
-        });
         assert!(
-            (highest - BOT_HEIGHT).abs() < 1e-4,
-            "the body's crown is the screen floor's height"
+            (lowest + BODY_RADIUS).abs() < 1e-4,
+            "the belly is one radius below the centre: {lowest}"
         );
-        assert!(lowest > 0.5 * BODY_RADIUS, "the nacelles clear the plinth");
-        assert!(winds_outward(&drone), "the solids face outward");
+        assert!(winds_outward(&shell), "the solids face outward");
+    }
+
+    #[test]
+    fn the_nacelles_hang_inside_the_body_height() {
+        let (lowest, _) = mesh_heights(&agent_body());
+        assert!(
+            lowest >= -BODY_RADIUS - 1e-4,
+            "nothing hangs below the body"
+        );
+        assert!((BOT_HEIGHT - 2.0 * BODY_RADIUS).abs() < 1e-6);
     }
 
     #[test]
@@ -557,30 +592,34 @@ mod tests {
         assert_eq!(parts.eyes, 1);
         assert_eq!(parts.vents, 2);
         assert_eq!(parts.grille, 14);
-        assert_eq!(parts.lamps, 1);
-        assert_eq!(parts.shadows, 1);
         assert!(parts.seams >= 2, "the latitude seams draw: {parts:?}");
     }
 
     #[test]
-    fn the_shadow_lies_on_the_plinth_top_below_the_body_centre() {
-        let drone = agent_body();
-        let shadow = drone
-            .dots
-            .iter()
-            .find(|dot| dot.tone == Ink::Shadow)
-            .expect("the drone casts a shadow");
+    fn the_accent_is_the_glass_on_the_nose_and_the_lamp_on_the_crown() {
+        let accent = agent_accent();
         assert!(
-            shadow.center[2].abs() < 1e-6,
-            "the shadow is on the plinth top"
+            (accent.bounds.max[0] - BODY_RADIUS).abs() < 1e-4,
+            "the glass reaches the nose radius: {:?}",
+            accent.bounds
         );
         assert!(
-            shadow.center[2] < DRONE_HOVER,
-            "the shadow sits below the body centre"
+            (accent.bounds.max[2] - (BODY_RADIUS + LAMP_RADIUS)).abs() < 1e-4,
+            "the lamp stands on the crown: {:?}",
+            accent.bounds
         );
-        assert!(shadow.center[0].abs() < 1e-6 && shadow.center[1].abs() < 1e-6);
-        assert!((shadow.normal[2] - 1.0).abs() < 1e-6, "the disc lies flat");
-        assert!((shadow.radius - SHADOW_RADIUS).abs() < 1e-6);
+        assert!(winds_outward(&accent), "the accent faces outward");
+    }
+
+    #[test]
+    fn the_shadow_is_one_soft_dot_on_the_origin() {
+        let shadow = agent_shadow();
+        assert_eq!(shadow.dots.len(), 1, "one shadow dot");
+        let dot = &shadow.dots[0];
+        assert_eq!(dot.tone, Ink::Shadow);
+        assert_eq!(dot.center, ORIGIN, "the shadow is centred on the origin");
+        assert!((dot.normal[2] - 1.0).abs() < 1e-6, "the disc lies flat");
+        assert!((dot.radius - SHADOW_RADIUS).abs() < 1e-6);
     }
 
     #[test]

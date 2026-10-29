@@ -630,15 +630,21 @@ struct HueIn {
     @location(3) width: f32,
     @location(4) alpha: f32,
     @location(5) tint: u32,
+    @location(6) origin: vec3<f32>,
+    @location(7) grow: vec2<f32>,
+    @location(8) turn: f32,
 }
 
+// A stroke's start is measured from its origin, turned and grown as a model is. A belt has no
+// origin, so its start is the world point. A beam from a drone's eye starts on the eye at any size.
 @vertex
 fn vs_hue(v: HueIn) -> StrokeOut {
     let min_px = camera.view.w;
     var ink = theme.tints[v.tint];
     ink.a = v.alpha;
     let half_px = 0.5 * max(v.width, min_px);
-    return stroke(v.a, v.b, half_px, ink, v.corner, vec2<f32>(0.0));
+    let start = v.origin + turned(v.a, v.turn) * grown(v.origin, v.grow);
+    return stroke(start, v.b, half_px, ink, v.corner, vec2<f32>(0.0));
 }
 
 @fragment

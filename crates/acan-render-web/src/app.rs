@@ -56,6 +56,9 @@ pub struct App {
     still: bool,
     /// The index of the clash whose card is open, if any.
     card_clash: Option<usize>,
+    /// An agent to close up on, and the zoom as a share of the fit zoom. It applies once the view
+    /// places the agent's drone, then clears.
+    focus: Option<(String, f32)>,
     view_json: String,
     view_version: u32,
     dirty: bool,
@@ -145,6 +148,7 @@ impl App {
             moving: false,
             still: false,
             card_clash: None,
+            focus: None,
             view_json: String::new(),
             view_version: 0,
             dirty: false,
@@ -279,9 +283,13 @@ impl App {
             .drag_ground(from, [from[0] + dx * self.dpr, from[1] + dy * self.dpr]);
     }
 
-    /// Switches between the perspective and orthographic projections, keeping the framing.
+    /// Switches between the perspective and orthographic projections. The fit depends on the
+    /// projection, so the plant is framed again at the same angles.
     pub fn toggle_projection(&mut self) {
         self.camera.toggle_projection();
+        if let Some(loaded) = &self.plant {
+            self.camera.fit(&loaded.bounds, FIT_MARGIN_CSS * self.dpr);
+        }
     }
 
     /// Turns the view by `(dx, dy)` CSS pixels of drag: horizontal orbits, vertical tilts. This
@@ -371,6 +379,29 @@ impl App {
         self.camera
             .set_pivot([placed.x + w / 2.0, placed.y + d / 2.0]);
         self.camera.set_zoom(ratio * self.fit_zoom());
+    }
+
+    /// Closes up on agent `name`'s drone: the drone sits at the screen centre, and the zoom is
+    /// `ratio` times the fit zoom. The page asks for it with `?focus=`. It waits until the view
+    /// places the drone, so it may be called before the log loads.
+    pub fn focus_agent(&mut self, name: &str, ratio: f32) {
+        self.focus = Some((name.to_owned(), ratio));
+        self.apply_focus();
+    }
+
+    /// Applies a pending focus once the agent's drone is placed, then clears it.
+    fn apply_focus(&mut self) {
+        let Some((name, ratio)) = self.focus.as_ref() else {
+            return;
+        };
+        let Some(body) = self.marks.bodies.iter().find(|body| &body.agent == name) else {
+            return;
+        };
+        let at = self.motion.body_at(&body.agent).unwrap_or(body.at);
+        let zoom = ratio * self.fit_zoom();
+        self.camera.centre_on(at);
+        self.camera.set_zoom(zoom);
+        self.focus = None;
     }
 
     /// Level of detail now: 0 far, 1 near, 2 close.
@@ -501,6 +532,20 @@ impl App {
                 let foot = self.motion.pin_at(&pin.id).unwrap_or(pin.at);
                 let [x, y] = marks::diamond_centre(foot, |p| self.screen(p));
                 [pin.clash as f32, x, y]
+            })
+            .collect()
+    }
+
+    /// Each drone's disc on screen, as flat `[css x, css y, css radius]` triples, in the order the
+    /// marks list the drones. The page keeps flags and names clear of them.
+    pub fn drone_layout(&self) -> Vec<f32> {
+        self.marks
+            .bodies
+            .iter()
+            .flat_map(|body| {
+                let at = self.motion.body_at(&body.agent).unwrap_or(body.at);
+                let ([x, y], radius) = marks::drone_disc(at, |p| self.screen(p));
+                [x, y, radius]
             })
             .collect()
     }
@@ -664,6 +709,7 @@ impl App {
         self.motion.sync(&marks);
         self.marks = marks;
         self.view = Some(view);
+        self.apply_focus();
         self.sync_scene();
         Ok(())
     }
@@ -685,7 +731,7 @@ impl App {
             .map(|&(plan_index, tint)| (loaded.plan_instance[plan_index], tint))
             .collect();
         scene.hue_lines = scene::hue_lines(&loaded.belts, &hues);
-        scene.beams = marks::beams(&self.motion, &self.marks);
+        scene.beams = marks::beams(&self.motion, &self.marks, self.dpr);
         scene.instances.extend(marks::mark_instances(
             &self.motion,
             &self.marks,

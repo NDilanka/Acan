@@ -1,23 +1,26 @@
 //! The plant's scene: a flat ribbon for each belt and one instance for each machine, built from
 //! the layout and the acan-iso models.
 
+use acan_iso::BODY_RADIUS;
 use acan_render::{Aabb, HueLine, Instance, Model, Ribbon, Scene};
 
 use crate::bends;
 use crate::kind::{self, ALL, PlanFootprint};
 use crate::layout::{Belt, Layout};
-use crate::marks::MarkKinds;
+use crate::marks::{FLAG_ROOM, MarkKinds, hover_height};
 
 /// The gap between a belt's end and the plinth it meets, in plan units.
 const BELT_PORT_GAP: f32 = 1.5;
 
-/// One acan-iso model per kind, in [`kind::ALL`] order. The marks follow: an agent's drone, the
-/// ring round a waiting agent, the clash pin, its stalk, and the beam's end. [`mark_kinds`] names
-/// the last five.
+/// One acan-iso model per kind, in [`kind::ALL`] order. The marks follow: an agent's drone shell,
+/// its accent, its shadow, the ring round a waiting agent, the clash pin, its stalk, and the beam's
+/// end. [`mark_kinds`] names them.
 pub fn models() -> Vec<Model> {
     let mut out: Vec<Model> = ALL.iter().map(|&kind| acan_iso::model(kind)).collect();
     out.extend([
         acan_iso::agent_body(),
+        acan_iso::agent_accent(),
+        acan_iso::agent_shadow(),
         acan_iso::waiting_ring(),
         acan_iso::clash_pin(),
         acan_iso::clash_stalk(),
@@ -31,10 +34,12 @@ pub fn mark_kinds() -> MarkKinds {
     let base = ALL.len() as u16;
     MarkKinds {
         body: base,
-        ring: base + 1,
-        pin: base + 2,
-        stalk: base + 3,
-        beacon: base + 4,
+        accent: base + 1,
+        shadow: base + 2,
+        ring: base + 3,
+        pin: base + 4,
+        stalk: base + 5,
+        beacon: base + 6,
     }
 }
 
@@ -56,6 +61,17 @@ pub fn plant_scene(layout: &Layout, models: &[Model]) -> Scene {
         let index = kind::index(placed.kind);
         for corner in models[index].bounds.corners() {
             bounds.include(std::array::from_fn(|axis| offset[axis] + corner[axis]));
+        }
+        // A drone hovers over the plinth of its machine, and its flag stands above it, so the plant
+        // frames the drone's height and the flag's room.
+        let high = hover_height(models[index].bounds.max[2]) + BODY_RADIUS + FLAG_ROOM;
+        for [x, y] in [
+            [placed.x, placed.y],
+            [placed.x + w, placed.y],
+            [placed.x, placed.y + d],
+            [placed.x + w, placed.y + d],
+        ] {
+            bounds.include([x, y, high]);
         }
         instances.push(Instance {
             offset,

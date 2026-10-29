@@ -353,10 +353,18 @@ function checkChip(check) {
 }
 
 // Flags are placed before the names and are never hidden for overlap; a flag is hidden only when
-// it is off the canvas. An agent's flags stack in a column above their machine's bots, each with
-// a leader line to its bot's crown. A clash label starts to the right of its diamond, and the
-// order flag sits above its machine. Each flag keeps its place as the bots and diamonds move.
+// it is off the canvas. An agent's flags stack in a column above their machine's drones, each with
+// a leader line to its drone's crown, and a flag never sits on a drone because the column starts
+// above the crowns. A clash label starts to the right of its diamond, and the order flag sits
+// above its machine. A flag that would cover a flag placed before it moves up clear of it. Each
+// flag keeps its place as the drones and diamonds move.
 function placeFlags(placedBoxes) {
+  // The drones come first, so no flag or name is placed over one.
+  const discs = app.drone_layout();
+  for (let k = 0; k < discs.length; k += 3) {
+    const [x, y, r] = [discs[k], discs[k + 1], discs[k + 2]];
+    placedBoxes.push({ left: x - r, right: x + r, top: y - r, bottom: y + r });
+  }
   const quads = app.flag_layout();
   const columns = new Map();
   for (let k = 0; k < quads.length; k += 4) {
@@ -374,7 +382,7 @@ function placeFlags(placedBoxes) {
     const [w, h] = el.size;
     const beside = el.classList.contains("clash") || el.classList.contains("landed");
     const left = beside ? x : x - w / 2;
-    const top = beside ? y - h / 2 : y - LABEL_OFFSET_PX - h;
+    const top = clearOf(left, beside ? y - h / 2 : y - LABEL_OFFSET_PX - h, w, h, placedBoxes);
     placeFlag(el, left, top, placedBoxes);
   }
   let leaders = 0;
@@ -383,15 +391,36 @@ function placeFlags(placedBoxes) {
     let bottom = Math.min(...column.map((item) => item.y)) - LABEL_OFFSET_PX;
     for (const item of column) {
       const [w, h] = item.el.size;
-      placeFlag(item.el, centre - w / 2, bottom - h, placedBoxes);
-      drawLeader(leaders, centre, bottom, item.x, item.y);
+      const top = clearOf(centre - w / 2, bottom - h, w, h, placedBoxes);
+      placeFlag(item.el, centre - w / 2, top, placedBoxes);
+      drawLeader(leaders, centre, top + h, item.x, item.y);
       leaders += 1;
-      bottom -= h + FLAG_ROW_GAP_PX;
+      bottom = top - FLAG_ROW_GAP_PX;
     }
   }
   for (let i = leaders; i < leaderEls.length; i += 1) {
     leaderEls[i].style.display = "none";
   }
+}
+
+// The top a flag takes so it clears every box placed before it. A flag that overlaps one moves up
+// to sit on its top edge, and the check starts again, so the flag ends clear of all of them. A
+// flag only ever moves up, so the search ends.
+function clearOf(left, top, w, h, placedBoxes) {
+  let y = top;
+  let moved = true;
+  while (moved) {
+    moved = false;
+    for (const box of placedBoxes) {
+      const overlapsX = left - LABEL_PAD_PX < box.right && left + w + LABEL_PAD_PX > box.left;
+      const overlapsY = y - LABEL_PAD_PX < box.bottom && y + h + LABEL_PAD_PX > box.top;
+      if (overlapsX && overlapsY) {
+        y = box.top - LABEL_PAD_PX - h;
+        moved = true;
+      }
+    }
+  }
+  return y;
 }
 
 function placeFlag(el, left, top, placedBoxes) {
@@ -900,6 +929,12 @@ async function boot() {
   if (params.has("view")) {
     const [azimuth, elevation] = params.get("view").split(",").map(Number);
     app.view(azimuth, elevation);
+  }
+  // `?focus=agent-a&zoom=8` closes up on one agent's drone, at 8 times the fit zoom. The zoom is
+  // the scale at the drone, so 8 draws it about 375 px tall. It applies once the log places the
+  // drone, so the page can ask before the log arrives.
+  if (params.has("focus")) {
+    app.focus_agent(params.get("focus"), Number(params.get("zoom") || 8));
   }
   requestRender();
   if (params.get("bench") === "1") {

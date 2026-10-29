@@ -994,7 +994,7 @@ impl Pipelines {
         let hue_vertex = wgpu::VertexBufferLayout {
             array_stride: size_of::<HueVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32, 4 => Float32, 5 => Uint32],
+            attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32, 4 => Float32, 5 => Uint32, 6 => Float32x3, 7 => Float32x2, 8 => Float32],
         };
         let stroke_instance = wgpu::VertexBufferLayout {
             array_stride: size_of::<InstanceRaw>() as u64,

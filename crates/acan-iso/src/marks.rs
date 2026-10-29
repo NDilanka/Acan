@@ -6,18 +6,18 @@
 
 use std::f32::consts::TAU;
 
-use crate::drone::BODY_RADIUS;
+use crate::drone::{BODY_RADIUS, SHADOW_RADIUS};
 use crate::model::{Aabb, Ink, Mesh, Model, Surface};
 use crate::parts::PLINTH;
 
-/// The height of the plinth top. Agent drones hover over it, and the ring lies on it.
+/// The height of the plinth top. A drone's shadow lies on it, and the ring lies on it.
 pub const PLINTH_TOP: f32 = PLINTH;
-/// The amber ring round a waiting agent's drone, with its inner and outer radius in plan units. It is
-/// grown with the drone, so it keeps clear of the body it surrounds.
-const RING_INNER: f32 = 0.7;
-const RING_OUTER: f32 = 0.95;
-// The ring clears the body it surrounds.
-const _: () = assert!(RING_INNER > BODY_RADIUS);
+/// The amber ring on the plinth top round a waiting agent's drone's shadow, with its inner and outer
+/// radius in plan units. The renderer grows it with the drone, so the two keep their proportions.
+const RING_INNER: f32 = 1.15 * BODY_RADIUS;
+const RING_OUTER: f32 = 1.3 * BODY_RADIUS;
+// The ring clears the shadow it surrounds.
+const _: () = assert!(RING_INNER > SHADOW_RADIUS);
 const RING_SEGMENTS: usize = 32;
 /// The ring sits this far above the plinth top, so it never z-fights the plinth.
 const RING_LIFT: f32 = 0.05;

@@ -61,15 +61,19 @@ pub enum Projection {
     Orthographic,
 }
 
-/// The view: a ground pivot, two angles, a zoom, a projection and the viewport in device pixels.
+/// The view: a ground pivot, a centre height, two angles, a zoom, a projection and the viewport in
+/// device pixels.
 ///
-/// The zoom is device pixels per plan unit at the pivot in both projections. The perspective
-/// eye sits `eye_distance` from the pivot, which is the distance at which the pivot's scale is
-/// `zoom` for the vertical field of view. The orthographic view uses the same eye distance for
+/// The zoom is device pixels per plan unit at the view centre in both projections. The perspective
+/// eye sits `eye_distance` from the view centre, which is the distance at which the centre's scale
+/// is `zoom` for the vertical field of view. The orthographic view uses the same eye distance for
 /// fog, so the two projections look the same.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
     pivot: [f32; 2],
+    /// Height of the view centre above the pivot's ground point, in plan units. The centre is
+    /// the point this high on the view axis. Zero puts the centre on the ground at the pivot.
+    height: f32,
     /// Degrees in `[0, 360)`.
     azimuth: f32,
     /// Degrees, clamped to the range of the projection.
@@ -86,6 +90,7 @@ impl Camera {
     pub fn new(viewport: [f32; 2]) -> Self {
         Self {
             pivot: [0.0; 2],
+            height: 0.0,
             azimuth: DEFAULT_AZIMUTH,
             elevation: DEFAULT_ELEVATION,
             zoom: 1.0,
@@ -99,9 +104,21 @@ impl Camera {
         self.pivot
     }
 
-    /// Moves the ground point under the screen centre.
+    /// Moves the ground point under the screen centre, and puts the view centre on the ground.
     pub fn set_pivot(&mut self, pivot: [f32; 2]) {
         self.pivot = pivot;
+        self.height = 0.0;
+    }
+
+    /// Centres the view on the world point `p`, so `p` projects to the screen centre. The
+    /// pivot becomes the ground point on the ray through `p`, and the view centre rises to `p`.
+    /// The eye then sits the eye distance from `p`, so a point in the air frames at the same
+    /// scale as the ground beneath it, and a zoom sets its scale.
+    pub fn centre_on(&mut self, p: [f32; 3]) {
+        let toward = self.basis().toward;
+        let t = -p[2] / toward[2];
+        self.pivot = [p[0] + t * toward[0], p[1] + t * toward[1]];
+        self.height = p[2];
     }
 
     pub fn azimuth(&self) -> f32 {
@@ -154,20 +171,32 @@ impl Camera {
         Basis::at(self.azimuth, self.elevation)
     }
 
-    /// Distance from the eye to the pivot, in plan units. Zoom changes it: a dolly in is a
+    /// Distance from the eye to the view centre, in plan units. Zoom changes it: a dolly in is a
     /// shorter distance at the same field of view.
     pub fn eye_distance(&self) -> f32 {
         self.viewport[1] * 0.5 / (self.zoom * half_fov_tan())
     }
 
+    /// The view centre: the pivot's ground point lifted `height` up the view axis.
+    fn centre(&self) -> [f32; 3] {
+        let b = self.basis();
+        let s = self.height / b.toward[2];
+        [
+            self.pivot[0] + s * b.toward[0],
+            self.pivot[1] + s * b.toward[1],
+            self.height,
+        ]
+    }
+
     /// The perspective eye. For the orthographic view it is the equivalent eye, used for fog.
     pub fn eye(&self) -> [f32; 3] {
         let b = self.basis();
+        let c = self.centre();
         let d = self.eye_distance();
         [
-            self.pivot[0] + d * b.toward[0],
-            self.pivot[1] + d * b.toward[1],
-            d * b.toward[2],
+            c[0] + d * b.toward[0],
+            c[1] + d * b.toward[1],
+            c[2] + d * b.toward[2],
         ]
     }
 
@@ -308,8 +337,10 @@ impl Camera {
         let b = self.basis();
         let centre = bounds.centre();
         // The ground point on the view ray through the box centre, so the centre lands mid-screen.
+        // A fit centres on the ground, so the view centre is back on the ground too.
         let t = -centre[2] / b.toward[2];
         self.pivot = [centre[0] + t * b.toward[0], centre[1] + t * b.toward[1]];
+        self.height = 0.0;
         for _ in 0..PASSES {
             self.zoom = self.largest_zoom_fitting(bounds, margin_px);
             self.centre_projected(bounds);
@@ -805,6 +836,46 @@ mod tests {
         cam.reset_view(&block(), 24.0);
         assert!((cam.azimuth() - DEFAULT_AZIMUTH).abs() < 1e-4);
         assert!((cam.elevation() - DEFAULT_ELEVATION).abs() < 1e-4);
+    }
+
+    #[test]
+    fn centre_on_puts_a_point_in_the_air_on_the_screen_centre() {
+        let mut cam = Camera::new([1440.0, 900.0]);
+        cam.set_zoom(12.0);
+        let point = [30.0, -14.0, 80.0];
+        cam.centre_on(point);
+        let [x, y] = cam.world_to_screen(point);
+        assert!((x - 720.0).abs() < 0.5, "x on the view axis: {x}");
+        assert!(
+            (y - cam.axis_y()).abs() < 0.5,
+            "y on the view axis row {}: {y}",
+            cam.axis_y()
+        );
+    }
+
+    #[test]
+    fn centring_on_a_point_in_the_air_keeps_it_one_eye_distance_away_at_the_zoom() {
+        for elevation in [5.0, 20.0, 30.0, 60.0] {
+            let mut cam = Camera::new([1440.0, 900.0]);
+            cam.set_angles(0.0, elevation);
+            cam.set_zoom(12.0);
+            let point = [30.0, -14.0, 40.0];
+            cam.centre_on(point);
+            let eye = cam.eye();
+            assert!(
+                (distance(point, eye) - cam.eye_distance()).abs() < 1e-2,
+                "the eye sits one eye distance from the centre at {elevation} degrees"
+            );
+            // A unit step along the screen's right vector moves the point by the zoom in pixels.
+            let right = cam.basis().right;
+            let projector = cam.projector();
+            let at = projector.world_to_screen(point);
+            let moved = projector.world_to_screen(std::array::from_fn(|i| point[i] + right[i]));
+            assert!(
+                (moved[0] - at[0] - 12.0).abs() < 0.05 && (moved[1] - at[1]).abs() < 0.05,
+                "a unit at the centre spans the zoom at {elevation} degrees: {moved:?} from {at:?}"
+            );
+        }
     }
 
     /// A ground point `k` eye distances from the eye, straight down the view.
