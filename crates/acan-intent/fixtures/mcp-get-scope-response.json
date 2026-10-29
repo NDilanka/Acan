@@ -334,7 +334,7 @@
       ]
     }
   },
-  "scope_hash": "sha256:eaab9bc0a3a9320938e24f5d50332cf9802ed3cf10b4c26497f8c518642bd415",
+  "scope_hash": "sha256:ed58ef8d58d4e29959f80110656bbaeb9d82ad3e12eb5baa5f80ac6bf5ce2d3e",
   "confirmed_at": 1793259060000,
   "budget": {
     "repair_rounds": 2,

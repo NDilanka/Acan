@@ -1,8 +1,8 @@
 # Acan receipt for order `o-3`
 
-- Receipt: `sha256:ed447d4ce3bd6a843f8e3374adbc176c44eec09dfca847bd981615b3c9baf195`
+- Receipt: `sha256:2a516250a36e5cf3a22a3539c4e211b59848171bf86530477dfba320a4726b6d`
 - Version: `acan-receipt/1`
-- Scope: revision 2, hash `sha256:eaab9bc0a3a9320938e24f5d50332cf9802ed3cf10b4c26497f8c518642bd415`
+- Scope: revision 2, hash `sha256:ed58ef8d58d4e29959f80110656bbaeb9d82ad3e12eb5baa5f80ac6bf5ce2d3e`
 - Gate state: `blocked`
 - Base commit: `178c1b07097a9f510882d139061ed50b4b44b1d4`
 - Merged commit (tested): `a27a5f30da19543ee34362516e29bf7561214156`
@@ -370,7 +370,7 @@ Contests: 1. A contest asks the human; it never widens the scope. The rationale 
 The gate compares every field below. Land is refused when any of them moved.
 
 - Overlay: `sha256:c27af44102a1dd3819def6db27bb5e79c2ff5023379faf9e8feddba8a780fd64`
-- Ledger head: event 3 at hash `sha256:2b12b2acbe23918444d81c6f18d6f9dd17191102e7e93378551b412ab8916983`
+- Ledger head: event 3 at hash `sha256:6742544659a3e3f556e06b30f278e80de0d301f47293a78cd9c3c95649f26db9`
 - Probe set: `sha256:08cbc55fe91e0a7d35d66a97b619a7931d518dccb0a3268d75ab7b9eac74af03`
 - Fixture set: `sha256:29007a22a25a34d8c43c2e3aba058bc33e54d60e6db3aae1c2ae84eb5459cf94`
 - Runner: `sha256:02b428f772fbef62ede2b5c9d022c4e49f7e17dbed2e7a396f402aad28a24b47`

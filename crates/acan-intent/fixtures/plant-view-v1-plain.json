@@ -1,6 +1,6 @@
 {
   "version": "plant-view/1",
-  "receipt_hash": "sha256:ed447d4ce3bd6a843f8e3374adbc176c44eec09dfca847bd981615b3c9baf195",
+  "receipt_hash": "sha256:2a516250a36e5cf3a22a3539c4e211b59848171bf86530477dfba320a4726b6d",
   "base_sha": "178c1b07097a9f510882d139061ed50b4b44b1d4",
   "merged_sha": "a27a5f30da19543ee34362516e29bf7561214156",
   "gate_state": "blocked",
@@ -45,7 +45,7 @@
     {
       "machine_id": "errors",
       "coverage": "partial",
-      "probes": 6,
+      "probes": 1,
       "routes": [
         "/health",
         "/api/signup",

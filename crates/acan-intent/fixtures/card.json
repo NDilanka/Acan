@@ -1,6 +1,6 @@
 {
   "version": "acan-card/1",
-  "receipt_hash": "sha256:ed447d4ce3bd6a843f8e3374adbc176c44eec09dfca847bd981615b3c9baf195",
+  "receipt_hash": "sha256:2a516250a36e5cf3a22a3539c4e211b59848171bf86530477dfba320a4726b6d",
   "item": {
     "item_id": "d-links-clicks",
     "class": "out_of_scope",
@@ -246,9 +246,9 @@
       },
       "ledger_head": {
         "event_seq": 3,
-        "hash": "sha256:2b12b2acbe23918444d81c6f18d6f9dd17191102e7e93378551b412ab8916983"
+        "hash": "sha256:6742544659a3e3f556e06b30f278e80de0d301f47293a78cd9c3c95649f26db9"
       },
-      "scope_hash": "sha256:eaab9bc0a3a9320938e24f5d50332cf9802ed3cf10b4c26497f8c518642bd415",
+      "scope_hash": "sha256:ed58ef8d58d4e29959f80110656bbaeb9d82ad3e12eb5baa5f80ac6bf5ce2d3e",
       "probe_set_hash": "sha256:08cbc55fe91e0a7d35d66a97b619a7931d518dccb0a3268d75ab7b9eac74af03",
       "runner_hash": "sha256:02b428f772fbef62ede2b5c9d022c4e49f7e17dbed2e7a396f402aad28a24b47",
       "evaluator_version": "acan-intent/0.1.0",

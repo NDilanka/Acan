@@ -892,6 +892,89 @@ fn hashes_do_not_depend_on_field_order() {
     assert!(shown.starts_with("sha256:") && shown.len() == 71);
 }
 
+/// Every `scope_hash` a fixture names for the current revision. Older revisions in a
+/// `scope_lineage` and the per-revision `evidence_revisions` are history, not bindings.
+fn bound_scope_hashes(value: &Value, current_rev: u64, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                match key.as_str() {
+                    "evidence_revisions" => {}
+                    "scope_lineage" => {
+                        for entry in child.as_array().into_iter().flatten() {
+                            if entry.get("rev").and_then(Value::as_u64) == Some(current_rev) {
+                                out.extend(
+                                    entry
+                                        .get("scope_hash")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_owned),
+                                );
+                            }
+                        }
+                    }
+                    _ => {
+                        if key == "scope_hash" {
+                            out.extend(child.as_str().map(str::to_owned));
+                        }
+                        bound_scope_hashes(child, current_rev, out);
+                    }
+                }
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                bound_scope_hashes(child, current_rev, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Every fixture that binds a scope binds `scope.json` by its hash. The one exception is order
+/// o-1, whose scope has no fixture file: its decision and contrast example name it and nothing
+/// else does.
+#[test]
+fn every_fixture_binds_the_scope_file_by_its_hash() {
+    const ORDER_ONE_SCOPE: &str =
+        "sha256:ab2d2883c994bc3d9c7555b4eeba14752aa8af8fd473544361960cfea13a03ba";
+    let scope: Scope = load("scope.json");
+    let expected = scope.scope_hash().expect("hashing the scope").to_string();
+    let mut bound_to_expected = BTreeSet::new();
+    let mut bound_to_order_one = BTreeSet::new();
+    for name in fixture_names() {
+        let mut bound = Vec::new();
+        bound_scope_hashes(&raw(&name), u64::from(scope.rev.0), &mut bound);
+        for hash in bound {
+            if hash == expected {
+                bound_to_expected.insert(name.clone());
+            } else if hash == ORDER_ONE_SCOPE {
+                bound_to_order_one.insert(name.clone());
+            } else {
+                panic!("{name} binds {hash}, which is neither scope.json nor the order o-1 scope");
+            }
+        }
+    }
+    for name in [
+        "card.json",
+        "episode.json",
+        "ledger-decision-dashboard.json",
+        "ledger-decision-supersede.json",
+        "mcp-get-receipt-response.json",
+        "mcp-get-scope-response.json",
+        "receipt.json",
+        "scope-confirmation.json",
+    ] {
+        assert!(bound_to_expected.contains(name), "{name} binds no scope");
+    }
+    assert_eq!(
+        bound_to_order_one,
+        BTreeSet::from([
+            "contrast-example.json".to_owned(),
+            "ledger-decision.json".to_owned()
+        ])
+    );
+}
+
 #[test]
 fn the_unsupported_mcp_error_names_the_operation() {
     let built = McpError::unsupported(Unsupported("API01: get_scope"));

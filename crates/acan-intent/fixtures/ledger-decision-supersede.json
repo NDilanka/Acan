@@ -2,12 +2,12 @@
   "event": "decision_confirmed",
   "schema_version": "acan-ledger/1",
   "event_seq": 4,
-  "prev_hash": "sha256:2b12b2acbe23918444d81c6f18d6f9dd17191102e7e93378551b412ab8916983",
+  "prev_hash": "sha256:6742544659a3e3f556e06b30f278e80de0d301f47293a78cd9c3c95649f26db9",
   "actor": "owner",
   "at": 1793260200000,
   "ruling_id": "r-1",
   "order": "o-3",
-  "scope_hash": "sha256:eaab9bc0a3a9320938e24f5d50332cf9802ed3cf10b4c26497f8c518642bd415",
+  "scope_hash": "sha256:ed58ef8d58d4e29959f80110656bbaeb9d82ad3e12eb5baa5f80ac6bf5ce2d3e",
   "episode_id": "sha256:03612417db992b26214f1f58962bbf4ad9937acb6f82746e00fb39c99f876f28",
   "evidence_hashes": [
     "sha256:1763edcf319d2ce21425faa2c54c0c5adc2aa919a8307e3d590635066b71e075"
