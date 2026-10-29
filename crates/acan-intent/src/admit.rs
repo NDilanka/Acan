@@ -29,12 +29,12 @@
 //! [`tour`] admits a model-proposed tour over a plant view by the rule in the
 //! [`crate::PlantView`] module docs, and binds its captions.
 //!
-//! [`retained_example`] returns [`Unsupported`] until P01 implements it.
+//! [`retained_example`] admits a retained ruling example against its manifest.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::compare::Contrast;
+use crate::compare::{self, CompareError, Contrast};
 use crate::error::Unsupported;
 use crate::hash::{CanonicalError, ObservationHash, ReceiptHash};
 use crate::ledger::ContrastExample;
@@ -65,6 +65,15 @@ pub enum AdmitError {
     /// The run is not of this probe, or the probe not of this fixture.
     #[error("the run is not of this probe and fixture")]
     WrongSpec,
+    /// A part of the retained example is not the one the contrast was rebuilt from.
+    #[error("the retained example's {what} is not the contrast's")]
+    CrossedEvidence {
+        /// Which part does not match.
+        what: &'static str,
+    },
+    /// The contrast cannot be compared, so the example has no comparison to check.
+    #[error("the contrast cannot be compared: {0}")]
+    Uncomparable(#[from] CompareError),
     /// A stored hash is not its observation's.
     #[error("the observation of step {step_id} is not stored under its own hash")]
     HashMismatch {
@@ -261,20 +270,84 @@ fn check_records<'a>(
 /// Admits a retained ruling example: the contrast rebuilt from its runs, checked against the
 /// manifest it was retained under.
 ///
-/// Checks that `contrast`'s probe and fixture are the manifest's, that each admitted run's
-/// record and observation hashes are the manifest's for its role, and that `comparison` is the
-/// comparison of exactly that contrast. The example's identity is
-/// [`ContrastExample::contrast_example_hash`].
+/// Checks, all of which must hold:
+/// - `contrast`'s probe (normalization plan included) and fixture are the manifest's.
+/// - Each role's run belongs to `contrast`'s probe and fixture ([`AdmitError::WrongSpec`]),
+///   its run record is the manifest's, and its stored observation hashes, in sequence order,
+///   are the manifest's.
+/// - The base runs were made at the manifest context's protected head, and the candidate at
+///   its merged commit.
+/// - `comparison` is exactly [`compare::compare`] of `contrast` under
+///   [`compare::derive_masks`], so it is the comparison of that contrast and no other.
+///
+/// The example's identity is [`ContrastExample::contrast_example_hash`].
 ///
 /// # Errors
 ///
-/// Returns [`AdmitError`] when the contrast does not match the manifest.
+/// Returns [`AdmitError`] when the contrast does not match the manifest, or cannot be compared.
 pub fn retained_example<'a>(
-    _manifest: &ContrastExample,
-    _contrast: Contrast<'a>,
-    _comparison: &'a CoreDerived<Comparison>,
+    manifest: &ContrastExample,
+    contrast: Contrast<'a>,
+    comparison: &'a CoreDerived<Comparison>,
 ) -> Result<RetainedExample<'a>, AdmitError> {
-    Err(Unsupported("P01: admit::retained_example").into())
+    if manifest.probe != *contrast.probe {
+        return Err(crossed("probe"));
+    }
+    if manifest.fixture != *contrast.fixture {
+        return Err(crossed("fixture"));
+    }
+    let probe_hash = contrast.probe.spec.probe_hash()?;
+    let fixture_hash = contrast.fixture.fixture_hash()?;
+    let roles = [
+        (
+            "base A run record",
+            "base A observations",
+            &manifest.base_a,
+            contrast.base_a,
+        ),
+        (
+            "base B run record",
+            "base B observations",
+            &manifest.base_b,
+            contrast.base_b,
+        ),
+        (
+            "candidate run record",
+            "candidate observations",
+            &manifest.candidate,
+            contrast.candidate,
+        ),
+    ];
+    for (record, observations, retained, observed) in roles {
+        let run = observed.run();
+        if run.probe != probe_hash || run.env.fixture_hash != fixture_hash {
+            return Err(AdmitError::WrongSpec);
+        }
+        if retained.run != *run {
+            return Err(crossed(record));
+        }
+        let stored: Vec<ObservationHash> = observed.observations().map(|(hash, _)| *hash).collect();
+        if retained.observations != stored {
+            return Err(crossed(observations));
+        }
+    }
+    let context = &manifest.context;
+    if manifest.base_a.run.commit != context.protected_head
+        || manifest.base_b.run.commit != context.protected_head
+        || manifest.candidate.run.commit != context.merged_commit
+    {
+        return Err(crossed("context"));
+    }
+    let masks = compare::derive_masks(&contrast)?;
+    if compare::compare(&contrast, &masks)? != *comparison {
+        return Err(crossed("comparison"));
+    }
+    let hash = manifest.contrast_example_hash()?;
+    Ok(RetainedExample::admitted(hash, contrast, comparison))
+}
+
+fn crossed(what: &'static str) -> AdmitError {
+    AdmitError::CrossedEvidence { what }
 }
 
 /// Whether a caption slot may be bound to a row that holds no value.

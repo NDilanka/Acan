@@ -8,15 +8,17 @@ use std::path::{Path, PathBuf};
 use acan_intent::admit::{
     self, AdmitError, MISSING_VALUE_TEXT, SlotMismatch, SlotPresence, StepFault, TourRejection,
 };
+use acan_intent::compare;
 use acan_intent::{
-    AppContract, CaptionCatalog, Card, CardRequest, ContainerNetwork, ContainerPolicy, Contest,
-    ContestRequest, ContestResponse, ContestStatus, ContrastExample, CorpusProbe, Coverage,
-    DiscrepancyEpisode, EpisodeKey, Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern,
-    Fixture, GateState, GetReceiptRequest, GetReceiptResponse, GetRulingsRequest,
-    GetRulingsResponse, GetScopeRequest, GetScopeResponse, ItemClass, ItemState, LedgerEvent,
-    LedgerHash, LedgerHead, MaskablePath, McpError, McpErrorCode, NotReached, Observation,
-    ObservationHash, ObservationPath, PlantView, PostReadbackRequest, PostReadbackResponse,
-    ProbeCorpus, Receipt, RepairRound, RouteSource, RulingId, Run, Scope, ScopeConfirmation,
+    AppContract, CaptionCatalog, CaptureOutcome, Card, CardRequest, CommitSha, Comparison,
+    ContainerNetwork, ContainerPolicy, ContentHash, Contest, ContestRequest, ContestResponse,
+    ContestStatus, ContrastExample, CoreDerived, CorpusProbe, Coverage, DiscrepancyEpisode,
+    EpisodeKey, Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern, Fixture, GateState,
+    GetReceiptRequest, GetReceiptResponse, GetRulingsRequest, GetRulingsResponse, GetScopeRequest,
+    GetScopeResponse, ItemClass, ItemState, LedgerEvent, LedgerHash, LedgerHead, MaskablePath,
+    McpError, McpErrorCode, NotReached, Observation, ObservationHash, ObservationPath, ObservedRun,
+    PlantView, PostReadbackRequest, PostReadbackResponse, ProbeCorpus, Receipt, RepairRound,
+    RouteSource, RulingId, Run, RunManifest, RunOutcome, RunRole, Scope, ScopeConfirmation,
     ScopeDraft, ScopeItem, Selector, SlotSpec, Step, StepId, TourView, TwinError, TwinRunRequest,
     TwinRunResponse, TwinSaveRequest, TwinSaveResponse, Unsupported, ValueType, WindowMs,
     canonical_episode_selector,
@@ -1442,6 +1444,217 @@ fn a_decision_rules_only_on_examples_retained_before_it() {
         }
     }
     assert!(ruled > 0, "no decision lists the example fixture");
+}
+
+/// A retained example of the corpus's login-rate-limit probe, with its three runs admitted.
+///
+/// Each run logs in with its own session token, which the capture `alice_session` binds from
+/// the cookie of step f2, so every capture reads the fingerprint its run recorded and the
+/// comparison can be made. The context is the contrast example fixture's.
+fn login_example() -> (ContrastExample, [ObservedRun; 3]) {
+    let corpus: ProbeCorpus = load("probe-corpus.json");
+    let probe = corpus
+        .probes
+        .iter()
+        .find(|probe| probe.label == "login-rate-limit")
+        .expect("the corpus has the login probe")
+        .clone();
+    let fixture = corpus
+        .fixtures
+        .iter()
+        .find(|fixture| fixture.id == probe.spec.fixture)
+        .expect("the probe's fixture is in the corpus")
+        .clone();
+    let mut example: ContrastExample = load("contrast-example.json");
+    let probe_hash = probe.spec.probe_hash().expect("hashing");
+    let fixture_hash = fixture.fixture_hash().expect("hashing");
+    let run = |id: &str, role: RunRole, commit: CommitSha, token: &str| {
+        let mut record: Run = load("run.json");
+        record.id = id.parse().expect("a run id");
+        record.probe = probe_hash;
+        record.commit = commit;
+        record.role = role;
+        record.env.fixture_hash = fixture_hash;
+        record.outcome = RunOutcome::Completed {};
+        record.captures = vec![CaptureOutcome::Captured {
+            binding: "alice_session".parse().expect("a binding"),
+            step_id: step("f3"),
+            value_hash: ContentHash::of(&Value::String(token.to_owned()))
+                .expect("hashing")
+                .into(),
+        }];
+        let mut stored = observations_for(&probe, &fixture, &record, &[]);
+        for (hash, observation) in &mut stored {
+            if observation.step_id == step("f2") {
+                observation
+                    .channels
+                    .cookies
+                    .insert("session".to_owned(), token.to_owned());
+                *hash = observation.observation_hash().expect("hashing");
+            }
+        }
+        let manifest = RunManifest {
+            run: record.clone(),
+            observations: stored.iter().map(|(hash, _)| *hash).collect(),
+        };
+        let admitted =
+            admit::observed_run(&probe, &fixture, record, stored).expect("the run is admitted");
+        (manifest, admitted)
+    };
+    let protected = example.context.protected_head.clone();
+    let merged = example.context.merged_commit.clone();
+    let (base_a, run_a) = run(
+        "run-base-a",
+        RunRole::BaseA,
+        protected.clone(),
+        "tok-base-a-0001",
+    );
+    let (base_b, run_b) = run("run-base-b", RunRole::BaseB, protected, "tok-base-b-0002");
+    let (candidate, run_c) = run("run-candidate", RunRole::Candidate, merged, "tok-cand-0003");
+    example.probe = probe;
+    example.fixture = fixture;
+    example.base_a = base_a;
+    example.base_b = base_b;
+    example.candidate = candidate;
+    (example, [run_a, run_b, run_c])
+}
+
+/// The contrast of the example's probe and fixture over three admitted runs.
+fn contrast_over<'a>(
+    example: &'a ContrastExample,
+    [base_a, base_b, candidate]: &'a [ObservedRun; 3],
+) -> compare::Contrast<'a> {
+    compare::Contrast {
+        probe: &example.probe,
+        fixture: &example.fixture,
+        base_a,
+        base_b,
+        candidate,
+    }
+}
+
+/// The comparison of a contrast under the masks its base runs derive.
+fn comparison_of(contrast: &compare::Contrast<'_>) -> CoreDerived<Comparison> {
+    let masks = compare::derive_masks(contrast).expect("the bases derive masks");
+    compare::compare(contrast, &masks).expect("the contrast compares")
+}
+
+fn refused_as(
+    manifest: &ContrastExample,
+    contrast: compare::Contrast<'_>,
+    comparison: &CoreDerived<Comparison>,
+) -> Result<(), AdmitError> {
+    admit::retained_example(manifest, contrast, comparison).map(|_| ())
+}
+
+#[test]
+fn a_retained_example_is_admitted_from_its_own_runs_and_comparison() {
+    let (example, runs) = login_example();
+    let contrast = contrast_over(&example, &runs);
+    let comparison = comparison_of(&contrast);
+    let retained =
+        admit::retained_example(&example, contrast, &comparison).expect("the example is admitted");
+    assert_eq!(
+        retained.hash(),
+        example.contrast_example_hash().expect("hashing")
+    );
+    assert_eq!(retained.comparison(), &comparison);
+    assert_eq!(
+        retained.contrast().candidate,
+        runs.last().expect("three runs")
+    );
+}
+
+#[test]
+fn crossed_evidence_is_refused_at_admission() {
+    let (example, runs) = login_example();
+    let contrast = contrast_over(&example, &runs);
+    let comparison = comparison_of(&contrast);
+    assert_eq!(refused_as(&example, contrast, &comparison), Ok(()));
+    let crossed = |what| Err(AdmitError::CrossedEvidence { what });
+
+    let mut other = example.clone();
+    other.probe.label = "another-probe".to_owned();
+    assert_eq!(refused_as(&other, contrast, &comparison), crossed("probe"));
+
+    let mut other = example.clone();
+    other.fixture.recipe.clear();
+    assert_eq!(
+        refused_as(&other, contrast, &comparison),
+        crossed("fixture")
+    );
+
+    let mut fixture = example.fixture.clone();
+    fixture.recipe.clear();
+    let mut other = example.clone();
+    other.fixture = fixture.clone();
+    let runs_of_another_fixture = compare::Contrast {
+        fixture: &fixture,
+        ..contrast
+    };
+    assert_eq!(
+        refused_as(&other, runs_of_another_fixture, &comparison),
+        Err(AdmitError::WrongSpec)
+    );
+
+    let another_candidate = compare::Contrast {
+        candidate: &runs[0],
+        ..contrast
+    };
+    assert_eq!(
+        refused_as(&example, another_candidate, &comparison),
+        crossed("candidate run record")
+    );
+
+    let mut stored = observations_for(
+        &example.probe,
+        &example.fixture,
+        &example.candidate.run,
+        &[],
+    );
+    let mut value = serde_json::to_value(&stored[0].1).expect("encoding");
+    value["channels"]["body"]["error"] = json!("another error");
+    let edited: Observation = serde_json::from_value(value).expect("decoding");
+    stored[0] = (edited.observation_hash().expect("hashing"), edited);
+    let edited_candidate = admit::observed_run(
+        &example.probe,
+        &example.fixture,
+        example.candidate.run.clone(),
+        stored,
+    )
+    .expect("the edited candidate is still a complete run");
+    let edited_contrast = compare::Contrast {
+        candidate: &edited_candidate,
+        ..contrast
+    };
+    assert_eq!(
+        refused_as(&example, edited_contrast, &comparison),
+        crossed("candidate observations")
+    );
+
+    let mut other = example.clone();
+    other.base_b.observations.swap(0, 1);
+    assert_eq!(
+        refused_as(&other, contrast, &comparison),
+        crossed("base B observations")
+    );
+
+    let mut other = example.clone();
+    other.context.merged_commit = other.context.protected_head.clone();
+    assert_eq!(
+        refused_as(&other, contrast, &comparison),
+        crossed("context")
+    );
+
+    let another_contrast = compare::Contrast {
+        candidate: &runs[0],
+        ..contrast
+    };
+    let another_comparison = comparison_of(&another_contrast);
+    assert_eq!(
+        refused_as(&example, contrast, &another_comparison),
+        crossed("comparison")
+    );
 }
 
 /// The scope fixture with one edit to its JSON, decoded again.
