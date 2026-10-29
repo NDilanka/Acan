@@ -269,10 +269,6 @@ pub struct CoreDerived<T> {
 }
 
 impl<T> CoreDerived<T> {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "P01's pure functions derive values")
-    )]
     pub(crate) fn derived(value: T) -> Self {
         Self {
             provenance: CoreDerivedTag,
