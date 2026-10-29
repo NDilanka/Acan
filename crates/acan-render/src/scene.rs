@@ -13,6 +13,19 @@ pub struct Instance {
     /// least `grow[0]` device px tall. `grow[1]` is its height in plan units. `[0.0; 2]` draws
     /// the model at plan size.
     pub grow: [f32; 2],
+    /// The angle, in radians, the model turns about its origin, anticlockwise from +x. Its
+    /// normals turn with it. `0.0` draws the model as it was built.
+    pub turn: f32,
+}
+
+/// A straight thin line in space, in one tint, drawn like a hue line. It is for a mark that links
+/// two points, such as a drone's beam to its target.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Beam {
+    pub from: [f32; 3],
+    pub to: [f32; 3],
+    /// Index into the theme's tint slots, as an instance's tint is.
+    pub tint: u8,
 }
 
 /// A belt: a flat opaque ribbon lying on the ground along a centre line, with a fine line
@@ -43,6 +56,8 @@ pub struct Scene {
     pub instances: Vec<Instance>,
     /// Thin lines along belt centres, drawn over the ground and under nothing that stands in front.
     pub hue_lines: Vec<HueLine>,
+    /// Beams in space, drawn with the hue lines.
+    pub beams: Vec<Beam>,
     /// Model kinds whose instances also draw in their tint where geometry in front hides them, as
     /// a faint outline. Nothing else is drawn that way.
     pub silhouettes: Vec<u16>,

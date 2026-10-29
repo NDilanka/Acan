@@ -11,8 +11,9 @@ use crate::marks::MarkKinds;
 /// The gap between a belt's end and the plinth it meets, in plan units.
 const BELT_PORT_GAP: f32 = 1.5;
 
-/// One acan-iso model per kind, in [`kind::ALL`] order, then the marks: an agent's bot, the
-/// ring round a waiting agent, the clash pin, and its stalk. [`mark_kinds`] names the last four.
+/// One acan-iso model per kind, in [`kind::ALL`] order. The marks follow: an agent's drone, the
+/// ring round a waiting agent, the clash pin, its stalk, and the beam's end. [`mark_kinds`] names
+/// the last five.
 pub fn models() -> Vec<Model> {
     let mut out: Vec<Model> = ALL.iter().map(|&kind| acan_iso::model(kind)).collect();
     out.extend([
@@ -20,6 +21,7 @@ pub fn models() -> Vec<Model> {
         acan_iso::waiting_ring(),
         acan_iso::clash_pin(),
         acan_iso::clash_stalk(),
+        acan_iso::beacon(),
     ]);
     out
 }
@@ -32,6 +34,7 @@ pub fn mark_kinds() -> MarkKinds {
         ring: base + 1,
         pin: base + 2,
         stalk: base + 3,
+        beacon: base + 4,
     }
 }
 
@@ -59,6 +62,7 @@ pub fn plant_scene(layout: &Layout, models: &[Model]) -> Scene {
             kind: index as u16,
             tint: 0,
             grow: [0.0; 2],
+            turn: 0.0,
         });
     }
     if bounds.min[0] > bounds.max[0] {
@@ -71,6 +75,7 @@ pub fn plant_scene(layout: &Layout, models: &[Model]) -> Scene {
         ribbons,
         instances,
         hue_lines: Vec::new(),
+        beams: Vec::new(),
         silhouettes: vec![mark_kinds().body],
         bounds,
     }

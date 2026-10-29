@@ -24,9 +24,10 @@ use crate::theme::{self, PALETTE_LEN, TINT_LEN};
 pub type TintTable = [[f32; 4]; TINT_LEN];
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-/// The per-instance attributes of an `InstanceRaw`: the offset and tint, then the screen-size
-/// floor at byte 16. The floor is not in `vertex_attr_array!`, which packs attributes in order.
-const MESH_INSTANCE: [wgpu::VertexAttribute; 3] = [
+/// The per-instance attributes of an `InstanceRaw` are the offset and tint, the screen-size floor
+/// at byte 16, then the turn at byte 24. `vertex_attr_array!` packs attributes in order, so these
+/// name their offsets. Each pipeline reads the fields its shader names, at the locations below.
+const MESH_INSTANCE: [wgpu::VertexAttribute; 4] = [
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x3,
         offset: 0,
@@ -42,8 +43,13 @@ const MESH_INSTANCE: [wgpu::VertexAttribute; 3] = [
         offset: 16,
         shader_location: 5,
     },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32,
+        offset: 24,
+        shader_location: 6,
+    },
 ];
-const EDGE_INSTANCE: [wgpu::VertexAttribute; 2] = [
+const EDGE_INSTANCE: [wgpu::VertexAttribute; 3] = [
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x3,
         offset: 0,
@@ -52,6 +58,30 @@ const EDGE_INSTANCE: [wgpu::VertexAttribute; 2] = [
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x2,
         offset: 16,
+        shader_location: 7,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32,
+        offset: 24,
+        shader_location: 8,
+    },
+];
+/// The dot and line pipelines read the offset at location 5, the screen-size floor at 6, and the
+/// turn at 7.
+const STROKE_INSTANCE: [wgpu::VertexAttribute; 3] = [
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x3,
+        offset: 0,
+        shader_location: 5,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x2,
+        offset: 16,
+        shader_location: 6,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32,
+        offset: 24,
         shader_location: 7,
     },
 ];
@@ -438,7 +468,8 @@ impl Renderer {
         ));
         self.ranges = ranges;
 
-        let hue = geometry::hue_vertices(&scene.hue_lines);
+        let mut hue = geometry::hue_vertices(&scene.hue_lines);
+        hue.extend(geometry::beam_vertices(&scene.beams));
         let quads = (hue.len() / geometry::QUAD_CORNERS as usize) as u32;
         let indices = geometry::quad_indices(quads);
         self.hue = (!hue.is_empty()).then(|| HueBuffers {
@@ -965,10 +996,10 @@ impl Pipelines {
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32, 4 => Float32, 5 => Uint32],
         };
-        let offset_instance = wgpu::VertexBufferLayout {
+        let stroke_instance = wgpu::VertexBufferLayout {
             array_stride: size_of::<InstanceRaw>() as u64,
             step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &wgpu::vertex_attr_array![5 => Float32x3],
+            attributes: &STROKE_INSTANCE,
         };
         let halo_instance = wgpu::VertexBufferLayout {
             array_stride: size_of::<InstanceRaw>() as u64,
@@ -1095,7 +1126,7 @@ impl Pipelines {
                 "dots",
                 &scene_layout,
                 ("vs_dot", "fs_dot"),
-                &[Some(dot_vertex), Some(offset_instance.clone())],
+                &[Some(dot_vertex), Some(stroke_instance.clone())],
                 triangles,
                 Some(depth(false, nearer)),
                 scene_samples,
@@ -1127,7 +1158,7 @@ impl Pipelines {
                 "lines",
                 &scene_layout,
                 ("vs_line", "fs_stroke"),
-                &[Some(line_vertex), Some(offset_instance)],
+                &[Some(line_vertex), Some(stroke_instance)],
                 triangles,
                 Some(depth(false, nearer)),
                 scene_samples,

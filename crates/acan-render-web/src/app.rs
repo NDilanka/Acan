@@ -685,6 +685,7 @@ impl App {
             .map(|&(plan_index, tint)| (loaded.plan_instance[plan_index], tint))
             .collect();
         scene.hue_lines = scene::hue_lines(&loaded.belts, &hues);
+        scene.beams = marks::beams(&self.motion, &self.marks);
         scene.instances.extend(marks::mark_instances(
             &self.motion,
             &self.marks,

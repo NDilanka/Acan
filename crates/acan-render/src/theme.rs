@@ -152,6 +152,7 @@ pub fn ink_slot(ink: Ink) -> u32 {
         Ink::Lo => SLOT_LO,
         Ink::Faint => SLOT_FAINT,
         Ink::Edge => SLOT_EDGE,
+        Ink::Shadow => SLOT_SHADOW,
         Ink::Lit => SLOT_LIT,
         Ink::Red => SLOT_RED,
         Ink::Green => SLOT_GREEN,
@@ -308,6 +309,7 @@ mod tests {
             Ink::Lo,
             Ink::Faint,
             Ink::Edge,
+            Ink::Shadow,
             Ink::Lit,
             Ink::Red,
             Ink::Green,
@@ -317,6 +319,7 @@ mod tests {
         ];
         let slots: Vec<u32> = inks.iter().map(|&ink| ink_slot(ink)).collect();
         assert!(slots.iter().all(|&s| (s as usize) < PALETTE_LEN));
+        assert_eq!(ink_slot(Ink::Shadow), SLOT_SHADOW);
         assert_eq!(ink_slot(Ink::Agent(0)), ink_slot(Ink::Agent(4)));
         assert_eq!(ink_slot(Ink::Agent(3)), SLOT_AGENT0 + 3);
         assert_eq!(dot_slot(Ink::Hi), SLOT_DOT);
