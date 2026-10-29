@@ -10,6 +10,9 @@
 //! Queued --LandResult Err--> Open                         [LandFailed]
 //! ```
 //!
+//! A scope-first run freezes no witnesses and stays gating until its receipt closes it; see
+//! the `lane` and `repair` modules.
+//!
 //! A failed gate also renews the lease from the close (`LeaseRenewed`), because the lease
 //! did not run down while the gate was running.
 
@@ -19,6 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::event::{Event, Rejection};
 use crate::ids::{AgentId, CommitId, GateRunId, Generation, OrderRev, TaskId, WitnessId};
+use crate::lane;
 use crate::lease::{self, Fence, LEASE_TTL_MS, LeaseEnd};
 use crate::order::{Stage, TaskState, Witness};
 use crate::world::{Ctx, World};
@@ -113,14 +117,22 @@ pub(crate) fn decide_report_built(
     let order = world
         .order(task.order)
         .ok_or_else(|| Rejection::unknown("order", task.order))?;
-    let witnesses: Vec<WitnessId> = order
-        .witnesses
-        .iter()
-        .copied()
-        .filter(|&w| world.witness(w).is_some_and(Witness::gated))
-        .collect();
+    let lane = world.lane(task.order);
+    if let Some(lane) = lane {
+        lane::check_buildable(lane)?;
+    }
+    // A scope-first run freezes no witnesses: its verdict comes only from its receipt.
+    let witnesses: Vec<WitnessId> = match lane {
+        Some(_) => Vec::new(),
+        None => order
+            .witnesses
+            .iter()
+            .copied()
+            .filter(|&w| world.witness(w).is_some_and(Witness::gated))
+            .collect(),
+    };
     let run = world.next_gate_id()?;
-    let empty = witnesses.is_empty();
+    let empty = witnesses.is_empty() && lane.is_none();
     let mut events = vec![Event::BuildReported {
         task: fence.task,
         generation: fence.generation,
@@ -178,7 +190,12 @@ pub(crate) fn decide_witness_result(
 }
 
 /// Closes a run: a pass delivers the lease, a failure renews it from now.
-fn close(ctx: &Ctx<'_>, fence: Fence, run: GateRunId, verdict: GateVerdict) -> [Event; 2] {
+pub(crate) fn close(
+    ctx: &Ctx<'_>,
+    fence: Fence,
+    run: GateRunId,
+    verdict: GateVerdict,
+) -> [Event; 2] {
     let follow = if verdict == GateVerdict::Passed {
         Event::LeaseEnded {
             task: fence.task,

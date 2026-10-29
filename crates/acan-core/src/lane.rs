@@ -1,0 +1,635 @@
+//! The scope-first lane: one confirmed scope per order, deterministic readback
+//! acknowledgements, and the claims that rest on them.
+//!
+//! ```text
+//! (legacy) --ReviseScope: every task open--> unconfirmed            [ScopeRevised]
+//! unconfirmed --ConfirmScope: bound to revision, hash, base commit, ruling versions,
+//!     selector and example hashes, one answer per open choice and one
+//!     acknowledgement per broad item--> confirmed                    [ScopeConfirmed]
+//! confirmed --ReviseScope: any newer revision--> unconfirmed         [ScopeRevised, LeaseEnded Superseded]
+//! PostScopedReadback at the confirmed revision and hash --> acknowledged [ScopedReadbackPosted]
+//! Claim --> needs the agent's acknowledged readback at the confirmed revision and hash
+//! ReportBuilt --> a run with no witnesses that waits for its receipt  [BuildReported]
+//! CandidatePrepared: same base, scope and ruling head --> prepared    [CandidatePrepared]
+//! ```
+//!
+//! The legacy model review never authorizes anything here. The lane reads only its own
+//! acknowledgements, the `Review` job is never derived for its orders, and a stored
+//! `ReadbacksReviewed` verdict on one of its tasks still replays but is never consulted.
+
+use std::collections::BTreeMap;
+
+use acan_intent::{
+    BroadGrantAck, CanonicalError, ChoiceAnswer, Contest, ContestId, ContestStatus, EpisodeId,
+    ExampleHash, GateState, InvalidValue, ItemId, McpV1, OrderRef, PostReadbackResponse,
+    Prediction, PreparedCommit, RepairBudget, RepairRound, Scope, ScopeConfirmation, ScopeHash,
+    ScopeRev, ScopeRevision, SelectorHash,
+};
+use serde::{Deserialize, Serialize};
+
+use crate::event::{Event, Rejection};
+use crate::ids::{AgentId, CommitId, GateRunId, MemberId, OrderId, ReadbackId, TaskId};
+use crate::lease::LeaseEnd;
+use crate::member::Role;
+use crate::order::{self, Order, OrderPhase, TaskState};
+use crate::repair::{Episode, LaneVerdict, ReceiptRecord};
+use crate::world::World;
+
+/// Most predictions one readback may carry.
+pub const MAX_PREDICTIONS: usize = 256;
+
+/// An agent's readback of a scope-first task: the scope revision it read and what it predicts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopedReadback {
+    /// The readback.
+    pub id: ReadbackId,
+    /// The task.
+    pub task: TaskId,
+    /// The agent that posted it.
+    pub agent: AgentId,
+    /// The scope revision the agent read.
+    pub scope_rev: ScopeRev,
+    /// The scope hash the agent read.
+    pub scope_hash: ScopeHash,
+    /// The plan in the agent's words.
+    pub summary: String,
+    /// What the agent predicts its change does. Agent proposals: the core scores them against
+    /// the receipt, and they are never evidence and never a pass.
+    pub predictions: Vec<Prediction>,
+}
+
+impl ScopedReadback {
+    /// The deterministic acknowledgement the agent gets back. It authorizes nothing but the
+    /// claim the confirmed scope already allows.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidValue`] if the task id has no contract spelling, which a core id never
+    /// lacks.
+    pub fn acknowledgement(&self) -> Result<PostReadbackResponse, InvalidValue> {
+        Ok(PostReadbackResponse {
+            version: McpV1,
+            task: self.task.to_string().parse()?,
+            scope_rev: self.scope_rev,
+            scope_hash: self.scope_hash,
+            predictions_recorded: u32::try_from(self.predictions.len()).unwrap_or(u32::MAX),
+        })
+    }
+}
+
+/// What a confirmation of one scope revision must bind, computed from the scope alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeBinding {
+    /// The scope's hash.
+    pub scope_hash: ScopeHash,
+    /// Every selector, may-change items first, then must-keep rules, in scope order.
+    pub selector_hashes: Vec<SelectorHash>,
+    /// Every may-change item's example, in scope order.
+    pub example_hashes: Vec<ExampleHash>,
+    /// The broad may-change items, each needing its own acknowledgement.
+    pub broad_items: Vec<(ItemId, SelectorHash)>,
+}
+
+impl ScopeBinding {
+    /// The binding of `scope`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] only if a part of the scope cannot be hashed.
+    pub fn of(scope: &Scope) -> Result<Self, CanonicalError> {
+        let may = &scope.body.may;
+        let mut selector_hashes = Vec::with_capacity(may.len() + scope.body.must_keep.len());
+        let mut broad_items = Vec::new();
+        for item in may {
+            let hash = item.selector.selector_hash()?;
+            if item.selector.is_broad() {
+                broad_items.push((item.id.clone(), hash));
+            }
+            selector_hashes.push(hash);
+        }
+        for keep in &scope.body.must_keep {
+            selector_hashes.push(keep.selector.selector_hash()?);
+        }
+        let example_hashes = may
+            .iter()
+            .map(|item| item.example.example_hash())
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            scope_hash: scope.scope_hash()?,
+            selector_hashes,
+            example_hashes,
+            broad_items,
+        })
+    }
+}
+
+/// One gate run of a scope-first task. Its verdict comes only from its receipt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LaneRun {
+    /// The task under test.
+    pub task: TaskId,
+    /// The commit the worker reported.
+    pub head: CommitId,
+    /// The prepared merged commit and its tested context, once prepared.
+    pub prepared: Option<PreparedCommit>,
+    /// The recorded receipt, once the run is classified.
+    pub receipt: Option<ReceiptRecord>,
+}
+
+/// The scope-first state of one order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeLane {
+    /// The order.
+    pub order: OrderId,
+    /// The current scope revision.
+    pub scope: Scope,
+    /// Its hash.
+    pub scope_hash: ScopeHash,
+    /// Every revision the order went through, oldest first.
+    pub lineage: Vec<ScopeRevision>,
+    /// The human confirmation of the current revision. A newer revision clears it.
+    pub confirmation: Option<ScopeConfirmation>,
+    /// The repair budget, fixed by the first confirmation and never replenished.
+    pub budget: Option<RepairBudget>,
+    /// Every gate run of the order's tasks.
+    pub runs: BTreeMap<GateRunId, LaneRun>,
+    /// Every discrepancy episode, by identity.
+    pub episodes: BTreeMap<EpisodeId, Episode>,
+    /// The order-wide repair rounds, oldest first.
+    pub rounds: Vec<RepairRound>,
+    /// Every contest filed in the order.
+    pub contests: BTreeMap<ContestId, Contest>,
+    /// Whether the repair budget ran out. A stopped lane takes no more claims or builds.
+    pub stopped: bool,
+}
+
+impl ScopeLane {
+    pub(crate) fn opened(order: OrderId, scope: Scope, scope_hash: ScopeHash) -> Self {
+        Self {
+            order,
+            lineage: vec![ScopeRevision {
+                rev: scope.rev,
+                scope_hash,
+            }],
+            scope,
+            scope_hash,
+            confirmation: None,
+            budget: None,
+            runs: BTreeMap::new(),
+            episodes: BTreeMap::new(),
+            rounds: Vec::new(),
+            contests: BTreeMap::new(),
+            stopped: false,
+        }
+    }
+
+    /// The repair rounds opened so far.
+    #[must_use]
+    pub fn rounds_used(&self) -> usize {
+        self.rounds.len()
+    }
+
+    /// Contests still waiting for the human.
+    pub fn open_contests(&self) -> impl Iterator<Item = &Contest> {
+        self.contests
+            .values()
+            .filter(|contest| contest.status == ContestStatus::Open)
+    }
+
+    /// The receipt of the latest classified run.
+    #[must_use]
+    pub fn latest_receipt(&self) -> Option<&ReceiptRecord> {
+        self.runs
+            .values()
+            .rev()
+            .find_map(|run| run.receipt.as_ref())
+    }
+
+    /// Where the gate stands, for the order plate: stopped once the budget ran out, blocked
+    /// when the latest receipt did not pass, running while a prepared run waits for its
+    /// receipt. `None` when the lane has nothing to draw: no run yet, or the latest one passed
+    /// and its task's state tells the rest.
+    #[must_use]
+    pub fn gate_state(&self) -> Option<GateState> {
+        if self.stopped {
+            return Some(GateState::Stopped);
+        }
+        let latest = self.runs.values().next_back()?;
+        match &latest.receipt {
+            Some(record) => match record.verdict {
+                LaneVerdict::Passed => None,
+                LaneVerdict::Blocked { .. } => Some(GateState::Blocked),
+                LaneVerdict::Stopped { .. } => Some(GateState::Stopped),
+            },
+            None => latest.prepared.as_ref().map(|_| GateState::Running),
+        }
+    }
+}
+
+pub(crate) fn order_ref(order: OrderId) -> Result<OrderRef, Rejection> {
+    order
+        .to_string()
+        .parse()
+        .map_err(|_| Rejection::invalid("the order id has no contract spelling"))
+}
+
+pub(crate) fn hash_failed(_: CanonicalError) -> Rejection {
+    Rejection::invalid("a value has no canonical JSON form")
+}
+
+/// Whether `member` may decide for `order`: its poster or an owner.
+pub(crate) fn may_decide(world: &World, member: &MemberId, order: &Order) -> bool {
+    &order.posted_by == member || world.member(member).is_some_and(|m| m.role == Role::Owner)
+}
+
+fn check_open(world: &World, order: OrderId) -> Result<(), Rejection> {
+    match world.phase(order) {
+        None => Err(Rejection::unknown("order", order)),
+        Some(OrderPhase::Cancelled) => Err(Rejection::wrong_state("order", "cancelled")),
+        Some(OrderPhase::Landed) => Err(Rejection::wrong_state("order", "landed")),
+        Some(_) => Ok(()),
+    }
+}
+
+fn stale(lane: &ScopeLane) -> Rejection {
+    Rejection::StaleScope {
+        current_rev: lane.scope.rev,
+        current_hash: lane.scope_hash,
+    }
+}
+
+/// The lane's confirmation, or why work may not start.
+pub(crate) fn confirmed(lane: &ScopeLane) -> Result<&ScopeConfirmation, Rejection> {
+    if lane.stopped {
+        return Err(Rejection::BudgetExhausted { order: lane.order });
+    }
+    lane.confirmation
+        .as_ref()
+        .ok_or(Rejection::ScopeNotConfirmed { order: lane.order })
+}
+
+/// `ReviseScope`: the first revision moves an order with no claimed work into the lane; a
+/// newer one clears the confirmation and ends every live lease as `Superseded`.
+pub(crate) fn decide_revise(
+    world: &World,
+    member: &MemberId,
+    order: OrderId,
+    scope: Scope,
+) -> Result<Vec<Event>, Rejection> {
+    let o = world
+        .order(order)
+        .ok_or_else(|| Rejection::unknown("order", order))?;
+    if !may_decide(world, member, o) {
+        return Err(Rejection::forbidden(
+            "only the poster or an owner sets an order's scope",
+        ));
+    }
+    check_open(world, order)?;
+    if scope.order != order_ref(order)? {
+        return Err(Rejection::invalid("the scope names another order"));
+    }
+    let scope_hash = scope.scope_hash().map_err(hash_failed)?;
+    let lane = world.lane(order);
+    match lane {
+        None if world
+            .tasks_of(order)
+            .any(|t| !matches!(t.state, TaskState::Open)) =>
+        {
+            return Err(Rejection::wrong_state("order", "already claimed"));
+        }
+        None => {}
+        Some(lane) if lane.scope_hash == scope_hash => return Ok(Vec::new()),
+        Some(lane) if scope.rev <= lane.scope.rev => return Err(stale(lane)),
+        Some(_) => {}
+    }
+    let mut events = vec![Event::ScopeRevised {
+        order,
+        scope: Box::new(scope),
+        scope_hash,
+    }];
+    if lane.is_some() {
+        events.extend(order::end_leases(world, order, LeaseEnd::Superseded));
+    }
+    Ok(events)
+}
+
+/// `ConfirmScope`: a human binds the current revision. Re-sending the same confirmation is a
+/// no-op; a different one for a confirmed revision is refused.
+pub(crate) fn decide_confirm(
+    world: &World,
+    member: &MemberId,
+    order: OrderId,
+    confirmation: ScopeConfirmation,
+) -> Result<Vec<Event>, Rejection> {
+    let o = world
+        .order(order)
+        .ok_or_else(|| Rejection::unknown("order", order))?;
+    if !may_decide(world, member, o) {
+        return Err(Rejection::forbidden(
+            "only the poster or an owner confirms an order's scope",
+        ));
+    }
+    check_open(world, order)?;
+    let lane = world
+        .lane(order)
+        .ok_or_else(|| Rejection::wrong_state("order", "without a scope"))?;
+    if confirmation.by.as_str() != member.as_str() {
+        return Err(Rejection::forbidden(
+            "a confirmation is signed by the member who sends it",
+        ));
+    }
+    if let Some(current) = &lane.confirmation {
+        return if *current == confirmation {
+            Ok(Vec::new())
+        } else {
+            Err(Rejection::wrong_state("scope", "confirmed"))
+        };
+    }
+    check_binding(world, lane, &confirmation)?;
+    Ok(vec![Event::ScopeConfirmed {
+        order,
+        confirmation: Box::new(confirmation),
+    }])
+}
+
+fn mismatch(what: &str, lane: &ScopeLane) -> Rejection {
+    Rejection::Invalid {
+        why: format!(
+            "the confirmation's {what} do not match scope revision {}",
+            lane.scope.rev.0
+        ),
+    }
+}
+
+fn check_binding(
+    world: &World,
+    lane: &ScopeLane,
+    confirmation: &ScopeConfirmation,
+) -> Result<(), Rejection> {
+    if confirmation.order != order_ref(lane.order)? {
+        return Err(Rejection::invalid("the confirmation names another order"));
+    }
+    if confirmation.scope_rev != lane.scope.rev || confirmation.scope_hash != lane.scope_hash {
+        return Err(stale(lane));
+    }
+    if confirmation.base_commit != lane.scope.base_commit {
+        return Err(mismatch("base commit", lane));
+    }
+    let mut versions = confirmation.ruling_versions.clone();
+    versions.sort();
+    if versions != world.ledger().ruling_versions() {
+        return Err(mismatch("ruling versions", lane));
+    }
+    let binding = ScopeBinding::of(&lane.scope).map_err(hash_failed)?;
+    if confirmation.selector_hashes != binding.selector_hashes {
+        return Err(mismatch("selector hashes", lane));
+    }
+    if confirmation.example_hashes != binding.example_hashes {
+        return Err(mismatch("example hashes", lane));
+    }
+    check_answers(&lane.scope, &confirmation.answers)?;
+    check_broad_grants(world, &binding, &confirmation.broad_grants)?;
+    if lane
+        .budget
+        .is_some_and(|budget| budget != confirmation.budget)
+    {
+        return Err(Rejection::invalid(
+            "the repair budget is fixed by the order's first confirmation",
+        ));
+    }
+    Ok(())
+}
+
+fn check_answers(scope: &Scope, answers: &[ChoiceAnswer]) -> Result<(), Rejection> {
+    let open = &scope.body.open;
+    if answers.len() != open.len() {
+        return Err(Rejection::invalid(
+            "a confirmation answers every open choice once",
+        ));
+    }
+    for choice in open {
+        let mut given = answers.iter().filter(|a| a.choice_id == choice.id);
+        let (Some(answer), None) = (given.next(), given.next()) else {
+            return Err(Rejection::Invalid {
+                why: format!("open choice {} needs exactly one answer", choice.id),
+            });
+        };
+        if !choice
+            .options
+            .iter()
+            .any(|option| option.key == answer.option)
+        {
+            return Err(Rejection::Invalid {
+                why: format!("open choice {} has no option {}", choice.id, answer.option),
+            });
+        }
+    }
+    Ok(())
+}
+
+fn check_broad_grants(
+    world: &World,
+    binding: &ScopeBinding,
+    grants: &[BroadGrantAck],
+) -> Result<(), Rejection> {
+    let mut acked: BTreeMap<&ItemId, &BroadGrantAck> = BTreeMap::new();
+    for ack in grants {
+        let member: Option<MemberId> = ack.by.as_str().parse().ok();
+        if member.is_none_or(|m| world.member(&m).is_none()) {
+            return Err(Rejection::forbidden(
+                "a broad grant is acknowledged by a member",
+            ));
+        }
+        if acked.insert(&ack.item_id, ack).is_some() {
+            return Err(Rejection::Invalid {
+                why: format!("broad item {} is acknowledged twice", ack.item_id),
+            });
+        }
+    }
+    for (item, hash) in &binding.broad_items {
+        match acked.remove(item) {
+            Some(ack) if ack.selector_hash == *hash => {}
+            Some(_) => {
+                return Err(Rejection::Invalid {
+                    why: format!("the acknowledgement of broad item {item} names another selector"),
+                });
+            }
+            None => {
+                return Err(Rejection::Invalid {
+                    why: format!("broad item {item} needs its own acknowledgement"),
+                });
+            }
+        }
+    }
+    match acked.keys().next() {
+        Some(item) => Err(Rejection::Invalid {
+            why: format!("item {item} is not a broad grant of this revision"),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// `PostScopedReadback`: acknowledged only at the confirmed revision and hash. Allowed while
+/// the task is open or held by another agent, so a standby can claim when the lease ends.
+pub(crate) fn decide_readback(
+    world: &World,
+    agent: &AgentId,
+    task: TaskId,
+    scope_rev: ScopeRev,
+    scope_hash: ScopeHash,
+    summary: String,
+    predictions: Vec<Prediction>,
+) -> Result<Vec<Event>, Rejection> {
+    let t = world
+        .task(task)
+        .ok_or_else(|| Rejection::unknown("task", task))?;
+    if !matches!(t.state, TaskState::Open | TaskState::Claimed { .. }) {
+        return Err(Rejection::wrong_state("task", t.state.name()));
+    }
+    let lane = world
+        .lane(t.order)
+        .ok_or_else(|| Rejection::wrong_state("order", "not scope-first"))?;
+    let confirmation = confirmed(lane)?;
+    if scope_rev != confirmation.scope_rev || scope_hash != confirmation.scope_hash {
+        return Err(stale(lane));
+    }
+    if summary.trim().is_empty() {
+        return Err(Rejection::invalid("a readback needs a summary"));
+    }
+    if predictions.len() > MAX_PREDICTIONS {
+        return Err(Rejection::invalid(
+            "a readback carries at most 256 predictions",
+        ));
+    }
+    Ok(vec![Event::ScopedReadbackPosted {
+        readback: Box::new(ScopedReadback {
+            id: world.next_readback_id()?,
+            task,
+            agent: agent.clone(),
+            scope_rev,
+            scope_hash,
+            summary,
+            predictions,
+        }),
+    }])
+}
+
+/// The agent's latest readback of `task` acknowledged at the confirmed revision and hash. The
+/// only authority a scope-first claim rests on.
+pub(crate) fn acknowledged_readback(
+    world: &World,
+    lane: &ScopeLane,
+    agent: &AgentId,
+    task: TaskId,
+) -> Result<ReadbackId, Rejection> {
+    let confirmation = confirmed(lane)?;
+    let mut mine = world
+        .scoped_readbacks_of(task)
+        .filter(|r| &r.agent == agent)
+        .peekable();
+    if mine.peek().is_none() {
+        return Err(Rejection::NotReadBack { task });
+    }
+    mine.filter(|r| {
+        r.scope_rev == confirmation.scope_rev && r.scope_hash == confirmation.scope_hash
+    })
+    .last()
+    .map(|r| r.id)
+    .ok_or_else(|| stale(lane))
+}
+
+/// Refuses a build in a lane that is unconfirmed or stopped.
+pub(crate) fn check_buildable(lane: &ScopeLane) -> Result<(), Rejection> {
+    confirmed(lane).map(drop)
+}
+
+/// The lane and run of a scope-first gate run.
+pub(crate) fn lane_run(world: &World, run: GateRunId) -> Result<(&ScopeLane, &LaneRun), Rejection> {
+    let gate = world
+        .gate(run)
+        .ok_or_else(|| Rejection::unknown("gate run", run))?;
+    let order = world
+        .task(gate.task)
+        .ok_or_else(|| Rejection::unknown("task", gate.task))?
+        .order;
+    let lane = world
+        .lane(order)
+        .ok_or_else(|| Rejection::wrong_state("gate run", "not scope-first"))?;
+    let lane_run = lane
+        .runs
+        .get(&run)
+        .ok_or_else(|| Rejection::unknown("scope-first run", run))?;
+    Ok((lane, lane_run))
+}
+
+/// Whether `run` is the task's current gating run.
+pub(crate) fn is_gating(world: &World, task: TaskId, run: GateRunId) -> bool {
+    world.task(task).is_some_and(|t| {
+        matches!(&t.state, TaskState::Claimed { stage: crate::order::Stage::Gating { run: r, .. }, .. } if *r == run)
+    })
+}
+
+/// `CandidatePrepared`: the merged commit a gating run tests. It must sit on the confirmed
+/// base, carry the confirmed scope, and name the current ruling head.
+pub(crate) fn decide_prepared(
+    world: &World,
+    run: GateRunId,
+    prepared: PreparedCommit,
+) -> Result<Vec<Event>, Rejection> {
+    let (lane, lane_run) = lane_run(world, run)?;
+    if let Some(existing) = &lane_run.prepared {
+        return if *existing == prepared {
+            Ok(Vec::new())
+        } else {
+            Err(Rejection::wrong_state("gate run", "prepared"))
+        };
+    }
+    if !is_gating(world, lane_run.task, run) {
+        return Err(Rejection::wrong_state("gate run", "closed"));
+    }
+    let confirmation = confirmed(lane)?;
+    if prepared.base_commit != confirmation.base_commit {
+        return Err(Rejection::StaleEvidence {
+            detail: format!(
+                "prepared on base {}, scope confirmed against {}",
+                prepared.base_commit, confirmation.base_commit
+            ),
+        });
+    }
+    if prepared.context.scope_hash != confirmation.scope_hash {
+        return Err(stale(lane));
+    }
+    if prepared.context.ledger_head != world.ledger().head() {
+        return Err(Rejection::StaleEvidence {
+            detail: "the ruling log moved since the candidate was prepared".to_owned(),
+        });
+    }
+    if prepared
+        .context
+        .merged_commit
+        .as_str()
+        .parse::<CommitId>()
+        .is_err()
+    {
+        return Err(Rejection::invalid("the merged commit is not a commit id"));
+    }
+    Ok(vec![Event::CandidatePrepared {
+        run,
+        prepared: Box::new(prepared),
+    }])
+}
+
+/// A scope-first run the host still has to prepare or contrast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingContrast<'w> {
+    /// The order.
+    pub order: OrderId,
+    /// The gating task.
+    pub task: TaskId,
+    /// The run.
+    pub run: GateRunId,
+    /// The commit the worker reported.
+    pub head: &'w CommitId,
+    /// The prepared merged commit, once recorded.
+    pub prepared: Option<&'w PreparedCommit>,
+}
