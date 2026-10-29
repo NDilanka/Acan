@@ -1,6 +1,6 @@
 {
   "version": "plant-view/1",
-  "receipt_hash": "sha256:2a516250a36e5cf3a22a3539c4e211b59848171bf86530477dfba320a4726b6d",
+  "receipt_hash": "sha256:2dbaa008714ca2cafc1bfb439e0b3d11d8469bb45e3c21ebbd275705377f53e0",
   "base_sha": "178c1b07097a9f510882d139061ed50b4b44b1d4",
   "merged_sha": "a27a5f30da19543ee34362516e29bf7561214156",
   "gate_state": "blocked",
@@ -1117,7 +1117,7 @@
     "mode": "directed",
     "model": "muse-spark",
     "tour": {
-      "receipt_hash": "sha256:2a516250a36e5cf3a22a3539c4e211b59848171bf86530477dfba320a4726b6d",
+      "receipt_hash": "sha256:2dbaa008714ca2cafc1bfb439e0b3d11d8469bb45e3c21ebbd275705377f53e0",
       "steps": [
         {
           "item_id": "d-login-error-body",
