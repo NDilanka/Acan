@@ -157,6 +157,26 @@ fn fs_mesh(v: MeshOut) -> @location(0) vec4<f32> {
     return vec4<f32>(mix(ink.rgb, page, fog), ink.a);
 }
 
+// An occluded silhouette is a bot that geometry in front hides. It draws as a faint outline in its
+// tint. The pass runs the mesh's vertices with the depth test reversed, so only the hidden part draws,
+// and only where the surface turns edge-on to the eye, so the fill stays clear.
+const SILHOUETTE_ALPHA: f32 = 0.35;
+// A face whose normal is within this of edge-on to the eye draws as outline.
+const SILHOUETTE_EDGE: f32 = 0.3;
+
+@fragment
+fn fs_silhouette(v: MeshOut) -> @location(0) vec4<f32> {
+    var to_eye = camera.toward.xyz;
+    if (!is_ortho()) {
+        to_eye = normalize(camera.eye.xyz - v.world);
+    }
+    let facing = abs(dot(normalize(v.normal), to_eye));
+    let rim = 1.0 - smoothstep(0.0, SILHOUETTE_EDGE, facing);
+    let fog = fog_at(v.world);
+    let hue = theme.tints[v.tint].rgb;
+    return vec4<f32>(hue, SILHOUETTE_ALPHA * rim * (1.0 - fog));
+}
+
 // Ground: one full-screen triangle. Each pixel's view ray meets the ground at a plan point, and
 // the grid lines are analytic, so there is no geometry. A ray that rises above the horizon sees
 // no ground: it is page white and writes no depth.
@@ -549,11 +569,9 @@ fn pixel_share(x: f32, n: vec2<f32>) -> f32 {
     return 1.0 - u * u / (2.0 * a * b);
 }
 
-// The ink a stroke lays on the page, as how much it darkens it. The coverage is the share of
-// the pixel square inside the stroke. A plain ramp on the distance shades a slanted thin line
-// unevenly, alternately one dark pixel and two light ones, which reads as a beaded line.
-@fragment
-fn fs_stroke(v: StrokeOut) -> @location(0) vec4<f32> {
+// The share of a pixel square that a stroke covers. A plain ramp on the distance shades a slanted
+// thin line unevenly, alternately one dark pixel and two light ones, which reads as a beaded line.
+fn stroke_coverage(v: StrokeOut) -> f32 {
     let p = vec2<f32>(v.clip.x - 0.5 * camera.view.x, 0.5 * camera.view.y - v.clip.y);
     let a = v.ends.xy;
     let ab = v.ends.zw - a;
@@ -564,7 +582,14 @@ fn fs_stroke(v: StrokeOut) -> @location(0) vec4<f32> {
     if (d > 1e-4) {
         n = off / d;
     }
-    let coverage = pixel_share(v.half_px - d, n) - pixel_share(-v.half_px - d, n);
+    return pixel_share(v.half_px - d, n) - pixel_share(-v.half_px - d, n);
+}
+
+// The ink a stroke lays on the page, as how much it darkens it. The coverage is the share of
+// the pixel square inside the stroke.
+@fragment
+fn fs_stroke(v: StrokeOut) -> @location(0) vec4<f32> {
+    let coverage = stroke_coverage(v);
     let lit = dot(v.ink.rgb, LUMA);
     var dark = (1.0 - lit) * coverage;
     if (camera.pivot.w > 0.5) {
@@ -577,6 +602,33 @@ fn fs_stroke(v: StrokeOut) -> @location(0) vec4<f32> {
     // No discard: under the max blend a zero changes nothing, and a discard costs more.
     return vec4<f32>(dark * v.ink.a, 0.0, 0.0, coverage * v.ink.a);
 }
+
+// A belt hue line is one screen-space stroke per piece, in the agent's tint. Each piece carries its
+// own opacity, which the renderer fades toward a belt's ends.
+
+struct HueIn {
+    @location(0) a: vec3<f32>,
+    @location(1) b: vec3<f32>,
+    @location(2) corner: vec2<f32>,
+    @location(3) width: f32,
+    @location(4) alpha: f32,
+    @location(5) tint: u32,
+}
+
+@vertex
+fn vs_hue(v: HueIn) -> StrokeOut {
+    let min_px = camera.view.w;
+    var ink = theme.tints[v.tint];
+    ink.a = v.alpha;
+    let half_px = 0.5 * max(v.width, min_px);
+    return stroke(v.a, v.b, half_px, ink, v.corner, vec2<f32>(0.0));
+}
+
+@fragment
+fn fs_hue(v: StrokeOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(v.ink.rgb, v.ink.a * stroke_coverage(v));
+}
+
 // Dots: a disc is a square of corners in its own plane, cut to a circle in the fragment shader.
 
 struct DotIn {

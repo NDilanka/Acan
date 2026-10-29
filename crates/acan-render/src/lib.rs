@@ -14,6 +14,6 @@ pub mod theme;
 pub use camera::{Camera, Projection};
 pub use model::{Aabb, Detail, Dot3, Ink, Line3, Mesh, Model, Surface};
 pub use renderer::{RenderError, Renderer};
-pub use scene::{Instance, Lod, Ribbon, Scene};
+pub use scene::{HueLine, Instance, Lod, Ribbon, Scene};
 /// The wgpu version this crate was built against. Callers create the instance and surface with it.
 pub use wgpu;

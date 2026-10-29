@@ -1,7 +1,7 @@
 //! The plant's scene: a flat ribbon for each belt and one instance for each machine, built from
 //! the layout and the acan-iso models.
 
-use acan_render::{Aabb, Instance, Model, Ribbon, Scene};
+use acan_render::{Aabb, HueLine, Instance, Model, Ribbon, Scene};
 
 use crate::bends;
 use crate::kind::{self, ALL, PlanFootprint};
@@ -70,27 +70,73 @@ pub fn plant_scene(layout: &Layout, models: &[Model]) -> Scene {
     Scene {
         ribbons,
         instances,
+        hue_lines: Vec::new(),
+        silhouettes: vec![mark_kinds().body],
         bounds,
     }
+}
+
+/// A belt as it draws: its rounded centre line on the plan, its width, and the machines it joins.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BeltLine {
+    /// The index of the machine its path starts at.
+    pub from: usize,
+    /// The index of the machine its path ends at.
+    pub to: usize,
+    /// Plan points of the rounded centre line, stopped just short of both plinths.
+    pub centre: Vec<[f32; 2]>,
+    /// Full width in plan units.
+    pub width: f32,
+}
+
+/// Each belt that draws, in layout order, as its rounded centre line. A belt too short to draw is
+/// left out.
+pub fn belt_lines(belts: &[Belt]) -> Vec<BeltLine> {
+    let (kept, paths): (Vec<&Belt>, Vec<Vec<[f32; 2]>>) = belts
+        .iter()
+        .filter_map(|belt| Some((belt, trimmed(&belt.path, BELT_PORT_GAP)?)))
+        .unzip();
+    kept.into_iter()
+        .zip(bends::round_all(&paths))
+        .map(|(belt, centre)| BeltLine {
+            from: belt.from,
+            to: belt.to,
+            centre,
+            width: belt_width(belt.imports),
+        })
+        .collect()
 }
 
 /// Each belt is a flat ribbon on the ground along its rounded path, stopped just short of both
 /// plinths. A belt too short to draw is left out.
 fn belt_ribbons(belts: &[Belt]) -> Vec<Ribbon> {
-    let (paths, widths): (Vec<Vec<[f32; 2]>>, Vec<f32>) = belts
-        .iter()
-        .filter_map(|belt| {
-            Some((
-                trimmed(&belt.path, BELT_PORT_GAP)?,
-                belt_width(belt.imports),
-            ))
-        })
-        .unzip();
-    bends::round_all(&paths)
+    belt_lines(belts)
         .into_iter()
-        .zip(widths)
-        .map(|(centre, width)| Ribbon { centre, width })
+        .map(|line| Ribbon {
+            centre: line.centre,
+            width: line.width,
+        })
         .collect()
+}
+
+/// The hue lines to draw. Each belt that joins a machine a live task's files sit on gets one line,
+/// once for each tint. `hues` pairs an instance index with a tint.
+pub fn hue_lines(belts: &[BeltLine], hues: &[(usize, u8)]) -> Vec<HueLine> {
+    let mut out = Vec::new();
+    for belt in belts {
+        let mut tints: Vec<u8> = hues
+            .iter()
+            .filter(|(machine, _)| *machine == belt.from || *machine == belt.to)
+            .map(|&(_, tint)| tint)
+            .collect();
+        tints.sort_unstable();
+        tints.dedup();
+        out.extend(tints.into_iter().map(|tint| HueLine {
+            centre: belt.centre.clone(),
+            tint,
+        }));
+    }
+    out
 }
 
 /// A belt's width in plan units, a little wider for more imports. The widest belt still leaves
@@ -135,6 +181,23 @@ mod tests {
     use crate::plant::{from_scan_json, stress};
 
     const FIXTURE: &str = include_str!("../www/fixtures/demo-plant.json");
+
+    #[test]
+    fn a_hue_line_runs_along_each_belt_that_joins_a_hued_machine_once_per_tint() {
+        let belt = |from: usize, to: usize| BeltLine {
+            from,
+            to,
+            centre: vec![[0.0, 0.0], [10.0, 0.0]],
+            width: 4.0,
+        };
+        let belts = [belt(0, 1), belt(1, 2), belt(2, 3)];
+        let lines = hue_lines(&belts, &[(1, 7), (1, 7), (2, 9)]);
+        let tints: Vec<u8> = lines.iter().map(|line| line.tint).collect();
+        // Belt 0 touches machine 1 and belt 2 touches machine 2. Belt 1 joins both, so it carries
+        // both tints.
+        assert_eq!(tints, vec![7, 7, 9, 9]);
+        assert!(hue_lines(&belts, &[]).is_empty(), "no hue, no line");
+    }
 
     #[test]
     fn models_stand_on_the_ground_inside_their_footprint() {

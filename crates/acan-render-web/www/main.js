@@ -5,8 +5,9 @@
 import init, { App } from "./pkg/acan_render_web.js";
 
 const TOKEN_KEY = "acan.owner";
-const USAGE_DELAY_MS = 800;
 const RECONNECT_MS = 1000;
+// The usage panel shows this many rows at rest. Alt shows every row.
+const USAGE_REST_ROWS = 3;
 const ID_PREFIX = { order: "o", clash: "c", question: "q", task: "t" };
 const PAN_KEY_PX = 80;
 const ZOOM_KEY = 1.25;
@@ -30,6 +31,9 @@ const params = new URLSearchParams(location.search);
 // events of its own settles, so the server's later events, such as a lease ending, do not move
 // the marks.
 const freeze = params.get("freeze") === "1";
+// `?upto=N` folds only the events before seq N. A frozen screenshot uses it to show the demo at
+// an earlier point, such as after a witness passes and before its task lands.
+const upto = params.has("upto") ? Number(params.get("upto")) : null;
 const $ = (id) => document.getElementById(id);
 const canvas = $("plant");
 const labelsEl = $("labels");
@@ -41,9 +45,7 @@ const link = $("link");
 const orderEl = $("order");
 const orderLine = $("order-line");
 const usagePanel = $("usage");
-const usageTable = $("usage-table");
 const usageBody = $("usage-body");
-const usageNone = $("usage-none");
 const repoEl = $("repo");
 const noticeEl = $("notice");
 
@@ -58,8 +60,6 @@ let flagEls = [];
 let leaderEls = [];
 let fadeTimer = null;
 let socket = null;
-let usageTimer = null;
-let usageRows = [];
 let settling = false;
 let note = "";
 let scheduled = false;
@@ -84,6 +84,8 @@ function drawFrame(now = performance.now()) {
   lastFrame = now;
   try {
     const turning = app.advance(elapsed);
+    // A landed dot going quiet or a fade ending changes the flag list, so the flags are redrawn.
+    if (app.take_flags_changed()) paintMarks();
     if (!app.render()) requestRender();
     if (timing.firstFrame === undefined) timing.firstFrame = performance.now();
     syncView();
@@ -108,7 +110,6 @@ function syncView() {
   paint();
   // The marks ease in from where they start, so the next frame must advance them.
   requestRender();
-  scheduleUsage();
   if (socket) setLink(`live · seq ${app.next_seq()}`);
 }
 
@@ -217,12 +218,16 @@ async function start() {
   } else {
     connect();
   }
-  refreshUsage();
 }
 
 async function reload() {
-  app.load_log(await get("/api/events?from=0"));
+  const log = await get("/api/events?from=0");
+  app.load_log(upto === null ? log : keepBefore(log, upto));
   requestRender();
+}
+
+function keepBefore(text, seq) {
+  return JSON.stringify(JSON.parse(text).filter((event) => event.seq < seq));
 }
 
 function connect() {
@@ -271,6 +276,7 @@ async function resync() {
 function paint() {
   paintOrderLine();
   paintMarks();
+  paintUsage();
 }
 
 function paintOrderLine() {
@@ -301,15 +307,25 @@ function paintMarks() {
 function flagElement(flag) {
   const el = document.createElement("div");
   el.className = `flag ${flag.kind}`;
+  el.classList.toggle("leaving", flag.leaving);
   if (flag.hue) {
     const dot = document.createElement("span");
     dot.className = "dot";
     dot.style.background = flag.hue;
     el.append(dot);
   }
-  const text = document.createElement("span");
-  text.textContent = flag.text;
-  el.append(text);
+  if (flag.kind === "landed") {
+    const dot = document.createElement("span");
+    dot.className = "dot land";
+    el.append(dot);
+    el.classList.toggle("quiet", flag.text === "");
+  }
+  if (flag.text !== "") {
+    const text = document.createElement("span");
+    text.textContent = flag.text;
+    el.append(text);
+  }
+  if (flag.check) el.append(checkChip(flag.check));
   if (flag.waiting) {
     const amber = document.createElement("span");
     amber.className = "dot wait";
@@ -319,6 +335,21 @@ function flagElement(flag) {
     el.addEventListener("click", () => openCard(flag.clash));
   }
   return el;
+}
+
+// A witness chip: a grey ring while the check is pending, a dark tick when it passed, a red dot
+// when it failed. Alt adds its words, such as `w3 · passed`.
+function checkChip(check) {
+  const chip = document.createElement("span");
+  chip.className = `chip ${check.state}`;
+  chip.title = `${check.name} · ${check.state}`;
+  chip.append(document.createElement("i"));
+  if (altDown) {
+    const words = document.createElement("span");
+    words.textContent = `${check.name} · ${check.state}`;
+    chip.append(words);
+  }
+  return chip;
 }
 
 // Flags are placed before the names and are never hidden for overlap; a flag is hidden only when
@@ -341,9 +372,9 @@ function placeFlags(placedBoxes) {
       continue;
     }
     const [w, h] = el.size;
-    const clash = el.classList.contains("clash");
-    const left = clash ? x : x - w / 2;
-    const top = clash ? y - h / 2 : y - LABEL_OFFSET_PX - h;
+    const beside = el.classList.contains("clash") || el.classList.contains("landed");
+    const left = beside ? x : x - w / 2;
+    const top = beside ? y - h / 2 : y - LABEL_OFFSET_PX - h;
     placeFlag(el, left, top, placedBoxes);
   }
   let leaders = 0;
@@ -583,46 +614,25 @@ async function settle(clash, option) {
   }
 }
 
-function scheduleUsage() {
-  if (usageTimer) return;
-  usageTimer = setTimeout(() => {
-    usageTimer = null;
-    refreshUsage();
-  }, USAGE_DELAY_MS);
-}
-
-async function refreshUsage() {
-  if (!token) return;
-  try {
-    renderUsage(JSON.parse(await get("/api/usage")));
-  } catch (err) {
-    console.error(err);
-  }
-}
-
-// The usage panel stays hidden until a model has been called. Holding Alt shows the one-line
-// `no model calls yet` instead, so the panel is never empty on screen.
-function renderUsage(rows) {
-  usageRows = rows;
-  usageBody.replaceChildren(...rows.map((row) => {
-    const tr = document.createElement("tr");
-    const cells = [row.role, row.model, row.provider, row.calls, row.prompt_tokens, row.completion_tokens];
-    cells.forEach((value, i) => {
-      const td = document.createElement("td");
-      td.textContent = String(value);
-      if (i === 2) td.className = row.provider === "offline" ? "offline" : "live";
-      tr.append(td);
-    });
-    return tr;
-  }));
-  paintUsage();
-}
-
+// The usage panel reads the model calls the view has recorded: one row per model and step. It is
+// hidden until the first call. At rest it shows the first few rows; Alt shows every row.
 function paintUsage() {
-  const any = usageRows.length > 0;
-  usageTable.hidden = !any;
-  usageNone.hidden = any;
-  usagePanel.hidden = !any && !altDown;
+  const rows = view === null ? [] : view.usage;
+  usagePanel.hidden = rows.length === 0;
+  const shown = altDown ? rows : rows.slice(0, USAGE_REST_ROWS);
+  usageBody.replaceChildren(...shown.map(usageRow));
+}
+
+function usageRow(row) {
+  const tr = document.createElement("tr");
+  const cells = [row.role, row.model, row.calls, row.input, row.output];
+  cells.forEach((value, i) => {
+    const td = document.createElement("td");
+    td.textContent = typeof value === "number" ? value.toLocaleString("en-US") : String(value);
+    if (i >= 2) td.className = "num";
+    tr.append(td);
+  });
+  return tr;
 }
 
 // Sets the drawing buffer to the CSS box times the device pixel ratio. The wasm side rounds
@@ -738,6 +748,8 @@ function setAlt(down) {
   altDown = down;
   labelsEl.classList.toggle("alt", down);
   paintUsage();
+  // The chips and the landed dots change their words with Alt, so the flags are redrawn.
+  if (view !== null) paintMarks();
   requestRender();
 }
 
@@ -882,7 +894,13 @@ async function boot() {
   bindCanvas();
   bindKeys();
   window.addEventListener("resize", sizeCanvas);
+  app.set_still(freeze);
   await loadPlant();
+  // `?view=azimuth,elevation` turns to a camera angle in degrees, such as a low tilt.
+  if (params.has("view")) {
+    const [azimuth, elevation] = params.get("view").split(",").map(Number);
+    app.view(azimuth, elevation);
+  }
   requestRender();
   if (params.get("bench") === "1") {
     const { installBench } = await import("./bench.js");

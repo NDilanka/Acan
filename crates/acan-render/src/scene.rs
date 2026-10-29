@@ -25,12 +25,27 @@ pub struct Ribbon {
     pub width: f32,
 }
 
+/// A thin line along a belt's centre, in one tint. It lies on the ground and fades toward both
+/// ends, so it reads as the belt's colour without covering it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HueLine {
+    /// Plan points of the centre line.
+    pub centre: Vec<[f32; 2]>,
+    /// Index into the theme's tint slots, as an instance's tint is.
+    pub tint: u8,
+}
+
 /// What the renderer draws, set once per plant change.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scene {
     /// Belts, drawn in order. A later ribbon covers an earlier one where they cross.
     pub ribbons: Vec<Ribbon>,
     pub instances: Vec<Instance>,
+    /// Thin lines along belt centres, drawn over the ground and under nothing that stands in front.
+    pub hue_lines: Vec<HueLine>,
+    /// Model kinds whose instances also draw in their tint where geometry in front hides them, as
+    /// a faint outline. Nothing else is drawn that way.
+    pub silhouettes: Vec<u16>,
     /// Box around everything in the scene, used to size the depth range.
     pub bounds: Aabb,
 }

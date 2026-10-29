@@ -6,9 +6,10 @@
 use std::str::FromStr;
 
 use acan_core::{
-    AgentCmd, AgentId, Check, ClashId, CodeIndex, Command, Ctx, DeclarationInput, Event, FilePath,
-    HumanCmd, Judgement, Locus, MachineKey, MemberId, OrderId, Origin, ReadbackId, ReadbackVerdict,
-    Rejection, Stamped, SymbolRef, SystemCmd, TaskId, TaskSpec, TaskState, Timestamp, WitnessSpec,
+    AgentCmd, AgentId, Check, ClashId, CodeIndex, Command, CommitId, Ctx, DeclarationInput, Event,
+    Explanation, Fence, FilePath, HumanCmd, Judgement, Locus, MachineKey, MemberId, OrderId,
+    Origin, ReadbackId, ReadbackVerdict, Rejection, Settlement, Stamped, SymbolRef, SystemCmd,
+    TaskId, TaskSpec, TaskState, Timestamp, WitnessOutcome, WitnessSpec,
 };
 
 /// The two agents the script registers, in registration order.
@@ -214,6 +215,143 @@ pub fn clash_script(
     }
 
     Ok(log)
+}
+
+/// Runs the rest of the demo on `origin`, after [`clash_script`] has left its clash open.
+///
+/// The owner settles the clash so the first task goes first. Each task reports its build, passes
+/// its gate, and lands in turn. Every event comes from the origin's own `execute`, so the log
+/// replays like any other. No model call is recorded. The offline demo has no model, so the usage
+/// panel stays hidden rather than show numbers it never measured.
+///
+/// # Errors
+///
+/// Returns the origin's [`Rejection`] for the first command it refuses.
+pub fn land_script(
+    origin: &mut Origin,
+    index: &CodeIndex,
+    founder: &MemberId,
+    now: Timestamp,
+) -> Result<Vec<Stamped>, Rejection> {
+    let ctx = Ctx { now, index };
+    let mut log = Vec::new();
+    let mut run = |origin: &mut Origin, cmd: Command| -> Result<Vec<Stamped>, Rejection> {
+        let events = origin.execute(&ctx, cmd)?;
+        log.extend(events.iter().cloned());
+        Ok(events)
+    };
+
+    let clash = clash_id(origin).ok_or_else(|| invalid("a clash"))?;
+    let order = order_id(origin).ok_or_else(|| invalid("an order"))?;
+    let witness = origin
+        .world()
+        .order(order)
+        .and_then(|o| o.witnesses.first().copied())
+        .ok_or_else(|| invalid("an order witness"))?;
+    let tasks: Vec<TaskId> = origin.world().tasks_of(order).map(|task| task.id).collect();
+    let [first, then] = tasks.as_slice() else {
+        return Err(invalid("two tasks"));
+    };
+    let (first, then) = (*first, *then);
+    let choice = origin
+        .world()
+        .clash(clash)
+        .ok_or_else(|| unknown("clash", clash))?
+        .menu()
+        .into_iter()
+        .find(|choice| {
+            matches!(choice, Settlement::Serialize { first: f, then: t } if *f == first && *t == then)
+        })
+        .ok_or_else(|| invalid("a serialize choice"))?;
+
+    run(
+        origin,
+        Command::System(SystemCmd::ClashExplained {
+            clash,
+            explanation: Explanation {
+                consequence: "both callers change the same function, so the second change overwrites the first"
+                    .to_owned(),
+                breaks: Some(witness),
+                suggested: Some(choice.clone()),
+            },
+        }),
+    )?;
+    run(
+        origin,
+        Command::Human {
+            member: founder.clone(),
+            cmd: HumanCmd::SettleClash { clash, choice },
+        },
+    )?;
+
+    let agents = AGENTS
+        .iter()
+        .map(|name| AgentId::from_str(name).map_err(|_| invalid("an agent id")))
+        .collect::<Result<Vec<_>, _>>()?;
+    let heads = [
+        CommitId::from_str("3f9c2e1").map_err(|_| invalid("a commit id"))?,
+        CommitId::from_str("b71d0a4").map_err(|_| invalid("a commit id"))?,
+    ];
+    let merges = [
+        CommitId::from_str("5e02c8d").map_err(|_| invalid("a commit id"))?,
+        CommitId::from_str("a94f61b").map_err(|_| invalid("a commit id"))?,
+    ];
+    for (((task, agent), head), merge) in [first, then]
+        .into_iter()
+        .zip(&agents)
+        .zip(&heads)
+        .zip(&merges)
+    {
+        let fence = fence_of(origin, task)?;
+        let events = run(
+            origin,
+            Command::Agent {
+                agent: agent.clone(),
+                cmd: AgentCmd::ReportBuilt {
+                    fence,
+                    head: head.clone(),
+                },
+            },
+        )?;
+        let (gate_run, gated) = events
+            .iter()
+            .find_map(|stamped| match &stamped.event {
+                Event::BuildReported {
+                    run: gate_run,
+                    witnesses,
+                    ..
+                } => Some((*gate_run, witnesses.clone())),
+                _ => None,
+            })
+            .ok_or_else(|| invalid("a build report"))?;
+        for gated_witness in gated {
+            run(
+                origin,
+                Command::System(SystemCmd::WitnessResult {
+                    run: gate_run,
+                    witness: gated_witness,
+                    outcome: WitnessOutcome::Pass,
+                }),
+            )?;
+        }
+        run(
+            origin,
+            Command::System(SystemCmd::LandResult {
+                task,
+                head: head.clone(),
+                result: Ok(merge.clone()),
+            }),
+        )?;
+    }
+
+    Ok(log)
+}
+
+fn fence_of(origin: &Origin, task: TaskId) -> Result<Fence, Rejection> {
+    match origin.world().task(task).map(|t| t.state.clone()) {
+        Some(TaskState::Claimed { claim, .. }) => Ok(claim.fence(task)),
+        _ => Err(invalid("a claim")),
+    }
 }
 
 /// The clash the script left open: the first one the origin recorded.
