@@ -1584,6 +1584,33 @@ fn an_unreached_item_is_named_by_id_with_its_unchecked_obligations() {
 }
 
 #[test]
+fn value_hash_is_sha256_over_the_canonical_json_of_the_value() {
+    use sha2::{Digest, Sha256};
+
+    let file = raw("value-hash-vectors.json");
+    let vectors = file["vectors"].as_array().expect("the vectors");
+    assert!(vectors.len() >= 4, "a string, a number, an escape and f3");
+    for vector in vectors {
+        let name = vector["name"].as_str().expect("a vector name");
+        let canonical = serde_jcs::to_vec(&vector["value"]).expect("the canonical JSON");
+        assert_eq!(
+            canonical,
+            vector["canonical"]
+                .as_str()
+                .expect("the canonical form")
+                .as_bytes(),
+            "{name}: the canonical JSON"
+        );
+        let digest = format!("sha256:{:x}", Sha256::digest(&canonical));
+        assert_eq!(
+            digest,
+            vector["value_hash"].as_str().expect("the value hash"),
+            "{name}: the value hash"
+        );
+    }
+}
+
+#[test]
 fn a_must_keep_selector_is_keyed_by_its_canonical_form() {
     let scope: Scope = load("scope.json");
     let canonical = canonical_episode_selector(&scope.body.must_keep[0].selector);
