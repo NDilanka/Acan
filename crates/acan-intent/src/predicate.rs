@@ -3,11 +3,17 @@
 //! [`evaluate`] answers one predicate for one contrast. Every answer is a [`CheckResult`], and
 //! none passes on missing evidence: a predicate the evidence cannot answer is `Unknown`, one the
 //! evidence contradicts is `Fail`, and only a holding predicate passes. A comparison that is
-//! `Unknown` makes every predicate of its contrast `Unknown`. Values come from the admitted runs,
-//! and a `Fail` detail names a path or a count, never a value.
+//! `Unknown` makes every predicate of its contrast `Unknown`. A comparison that was not made from
+//! this contrast's runs is refused with an error. Values come from the admitted runs, and a
+//! `Fail` detail names a path or a count, never a value.
 //!
-//! [`check_examples`] saves a proposed ruling only when the predicate holds on every example it
-//! accepts and fails on every example it rejects.
+//! [`check_examples`] saves a proposed ruling only when the predicate actually passes on every
+//! example it accepts and actually fails on every example it rejects. An unknown on either side
+//! is a misjudgement.
+//!
+//! The rate window ([`Predicate::Window`]) proves an upper bound only, as its policy says: no
+//! attempt beyond the allowance is allowed. It does not prove that the first attempts were
+//! allowed, nor that a window recovers when it ends. A run that allows nothing is unknown.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -25,6 +31,7 @@ use crate::expr::{
 };
 use crate::hash::{CanonicalError, ContrastExampleHash};
 use crate::observation::{ObservedRun, RequestRecord};
+use crate::probe::CaptureOutcome;
 use crate::provenance::CoreDerived;
 use crate::scope::Principal;
 use crate::types::{
@@ -123,26 +130,28 @@ impl<'a> RetainedExample<'a> {
 ///
 /// # Errors
 ///
-/// Returns [`PredicateError`] when the inputs do not belong together, or a run cannot be
-/// normalized. A predicate the evidence cannot answer is an `Unknown` result, not an error.
+/// Returns [`PredicateError`] when the comparison is not the one these runs make, or the runs
+/// cannot be compared or normalized. A predicate the evidence cannot answer, such as a run that
+/// did not complete, is an `Unknown` result, not an error.
 pub fn evaluate(
     predicate: &Predicate,
     contrast: &Contrast<'_>,
     comparison: &CoreDerived<Comparison>,
     anchors: &[RetainedExample<'_>],
 ) -> Result<CheckResult, PredicateError> {
-    let comparison = comparison.value();
-    if comparison.probe_hash != contrast.probe.spec.probe_hash().map_err(hashing)? {
+    let comparison_value = comparison.value();
+    if comparison_value.probe_hash != contrast.probe.spec.probe_hash().map_err(hashing)? {
         return Err(PredicateError::Mismatch {
             detail: "the comparison is of another probe".to_owned(),
         });
     }
-    if let Outcome::Unknown { reason } = &comparison.outcome {
+    compare::verify_comparison(contrast, comparison)?;
+    if let Outcome::Unknown { reason } = &comparison_value.outcome {
         return Ok(CheckResult::Unknown {
             reason: reason.clone(),
         });
     }
-    judge(predicate, contrast, comparison, anchors)
+    judge(predicate, contrast, comparison_value, anchors)
 }
 
 /// Succeeds only if `predicate` passes on every accepted example and fails on every rejected
@@ -191,8 +200,11 @@ pub fn check_examples(
     for (examples, accepted) in [(accepts, true), (rejects, false)] {
         for example in examples {
             let actual = evaluate(predicate, &example.contrast, example.comparison, &listed)?;
-            let passed = matches!(actual, CheckResult::Pass {});
-            if passed != accepted {
+            let correct = matches!(
+                (&actual, accepted),
+                (CheckResult::Pass {}, true) | (CheckResult::Fail { .. }, false)
+            );
+            if !correct {
                 return Err(PredicateError::Misjudged {
                     example: example.hash,
                     accepted,
@@ -283,7 +295,7 @@ fn judge(
                 fail(&format!("the count is {count}, outside the bound"))
             })
         }
-        Predicate::Window { policy } => window(contrast, policy),
+        Predicate::Window { policy } => Ok(window(contrast, policy)),
     }
 }
 
@@ -326,8 +338,9 @@ fn scalar_value(scalar: &Scalar) -> Value {
     }
 }
 
-/// The values a reference holds: empty when absent, or an unknown when its step or sink has no
-/// observation at all.
+/// The values a reference holds: empty when an observed field is absent. An unknown when its
+/// step or sink has no observation, or when a capture did not bind: a missing capture is never
+/// read as an absent value, so `absent` cannot pass on it.
 fn resolve(
     contrast: &Contrast<'_>,
     at: &ValueRef,
@@ -345,13 +358,34 @@ fn resolve(
             })
         }
         ValueRef::Capture { run, binding } => {
-            let context = RunContext {
-                probe: contrast.probe,
-                fixture: contrast.fixture,
-                run: run_for(contrast, *run),
-            };
-            let captured = compare::captured_values(&context)?;
-            Ok(Ok(captured.get(binding).cloned().into_iter().collect()))
+            let run = run_for(contrast, *run);
+            let record = run
+                .run()
+                .captures
+                .iter()
+                .find(|outcome| outcome.binding() == binding);
+            match record {
+                None => Ok(Err(unknown_incomparable(format!(
+                    "the run has no record for the capture {binding}"
+                )))),
+                Some(CaptureOutcome::Missing { .. }) => Ok(Err(CheckResult::Unknown {
+                    reason: UnknownReason::Incomplete {},
+                })),
+                Some(CaptureOutcome::Captured { .. }) => {
+                    let context = RunContext {
+                        probe: contrast.probe,
+                        fixture: contrast.fixture,
+                        run,
+                    };
+                    let captured = compare::captured_values(&context)?;
+                    Ok(match captured.get(binding) {
+                        Some(value) => Ok(vec![value.clone()]),
+                        None => Err(unknown_incomparable(format!(
+                            "no capture step binds {binding}"
+                        ))),
+                    })
+                }
+            }
         }
         ValueRef::Event { run, sink, path } => {
             let run = run_for(contrast, *run);
@@ -686,13 +720,17 @@ struct Open {
 /// (or at the anchor step), lasts `duration_ms`, and the next event after it opens the next
 /// window. Within a window the first `allowed_count` counted events are allowed; every event
 /// after them must receive a rejected status.
-fn window(contrast: &Contrast<'_>, policy: &WindowPolicy) -> Result<CheckResult, PredicateError> {
+///
+/// This proves an upper bound only, as [`WindowPolicy`] says. It does not prove that the first
+/// `allowed_count` attempts were allowed, and it does not prove that a window recovers after it
+/// ends: a run that rejects every attempt passes the bound and says nothing else. So a run in
+/// which no matching attempt was allowed is unknown, never a pass. Stating that the first N are
+/// allowed, or that the window recovers, needs its own predicate in the contract.
+fn window(contrast: &Contrast<'_>, policy: &WindowPolicy) -> CheckResult {
     let run = run_for(contrast, policy.event_filter.run);
     let mut events = matching(run, &policy.event_filter);
     if events.is_empty() {
-        return Ok(unknown_incomparable(
-            "no request in the run matches the window's filter",
-        ));
+        return unknown_incomparable("no request in the run matches the window's filter");
     }
     let anchor_at = match &policy.anchor {
         WindowAnchor::FirstMatch {} => None,
@@ -700,19 +738,25 @@ fn window(contrast: &Contrast<'_>, policy: &WindowPolicy) -> Result<CheckResult,
             match sent(run).iter().find(|event| event.step_id == step_id) {
                 Some(event) => Some(event.record.sent_at_ms),
                 None => {
-                    return Ok(unknown_incomparable(format!(
+                    return unknown_incomparable(format!(
                         "the window's anchor step {step_id} sent no request"
-                    )));
+                    ));
                 }
             }
         }
     };
     if let Some(at) = anchor_at {
         events.retain(|event| event.record.sent_at_ms >= at);
+        if events.is_empty() {
+            return unknown_incomparable(
+                "no request in the run matches the window's filter at or after its anchor",
+            );
+        }
     }
     let duration = policy.duration_ms.get();
     let allowed = policy.allowed_count.get();
     let mut groups: BTreeMap<Option<String>, Open> = BTreeMap::new();
+    let mut any_allowed = false;
     for event in &events {
         let key = group_key(policy.group_by, event.record);
         let open = groups.entry(key).or_insert(Open {
@@ -728,18 +772,24 @@ fn window(contrast: &Contrast<'_>, policy: &WindowPolicy) -> Result<CheckResult,
             open.count = 0;
         }
         let rejected = is_rejected(&policy.rejected_attempts, event.status);
+        any_allowed |= !rejected;
         if open.count < allowed {
             if !rejected || policy.rejected_attempts.counted == QuotaCounting::Counted {
                 open.count += 1;
             }
         } else if !rejected {
-            return Ok(fail(&format!(
+            return fail(&format!(
                 "an attempt at {} beyond the {allowed} allowed was not rejected",
                 event.step_id
-            )));
+            ));
         }
     }
-    Ok(pass())
+    if !any_allowed {
+        return unknown_incomparable(
+            "every matching attempt was rejected, so the run shows no allowed attempt",
+        );
+    }
+    pass()
 }
 
 fn group_key(group: GroupBy, record: &RequestRecord) -> Option<String> {
@@ -770,19 +820,72 @@ mod tests {
     use super::*;
     use crate::compare::tests::corpus;
     use crate::hash::ContentHash;
-    use crate::observation::Observation;
-    use crate::probe::Run;
+    use crate::observation::{Completeness, IncompleteReason, Observation};
+    use crate::probe::{ProbeCorpus, Run, RunOutcome, RunRole};
 
-    /// A run whose one observation, at step s6, answered `status` with the body `error`.
-    fn one_observation(status: u16, error: &str) -> ObservedRun {
-        let run: Run = serde_json::from_str(include_str!("../fixtures/run.json")).expect("run");
+    /// The first probe of the corpus without its relations, so one-observation runs compare.
+    fn single_step_corpus() -> ProbeCorpus {
+        let mut corpus = corpus();
+        corpus.probes[0].normalization.relations.clear();
+        corpus
+    }
+
+    /// One run of the first probe in `role`, with one observation at s6 that answered `status`
+    /// with the body `error`. `edit` may change the run record or the observation.
+    fn run_with(
+        corpus: &ProbeCorpus,
+        role: RunRole,
+        status: u16,
+        error: &str,
+        edit: impl FnOnce(&mut Run, &mut Observation),
+    ) -> ObservedRun {
+        let probe = &corpus.probes[0];
+        let mut run: Run = serde_json::from_str(include_str!("../fixtures/run.json")).expect("run");
+        run.id = format!("run-{role:?}").parse().expect("a run id");
+        run.role = role;
+        run.probe = probe.spec.probe_hash().expect("the probe hashes");
+        run.env.fixture_hash = corpus.fixtures[0]
+            .fixture_hash()
+            .expect("the fixture hashes");
+        run.captures = Vec::new();
+        run.outcome = RunOutcome::Completed {};
         let mut observation: Observation =
             serde_json::from_str(include_str!("../fixtures/observation.json"))
                 .expect("observation");
+        observation.run_id = run.id.clone();
+        observation.probe = run.probe;
+        observation.commit = run.commit.clone();
+        observation.step_id = "s6".parse().expect("a step id");
         observation.channels.status = Some(status);
         observation.channels.body = Some(serde_json::json!({ "error": error }));
+        edit(&mut run, &mut observation);
         let hash = observation.observation_hash().expect("hash");
         ObservedRun::admitted(run, vec![(hash, observation)])
+    }
+
+    /// Base A, base B and the candidate, all answering `status` with `error`.
+    fn trio_of(corpus: &ProbeCorpus, status: u16, error: &str) -> [ObservedRun; 3] {
+        [
+            run_with(corpus, RunRole::BaseA, status, error, |_, _| {}),
+            run_with(corpus, RunRole::BaseB, status, error, |_, _| {}),
+            run_with(corpus, RunRole::Candidate, status, error, |_, _| {}),
+        ]
+    }
+
+    fn contrast_of<'a>(corpus: &'a ProbeCorpus, runs: &'a [ObservedRun; 3]) -> Contrast<'a> {
+        Contrast {
+            probe: &corpus.probes[0],
+            fixture: &corpus.fixtures[0],
+            base_a: &runs[0],
+            base_b: &runs[1],
+            candidate: &runs[2],
+        }
+    }
+
+    /// The comparison the contrast's runs make, under the masks they derive.
+    fn comparison_of(contrast: &Contrast<'_>) -> CoreDerived<Comparison> {
+        let masks = compare::derive_masks(contrast).expect("the masks derive");
+        compare::compare(contrast, &masks).expect("the comparison runs")
     }
 
     fn example_hash(name: &[u8]) -> ContrastExampleHash {
@@ -800,45 +903,48 @@ mod tests {
 
     #[test]
     fn a_predicate_passes_and_fails_on_the_runs_its_examples_hold() {
-        let corpus = corpus();
-        let comparison = CoreDerived::derived(crate::verdict::tests::unchanged(&corpus));
-        let limited = one_observation(429, "too many attempts");
-        let failed = one_observation(401, "invalid credentials");
-        let contrast = |run| Contrast {
-            probe: &corpus.probes[0],
-            fixture: &corpus.fixtures[0],
-            base_a: run,
-            base_b: run,
-            candidate: run,
-        };
+        let corpus = single_step_corpus();
+        let limited = trio_of(&corpus, 429, "too many attempts");
+        let failed = trio_of(&corpus, 401, "invalid credentials");
+        let (limited_contrast, failed_contrast) = (
+            contrast_of(&corpus, &limited),
+            contrast_of(&corpus, &failed),
+        );
+        let (limited_comparison, failed_comparison) = (
+            comparison_of(&limited_contrast),
+            comparison_of(&failed_contrast),
+        );
         let predicate = status_in(&[429]);
         assert_eq!(
-            evaluate(&predicate, &contrast(&limited), &comparison, &[]),
+            evaluate(&predicate, &limited_contrast, &limited_comparison, &[]),
             Ok(CheckResult::Pass {})
         );
         assert!(matches!(
-            evaluate(&predicate, &contrast(&failed), &comparison, &[]),
+            evaluate(&predicate, &failed_contrast, &failed_comparison, &[]),
             Ok(CheckResult::Fail { .. })
         ));
     }
 
     #[test]
     fn check_examples_saves_a_predicate_that_accepts_and_rejects_as_listed() {
-        let corpus = corpus();
-        let comparison = CoreDerived::derived(crate::verdict::tests::unchanged(&corpus));
-        let limited = one_observation(429, "too many attempts");
-        let failed = one_observation(401, "invalid credentials");
-        let contrast = |run| Contrast {
-            probe: &corpus.probes[0],
-            fixture: &corpus.fixtures[0],
-            base_a: run,
-            base_b: run,
-            candidate: run,
-        };
-        let accept =
-            RetainedExample::admitted(example_hash(b"limited"), contrast(&limited), &comparison);
+        let corpus = single_step_corpus();
+        let limited = trio_of(&corpus, 429, "too many attempts");
+        let failed = trio_of(&corpus, 401, "invalid credentials");
+        let (limited_contrast, failed_contrast) = (
+            contrast_of(&corpus, &limited),
+            contrast_of(&corpus, &failed),
+        );
+        let (limited_comparison, failed_comparison) = (
+            comparison_of(&limited_contrast),
+            comparison_of(&failed_contrast),
+        );
+        let accept = RetainedExample::admitted(
+            example_hash(b"limited"),
+            limited_contrast,
+            &limited_comparison,
+        );
         let reject =
-            RetainedExample::admitted(example_hash(b"failed"), contrast(&failed), &comparison);
+            RetainedExample::admitted(example_hash(b"failed"), failed_contrast, &failed_comparison);
         assert_eq!(
             check_examples(&status_in(&[429]), &accept, &[accept], &[reject]),
             Ok(())
@@ -847,21 +953,24 @@ mod tests {
 
     #[test]
     fn check_examples_names_the_example_a_predicate_misjudges() {
-        let corpus = corpus();
-        let comparison = CoreDerived::derived(crate::verdict::tests::unchanged(&corpus));
-        let limited = one_observation(429, "too many attempts");
-        let also_limited = one_observation(429, "slow down");
-        let contrast = |run| Contrast {
-            probe: &corpus.probes[0],
-            fixture: &corpus.fixtures[0],
-            base_a: run,
-            base_b: run,
-            candidate: run,
-        };
-        let accept =
-            RetainedExample::admitted(example_hash(b"limited"), contrast(&limited), &comparison);
+        let corpus = single_step_corpus();
+        let limited = trio_of(&corpus, 429, "too many attempts");
+        let also_limited = trio_of(&corpus, 429, "slow down");
+        let (limited_contrast, also_contrast) = (
+            contrast_of(&corpus, &limited),
+            contrast_of(&corpus, &also_limited),
+        );
+        let (limited_comparison, also_comparison) = (
+            comparison_of(&limited_contrast),
+            comparison_of(&also_contrast),
+        );
+        let accept = RetainedExample::admitted(
+            example_hash(b"limited"),
+            limited_contrast,
+            &limited_comparison,
+        );
         let wrongly_rejected =
-            RetainedExample::admitted(example_hash(b"also"), contrast(&also_limited), &comparison);
+            RetainedExample::admitted(example_hash(b"also"), also_contrast, &also_comparison);
         assert_eq!(
             check_examples(&status_in(&[429]), &accept, &[accept], &[wrongly_rejected]),
             Err(PredicateError::Misjudged {
@@ -873,24 +982,48 @@ mod tests {
     }
 
     #[test]
-    fn check_examples_refuses_an_example_listed_twice_or_ruled_on_outside_the_lists() {
-        let corpus = corpus();
-        let comparison = CoreDerived::derived(crate::verdict::tests::unchanged(&corpus));
-        let limited = one_observation(429, "too many attempts");
-        let failed = one_observation(401, "invalid credentials");
-        let contrast = |run| Contrast {
-            probe: &corpus.probes[0],
-            fixture: &corpus.fixtures[0],
-            base_a: run,
-            base_b: run,
-            candidate: run,
-        };
+    fn a_fail_on_an_accepted_example_is_misjudged() {
+        let corpus = single_step_corpus();
+        let failed = trio_of(&corpus, 401, "invalid credentials");
+        let failed_contrast = contrast_of(&corpus, &failed);
+        let failed_comparison = comparison_of(&failed_contrast);
         let accept =
-            RetainedExample::admitted(example_hash(b"limited"), contrast(&limited), &comparison);
+            RetainedExample::admitted(example_hash(b"failed"), failed_contrast, &failed_comparison);
+        assert!(matches!(
+            check_examples(&status_in(&[429]), &accept, &[accept], &[]),
+            Err(PredicateError::Misjudged {
+                example,
+                accepted: true,
+                actual: CheckResult::Fail { .. },
+            }) if example == example_hash(b"failed")
+        ));
+    }
+
+    #[test]
+    fn check_examples_refuses_an_example_listed_twice_or_ruled_on_outside_the_lists() {
+        let corpus = single_step_corpus();
+        let limited = trio_of(&corpus, 429, "too many attempts");
+        let failed = trio_of(&corpus, 401, "invalid credentials");
+        let (limited_contrast, failed_contrast) = (
+            contrast_of(&corpus, &limited),
+            contrast_of(&corpus, &failed),
+        );
+        let (limited_comparison, failed_comparison) = (
+            comparison_of(&limited_contrast),
+            comparison_of(&failed_contrast),
+        );
+        let accept = RetainedExample::admitted(
+            example_hash(b"limited"),
+            limited_contrast,
+            &limited_comparison,
+        );
         let reject =
-            RetainedExample::admitted(example_hash(b"failed"), contrast(&failed), &comparison);
-        let elsewhere =
-            RetainedExample::admitted(example_hash(b"elsewhere"), contrast(&limited), &comparison);
+            RetainedExample::admitted(example_hash(b"failed"), failed_contrast, &failed_comparison);
+        let elsewhere = RetainedExample::admitted(
+            example_hash(b"elsewhere"),
+            limited_contrast,
+            &limited_comparison,
+        );
         let predicate = status_in(&[429]);
         assert_eq!(
             check_examples(&predicate, &accept, &[accept], &[accept]),
@@ -908,16 +1041,10 @@ mod tests {
 
     #[test]
     fn a_fixed_anchor_that_is_not_listed_is_refused_and_unknown_when_evaluated() {
-        let corpus = corpus();
-        let comparison = CoreDerived::derived(crate::verdict::tests::unchanged(&corpus));
-        let limited = one_observation(429, "too many attempts");
-        let contrast = Contrast {
-            probe: &corpus.probes[0],
-            fixture: &corpus.fixtures[0],
-            base_a: &limited,
-            base_b: &limited,
-            candidate: &limited,
-        };
+        let corpus = single_step_corpus();
+        let limited = trio_of(&corpus, 429, "too many attempts");
+        let contrast = contrast_of(&corpus, &limited);
+        let comparison = comparison_of(&contrast);
         let missing = example_hash(b"missing");
         let anchored: Predicate = serde_json::from_value(serde_json::json!({
             "predicate": "equals_base",
@@ -935,5 +1062,139 @@ mod tests {
             check_examples(&anchored, &accept, &[accept], &[]),
             Err(PredicateError::NotListed { example: missing })
         );
+    }
+
+    /// Runs that each leave the predicate unknown: a candidate that timed out, bases that
+    /// disagree, a skipped candidate step, and a candidate observation the bases do not have.
+    fn unknown_cases(corpus: &ProbeCorpus) -> Vec<(&'static str, [ObservedRun; 3])> {
+        let limited = "too many attempts";
+        vec![
+            (
+                "timed out",
+                [
+                    run_with(corpus, RunRole::BaseA, 429, limited, |_, _| {}),
+                    run_with(corpus, RunRole::BaseB, 429, limited, |_, _| {}),
+                    run_with(corpus, RunRole::Candidate, 429, limited, |run, _| {
+                        run.outcome = RunOutcome::TimedOut {
+                            step_id: "s6".parse().expect("a step id"),
+                        };
+                    }),
+                ],
+            ),
+            (
+                "unstable",
+                [
+                    run_with(corpus, RunRole::BaseA, 429, limited, |_, _| {}),
+                    run_with(
+                        corpus,
+                        RunRole::BaseB,
+                        401,
+                        "invalid credentials",
+                        |_, _| {},
+                    ),
+                    run_with(corpus, RunRole::Candidate, 429, limited, |_, _| {}),
+                ],
+            ),
+            (
+                "skipped",
+                [
+                    run_with(corpus, RunRole::BaseA, 429, limited, |_, _| {}),
+                    run_with(corpus, RunRole::BaseB, 429, limited, |_, _| {}),
+                    run_with(
+                        corpus,
+                        RunRole::Candidate,
+                        429,
+                        limited,
+                        |_, observation| {
+                            observation.completeness = Completeness::Incomplete {
+                                reasons: NonEmpty::new(
+                                    IncompleteReason::StepSkipped {},
+                                    std::iter::empty(),
+                                ),
+                            };
+                        },
+                    ),
+                ],
+            ),
+            (
+                "incomparable",
+                [
+                    run_with(corpus, RunRole::BaseA, 429, limited, |_, _| {}),
+                    run_with(corpus, RunRole::BaseB, 429, limited, |_, _| {}),
+                    run_with(
+                        corpus,
+                        RunRole::Candidate,
+                        429,
+                        limited,
+                        |_, observation| {
+                            observation.step_id = "s9".parse().expect("a step id");
+                        },
+                    ),
+                ],
+            ),
+        ]
+    }
+
+    #[test]
+    fn an_unknown_example_is_misjudged_on_either_side() {
+        let corpus = single_step_corpus();
+        let predicate = status_in(&[429]);
+        let limited = trio_of(&corpus, 429, "too many attempts");
+        let limited_contrast = contrast_of(&corpus, &limited);
+        let limited_comparison = comparison_of(&limited_contrast);
+        let accept = RetainedExample::admitted(
+            example_hash(b"limited"),
+            limited_contrast,
+            &limited_comparison,
+        );
+        let failed = trio_of(&corpus, 401, "invalid credentials");
+        let failed_contrast = contrast_of(&corpus, &failed);
+        let failed_comparison = comparison_of(&failed_contrast);
+        let reject =
+            RetainedExample::admitted(example_hash(b"failed"), failed_contrast, &failed_comparison);
+        for (name, runs) in unknown_cases(&corpus) {
+            let contrast = contrast_of(&corpus, &runs);
+            let comparison = comparison_of(&contrast);
+            let example =
+                RetainedExample::admitted(example_hash(name.as_bytes()), contrast, &comparison);
+            assert!(
+                matches!(
+                    check_examples(&predicate, &accept, &[accept], &[example]),
+                    Err(PredicateError::Misjudged {
+                        accepted: false,
+                        actual: CheckResult::Unknown { .. },
+                        ..
+                    })
+                ),
+                "an unknown rejected example ({name}) was not misjudged"
+            );
+            let accepted =
+                RetainedExample::admitted(example_hash(name.as_bytes()), contrast, &comparison);
+            assert!(
+                matches!(
+                    check_examples(&predicate, &accepted, &[accepted], &[reject]),
+                    Err(PredicateError::Misjudged {
+                        accepted: true,
+                        actual: CheckResult::Unknown { .. },
+                        ..
+                    })
+                ),
+                "an unknown accepted example ({name}) was not misjudged"
+            );
+        }
+    }
+
+    #[test]
+    fn a_comparison_these_runs_did_not_make_is_refused() {
+        let corpus = single_step_corpus();
+        let runs = trio_of(&corpus, 429, "too many attempts");
+        let contrast = contrast_of(&corpus, &runs);
+        let hand_made = CoreDerived::derived(crate::verdict::tests::unchanged(&corpus));
+        assert!(matches!(
+            evaluate(&status_in(&[429]), &contrast, &hand_made, &[]),
+            Err(PredicateError::Compare(
+                compare::CompareError::ForeignComparison { .. }
+            ))
+        ));
     }
 }

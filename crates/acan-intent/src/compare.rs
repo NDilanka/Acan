@@ -3,22 +3,29 @@
 //! Every input is admitted ([`ObservedRun`]) and every output is [`CoreDerived`]; a decoded
 //! observation, mask or comparison never reaches these functions.
 //!
+//! [`check_contrast`] comes first: each run must hold the role its contrast gives it, base A and
+//! base B must share a commit and lockfile, and the three runs must share a runtime and a runner.
+//! A contrast that fails this is refused with an error, never judged.
+//!
 //! How a comparison decides, in order:
-//! - A run that did not complete, an incomplete observation, or runs whose step sequences differ
-//!   is [`Outcome::Unknown`]. Nothing is compared past them.
-//! - Each relation of the plan must hold on base A, base B and the candidate, judged on the
-//!   original values. A relation that holds on one base and not the other is an unstable base.
-//!   A relation whose truth changes between base A and the candidate is a difference, at the
-//!   field that breaks it.
-//! - Base A and base B must agree on every value outside a mask. A disagreement outside a mask
-//!   is an unstable base, not a difference.
+//! - A run that did not complete, a run that recorded a missing capture, an incomplete
+//!   observation, or runs whose step sequences differ is [`Outcome::Unknown`]. Nothing is compared
+//!   past them.
+//! - Each relation of the plan is a constraint on every run, judged on the original values. A
+//!   relation that breaks on base A or base B has no valid baseline and is unknown. A relation
+//!   that holds on both bases and breaks on the candidate is a difference, at the fields that
+//!   break it. A relation that holds on one base and not the other is an unstable base.
+//! - Base A and base B must agree on every value outside a mask, and on the type and format of
+//!   every captured identity they both read. A disagreement outside a mask is an unstable base,
+//!   not a difference.
 //! - Candidate against base A, on canonical values. A value under a mask is not compared, but
-//!   its format must still match base A's, so a masked field keeps its format. Structure,
-//!   presence and status are never masked.
+//!   its format must still match base A's, so a masked field keeps its format. A captured
+//!   identity keeps its type and format too. Structure, presence and status are never masked.
 //!
 //! Canonical values replace a captured identity with `<capture:BINDING>` and a redacted secret
-//! with `<redacted:LENGTH:CLASS:DIGEST>`. A difference shows the canonical values, so a session
-//! token is never printed.
+//! with `<redacted:LENGTH:CLASS:DIGEST>`. Literal text escapes `\` and `<`, so application text
+//! can never spell a placeholder. A difference shows canonical values, so a session token is
+//! never printed.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;
@@ -32,7 +39,8 @@ use crate::observation::{
     MaskSelector, NormalizationPlan, Observation, ObservedRun, ProjectionKind, Relation, StepPath,
 };
 use crate::probe::{
-    CaptureKind, CaptureOutcome, CaptureSource, CaptureStep, CorpusProbe, Fixture, RunOutcome, Step,
+    CaptureKind, CaptureOutcome, CaptureSource, CaptureStep, CorpusProbe, Fixture, RunOutcome,
+    RunRole, Step,
 };
 use crate::provenance::CoreDerived;
 use crate::types::{
@@ -72,6 +80,25 @@ pub enum CompareError {
     /// A mask does not belong to this contrast, or names a field the plan does not allow masking.
     #[error("a mask does not belong to this contrast: {detail}")]
     ForeignMask {
+        /// What does not match.
+        detail: String,
+    },
+    /// A run is not in the role its contrast gives it.
+    #[error("a run is not in the role its contrast gives it: {detail}")]
+    WrongRole {
+        /// What does not match.
+        detail: String,
+    },
+    /// The runs cannot be compared with each other: base A and base B differ in commit or
+    /// lockfile, or the three runs differ in runtime or runner.
+    #[error("the runs cannot be compared with each other: {detail}")]
+    Incompatible {
+        /// What does not match.
+        detail: String,
+    },
+    /// A comparison was not made from these three runs under this normalization plan.
+    #[error("the comparison was not made from these runs: {detail}")]
+    ForeignComparison {
         /// What does not match.
         detail: String,
     },
@@ -172,8 +199,10 @@ fn context<'a>(contrast: &Contrast<'a>, run: &'a ObservedRun) -> RunContext<'a> 
 ///
 /// # Errors
 ///
-/// Returns [`CompareError`] when a base run cannot be normalized.
+/// Returns [`CompareError`] when the contrast is not comparable, or a base run cannot be
+/// normalized.
 pub fn derive_masks(contrast: &Contrast<'_>) -> Result<Vec<CoreDerived<Mask>>, CompareError> {
+    check_contrast(contrast)?;
     let base_a = canonical_run(&context(contrast, contrast.base_a))?;
     let base_b = canonical_run(&context(contrast, contrast.base_b))?;
     let comparable = [contrast.base_a, contrast.base_b]
@@ -212,13 +241,14 @@ pub fn derive_masks(contrast: &Contrast<'_>) -> Result<Vec<CoreDerived<Mask>>, C
 ///
 /// # Errors
 ///
-/// Returns [`CompareError`] when the runs cannot be normalized, or a mask does not belong to
-/// this contrast: another probe, another normalization plan, a field the plan does not allow
-/// masking, or base observations it was not derived from.
+/// Returns [`CompareError`] when the contrast is not comparable, the runs cannot be normalized,
+/// or a mask does not belong to this contrast: another probe, another normalization plan, a
+/// field the plan does not allow masking, or base observations it was not derived from.
 pub fn compare(
     contrast: &Contrast<'_>,
     masks: &[CoreDerived<Mask>],
 ) -> Result<CoreDerived<Comparison>, CompareError> {
+    check_contrast(contrast)?;
     let probe_hash = contrast.probe.spec.probe_hash()?;
     let base_a = canonical_run(&context(contrast, contrast.base_a))?;
     let base_b = canonical_run(&context(contrast, contrast.base_b))?;
@@ -237,6 +267,85 @@ pub fn compare(
         candidate,
         outcome,
     }))
+}
+
+/// Checks that the three runs of a contrast can be compared at all. Each run holds the role its
+/// contrast gives it and belongs to the contrast's probe and fixture. Base A and base B share a
+/// commit and a lockfile, and all three share a runtime and a runner. Compatible means equal, so
+/// an environment difference is never read as a change in the candidate.
+///
+/// # Errors
+///
+/// Returns [`CompareError::WrongRole`] for a run in another role, [`CompareError::WrongSpec`]
+/// for a run of another probe or fixture, and [`CompareError::Incompatible`] for runs that
+/// differ in commit, lockfile, runtime or runner.
+pub fn check_contrast(contrast: &Contrast<'_>) -> Result<(), CompareError> {
+    let roles = [
+        (contrast.base_a, RunRole::BaseA),
+        (contrast.base_b, RunRole::BaseB),
+        (contrast.candidate, RunRole::Candidate),
+    ];
+    for (run, role) in roles {
+        if run.run().role != role {
+            return Err(CompareError::WrongRole {
+                detail: format!("run {} is {:?}, not {role:?}", run.run().id, run.run().role),
+            });
+        }
+        check_spec(&context(contrast, run))?;
+    }
+    let (a, b, c) = (
+        contrast.base_a.run(),
+        contrast.base_b.run(),
+        contrast.candidate.run(),
+    );
+    if a.commit != b.commit || a.env.lockfile_hash != b.env.lockfile_hash {
+        return Err(CompareError::Incompatible {
+            detail: "base A and base B are not on the same commit and lockfile".to_owned(),
+        });
+    }
+    if a.env.runtime != b.env.runtime || a.env.runtime != c.env.runtime {
+        return Err(CompareError::Incompatible {
+            detail: "the three runs do not share a runtime".to_owned(),
+        });
+    }
+    if a.runner != b.runner || a.runner != c.runner {
+        return Err(CompareError::Incompatible {
+            detail: "the three runs do not share a runner".to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// Checks that `comparison` is exactly the comparison these three runs make under this
+/// contrast's probe and normalization plan, by recomputing it. Run identities, observation
+/// hashes and their order, the plan, and the outcome must all agree.
+///
+/// # Errors
+///
+/// Returns [`CompareError::ForeignComparison`] when the comparison differs from the recomputed
+/// one, and the errors of [`compare`] when the contrast cannot be compared.
+pub fn verify_comparison(
+    contrast: &Contrast<'_>,
+    comparison: &CoreDerived<Comparison>,
+) -> Result<(), CompareError> {
+    let expected = compare(contrast, &derive_masks(contrast)?)?;
+    if expected.value() == comparison.value() {
+        Ok(())
+    } else {
+        Err(CompareError::ForeignComparison {
+            detail: "the comparison differs from the one these runs make under this plan"
+                .to_owned(),
+        })
+    }
+}
+
+/// Whether the run recorded a capture that did not bind. A missing capture is never a pass,
+/// whichever predicate reads it.
+pub(crate) fn missing_capture(run: &ObservedRun) -> bool {
+    run.run()
+        .captures
+        .iter()
+        .any(|outcome| matches!(outcome, CaptureOutcome::Missing { .. }))
 }
 
 /// The bindings a run captured, resolved from their source steps and checked against the
@@ -391,45 +500,163 @@ fn canonical_tree(path: &str, value: Value, canon: &Canon<'_>) -> Result<Value, 
 }
 
 fn canon_leaf(path: &str, value: Value, canon: &Canon<'_>) -> Result<Value, CompareError> {
-    let mut value = value;
+    let mut identities: Vec<(&CaptureName, &Value)> = Vec::new();
     for projection in &canon.plan.projections {
         if !matches_pattern(projection.path.as_str(), path) {
             continue;
         }
-        value = match &projection.kind {
-            ProjectionKind::CanonicalIdentity { binding } => match canon.captures.get(binding) {
-                Some(captured) => replace_identity(value, captured, binding),
-                None => value,
-            },
-            ProjectionKind::RedactSecret {} => redact(&value)?,
-        };
+        match &projection.kind {
+            ProjectionKind::CanonicalIdentity { binding } => {
+                identities.extend(canon.captures.get_key_value(binding));
+            }
+            ProjectionKind::RedactSecret {} => return redact(&value),
+        }
     }
     for typed in &canon.plan.typed_captures {
-        if typed.kind == CaptureKind::Opaque {
-            continue;
-        }
-        if let Some(captured) = canon.captures.get(&typed.binding) {
-            value = replace_identity(value, captured, &typed.binding);
+        if typed.kind != CaptureKind::Opaque {
+            identities.extend(canon.captures.get_key_value(&typed.binding));
         }
     }
-    Ok(value)
+    Ok(rewrite_value(value, &identities))
 }
 
-fn replace_identity(value: Value, captured: &Value, binding: &CaptureName) -> Value {
-    if value == *captured {
+/// Rewrites one leaf. A value equal to a captured identity becomes its placeholder. A string
+/// has each occurrence of a captured text (at least `MIN_IDENTITY_TEXT` bytes) replaced, and
+/// every other character is escaped, so no literal text can read as a placeholder.
+fn rewrite_value(value: Value, identities: &[(&CaptureName, &Value)]) -> Value {
+    if let Some((binding, _)) = identities.iter().find(|(_, captured)| **captured == value) {
         return Value::String(placeholder(binding));
     }
-    if let (Value::String(text), Value::String(secret)) = (&value, captured)
-        && secret.len() >= MIN_IDENTITY_TEXT
-        && text.contains(secret.as_str())
-    {
-        return Value::String(text.replace(secret.as_str(), &placeholder(binding)));
+    match value {
+        Value::String(text) => Value::String(rewrite_text(&text, identities)),
+        other => other,
     }
-    value
+}
+
+fn rewrite_text(text: &str, identities: &[(&CaptureName, &Value)]) -> String {
+    let secrets: Vec<(&CaptureName, &str)> = identities
+        .iter()
+        .filter_map(|(binding, captured)| match captured {
+            Value::String(secret) if secret.len() >= MIN_IDENTITY_TEXT => {
+                Some((*binding, secret.as_str()))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(next) = rest.chars().next() {
+        match secrets.iter().find(|(_, secret)| rest.starts_with(*secret)) {
+            Some((binding, secret)) => {
+                out.push_str(&placeholder(binding));
+                rest = &rest[secret.len()..];
+            }
+            None => {
+                if matches!(next, '\\' | '<') {
+                    out.push('\\');
+                }
+                out.push(next);
+                rest = &rest[next.len_utf8()..];
+            }
+        }
+    }
+    out
 }
 
 fn placeholder(binding: &CaptureName) -> String {
     format!("<capture:{binding}>")
+}
+
+/// The bindings a canonical string names through its placeholders, in order.
+fn placeholders(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(next) = rest.chars().next() {
+        if next == '\\' {
+            rest = &rest[1..];
+            if let Some(escaped) = rest.chars().next() {
+                rest = &rest[escaped.len_utf8()..];
+            }
+        } else if let Some(after) = rest.strip_prefix("<capture:") {
+            let end = after.find('>').unwrap_or(after.len());
+            out.push(&after[..end]);
+            rest = after.get(end + 1..).unwrap_or_default();
+        } else {
+            rest = &rest[next.len_utf8()..];
+        }
+    }
+    out
+}
+
+/// The type and string format of a captured value. Length is not part of it: identities compare
+/// by binding, so two captured tokens of one format compare equal whatever their length.
+fn identity_shape(value: &Value) -> String {
+    match value {
+        Value::String(text) => {
+            format!("string:{}", string_format(text).map_or("text", format_name))
+        }
+        Value::Number(number) if number.is_i64() || number.is_u64() => "integer".to_owned(),
+        Value::Number(_) => "number".to_owned(),
+        Value::Bool(_) => "boolean".to_owned(),
+        Value::Null => "null".to_owned(),
+        Value::Array(_) => "array".to_owned(),
+        Value::Object(_) => "object".to_owned(),
+    }
+}
+
+fn format_name(format: StringFormat) -> &'static str {
+    match format {
+        StringFormat::Uuid => "uuid",
+        StringFormat::DateTime => "datetime",
+        StringFormat::Uri => "uri",
+        StringFormat::Hex => "hex",
+        StringFormat::ShortCode => "shortcode",
+    }
+}
+
+/// The placeholders of one observation whose captured value reads a different type or format
+/// in the other run, as `(path, shape in x, shape in y)`. Two runs can read the same placeholder
+/// while their captured values differ in kind, so canonical equality alone does not show it.
+fn shape_mismatches(
+    x: &Channels,
+    x_values: &BTreeMap<CaptureName, Value>,
+    y: &Channels,
+    y_values: &BTreeMap<CaptureName, Value>,
+) -> Vec<(String, String, String)> {
+    let (x_nodes, y_nodes) = (node_values(x), node_values(y));
+    let mut out = Vec::new();
+    for (path, value) in &x_nodes {
+        let Value::String(text) = value else {
+            continue;
+        };
+        if y_nodes.get(path) != Some(value) {
+            continue;
+        }
+        for name in placeholders(text) {
+            let Ok(binding) = name.parse::<CaptureName>() else {
+                continue;
+            };
+            let (x_shape, y_shape) = (shape_of(x_values, &binding), shape_of(y_values, &binding));
+            if x_shape != y_shape {
+                out.push((path.clone(), x_shape, y_shape));
+            }
+        }
+    }
+    out
+}
+
+fn shape_of(values: &BTreeMap<CaptureName, Value>, binding: &CaptureName) -> String {
+    values
+        .get(binding)
+        .map_or_else(|| "absent".to_owned(), identity_shape)
+}
+
+fn node_values(channels: &Channels) -> BTreeMap<String, Value> {
+    let mut nodes = Vec::new();
+    for (path, value) in roots(channels) {
+        flatten(&path, &value, &mut nodes);
+    }
+    nodes.into_iter().collect()
 }
 
 /// Replaces a secret with a marker that keeps its length and alphabet class and carries a digest
@@ -701,12 +928,18 @@ fn judge(
     {
         return Ok(unknown(UnknownReason::RunFailed {}));
     }
+    if observed.iter().any(|run| missing_capture(run)) {
+        return Ok(unknown(UnknownReason::Incomplete {}));
+    }
     if let Some(reason) = observed.iter().find_map(|run| incomplete_reason(run)) {
         return Ok(unknown(reason));
     }
     if let Some(detail) = shape_mismatch(a, b).or_else(|| shape_mismatch(a, c)) {
         return Ok(unknown(UnknownReason::Incomparable { detail }));
     }
+    let [a_values, b_values, c_values] =
+        observed.map(|run| captured_values(&context(contrast, run)));
+    let (a_values, b_values, c_values) = (a_values?, b_values?, c_values?);
     let mut differences = Differences::default();
     for relation in &contrast.probe.normalization.relations {
         let (Some(in_a), Some(in_b), Some(in_c)) = (
@@ -721,20 +954,20 @@ fn judge(
         if in_a.is_empty() != in_b.is_empty() {
             return Ok(unstable());
         }
-        if in_a.is_empty() != in_c.is_empty() {
-            let at = if in_c.is_empty() { &in_a } else { &in_c };
-            for located in at {
-                let base = canonical_evidence(a, &located.step_id, &located.path);
-                let candidate = canonical_evidence(c, &located.step_id, &located.path);
-                differences.add(Difference {
-                    probe_hash,
-                    step_id: located.step_id.clone(),
-                    path: located.path.clone(),
-                    base,
-                    candidate,
-                    episode_id: None,
-                });
-            }
+        if !in_a.is_empty() {
+            return Ok(unknown(UnknownReason::Incomparable {
+                detail: "a declared relation does not hold on the base runs".to_owned(),
+            }));
+        }
+        for located in &in_c {
+            differences.add(Difference {
+                probe_hash,
+                step_id: located.step_id.clone(),
+                path: located.path.clone(),
+                base: canonical_evidence(a, &located.step_id, &located.path),
+                candidate: canonical_evidence(c, &located.step_id, &located.path),
+                episode_id: None,
+            });
         }
     }
     for (x, y) in a.observations.iter().zip(&b.observations) {
@@ -745,6 +978,9 @@ fn judge(
                 return Ok(unstable());
             }
         }
+        if !shape_mismatches(&x.channels, &a_values, &y.channels, &b_values).is_empty() {
+            return Ok(unstable());
+        }
     }
     for (x, z) in a.observations.iter().zip(&c.observations) {
         for found in step_differences(&x.channels, &z.channels) {
@@ -753,6 +989,22 @@ fn judge(
             if !is_masked {
                 differences.add(found_difference(probe_hash, &x.step_id, &found)?);
             }
+        }
+        for (path, base_shape, candidate_shape) in
+            shape_mismatches(&x.channels, &a_values, &z.channels, &c_values)
+        {
+            differences.add(Difference {
+                probe_hash,
+                step_id: x.step_id.clone(),
+                path: parse_path(&path)?,
+                base: Evidence::Present {
+                    value: Value::String(base_shape),
+                },
+                candidate: Evidence::Present {
+                    value: Value::String(candidate_shape),
+                },
+                episode_id: None,
+            });
         }
     }
     for (step, path) in masked {
@@ -1131,14 +1383,77 @@ pub(crate) mod tests {
         let captured = Value::String("abcdefghijklmnop".to_owned());
         let binding: CaptureName = "alice".parse().expect("a binding");
         assert_eq!(
-            replace_identity(captured.clone(), &captured, &binding),
+            rewrite_value(captured.clone(), &[(&binding, &captured)]),
             Value::String("<capture:alice>".to_owned())
         );
         let short = Value::String("abc".to_owned());
         assert_eq!(
-            replace_identity(Value::String("xabcx".to_owned()), &short, &binding),
+            rewrite_value(Value::String("xabcx".to_owned()), &[(&binding, &short)]),
             Value::String("xabcx".to_owned())
         );
+    }
+
+    #[test]
+    fn literal_text_cannot_spell_a_placeholder() {
+        let captured = Value::String("abcdefghijklmnop".to_owned());
+        let binding: CaptureName = "alice".parse().expect("a binding");
+        let identities = [(&binding, &captured)];
+        let literal = Value::String("<capture:alice>".to_owned());
+        assert_eq!(
+            rewrite_value(literal, &identities),
+            Value::String("\\<capture:alice>".to_owned())
+        );
+        assert_eq!(
+            rewrite_value(Value::String("a\\b".to_owned()), &[]),
+            Value::String("a\\\\b".to_owned())
+        );
+        assert!(placeholders("\\<capture:alice>").is_empty());
+        assert_eq!(placeholders("<capture:alice>"), vec!["alice"]);
+    }
+
+    #[test]
+    fn every_occurrence_of_a_long_identity_is_replaced_and_only_it() {
+        let captured = Value::String("abcdefghijklmnop".to_owned());
+        let binding: CaptureName = "alice".parse().expect("a binding");
+        let text = Value::String("tok=abcdefghijklmnop;next=abcdefghijklmnop;x=1".to_owned());
+        assert_eq!(
+            rewrite_value(text, &[(&binding, &captured)]),
+            Value::String("tok=<capture:alice>;next=<capture:alice>;x=1".to_owned())
+        );
+    }
+
+    #[test]
+    fn identity_shape_keeps_type_and_format_but_not_length() {
+        let hex = Value::String("3f2b8c1e5d4a4b6c8d9e0f1a2b3c4d5e".to_owned());
+        let other_hex = Value::String("0a1b2c3d4e5f60718293a4b5c6d7e8f9".to_owned());
+        let short = Value::String("x".to_owned());
+        assert_eq!(identity_shape(&hex), identity_shape(&other_hex));
+        assert_ne!(identity_shape(&hex), identity_shape(&short));
+        assert_ne!(identity_shape(&Value::from(7)), identity_shape(&short));
+        assert_eq!(identity_shape(&Value::from(7)), "integer");
+    }
+
+    #[test]
+    fn a_number_and_a_text_under_one_placeholder_differ_in_shape() {
+        let binding: CaptureName = "alice".parse().expect("a binding");
+        let (number, text) = (Value::from(7), Value::String("x".to_owned()));
+        let x_values = BTreeMap::from([(binding.clone(), number.clone())]);
+        let y_values = BTreeMap::from([(binding.clone(), text.clone())]);
+        let placed = |value: &Value, values: &BTreeMap<CaptureName, Value>| {
+            let identities: Vec<(&CaptureName, &Value)> = values.iter().collect();
+            json!({ "id": rewrite_value(value.clone(), &identities) })
+        };
+        let channels = |body: Value| Channels {
+            status: None,
+            headers: BTreeMap::new(),
+            cookies: BTreeMap::new(),
+            body: Some(body),
+            side_effects: BTreeMap::new(),
+        };
+        let x = channels(placed(&number, &x_values));
+        let y = channels(placed(&text, &y_values));
+        assert_eq!(x.body, y.body, "both read the same placeholder");
+        assert_eq!(shape_mismatches(&x, &x_values, &y, &y_values).len(), 1);
     }
 
     #[test]
