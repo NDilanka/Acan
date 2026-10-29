@@ -25,21 +25,30 @@
 //! denominator, the applied masks, every ruling with its predicate and examples, the contests,
 //! and the full gate context.
 //!
-//! Tour admission (T01), binding: a proposed tour is admitted only when its receipt hash is the
-//! view's, every step's item, camera machine and staged mark exist in the view, every caption
-//! names a template of the view's catalog and binds exactly its slots, every slot's
-//! [`EvidenceRef`] resolves through [`PlantView::resolve`], the resolved row is in the column the
-//! template's [`SlotSpec`] declares and has a provenance that column admits
-//! ([`SlotSpec::accepts`]), and every mandatory item ([`PlantItem::is_mandatory`]) is reachable
-//! ([`Tour::reaches`]). An invalid, stale, swapped or hypothetical binding rejects the whole tour,
-//! and the UI falls back to the deterministic tour and the plain card. Admitted slots become a
-//! [`BoundItemView`] whose values are copies of the resolved rows, never the model's text.
+//! Tour admission (T01), binding, implemented once by [`crate::admit::tour`]: a proposed tour
+//! is admitted only when its receipt hash is the view's, the catalog is the view's
+//! [`PlantView::catalog_version`], every step's item, camera machine and staged mark exist in the
+//! view (a bounced chip on a bounced item, a residue card on a residue item, a grey mark on an
+//! unknown class, a `no probes` chip on an uncovered machine), every evidence reference and
+//! caption slot of a step names the step's own item and resolves through
+//! [`PlantView::resolve`], every caption names a template of the catalog and binds exactly its
+//! slots, every resolved row fits its [`SlotSpec`] ([`SlotSpec::check`]: the declared column, a
+//! provenance that column admits, a value of the declared [`ValueType`], and a present value
+//! unless the slot is [`SlotPresence::Optional`]), and every mandatory item
+//! ([`PlantItem::is_mandatory`]) is reached ([`Tour::reaches`]). A cross-item, stale, swapped,
+//! mistyped or hypothetical binding rejects the whole tour, and the UI falls back to the
+//! deterministic tour and the plain card. Admitted slots become a [`BoundItemView`] whose values
+//! are copies of the resolved rows, never the model's text; the card writes each with
+//! [`BindableValue`]'s `Display`, which writes a missing value as [`MISSING_VALUE_TEXT`].
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
+use crate::admit::{MISSING_VALUE_TEXT, SlotMismatch, SlotPresence};
 use crate::episode::Contest;
 use crate::expr::Predicate;
 use crate::gate::PreparedCommit;
@@ -308,16 +317,13 @@ impl PlantView {
     /// and field. `None` when there is none, which rejects the tour that used it.
     #[must_use]
     pub fn resolve(&self, reference: &EvidenceRef) -> Option<&EvidenceRow> {
-        self.items
-            .iter()
-            .find(|item| item.item_id == reference.item_id)?
-            .evidence
-            .iter()
-            .find(|row| {
-                row.slot == reference.slot
-                    && row.step == reference.step
-                    && row.field == reference.field
-            })
+        self.item(&reference.item_id)?.evidence.iter().find(|row| {
+            row.slot == reference.slot && row.step == reference.step && row.field == reference.field
+        })
+    }
+
+    fn item(&self, item_id: &ItemId) -> Option<&PlantItem> {
+        self.items.iter().find(|item| &item.item_id == item_id)
     }
 
     /// The items every tour must reach, in view order.
@@ -527,6 +533,44 @@ pub enum ValueType {
     Boolean,
 }
 
+impl ValueType {
+    /// Whether a present JSON value is of this type: a status is an integer from 100 to 599, a
+    /// count or duration a non-negative integer, a commit a commit hash string, an identifier a
+    /// non-empty string, text any string, a number any number, a boolean a boolean. JSON
+    /// `null` is of no type.
+    #[must_use]
+    pub fn admits(self, value: &Value) -> bool {
+        match self {
+            Self::Status => value
+                .as_u64()
+                .is_some_and(|code| (100..=599).contains(&code)),
+            Self::Count | Self::Duration => value.is_u64(),
+            Self::Commit => value
+                .as_str()
+                .is_some_and(|raw| raw.parse::<CommitSha>().is_ok()),
+            Self::Identifier => value.as_str().is_some_and(|raw| !raw.is_empty()),
+            Self::Text => value.is_string(),
+            Self::Number => value.is_number(),
+            Self::Boolean => value.is_boolean(),
+        }
+    }
+
+    /// Whether values of this type may be shown in `unit`: a duration always in
+    /// milliseconds, a count in requests, bytes or no unit, a number in bytes or no unit, and
+    /// every other type in no unit.
+    #[must_use]
+    pub fn admits_unit(self, unit: Option<ValueUnit>) -> bool {
+        match self {
+            Self::Duration => unit == Some(ValueUnit::Ms),
+            Self::Count => matches!(unit, None | Some(ValueUnit::Requests | ValueUnit::Bytes)),
+            Self::Number => matches!(unit, None | Some(ValueUnit::Bytes)),
+            Self::Status | Self::Commit | Self::Identifier | Self::Text | Self::Boolean => {
+                unit.is_none()
+            }
+        }
+    }
+}
+
 /// The unit a bound value is shown in.
 #[derive(
     Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize, JsonSchema,
@@ -562,9 +606,30 @@ pub struct BindableValue {
     pub row: EvidenceRow,
 }
 
-/// What one slot of a caption template takes.
+/// The caption text of the value: a string as itself, any other JSON value as JSON, then the
+/// unit; a missing value as [`MISSING_VALUE_TEXT`], without a unit.
+impl fmt::Display for BindableValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Evidence::Present { value } = &self.row.value else {
+            return f.write_str(MISSING_VALUE_TEXT);
+        };
+        match value {
+            Value::String(text) => f.write_str(text)?,
+            other => write!(f, "{other}")?,
+        }
+        match self.unit {
+            None => Ok(()),
+            Some(ValueUnit::Ms) => f.write_str(" ms"),
+            Some(ValueUnit::Requests) => f.write_str(" requests"),
+            Some(ValueUnit::Bytes) => f.write_str(" bytes"),
+        }
+    }
+}
+
+/// What one slot of a caption template takes. Decoding refuses a unit its value type is never
+/// shown in ([`ValueType::admits_unit`]).
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "SlotSpecWire")]
 pub struct SlotSpec {
     /// The card column the bound row must come from.
     pub column: EvidenceSlot,
@@ -573,15 +638,68 @@ pub struct SlotSpec {
     /// Its unit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<ValueUnit>,
+    /// Whether the row may hold no value.
+    pub presence: SlotPresence,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "SlotSpec")]
+struct SlotSpecWire {
+    column: EvidenceSlot,
+    value_type: ValueType,
+    #[serde(default)]
+    unit: Option<ValueUnit>,
+    presence: SlotPresence,
+}
+
+impl TryFrom<SlotSpecWire> for SlotSpec {
+    type Error = InvalidValue;
+
+    fn try_from(wire: SlotSpecWire) -> Result<Self, Self::Error> {
+        if !wire.value_type.admits_unit(wire.unit) {
+            return Err(InvalidValue::Malformed {
+                what: "slot unit",
+                raw: format!("{:?} in {:?}", wire.value_type, wire.unit),
+            });
+        }
+        Ok(Self {
+            column: wire.column,
+            value_type: wire.value_type,
+            unit: wire.unit,
+            presence: wire.presence,
+        })
+    }
 }
 
 impl SlotSpec {
-    /// Whether `row` may fill this slot: it is in the declared column, and its provenance is
-    /// one that column admits. A row from another column is a swap; a target or prediction in
-    /// a run column is a hypothetical.
+    /// Whether `row` may fill this slot. See [`SlotSpec::check`].
     #[must_use]
     pub fn accepts(&self, row: &EvidenceRow) -> bool {
-        row.slot == self.column && self.column.admits(row.provenance)
+        self.check(row).is_ok()
+    }
+
+    /// Checks that `row` may fill this slot: it is in the declared column, its provenance is one
+    /// that column admits, and it holds a value of the declared type, or no value when the slot
+    /// is optional. A row from another column is a swap; a target or prediction in a run
+    /// column is a hypothetical.
+    ///
+    /// # Errors
+    ///
+    /// Returns the first [`SlotMismatch`].
+    pub fn check(&self, row: &EvidenceRow) -> Result<(), SlotMismatch> {
+        if row.slot != self.column {
+            return Err(SlotMismatch::Column);
+        }
+        if !self.column.admits(row.provenance) {
+            return Err(SlotMismatch::Provenance);
+        }
+        match &row.value {
+            Evidence::Present { value } if self.value_type.admits(value) => Ok(()),
+            Evidence::Present { .. } => Err(SlotMismatch::Type),
+            Evidence::Missing {} if self.presence == SlotPresence::Optional => Ok(()),
+            Evidence::Missing {} => Err(SlotMismatch::Missing),
+        }
     }
 }
 

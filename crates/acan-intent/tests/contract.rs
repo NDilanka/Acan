@@ -5,17 +5,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use acan_intent::admit::{
+    self, AdmitError, MISSING_VALUE_TEXT, SlotMismatch, SlotPresence, StepFault, TourRejection,
+};
 use acan_intent::{
     AppContract, CaptionCatalog, Card, CardRequest, ContainerNetwork, ContainerPolicy, Contest,
-    ContestRequest, ContestResponse, ContrastExample, Coverage, DiscrepancyEpisode, Evidence,
-    EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern, GateState, GetReceiptRequest,
-    GetReceiptResponse, GetRulingsRequest, GetRulingsResponse, GetScopeRequest, GetScopeResponse,
-    ItemClass, ItemState, LedgerEvent, LedgerHash, LedgerHead, MaskablePath, McpError,
-    McpErrorCode, Observation, ObservationPath, PlantView, PostReadbackRequest,
-    PostReadbackResponse, ProbeCorpus, Receipt, RepairRound, RouteSource, RulingId, Run, Scope,
-    ScopeConfirmation, ScopeDraft, ScopeItem, Selector, SlotSpec, TourView, TwinError,
-    TwinRunRequest, TwinRunResponse, TwinSaveRequest, TwinSaveResponse, Unsupported, ValueType,
-    WindowMs,
+    ContestRequest, ContestResponse, ContrastExample, CorpusProbe, Coverage, DiscrepancyEpisode,
+    Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern, Fixture, GateState,
+    GetReceiptRequest, GetReceiptResponse, GetRulingsRequest, GetRulingsResponse, GetScopeRequest,
+    GetScopeResponse, ItemClass, ItemState, LedgerEvent, LedgerHash, LedgerHead, MaskablePath,
+    McpError, McpErrorCode, Observation, ObservationHash, ObservationPath, PlantView,
+    PostReadbackRequest, PostReadbackResponse, ProbeCorpus, Receipt, RepairRound, RouteSource,
+    RulingId, Run, Scope, ScopeConfirmation, ScopeDraft, ScopeItem, Selector, SlotSpec, Step,
+    StepId, TourView, TwinError, TwinRunRequest, TwinRunResponse, TwinSaveRequest,
+    TwinSaveResponse, Unsupported, ValueType, WindowMs,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -494,6 +497,7 @@ fn stale_swapped_and_hypothetical_bindings_are_refused() {
         column: EvidenceSlot::Candidate,
         value_type: ValueType::Status,
         unit: None,
+        presence: SlotPresence::Required,
     };
     assert!(
         !candidate.accepts(base),
@@ -503,6 +507,7 @@ fn stale_swapped_and_hypothetical_bindings_are_refused() {
         column: EvidenceSlot::Target,
         value_type: ValueType::Status,
         unit: None,
+        presence: SlotPresence::Required,
     };
     let observed_target = EvidenceRow {
         slot: EvidenceSlot::Target,
@@ -514,6 +519,226 @@ fn stale_swapped_and_hypothetical_bindings_are_refused() {
     );
 }
 
+/// The directed fixture tour, after `edit` on its JSON steps, admitted over the fixture view.
+fn admit_tour_with(
+    catalog: &CaptionCatalog,
+    edit: impl FnOnce(&mut Vec<Value>),
+) -> Result<Vec<acan_intent::BoundItemView>, TourRejection> {
+    let mut value = raw("plant-view-v1.json");
+    edit(
+        value["tour"]["tour"]["steps"]
+            .as_array_mut()
+            .expect("tour steps"),
+    );
+    let view: PlantView = serde_json::from_value(value).expect("decoding the view");
+    let Some(TourView::Directed { tour, .. }) = &view.tour else {
+        panic!("the fixture has a directed tour");
+    };
+    admit::tour(&view, catalog, tour)
+}
+
+fn reference(item: &str, slot: &str, step: &str, field: &str) -> Value {
+    json!({ "item_id": item, "slot": slot, "step": step, "field": field })
+}
+
+/// The index of the tour step about `item`.
+fn step_about(steps: &[Value], item: &str) -> usize {
+    steps
+        .iter()
+        .position(|step| step["item_id"] == item)
+        .unwrap_or_else(|| panic!("no step about {item}"))
+}
+
+fn slot_fault(tour_step: usize, slot: &str, mismatch: SlotMismatch) -> TourRejection {
+    TourRejection::Step {
+        tour_step,
+        fault: StepFault::Slot {
+            slot: slot.parse().expect("a slot name"),
+            mismatch,
+        },
+    }
+}
+
+#[test]
+fn the_directed_fixture_tour_is_admitted_and_writes_missing_values() {
+    let catalog: CaptionCatalog = load("caption-catalog.json");
+    let bound = admit_tour_with(&catalog, |_| {}).expect("the fixture tour is admitted");
+    let view: PlantView = load("plant-view-v1.json");
+    let Some(TourView::Directed { tour, .. }) = &view.tour else {
+        panic!("the fixture has a directed tour");
+    };
+    assert_eq!(bound.len(), tour.steps.iter().count());
+    let slot_text = |item: &str, slot: &str| {
+        let bound = bound
+            .iter()
+            .find(|view| view.item_id.as_str() == item)
+            .unwrap_or_else(|| panic!("{item} is bound"));
+        bound.typed_slot_bindings[&slot.parse().expect("a slot")].to_string()
+    };
+    assert_eq!(slot_text("d-links-clicks", "base"), "0");
+    assert_eq!(slot_text("d-links-clicks", "candidate"), MISSING_VALUE_TEXT);
+    assert_eq!(slot_text("i-retry-after", "target"), "60");
+}
+
+#[test]
+fn a_cross_item_reference_rejects_the_whole_tour() {
+    let catalog: CaptionCatalog = load("caption-catalog.json");
+    for borrowed in [
+        reference("d-login-error-body", "target", "s6", "body.error"),
+        reference("i-login-limit", "target", "s6", "status"),
+    ] {
+        let mut at = 0;
+        let rejected = admit_tour_with(&catalog, |steps| {
+            at = step_about(steps, "i-retry-after");
+            steps[at]["caption"]["slots"]["target"] = borrowed.clone();
+        });
+        assert!(
+            matches!(
+                rejected,
+                Err(TourRejection::Step { tour_step, fault: StepFault::ForeignItem { .. } })
+                    if tour_step == at
+            ),
+            "{borrowed}: {rejected:?}"
+        );
+    }
+    let rejected = admit_tour_with(&catalog, |steps| {
+        let at = step_about(steps, "d-links-sort");
+        steps[at]["evidence_refs"][0] =
+            reference("d-links-clicks", "candidate", "s4", "body.links[0].clicks");
+    });
+    assert!(
+        matches!(
+            rejected,
+            Err(TourRejection::Step {
+                fault: StepFault::ForeignItem { .. },
+                ..
+            })
+        ),
+        "{rejected:?}"
+    );
+}
+
+#[test]
+fn a_number_in_a_text_slot_rejects_the_whole_tour() {
+    let catalog: CaptionCatalog = load("caption-catalog.json");
+    let mut at = 0;
+    let rejected = admit_tour_with(&catalog, |steps| {
+        at = step_about(steps, "i-login-limit");
+        steps[at]["caption"] = json!({
+            "template_id": "residue.changed_value",
+            "slots": {
+                "base": reference("i-login-limit", "base_a", "s6", "status"),
+                "candidate": reference("i-login-limit", "candidate", "s6", "status"),
+            }
+        });
+    });
+    assert_eq!(rejected, Err(slot_fault(at, "base", SlotMismatch::Type)));
+    let rejected = admit_tour_with(&catalog, |steps| {
+        at = step_about(steps, "d-login-error-body");
+        steps[at]["caption"] = json!({
+            "template_id": "unknown.error",
+            "slots": { "base_a": reference("d-login-error-body", "base_a", "s6", "body.error") }
+        });
+    });
+    assert_eq!(rejected, Err(slot_fault(at, "base_a", SlotMismatch::Type)));
+}
+
+#[test]
+fn a_stale_swapped_or_missing_binding_rejects_the_whole_tour() {
+    let catalog: CaptionCatalog = load("caption-catalog.json");
+    let rejected = admit_tour_with(&catalog, |steps| {
+        steps[0]["caption"]["slots"]["base"] =
+            reference("d-login-error-body", "candidate", "s6", "body.error");
+    });
+    assert_eq!(
+        rejected,
+        Err(slot_fault(0, "base", SlotMismatch::Column)),
+        "a candidate row filled a base slot"
+    );
+    let rejected = admit_tour_with(&catalog, |steps| {
+        steps[0]["caption"]["slots"]["base"] =
+            reference("d-login-error-body", "base_a", "s9", "body.error");
+    });
+    assert!(
+        matches!(
+            rejected,
+            Err(TourRejection::Step {
+                tour_step: 0,
+                fault: StepFault::Unresolved { .. }
+            })
+        ),
+        "{rejected:?}"
+    );
+    let mut value = raw("plant-view-v1.json");
+    value["tour"]["tour"]["receipt_hash"] = json!(format!("sha256:{}", "0".repeat(64)));
+    let view: PlantView = serde_json::from_value(value).expect("decoding");
+    let Some(TourView::Directed { tour, .. }) = &view.tour else {
+        panic!("the fixture has a directed tour");
+    };
+    assert!(matches!(
+        admit::tour(&view, &catalog, tour),
+        Err(TourRejection::StaleReceipt { .. })
+    ));
+    let mut strict = raw("caption-catalog.json");
+    for template in strict["templates"].as_array_mut().expect("templates") {
+        for spec in template["slots"]
+            .as_object_mut()
+            .expect("slots")
+            .values_mut()
+        {
+            spec["presence"] = json!("required");
+        }
+    }
+    let strict: CaptionCatalog = serde_json::from_value(strict).expect("decoding");
+    let mut at = 0;
+    let rejected = admit_tour_with(&strict, |steps| at = step_about(steps, "d-links-clicks"));
+    assert_eq!(
+        rejected,
+        Err(slot_fault(at, "candidate", SlotMismatch::Missing))
+    );
+    let rejected = admit_tour_with(&catalog, |steps| {
+        let at = step_about(steps, "chk-signup-store");
+        steps.remove(at);
+    });
+    assert_eq!(
+        rejected,
+        Err(TourRejection::Unreached {
+            item_id: "chk-signup-store".parse().expect("an id")
+        })
+    );
+    let rejected = admit_tour_with(&catalog, |steps| {
+        let at = step_about(steps, "i-login-limit");
+        steps[at]["stage"] = json!([{ "mark": "bounced_chip", "item_id": "i-login-limit" }]);
+    });
+    assert!(
+        matches!(
+            rejected,
+            Err(TourRejection::Step {
+                fault: StepFault::UnknownMark { .. },
+                ..
+            })
+        ),
+        "a bounced chip on a fixed item: {rejected:?}"
+    );
+}
+
+#[test]
+fn a_slot_unit_its_type_is_never_shown_in_is_refused() {
+    let spec = |value_type: &str, unit: Option<&str>| {
+        let mut value =
+            json!({ "column": "candidate", "value_type": value_type, "presence": "required" });
+        if let Some(unit) = unit {
+            value["unit"] = json!(unit);
+        }
+        serde_json::from_value::<SlotSpec>(value)
+    };
+    assert!(spec("duration", Some("ms")).is_ok());
+    assert!(spec("duration", None).is_err());
+    assert!(spec("count", Some("requests")).is_ok());
+    assert!(spec("status", Some("ms")).is_err());
+    assert!(spec("text", Some("bytes")).is_err());
+    assert!(spec("text", None).is_ok());
+}
 #[test]
 fn the_card_is_the_receipt_s_own_item_and_context() {
     let receipt: Receipt = load("receipt.json");
@@ -865,6 +1090,252 @@ fn a_reused_event_sequence_is_caught() {
             .any(|problem| problem.starts_with("event 3 is two different events")),
         "{problems:?}"
     );
+}
+
+fn reencoded<T: DeserializeOwned + Serialize>(value: Value) -> (T, Value) {
+    let decoded: T = serde_json::from_value(value).expect("decoding");
+    let encoded = serde_json::to_value(&decoded).expect("encoding");
+    (decoded, encoded)
+}
+
+/// The fixture with the body of its first HTTP step, under `steps`, set to `body` or removed.
+fn with_first_body(name: &str, steps: &str, body: Option<Value>) -> Value {
+    let mut value = raw(name);
+    let request = value
+        .pointer_mut(&format!("{steps}/0/request"))
+        .and_then(Value::as_object_mut)
+        .expect("the first step is an HTTP step");
+    match body {
+        Some(body) => request.insert("body".to_owned(), body),
+        None => request.remove("body"),
+    };
+    value
+}
+
+fn first_body<'a>(mut steps: impl Iterator<Item = &'a Step>) -> Option<&'a Value> {
+    match steps.next() {
+        Some(Step::Http(step)) => step.request.body.as_ref(),
+        _ => panic!("the first step is an HTTP step"),
+    }
+}
+
+#[test]
+fn a_run_response_keeps_a_null_request_body_apart_from_none() {
+    let pointer = "/steps/0/request/body";
+    let run = |body| {
+        reencoded::<TwinRunResponse>(with_first_body("twin-run-response.json", "/steps", body))
+    };
+    let (null, encoded) = run(Some(Value::Null));
+    assert_eq!(first_body(null.steps.iter()), Some(&Value::Null));
+    assert_eq!(
+        encoded.pointer(pointer),
+        Some(&Value::Null),
+        "null was dropped"
+    );
+    let (absent, encoded) = run(None);
+    assert_eq!(first_body(absent.steps.iter()), None);
+    assert_eq!(encoded.pointer(pointer), None, "no body became a body");
+    assert_ne!(null, absent);
+}
+
+#[test]
+fn a_saved_null_body_probe_reloads_with_the_same_spec_hash() {
+    let saved = |body| {
+        let value = with_first_body("twin-save-response.json", "/probe/spec/steps", body);
+        let (first, encoded) = reencoded::<TwinSaveResponse>(value);
+        let (reloaded, _) = reencoded::<TwinSaveResponse>(encoded);
+        let hash = first.probe.spec.probe_hash().expect("hashing");
+        assert_eq!(
+            reloaded.probe.spec.probe_hash().expect("hashing"),
+            hash,
+            "the spec hash moved across a save and reload"
+        );
+        assert_eq!(reloaded, first);
+        (hash, first_body(reloaded.probe.spec.steps.iter()).cloned())
+    };
+    let (null_hash, null_body) = saved(Some(Value::Null));
+    let (absent_hash, absent_body) = saved(None);
+    assert_eq!(null_body, Some(Value::Null));
+    assert_eq!(absent_body, None);
+    assert_ne!(
+        null_hash, absent_hash,
+        "a null body and no body are one spec"
+    );
+}
+
+/// One stored observation per HTTP and side-effect step of `run`'s sequence, except `skip`.
+fn observations_for(
+    probe: &CorpusProbe,
+    fixture: &Fixture,
+    run: &Run,
+    skip: &[&str],
+) -> Vec<(ObservationHash, Observation)> {
+    fixture
+        .recipe
+        .iter()
+        .chain(probe.spec.steps.iter())
+        .filter(|step| matches!(step, Step::Http(_) | Step::ObserveSideEffect(_)))
+        .filter(|step| !skip.contains(&step.id().as_str()))
+        .map(|step| {
+            let mut observation: Observation = load("observation.json");
+            observation.run_id = run.id.clone();
+            observation.commit = run.commit.clone();
+            observation.probe = run.probe;
+            observation.step_id = step.id().clone();
+            (
+                observation.observation_hash().expect("hashing"),
+                observation,
+            )
+        })
+        .collect()
+}
+
+fn step(id: &str) -> StepId {
+    id.parse().expect("a step id")
+}
+
+#[test]
+fn every_run_of_the_contrast_example_is_admitted_with_its_listed_observations() {
+    let example: ContrastExample = load("contrast-example.json");
+    for (role, manifest) in [
+        ("base_a", &example.base_a),
+        ("base_b", &example.base_b),
+        ("candidate", &example.candidate),
+    ] {
+        let stored = observations_for(&example.probe, &example.fixture, &manifest.run, &[]);
+        assert_eq!(
+            stored.len(),
+            manifest.observations.len(),
+            "{role} lists another number of observations than its HTTP and sink steps"
+        );
+        let admitted = admit::observed_run(
+            &example.probe,
+            &example.fixture,
+            manifest.run.clone(),
+            stored,
+        )
+        .unwrap_or_else(|err| panic!("{role} was refused: {err}"));
+        assert_eq!(admitted.observations().count(), manifest.observations.len());
+    }
+}
+
+/// The example's probe with a clock step and a store read appended, and a base run of it.
+fn probe_with_a_sink() -> (CorpusProbe, Fixture, Run) {
+    let mut value = raw("contrast-example.json");
+    let steps = value["probe"]["spec"]["steps"]
+        .as_array_mut()
+        .expect("probe steps");
+    steps.push(json!({ "step": "advance_time", "id": "s5", "by_ms": 1000 }));
+    steps.push(json!({
+        "step": "observe_side_effect", "id": "s6", "sink": "store", "correlate": "s4",
+        "barrier": { "timeout_ms": 500, "quiet_ms": 50 }
+    }));
+    let example: ContrastExample = serde_json::from_value(value).expect("decoding");
+    let mut run = example.base_a.run.clone();
+    run.probe = example.probe.spec.probe_hash().expect("hashing");
+    (example.probe, example.fixture, run)
+}
+
+#[test]
+fn a_completed_run_missing_an_http_or_sink_observation_is_refused() {
+    let example: ContrastExample = load("contrast-example.json");
+    let (probe, fixture, run) = (&example.probe, &example.fixture, &example.base_a.run);
+    let admit = |probe: &CorpusProbe, run: &Run, skip: &[&str]| {
+        let stored = observations_for(probe, fixture, run, skip);
+        admit::observed_run(probe, fixture, run.clone(), stored).map(|_| ())
+    };
+    for missing in ["f1", "s3", "s4"] {
+        assert_eq!(
+            admit(probe, run, &[missing]),
+            Err(AdmitError::Unrecorded {
+                step_id: step(missing)
+            }),
+            "{missing}"
+        );
+    }
+    let (with_sink, _, sink_run) = probe_with_a_sink();
+    assert_eq!(admit(&with_sink, &sink_run, &[]), Ok(()));
+    assert_eq!(
+        admit(&with_sink, &sink_run, &["s6"]),
+        Err(AdmitError::Unrecorded {
+            step_id: step("s6")
+        })
+    );
+    let mut no_capture = run.clone();
+    no_capture.captures.pop();
+    assert_eq!(
+        admit(probe, &no_capture, &[]),
+        Err(AdmitError::Unrecorded {
+            step_id: step("s2")
+        })
+    );
+}
+
+#[test]
+fn a_stopped_run_holds_records_only_up_to_its_stop() {
+    let example: ContrastExample = load("contrast-example.json");
+    let (probe, fixture) = (&example.probe, &example.fixture);
+    let mut run = example.base_a.run.clone();
+    run.outcome = serde_json::from_value(json!({ "outcome": "timed_out", "step_id": "s3" }))
+        .expect("an outcome");
+    let admit = |run: &Run, skip: &[&str]| {
+        let stored = observations_for(probe, fixture, run, skip);
+        admit::observed_run(probe, fixture, run.clone(), stored).map(|_| ())
+    };
+    assert_eq!(admit(&run, &["s3", "s4"]), Ok(()));
+    assert_eq!(admit(&run, &["s4"]), Ok(()));
+    assert_eq!(
+        admit(&run, &[]),
+        Err(AdmitError::AfterStop {
+            step_id: step("s4")
+        })
+    );
+    assert_eq!(
+        admit(&run, &["s1", "s3", "s4"]),
+        Err(AdmitError::Unrecorded {
+            step_id: step("s1")
+        })
+    );
+    run.outcome =
+        serde_json::from_value(json!({ "outcome": "setup_failed", "detail": "not ready" }))
+            .expect("an outcome");
+    run.captures.clear();
+    let everything: Vec<&str> = ["f1", "f2", "s1", "s3", "s4"].into();
+    assert_eq!(admit(&run, &everything), Ok(()));
+    assert_eq!(
+        admit(&run, &everything[1..]),
+        Err(AdmitError::AfterStop {
+            step_id: step("f1")
+        })
+    );
+}
+
+#[test]
+fn a_decision_rules_only_on_examples_of_its_own_order() {
+    let example: ContrastExample = load("contrast-example.json");
+    let hash = example
+        .contrast_example_hash()
+        .expect("hashing the example");
+    let context = &example.context;
+    assert_eq!(example.candidate.run.commit, context.merged_commit);
+    for base in [&example.base_a.run, &example.base_b.run] {
+        assert_eq!(base.commit, context.protected_head);
+    }
+    let mut ruled = 0;
+    for name in LEDGER {
+        let LedgerEvent::DecisionConfirmed(decision) = load(name) else {
+            continue;
+        };
+        if decision.accepts.contains(&hash) || decision.rejects.contains(&hash) {
+            ruled += 1;
+            assert_eq!(
+                context.scope_hash, decision.scope_hash,
+                "{name} of order {} rules on an example of another order's scope",
+                decision.order
+            );
+        }
+    }
+    assert!(ruled > 0, "no decision lists the example fixture");
 }
 
 #[test]

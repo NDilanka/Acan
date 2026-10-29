@@ -1,6 +1,6 @@
 {
   "version": "acan-card/1",
-  "receipt_hash": "sha256:857e03cb7b4baadaad3beafc566d9309bee763b930eb8beec9e0ee001ece6901",
+  "receipt_hash": "sha256:ed447d4ce3bd6a843f8e3374adbc176c44eec09dfca847bd981615b3c9baf195",
   "item": {
     "item_id": "d-links-clicks",
     "class": "out_of_scope",
@@ -213,9 +213,9 @@
           "sha256:83403a25049fdcc71fef2bc4a86d076f189c86cf80e17f4d4e1991e9f8b5709b"
         ],
         "rejects": [
-          "sha256:426263b3ceb8b39bb835cc41d12c151ea6ce66f3d27d26c0f1b8a734bf4469fe"
+          "sha256:5b5bb256006b7b446064c430675ede38d45af898a86264bbad6d5a744ddd3596"
         ],
-        "ruled_on": "sha256:426263b3ceb8b39bb835cc41d12c151ea6ce66f3d27d26c0f1b8a734bf4469fe",
+        "ruled_on": "sha256:5b5bb256006b7b446064c430675ede38d45af898a86264bbad6d5a744ddd3596",
         "applicability": "standing_predicate_approval",
         "normalization_hash": "sha256:68055ed85b59fb375d723c22bcaf638aaaede6b7568fe25930de1194c42574a8"
       }
@@ -246,7 +246,7 @@
       },
       "ledger_head": {
         "event_seq": 3,
-        "hash": "sha256:dfd226635be9d2a3e4ba3bb2b0cfac331f520bfa1e5166349e3ffae0d0656151"
+        "hash": "sha256:2b12b2acbe23918444d81c6f18d6f9dd17191102e7e93378551b412ab8916983"
       },
       "scope_hash": "sha256:eaab9bc0a3a9320938e24f5d50332cf9802ed3cf10b4c26497f8c518642bd415",
       "probe_set_hash": "sha256:08cbc55fe91e0a7d35d66a97b619a7931d518dccb0a3268d75ab7b9eac74af03",

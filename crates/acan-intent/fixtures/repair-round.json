@@ -11,11 +11,11 @@
   ],
   "opened_at": 1793259800000,
   "result": {
-    "result_id": "sha256:594800c27a68d57f1fb2430422ec63016c87e06909ca97f226f1946215c96d8a",
+    "result_id": "sha256:436145fe2f58e3be8402c6fbd1e6b879d4eacdfedf5b3e475277a135d21d7340",
     "key": {
       "round_id": "sha256:61b637ca35c719d9f506a24dc093b89edb387099a9a48bd4efb28aaee89e631e",
       "merged_commit": "a27a5f30da19543ee34362516e29bf7561214156",
-      "receipt_hash": "sha256:857e03cb7b4baadaad3beafc566d9309bee763b930eb8beec9e0ee001ece6901"
+      "receipt_hash": "sha256:ed447d4ce3bd6a843f8e3374adbc176c44eec09dfca847bd981615b3c9baf195"
     },
     "recorded_at": 1793260000000
   }
