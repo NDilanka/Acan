@@ -1,6 +1,6 @@
 {
   "version": "acan-twin/1",
-  "receipt_hash": "sha256:c61697acfbf70c8878a004d8cfc111f9a01735c3602a3d2a105b66ddfa9fe3c6",
+  "receipt_hash": "sha256:dcd24a773280538b33214f5808daa50a811f2bfb65604ab35738788af3c135f8",
   "source": "sha256:762703905cfc5ffa376dfb1b89d53c9ce693dc5f3e1628b39b06935364f62b45",
   "probe_hash": "sha256:d02a4e94840e5f2c04dafd74f2677ad60285b947a338b0503336f29b3114d6c9",
   "steps": [

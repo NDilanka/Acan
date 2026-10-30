@@ -12,7 +12,7 @@ use acan_intent::compare;
 use acan_intent::fold;
 use acan_intent::{
     AppContract, CaptionCatalog, CaptureOutcome, Card, CardRequest, CommitSha, Comparison,
-    ContainerNetwork, ContainerPolicy, ContentHash, Contest, ContestKind, ContestRequest,
+    ContainerPolicy, ContentHash, Contest, ContestKind, ContestRequest,
     ContestResponse, ContestStatus, ContrastExample, CoreDerived, CorpusProbe, Coverage,
     DiscrepancyEpisode, EpisodeKey, Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern,
     Fixture, GateState, GetReceiptRequest, GetReceiptResponse, GetRulingsRequest,
@@ -994,6 +994,35 @@ fn the_container_policy_round_trips_and_refuses_unknown_fields() {
     refuses_unknown_fields::<ContainerPolicy>("container-policy.json");
 }
 
+/// The fixture is the policy the runtime runs under by default, so the two cannot drift apart: the
+/// worker's test command and the contract name one image, one digest and one set of limits.
+#[test]
+fn the_fixture_is_the_default_run() {
+    let fixture: ContainerPolicy = load("container-policy.json");
+    assert_eq!(fixture, ContainerPolicy::default_run(), "fixture drifted");
+    assert_eq!(
+        fixture.image.digest.as_ref().map(ToString::to_string),
+        Some(
+            "sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d".to_owned()
+        ),
+        "the image is pinned by the digest the H01 spike ran"
+    );
+}
+
+/// The environment and the probe harness are what the probe runner reads from the policy. The
+/// fixture names exactly the variables the demo needs and no credential.
+#[test]
+fn the_fixture_names_only_the_variables_the_demo_needs() {
+    let fixture: ContainerPolicy = load("container-policy.json");
+    let names: Vec<&str> = fixture.environment.keys().map(String::as_str).collect();
+    assert_eq!(names, vec!["HOME", "PORT"]);
+    assert_eq!(fixture.mounts.harness.as_str(), "/harness");
+    assert!(
+        fixture.role_timeout_ms > fixture.timeout_ms,
+        "a role container's limit is longer than one sequence's"
+    );
+}
+
 #[test]
 fn every_tested_context_ran_under_the_container_policy_fixture() {
     let policy: ContainerPolicy = load("container-policy.json");
@@ -1011,10 +1040,8 @@ fn every_tested_context_ran_under_the_container_policy_fixture() {
             "{name} ran under another policy"
         );
     }
-    let opened = ContainerPolicy {
-        network: ContainerNetwork::None {},
-        ..policy
-    };
+    let mut opened = policy.clone();
+    opened.mounts.readonly_git = false;
     let mut current = receipt.prepared.context.clone();
     current.sandbox_policy_hash = opened.sandbox_policy_hash().expect("hashing");
     assert_ne!(

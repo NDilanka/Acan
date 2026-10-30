@@ -3,23 +3,29 @@
 //!
 //! Policy rules, binding on every runner:
 //! - The command runs as a non-root user on a read-only root filesystem with a bounded `/tmp`,
-//!   with no capabilities and no privilege gain, under the CPU, memory, process and time caps
-//!   below. The container is killed and removed when it ends or times out.
+//!   with no capabilities and no privilege gain, under the CPU, memory and process caps below.
+//!   A run is killed and removed when it ends or when its time limit passes: `timeout_ms` for one
+//!   probe sequence or test command, `role_timeout_ms` for a long-lived role container.
 //! - The worktree is mounted read-write at the working directory. Every protected path is
 //!   mounted read-only on top of it from a snapshot of the protected head, never from the
 //!   worktree. A protected path the snapshot does not have is still covered as
 //!   [`MissingProtected`] says; it is never left writable.
-//! - The container reaches only what [`ContainerNetwork`] allows. No provider key, owner token
-//!   or host secret enters it.
+//! - The container has no network and publishes no port. Probes run inside it from the harness
+//!   mounted at `mounts.harness`; the host drives them over the container's standard input and
+//!   output.
+//! - The container gets only the variables `environment` names, with the values it gives them.
+//!   No provider key, owner token or host secret enters it, and a name that could carry one is
+//!   refused when the policy is decoded.
 //! - A runner that cannot apply every field refuses the run. It never runs with less isolation.
+//!   The harness is a probe-run field: the worker's test command runs no probe and mounts none.
 //!
 //! The policy's [`SandboxPolicyHash`] is part of the [`crate::GateContext`], so changing any
 //! field voids a clearance obtained under the old policy.
 
 use std::borrow::Cow;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::num::{NonZeroU16, NonZeroU32, NonZeroU64};
+use std::num::{NonZeroU32, NonZeroU64};
 use std::str::FromStr;
 
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
@@ -28,11 +34,32 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::hash::{CanonicalError, ContentHash, ImageDigest, SandboxPolicyHash};
 use crate::types::{ContainerPath, ImageName, InvalidValue, RepoPath};
 
+/// The digest of `oven/bun:1.4.4`, the image the H01 spike ran. Every policy that names this image
+/// pins this digest, and the runners refuse an image whose content differs.
+const PINNED_IMAGE_DIGEST: &str =
+    "sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d";
+
+/// Fragments that mark a variable as a credential. No variable whose name contains one reaches a
+/// container.
+const CREDENTIAL_NAME_PARTS: [&str; 7] = [
+    "KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSWORD",
+    "PASSWD",
+    "CREDENTIAL",
+    "AUTH",
+];
+/// Longest variable name accepted.
+const ENVIRONMENT_NAME_MAX: usize = 64;
+/// Longest variable value accepted, in bytes.
+const ENVIRONMENT_VALUE_MAX: usize = 4096;
+
 /// The image a run starts from.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ContainerImage {
-    /// The name and tag, such as `oven/bun:1`.
+    /// The name and tag, such as `oven/bun:1.4.4`.
     pub name: ImageName,
     /// The registry digest. When present the runner starts exactly this content and refuses an
     /// image whose digest differs.
@@ -108,20 +135,15 @@ impl JsonSchema for ContainerUser {
     }
 }
 
-/// What a run's container may reach. Closed: there is no host or bridge network.
+/// What a run's container may reach. Closed: the container has no network at all, so nothing is
+/// published and probes run inside it.
 #[derive(
     Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize, JsonSchema,
 )]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ContainerNetwork {
-    /// No network at all. The worker's test command runs this way.
+    /// No network at all. Probes and the test command run this way.
     None {},
-    /// Only the app's port, published on the host's loopback interface for the runner. The
-    /// container has no other route out.
-    LoopbackPublished {
-        /// The port the app listens on inside the container.
-        port: NonZeroU16,
-    },
 }
 
 /// The container's root filesystem. Only `/tmp` and the worktree are writable.
@@ -172,11 +194,70 @@ pub struct MountPolicy {
     /// the host at the next commit, so a policy keeps it read-only unless it says otherwise.
     #[serde(default = "readonly_git_by_default")]
     pub readonly_git: bool,
+    /// Where the probe driver's directory is mounted read-only. The driver runs inside the
+    /// container and the host drives it over standard input. Only probe runs mount it.
+    #[serde(default = "harness_by_default")]
+    pub harness: ContainerPath,
 }
 
 /// The default for [`MountPolicy::readonly_git`]: `.git` is mounted read-only.
 const fn readonly_git_by_default() -> bool {
     true
+}
+
+/// The default for [`MountPolicy::harness`]: the probe driver is mounted at `/harness`.
+fn harness_by_default() -> ContainerPath {
+    "/harness"
+        .parse()
+        .expect("the default harness path is a container path")
+}
+
+/// The default for [`ContainerPolicy::role_timeout_ms`]: one hour.
+fn role_timeout_by_default() -> NonZeroU64 {
+    nonzero64(3_600_000)
+}
+
+/// The default for [`ContainerPolicy::environment`]: only `HOME`, which is the writable `/tmp`.
+fn environment_by_default() -> BTreeMap<String, String> {
+    BTreeMap::from([("HOME".to_owned(), "/tmp".to_owned())])
+}
+
+/// Decodes the environment and refuses any variable a container must not receive.
+fn environment_names<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, String>, D::Error> {
+    let environment = BTreeMap::<String, String>::deserialize(deserializer)?;
+    for (name, value) in &environment {
+        check_environment(name, value).map_err(serde::de::Error::custom)?;
+    }
+    Ok(environment)
+}
+
+/// Refuses a variable whose name is not `A-Z 0-9 _` from an uppercase letter, whose name could
+/// carry a credential, or whose value is not short printable text.
+fn check_environment(name: &str, value: &str) -> Result<(), String> {
+    let well_formed = name.len() <= ENVIRONMENT_NAME_MAX
+        && name.starts_with(|c: char| c.is_ascii_uppercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
+    if !well_formed {
+        return Err(format!("{name:?} is not an environment variable name"));
+    }
+    if CREDENTIAL_NAME_PARTS
+        .iter()
+        .any(|part| name.contains(part))
+    {
+        return Err(format!(
+            "{name} may carry a credential, so no container may receive it"
+        ));
+    }
+    if value.len() > ENVIRONMENT_VALUE_MAX || value.chars().any(char::is_control) {
+        return Err(format!(
+            "the value of {name} is not printable text of at most {ENVIRONMENT_VALUE_MAX} bytes"
+        ));
+    }
+    Ok(())
 }
 
 /// The container policy of every isolated run. Its hash is the [`SandboxPolicyHash`].
@@ -193,10 +274,22 @@ pub struct ContainerPolicy {
     pub memory_bytes: NonZeroU64,
     /// Process cap.
     pub pids: NonZeroU32,
-    /// Wall-clock cap from container start. At it the runner kills and removes the container.
+    /// Wall-clock cap of one probe sequence or one test command, from container start. At it
+    /// the runner kills and removes the container.
     pub timeout_ms: NonZeroU64,
+    /// Wall-clock cap of a long-lived role container. It is separate from `timeout_ms`, so a
+    /// role container is not cut at the sequence cap.
+    #[serde(default = "role_timeout_by_default")]
+    pub role_timeout_ms: NonZeroU64,
     /// Size of the writable `/tmp`, which is also `HOME`.
     pub tmp_bytes: NonZeroU64,
+    /// The environment variables the container gets, by name, with their values. A variable not
+    /// listed never reaches the container.
+    #[serde(
+        default = "environment_by_default",
+        deserialize_with = "environment_names"
+    )]
+    pub environment: BTreeMap<String, String>,
     /// What the container may reach.
     pub network: ContainerNetwork,
     /// The root filesystem.
@@ -208,6 +301,46 @@ pub struct ContainerPolicy {
 }
 
 impl ContainerPolicy {
+    /// The policy a run starts under when none is named: the contract fixture
+    /// `container-policy.json`, which the worker's test command also runs under. The contract
+    /// test `the_fixture_is_the_default_run` holds the two equal.
+    #[must_use]
+    pub fn default_run() -> Self {
+        Self {
+            image: ContainerImage {
+                name: "oven/bun:1.4.4"
+                    .parse()
+                    .expect("the pinned image name is valid"),
+                digest: Some(
+                    PINNED_IMAGE_DIGEST
+                        .parse()
+                        .expect("the pinned image digest is valid"),
+                ),
+            },
+            user: "1000:1000".parse().expect("the run user is valid"),
+            cpus_milli: nonzero32(2000),
+            memory_bytes: nonzero64(1 << 30),
+            pids: nonzero32(256),
+            timeout_ms: nonzero64(30_000),
+            role_timeout_ms: role_timeout_by_default(),
+            tmp_bytes: nonzero64(256 << 20),
+            environment: BTreeMap::from([
+                ("HOME".to_owned(), "/tmp".to_owned()),
+                ("PORT".to_owned(), "3000".to_owned()),
+            ]),
+            network: ContainerNetwork::None {},
+            root: RootFilesystem::ReadOnly,
+            privileges: Privileges::Dropped,
+            mounts: MountPolicy {
+                workdir: "/work".parse().expect("the workdir is a container path"),
+                protected: BTreeSet::from([".acan".parse().expect("a repo path")]),
+                missing_protected: MissingProtected::Masked,
+                readonly_git: true,
+                harness: harness_by_default(),
+            },
+        }
+    }
+
     /// The policy's identity, carried in [`crate::GateContext::sandbox_policy_hash`].
     ///
     /// # Errors
@@ -216,6 +349,14 @@ impl ContainerPolicy {
     pub fn sandbox_policy_hash(&self) -> Result<SandboxPolicyHash, CanonicalError> {
         ContentHash::of(self).map(SandboxPolicyHash::from)
     }
+}
+
+fn nonzero32(n: u32) -> NonZeroU32 {
+    NonZeroU32::new(n).expect("a container limit is never zero")
+}
+
+fn nonzero64(n: u64) -> NonZeroU64 {
+    NonZeroU64::new(n).expect("a container limit is never zero")
 }
 
 #[cfg(test)]
@@ -236,14 +377,6 @@ mod tests {
         serde_json::from_value::<ContainerPolicy>(value).is_ok()
     }
 
-    fn nonzero32(n: u32) -> NonZeroU32 {
-        NonZeroU32::new(n).expect("nonzero")
-    }
-
-    fn nonzero64(n: u64) -> NonZeroU64 {
-        NonZeroU64::new(n).expect("nonzero")
-    }
-
     #[test]
     fn every_policy_field_changes_the_hash() {
         let base = fixture();
@@ -255,14 +388,16 @@ mod tests {
             memory_bytes: _,
             pids: _,
             timeout_ms: _,
+            role_timeout_ms: _,
             tmp_bytes: _,
+            environment: _,
             network: _,
             root: _,
             privileges: _,
             mounts: _,
         } = &base;
         type Edit = fn(&mut ContainerPolicy);
-        let edits: [(&str, Edit); 15] = [
+        let edits: [(&str, Edit); 17] = [
             ("image name", |p| {
                 p.image.name = "oven/bun:2".parse().expect("a name");
             }),
@@ -273,12 +408,14 @@ mod tests {
             ("memory", |p| p.memory_bytes = nonzero64(512 << 20)),
             ("pids", |p| p.pids = nonzero32(128)),
             ("timeout", |p| p.timeout_ms = nonzero64(60_000)),
+            ("role timeout", |p| p.role_timeout_ms = nonzero64(7_200_000)),
             ("tmp", |p| p.tmp_bytes = nonzero64(64 << 20)),
-            ("network", |p| p.network = ContainerNetwork::None {}),
-            ("published port", |p| {
-                p.network = ContainerNetwork::LoopbackPublished {
-                    port: NonZeroU16::new(8080).expect("nonzero"),
-                };
+            ("an added variable", |p| {
+                p.environment.insert("TZ".to_owned(), "UTC".to_owned());
+            }),
+            ("a variable's value", |p| {
+                p.environment
+                    .insert("HOME".to_owned(), "/var/tmp".to_owned());
             }),
             ("workdir", |p| {
                 p.mounts.workdir = "/app".parse().expect("a path");
@@ -292,6 +429,9 @@ mod tests {
                 p.mounts.missing_protected = MissingProtected::Refused;
             }),
             ("readonly git", |p| p.mounts.readonly_git = false),
+            ("harness", |p| {
+                p.mounts.harness = "/sandbox".parse().expect("a path");
+            }),
         ];
         let original = base.sandbox_policy_hash().expect("hashing");
         let mut seen = BTreeSet::from([original]);
@@ -354,6 +494,7 @@ mod tests {
             "memory_bytes",
             "pids",
             "timeout_ms",
+            "role_timeout_ms",
             "tmp_bytes",
         ] {
             assert!(!with(|v| v[cap] = json!(0)), "a zero {cap} decoded");
@@ -371,11 +512,72 @@ mod tests {
                 "{workdir} decoded"
             );
         }
+        for harness in ["harness", "/harness/..", "/harness dir"] {
+            assert!(
+                !with(|v| v["mounts"]["harness"] = json!(harness)),
+                "{harness} decoded"
+            );
+        }
         assert!(!with(|v| v["mounts"]["protected"] = json!(["../outside"])));
         assert!(!with(
             |v| v["mounts"]["missing_protected"] = json!("writable")
         ));
         assert!(!with(|v| v["mounts"]["readonly_git"] = json!("no")));
+    }
+
+    #[test]
+    fn environment_names_refuse_credentials_and_control_text() {
+        assert!(with(|v| v["environment"] = json!({ "HOME": "/tmp", "PORT": "3000" })));
+        assert!(with(|v| v["environment"] = json!({})));
+        for name in [
+            "OPENAI_API_KEY",
+            "META_TOKEN",
+            "DB_PASSWORD",
+            "GITHUB_SECRET",
+            "AUTH_HEADER",
+            "my_var",
+            "1PORT",
+            "PORT=3000",
+            "A B",
+            "",
+        ] {
+            assert!(
+                !with(|v| v["environment"] = json!({ name: "x" })),
+                "{name:?} decoded"
+            );
+        }
+        for value in ["3000\n", "a\u{7}b"] {
+            assert!(
+                !with(|v| v["environment"] = json!({ "PORT": value })),
+                "{value:?} decoded"
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_environment_or_harness_takes_the_probe_defaults() {
+        let mut absent: Value =
+            serde_json::from_str(include_str!("../fixtures/container-policy.json")).expect("JSON");
+        absent
+            .as_object_mut()
+            .expect("a policy")
+            .remove("environment");
+        absent["mounts"]
+            .as_object_mut()
+            .expect("mounts")
+            .remove("harness");
+        absent
+            .as_object_mut()
+            .expect("a policy")
+            .remove("role_timeout_ms");
+        let decoded: ContainerPolicy = serde_json::from_value(absent).expect("the policy decodes");
+        assert_eq!(
+            decoded.environment,
+            BTreeMap::from([("HOME".to_owned(), "/tmp".to_owned())]),
+            "only HOME when the policy names nothing"
+        );
+        assert_eq!(decoded.mounts.harness.as_str(), "/harness");
+        assert_eq!(decoded.role_timeout_ms, nonzero64(3_600_000));
     }
 
     #[test]
@@ -407,8 +609,18 @@ mod tests {
         ));
         assert!(!with(|v| v["network"] = json!({ "kind": "host" })));
         assert!(!with(
-            |v| v["network"] = json!({ "kind": "loopback_published", "port": 0 })
+            |v| v["network"] = json!({ "kind": "loopback_published", "port": 3000 })
         ));
         assert!(!with(|v| v["root"] = json!("read_write")));
+    }
+
+    #[test]
+    fn the_default_run_pins_the_digest_the_spike_ran() {
+        let image = ContainerPolicy::default_run().image;
+        assert_eq!(image.name.as_str(), "oven/bun:1.4.4");
+        assert_eq!(
+            image.digest.map(|digest| digest.to_string()).as_deref(),
+            Some(PINNED_IMAGE_DIGEST)
+        );
     }
 }
