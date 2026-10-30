@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use acan_core::{ClashState, Locus, MAX_PREDICTIONS, Settlement};
 use acan_intent::{
-    CheckResult, GetReceiptResponse, GetScopeResponse, ItemClass, ItemState, Predicted,
-    Prediction, Receipt, ReceiptHash, ReceiptItem, Scope,
+    CheckResult, GetReceiptResponse, GetScopeResponse, ItemClass, ItemState, Predicted, Prediction,
+    Receipt, ReceiptHash, ReceiptItem, Scope,
 };
 use acan_llm::{ChatRequest, Message, ModelClient, Role, ToolCall, ToolSpec};
 use anyhow::{Context, bail};
@@ -212,12 +212,14 @@ struct Planned {
 /// A claimed task and the generation the origin granted. `files` is the footprint as declared,
 /// already in the origin's normalized form. `gave_up` is every place a Narrow settlement took from
 /// this claim, in the order taken. No later plan of the claim may declare one of them again.
+/// `repair_rounds` is the confirmed scope's budget: how many bounced builds may be repaired.
 #[derive(Debug, Clone)]
 struct Claim {
     task: String,
     generation: u64,
     files: Vec<String>,
     gave_up: Vec<Given>,
+    repair_rounds: u32,
 }
 
 /// What one attempt at a task produced.
@@ -443,12 +445,15 @@ async fn try_claim<C: ModelClient>(
     for fix in &planned.fixes {
         log(steps, format!("plan fix on {task}: {fix}"));
     }
+    let repair_rounds = confirmed.budget.repair_rounds.get();
     let predictions = scope_predictions(&confirmed.scope);
     let withheld = scope_items(&confirmed.scope) - predictions.len();
     if withheld > 0 {
         log(
             steps,
-            format!("{task}: {withheld} scope item(s) past the readback's limit of {MAX_PREDICTIONS} predictions"),
+            format!(
+                "{task}: {withheld} scope item(s) past the readback's limit of {MAX_PREDICTIONS} predictions"
+            ),
         );
     }
     let posted = mcp
@@ -489,6 +494,7 @@ async fn try_claim<C: ModelClient>(
                 generation,
                 files: planned.footprint,
                 gave_up: Vec::new(),
+                repair_rounds,
             }))
         }
     }
@@ -496,13 +502,17 @@ async fn try_claim<C: ModelClient>(
 
 /// The confirmed scope of `task`, or the refusal the origin gave. A refusal is an answer the caller
 /// acts on, such as a scope that is not confirmed yet.
-async fn get_scope(mcp: &McpClient, task: &str) -> anyhow::Result<Result<GetScopeResponse, String>> {
+async fn get_scope(
+    mcp: &McpClient,
+    task: &str,
+) -> anyhow::Result<Result<GetScopeResponse, String>> {
     match mcp
         .call("get_scope", json!({ "version": MCP_VERSION, "task": task }))
         .await?
     {
-        Reply::Done(value) => Ok(Ok(serde_json::from_value(value)
-            .with_context(|| format!("get_scope answered a scope the worker does not read for {task}"))?)),
+        Reply::Done(value) => Ok(Ok(serde_json::from_value(value).with_context(|| {
+            format!("get_scope answered a scope the worker does not read for {task}")
+        })?)),
         Reply::Refused(reason) => Ok(Err(reason)),
     }
 }
@@ -633,6 +643,19 @@ async fn work<C: ModelClient>(
                 });
             }
             Repair::Bounced(next) => {
+                // The confirmed budget counts the repair rounds after the first build. A bounce
+                // after the last allowed round has no round left to repair in.
+                if round > claim.repair_rounds {
+                    let reason = format!(
+                        "build {round} bounced, and the confirmed budget of {} repair round(s) is spent",
+                        claim.repair_rounds
+                    );
+                    log(steps, format!("{} went to residue: {reason}", claim.task));
+                    return Ok(Exit::Residue {
+                        task: claim.task.clone(),
+                        reason,
+                    });
+                }
                 log(
                     steps,
                     format!(
@@ -692,9 +715,8 @@ async fn clear_to_build<C: ModelClient>(
     }
 }
 
-/// The tools for one round: the task's worktree, the files it declares, and the protected-head
-/// snapshot when the origin supplied one. Without a snapshot `run_tests` refuses, so the worker
-/// never runs tests against protected paths it cannot pin.
+/// The tools for one round, from the origin's view of the task's worktree: the worktree, the files
+/// the task declares, and the protected-head snapshot when the view names one.
 async fn open_worktree(
     config: &WorkerConfig,
     mcp: &McpClient,
@@ -713,14 +735,26 @@ async fn open_worktree(
             )));
         }
     };
-    let path = string_field(&view, "path");
+    Ok(Ok(tools_for(config, claim, &view, steps)))
+}
+
+/// Builds the tools from a worktree view. The protected-head snapshot is passed on when the view
+/// names one. Without it `run_tests` refuses, so the worker never runs tests against protected
+/// paths it cannot pin.
+fn tools_for(
+    config: &WorkerConfig,
+    claim: &Claim,
+    view: &Value,
+    steps: &mut Vec<String>,
+) -> Worktree {
+    let path = string_field(view, "path");
     log(steps, format!("worktree for {}: {path}", claim.task));
     let tools = Worktree::new(
         PathBuf::from(path),
         &claim.files,
         config.test_command.clone(),
     );
-    Ok(Ok(match view["snapshot"].as_str() {
+    match view["snapshot"].as_str() {
         Some(snapshot) => {
             log(
                 steps,
@@ -738,7 +772,7 @@ async fn open_worktree(
             );
             tools
         }
-    }))
+    }
 }
 
 /// The brief for one build round. Round one names the task and its files. A later round names the
@@ -839,7 +873,12 @@ fn repair(receipt: &Receipt, repeats: &mut BTreeMap<String, u32>) -> Repair {
         match item.class {
             ItemClass::Preserved | ItemClass::ObligationFulfilled => {}
             ItemClass::ObligationFailed | ItemClass::OutOfScope | ItemClass::ViolatesRuling => {
-                let key = format!("{}/{}/{}", item.item_id, class_name(item.class), item.probe_hash);
+                let key = format!(
+                    "{}/{}/{}",
+                    item.item_id,
+                    class_name(item.class),
+                    item.probe_hash
+                );
                 let seen = repeats.entry(key).or_insert(0);
                 *seen += 1;
                 if *seen >= REPEAT_LIMIT {
@@ -878,12 +917,12 @@ fn class_name(class: ItemClass) -> String {
 }
 
 /// The latest receipt of the task's gate runs, or `None` when there is none yet.
-async fn latest_receipt(
-    mcp: &McpClient,
-    task: &str,
-) -> anyhow::Result<Option<GetReceiptResponse>> {
+async fn latest_receipt(mcp: &McpClient, task: &str) -> anyhow::Result<Option<GetReceiptResponse>> {
     match mcp
-        .call("get_receipt", json!({ "version": MCP_VERSION, "task": task }))
+        .call(
+            "get_receipt",
+            json!({ "version": MCP_VERSION, "task": task }),
+        )
         .await?
     {
         Reply::Done(value) => Ok(Some(serde_json::from_value(value).with_context(|| {
@@ -907,7 +946,10 @@ async fn await_receipt(
         if let Some(found) = latest_receipt(mcp, task).await?
             && Some(&found.receipt_hash) != before
         {
-            log(steps, format!("the gate answered {task}: receipt {}", found.receipt_hash));
+            log(
+                steps,
+                format!("the gate answered {task}: receipt {}", found.receipt_hash),
+            );
             return Ok(Some(found));
         }
         if Instant::now() >= deadline {
@@ -1544,9 +1586,14 @@ fn log(steps: &mut Vec<String>, text: String) {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex as StdMutex};
 
-    use acan_llm::{Reply, Stub};
+    use acan_llm::{ChatResponse, FunctionCall, LlmError, Reply, Stub, ToolKind};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
 
     use super::*;
 
@@ -1641,6 +1688,7 @@ mod tests {
             generation: 3,
             files: vec!["model/store.ts".to_owned()],
             gave_up: Vec::new(),
+            repair_rounds: 2,
         }
     }
 
@@ -1830,5 +1878,630 @@ mod tests {
         .expect("an empty re-plan is returned, not refused");
         assert!(planned.footprint.is_empty(), "{:?}", planned.footprint);
         assert_eq!(planned.summary, "the loader needs src/a.ts");
+    }
+
+    /// A real gate answer from the intent fixtures: one bounced item, `i-retry-after`, failing its
+    /// obligation on the probe below.
+    const RECEIPT: &str = include_str!("../../acan-intent/fixtures/mcp-get-receipt-response.json");
+    /// A real scope answer from the intent fixtures, confirmed at revision 2.
+    const SCOPE: &str = include_str!("../../acan-intent/fixtures/mcp-get-scope-response.json");
+    const PROBE: &str = "sha256:762703905cfc5ffa376dfb1b89d53c9ce693dc5f3e1628b39b06935364f62b45";
+    const STORE: &str = "model/store.ts";
+
+    /// The gate's answer for build `build`, with only the item `keep` among its items. Each build
+    /// gets its own receipt hash, as each build gets its own run.
+    fn receipt_of(keep: &str, build: u32) -> Value {
+        let mut value: Value = serde_json::from_str(RECEIPT).expect("the receipt fixture is JSON");
+        value["receipt_hash"] = json!(format!("sha256:{build:064x}"));
+        value["receipt"]["items"]
+            .as_array_mut()
+            .expect("the fixture has items")
+            .retain(|item| item["item_id"] == keep);
+        value
+    }
+
+    /// The receipt of build `build` as the worker reads it.
+    fn receipt_items(keep: &str, build: u32) -> Receipt {
+        let response: GetReceiptResponse =
+            serde_json::from_value(receipt_of(keep, build)).expect("the receipt decodes");
+        response.receipt
+    }
+
+    #[test]
+    fn a_bounce_names_its_failing_obligation_and_probe_for_the_next_build() {
+        let mut repeats = BTreeMap::new();
+        let Repair::Bounced(next) = repair(&receipt_items("i-retry-after", 1), &mut repeats) else {
+            panic!("a failing item bounces");
+        };
+        assert_eq!(next.len(), 1, "{next:?}");
+        assert_eq!(next[0].item, "i-retry-after");
+        assert_eq!(next[0].class, "obligation_failed");
+        assert_eq!(next[0].probe, PROBE);
+        assert_eq!(
+            next[0].failed,
+            vec!["obl-retry-after failed: header.retry-after is absent at step s6".to_owned()]
+        );
+        let brief = build_brief(&claim(), 2, &next);
+        assert!(
+            brief.starts_with("Build 2 of t-1. Declared files: model/store.ts."),
+            "{brief}"
+        );
+        assert!(brief.contains("The gate bounced build 1."), "{brief}");
+        assert!(
+            brief.contains(&format!(
+                "- item i-retry-after (obligation_failed) on probe {PROBE}: obl-retry-after failed: header.retry-after is absent at step s6"
+            )),
+            "{brief}"
+        );
+    }
+
+    #[test]
+    fn the_third_repeat_of_the_same_difference_is_residue() {
+        let receipt = receipt_items("i-retry-after", 1);
+        let mut repeats = BTreeMap::new();
+        assert!(matches!(repair(&receipt, &mut repeats), Repair::Bounced(_)));
+        assert!(matches!(repair(&receipt, &mut repeats), Repair::Bounced(_)));
+        let Repair::Residue(reason) = repair(&receipt, &mut repeats) else {
+            panic!("the third repeat is residue");
+        };
+        assert!(reason.contains("third repeat is residue"), "{reason}");
+    }
+
+    #[test]
+    fn a_passing_item_builds_nothing_more_and_a_stopped_or_unspecified_item_is_residue() {
+        assert_eq!(
+            repair(&receipt_items("chk-health", 1), &mut BTreeMap::new()),
+            Repair::Passed
+        );
+        let Repair::Residue(stopped) =
+            repair(&receipt_items("d-links-clicks", 1), &mut BTreeMap::new())
+        else {
+            panic!("a stopped item is residue");
+        };
+        assert!(stopped.contains("the core stopped it"), "{stopped}");
+        assert!(matches!(
+            repair(
+                &receipt_items("d-login-error-body", 1),
+                &mut BTreeMap::new()
+            ),
+            Repair::Residue(_)
+        ));
+    }
+
+    /// A repository with `model/store.ts` committed on `main`, and the worker's identity set.
+    fn bounce_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("a repository");
+        let root = dir.path();
+        git_in(root, &["init", "-q", "-b", "main"]);
+        git_in(root, &["config", "user.name", "Test Worker"]);
+        git_in(root, &["config", "user.email", "worker@example.test"]);
+        git_in(root, &["config", "core.autocrlf", "false"]);
+        fs::create_dir_all(root.join("model")).expect("the machine directory");
+        fs::write(root.join(STORE), "export function load() { return 1; }\n").expect("the fixture");
+        git_in(root, &["add", "-A"]);
+        git_in(root, &["commit", "-q", "-m", "initial"]);
+        dir
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    /// The tools one round sees, from a view that names a snapshot or does not. A test run needs
+    /// the snapshot, so the view without one is refused and the view with one is not.
+    #[test]
+    fn a_worktree_view_with_a_snapshot_arms_the_tests_and_one_without_refuses_them() {
+        let config = WorkerConfig {
+            server: String::new(),
+            token: String::new(),
+            repo: PathBuf::new(),
+            test_command: Some("cargo test".to_owned()),
+            max_steps: 1,
+            wait: Duration::ZERO,
+            receipt_wait: Duration::ZERO,
+            heartbeat: Duration::from_secs(1),
+            poll: Duration::from_millis(1),
+        };
+        let root = tempfile::tempdir().expect("a worktree");
+        let snapshot = tempfile::tempdir().expect("a snapshot");
+        let mut steps = Vec::new();
+        let armed = tools_for(
+            &config,
+            &claim(),
+            &json!({ "path": root.path().display().to_string(), "snapshot": snapshot.path().display().to_string() }),
+            &mut steps,
+        );
+        let unarmed = tools_for(
+            &config,
+            &claim(),
+            &json!({ "path": root.path().display().to_string() }),
+            &mut steps,
+        );
+        let refused = unarmed
+            .test_container_args("probe")
+            .expect_err("a test run without a snapshot is refused");
+        assert!(
+            refused.contains("no protected-head snapshot is set"),
+            "{refused}"
+        );
+        // The snapshot here is empty, so the policy may refuse for the protected paths it lacks,
+        // but never for want of a snapshot.
+        if let Err(reason) = armed.test_container_args("probe") {
+            assert!(
+                !reason.contains("no protected-head snapshot is set"),
+                "{reason}"
+            );
+        }
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.starts_with("protected-head snapshot for t-1: ")),
+            "{steps:?}"
+        );
+        assert!(
+            steps.iter().any(|step| step
+                .starts_with("no protected-head snapshot for t-1; run_tests will refuse")),
+            "{steps:?}"
+        );
+    }
+
+    /// What the fake origin holds for one open task that its gate answers build by build.
+    #[derive(Default)]
+    struct Origin {
+        /// The stage `get_task` reports. A declared task is cleared to build on the next read.
+        stage: String,
+        /// Builds reported so far. Build `n` is answered by receipt `n`.
+        reports: usize,
+        /// The gate's receipts, in build order.
+        receipts: Vec<Value>,
+        /// The scope `get_scope` answers, with the repair budget the test sets.
+        scope: Value,
+        /// The worktree and its snapshot, as `get_worktree` names them.
+        worktree: String,
+        snapshot: String,
+        /// Every tool the worker called, in order.
+        calls: Vec<String>,
+        /// The tasks the worker released.
+        released: Vec<String>,
+    }
+
+    /// Answers one MCP message for the fake origin. A notification has no answer.
+    fn dispatch(origin: &StdMutex<Origin>, message: &Value) -> Option<Value> {
+        let id = message["id"].clone();
+        match message["method"].as_str()? {
+            "initialize" => Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "protocolVersion": "2025-06-18" },
+            })),
+            "tools/call" => {
+                let name = message["params"]["name"].as_str().unwrap_or_default();
+                let mut guard = origin.lock().expect("the fake origin is not poisoned");
+                let answer = tool(&mut guard, name, &message["params"]["arguments"]);
+                let result = match answer {
+                    Ok(value) => json!({
+                        "content": [{ "type": "text", "text": value.to_string() }],
+                        "isError": false,
+                    }),
+                    Err(refusal) => json!({
+                        "content": [{ "type": "text", "text": refusal }],
+                        "isError": true,
+                    }),
+                };
+                Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+            }
+            _ => None,
+        }
+    }
+
+    /// One tool call answered as the origin would for a single open task.
+    fn tool(origin: &mut Origin, name: &str, args: &Value) -> Result<Value, String> {
+        origin.calls.push(name.to_owned());
+        match name {
+            "heartbeat_task" | "post_scoped_readback" => Ok(json!({})),
+            "list_tasks" => Ok(json!([{
+                "task": "t-1",
+                "order": "o-1",
+                "state": "open",
+                "title": "Change the loader",
+                "brief": "change the loader",
+                "scope": ["model"],
+            }])),
+            "get_scope" => Ok(origin.scope.clone()),
+            "claim_task" => Ok(json!({ "task": "t-1", "generation": 1 })),
+            "declare_changes" => Ok(json!({ "clashes_found": [] })),
+            "get_task" => {
+                let shown = origin.stage.clone();
+                if origin.stage == "declared" {
+                    origin.stage = "building".to_owned();
+                }
+                Ok(json!({
+                    "task": "t-1",
+                    "state": "claimed",
+                    "stage": shown,
+                    "you_hold": true,
+                    "generation": 1,
+                    "clashes": [],
+                }))
+            }
+            "get_worktree" => Ok(json!({
+                "task": "t-1",
+                "path": origin.worktree,
+                "branch": "unit/t-1",
+                "snapshot": origin.snapshot,
+            })),
+            "report_built" => {
+                origin.reports += 1;
+                origin.stage = "gating".to_owned();
+                Ok(json!({ "task": "t-1", "run": origin.reports }))
+            }
+            "get_receipt" => {
+                let receipt = origin
+                    .reports
+                    .checked_sub(1)
+                    .and_then(|built| origin.receipts.get(built))
+                    .cloned()
+                    .ok_or_else(|| "no receipt for t-1 yet".to_owned())?;
+                // The gate closes the run, so the task is declared again until it is cleared.
+                origin.stage = "declared".to_owned();
+                Ok(receipt)
+            }
+            "release_task" => {
+                origin.released.push(string_arg(args, "task"));
+                origin.stage = "open".to_owned();
+                Ok(json!({}))
+            }
+            other => Err(format!("the fake origin has no tool named {other}")),
+        }
+    }
+
+    /// Serves the fake origin on a loopback port and returns its base URL. Each connection carries
+    /// one message, which is how the MCP client sends them.
+    async fn serve(origin: Arc<StdMutex<Origin>>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the fake origin binds");
+        let address = listener
+            .local_addr()
+            .expect("the fake origin has an address");
+        tokio::spawn(async move {
+            loop {
+                let Ok((socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let origin = Arc::clone(&origin);
+                tokio::spawn(async move {
+                    // A connection that fails mid-message only ends that connection.
+                    let _ = answer_http(socket, &origin).await;
+                });
+            }
+        });
+        format!("http://{address}")
+    }
+
+    /// Reads one HTTP request, answers its JSON-RPC message, and closes the connection.
+    async fn answer_http(mut socket: TcpStream, origin: &StdMutex<Origin>) -> std::io::Result<()> {
+        let mut buf = Vec::new();
+        let (body_start, length) = loop {
+            if let Some(end) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+                let length = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                break (end + 4, length);
+            }
+            if read_more(&mut socket, &mut buf).await? == 0 {
+                return Ok(());
+            }
+        };
+        while buf.len() < body_start + length {
+            if read_more(&mut socket, &mut buf).await? == 0 {
+                return Ok(());
+            }
+        }
+        let message: Value = serde_json::from_slice(&buf[body_start..body_start + length])
+            .expect("the worker sends JSON");
+        let (status, body) = match dispatch(origin, &message) {
+            Some(answer) => ("200 OK", answer.to_string()),
+            None => ("202 Accepted", String::new()),
+        };
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        socket.write_all(response.as_bytes()).await?;
+        socket.shutdown().await
+    }
+
+    async fn read_more(socket: &mut TcpStream, buf: &mut Vec<u8>) -> std::io::Result<usize> {
+        let mut chunk = [0u8; 4096];
+        let read = socket.read(&mut chunk).await?;
+        buf.extend_from_slice(&chunk[..read]);
+        Ok(read)
+    }
+
+    /// The model the bounce runs use. It records the brief each edit starts with, and answers from
+    /// a script.
+    struct Recording {
+        script: Stub,
+        briefs: StdMutex<Vec<String>>,
+    }
+
+    impl ModelClient for Recording {
+        async fn chat(&self, role: Role, request: ChatRequest) -> Result<ChatResponse, LlmError> {
+            // An edit's first tool request carries its brief and no tool replies yet.
+            if !request.tools.is_empty()
+                && replies(&request) == 0
+                && let Some(brief) = request.last_user_text()
+            {
+                self.briefs
+                    .lock()
+                    .expect("the brief log is not poisoned")
+                    .push(brief.to_owned());
+            }
+            self.script.chat(role, request).await
+        }
+    }
+
+    /// The build a tool request belongs to: `n` when its brief says `Build n of`, otherwise 1.
+    fn build_of(request: &ChatRequest) -> u32 {
+        let text = request.last_user_text().unwrap_or_default();
+        (2..=9)
+            .find(|build| text.contains(&format!("Build {build} of ")))
+            .unwrap_or(1)
+    }
+
+    /// The tool replies one edit has received, so a request knows which step of the build it is.
+    fn replies(request: &ChatRequest) -> usize {
+        request
+            .messages
+            .iter()
+            .filter(|message| matches!(message, Message::Tool { .. }))
+            .count()
+    }
+
+    fn tool_call(name: &str, arguments: Value) -> ToolCall {
+        ToolCall {
+            id: format!("call-{name}"),
+            kind: ToolKind::Function,
+            function: FunctionCall {
+                name: name.to_owned(),
+                arguments: arguments.to_string(),
+            },
+        }
+    }
+
+    /// The scripted worker. It plans the store file, then in build `n` writes version `n + 1` and
+    /// commits it. It never stops early, so the loop's own stops decide how the run ends.
+    fn bounce_script() -> Stub {
+        let plan = Reply::json(&json!({ "summary": "change the loader", "files": [STORE] }));
+        let mut script =
+            Stub::default().when(Role::Worker, |request| request.tools.is_empty(), plan);
+        for build in 1..=3 {
+            script = script
+                .when(
+                    Role::Worker,
+                    move |request| build_of(request) == build && replies(request) == 0,
+                    Reply {
+                        tool_calls: vec![tool_call(
+                            "write_file",
+                            json!({
+                                "path": STORE,
+                                "content": format!("export function load() {{ return {}; }}\n", build + 1),
+                            }),
+                        )],
+                        ..Reply::default()
+                    },
+                )
+                .when(
+                    Role::Worker,
+                    move |request| build_of(request) == build && replies(request) == 1,
+                    Reply {
+                        tool_calls: vec![tool_call(
+                            "commit",
+                            json!({ "message": format!("build {build}") }),
+                        )],
+                        ..Reply::default()
+                    },
+                );
+        }
+        script.when(
+            Role::Worker,
+            |_| true,
+            Reply::text("the build is committed"),
+        )
+    }
+
+    /// What one bounce run ended with.
+    struct Ran {
+        outcome: Outcome,
+        /// The brief of every edit, in build order.
+        briefs: Vec<String>,
+        /// Builds the worker reported to the origin.
+        reports: usize,
+        /// The tasks the worker released.
+        released: Vec<String>,
+        /// Every tool the worker called.
+        calls: Vec<String>,
+    }
+
+    /// Runs one worker against the fake origin. The gate answers build `n` with `receipts[n - 1]`,
+    /// and the confirmed scope allows `budget` repair rounds.
+    async fn run_bounces(repo: &Path, budget: u32, receipts: Vec<Value>) -> Ran {
+        let snapshot = tempfile::tempdir().expect("a protected-head snapshot");
+        let mut scope: Value = serde_json::from_str(SCOPE).expect("the scope fixture is JSON");
+        scope["budget"]["repair_rounds"] = json!(budget);
+        let origin = Arc::new(StdMutex::new(Origin {
+            stage: "declared".to_owned(),
+            receipts,
+            scope,
+            worktree: repo.display().to_string(),
+            snapshot: snapshot.path().display().to_string(),
+            ..Origin::default()
+        }));
+        let server = serve(Arc::clone(&origin)).await;
+        let config = WorkerConfig {
+            server,
+            token: "acan_agent_fake".to_owned(),
+            repo: repo.to_path_buf(),
+            test_command: None,
+            max_steps: 5,
+            wait: Duration::from_secs(10),
+            receipt_wait: Duration::from_secs(10),
+            heartbeat: Duration::from_secs(3600),
+            poll: Duration::from_millis(5),
+        };
+        let model = Recording {
+            script: bounce_script(),
+            briefs: StdMutex::new(Vec::new()),
+        };
+        let outcome = run(&config, &model).await;
+        let briefs = model
+            .briefs
+            .into_inner()
+            .expect("the brief log is not poisoned");
+        let origin = origin.lock().expect("the fake origin is not poisoned");
+        Ran {
+            outcome,
+            briefs,
+            reports: origin.reports,
+            released: origin.released.clone(),
+            calls: origin.calls.clone(),
+        }
+    }
+
+    /// One build bounces, the second build gets the reproducer, the third repeats the same
+    /// difference and stops. The loop reports three builds, commits three times, and releases the
+    /// claim as residue.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_bounced_build_is_repaired_with_its_reproducer_and_the_third_repeat_is_residue() {
+        let repo = bounce_repo();
+        let ran = run_bounces(
+            repo.path(),
+            2,
+            vec![
+                receipt_of("i-retry-after", 1),
+                receipt_of("i-retry-after", 2),
+                receipt_of("i-retry-after", 3),
+            ],
+        )
+        .await;
+        let Exit::Residue { task, reason } = &ran.outcome.exit else {
+            panic!("the third repeat stops the claim: {}", ran.outcome.exit);
+        };
+        assert_eq!(task, "t-1");
+        assert!(reason.contains("third repeat is residue"), "{reason}");
+        assert_eq!(ran.reports, 3, "{:?}", ran.calls);
+        assert_eq!(
+            git_in(repo.path(), &["rev-list", "--count", "HEAD"]).trim(),
+            "4",
+            "one commit per build, on top of the fixture"
+        );
+        // Build 1 has no reproducer. Builds 2 and 3 each carry the one the gate gave.
+        assert_eq!(ran.briefs.len(), 3, "{:#?}", ran.briefs);
+        assert!(!ran.briefs[0].contains("bounced"), "{}", ran.briefs[0]);
+        for (index, brief) in ran.briefs.iter().enumerate().skip(1) {
+            assert!(
+                brief.starts_with(&format!("Build {} of t-1.", index + 1)),
+                "{brief}"
+            );
+            assert!(
+                brief.contains(&format!("The gate bounced build {index}.")),
+                "{brief}"
+            );
+            assert!(
+                brief.contains(&format!(
+                    "- item i-retry-after (obligation_failed) on probe {PROBE}: obl-retry-after failed: header.retry-after is absent at step s6"
+                )),
+                "{brief}"
+            );
+        }
+        let steps = &ran.outcome.steps;
+        assert!(
+            steps.iter().any(|step| step
+                == "the gate bounced build 1 of t-1: 1 item(s) to repair; building again"),
+            "{steps:#?}"
+        );
+        assert!(
+            steps.iter().any(|step| step
+                == "the gate bounced build 2 of t-1: 1 item(s) to repair; building again"),
+            "{steps:#?}"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.starts_with("t-1 went to residue: ")),
+            "{steps:#?}"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.starts_with("released t-1: t-1 is residue: ")),
+            "{steps:#?}"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.starts_with("protected-head snapshot for t-1: ")),
+            "{steps:#?}"
+        );
+        assert_eq!(ran.released, vec!["t-1".to_owned()]);
+    }
+
+    /// The second build gets the reproducer and passes, so the run is built and nothing bounces
+    /// again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_repaired_build_that_passes_is_built() {
+        let repo = bounce_repo();
+        let ran = run_bounces(
+            repo.path(),
+            2,
+            vec![receipt_of("i-retry-after", 1), receipt_of("chk-health", 2)],
+        )
+        .await;
+        assert!(
+            matches!(&ran.outcome.exit, Exit::Built { task, .. } if task == "t-1"),
+            "{}",
+            ran.outcome.exit
+        );
+        assert_eq!(ran.reports, 2, "{:?}", ran.calls);
+        assert_eq!(ran.briefs.len(), 2, "{:#?}", ran.briefs);
+        assert!(
+            ran.briefs[1].contains("- item i-retry-after (obligation_failed)"),
+            "{}",
+            ran.briefs[1]
+        );
+        assert!(ran.released.is_empty(), "{:?}", ran.released);
+    }
+
+    /// The confirmed scope allows no repair round, so the first bounce is the last word and the
+    /// worker never starts a second build.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_bounce_past_the_confirmed_repair_budget_is_residue_before_the_next_build() {
+        let repo = bounce_repo();
+        let ran = run_bounces(repo.path(), 0, vec![receipt_of("i-retry-after", 1)]).await;
+        let Exit::Residue { reason, .. } = &ran.outcome.exit else {
+            panic!("the bounce is residue: {}", ran.outcome.exit);
+        };
+        assert!(
+            reason.contains("the confirmed budget of 0 repair round(s) is spent"),
+            "{reason}"
+        );
+        assert_eq!(ran.reports, 1, "{:?}", ran.calls);
+        assert_eq!(ran.briefs.len(), 1, "{:#?}", ran.briefs);
+        assert_eq!(ran.released, vec!["t-1".to_owned()]);
     }
 }
