@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use acan_core::Stamped;
-use acan_render::camera::{DEFAULT_AZIMUTH, DEFAULT_ELEVATION};
+use acan_render::camera::{DEFAULT_AZIMUTH, DEFAULT_ELEVATION, FitRoom};
 use acan_render::{Aabb, Camera, Lod, Model, Renderer, Scene, wgpu};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
@@ -25,6 +25,17 @@ use crate::stand;
 
 /// Space around the plant at fit, in CSS pixels.
 const FIT_MARGIN_CSS: f32 = 24.0;
+/// Extra room the fit leaves under the plant, in CSS pixels. The machines' names are HTML hung
+/// under the plates, so the framing boxes cannot size them. Larger than a name's height, so the
+/// bottom margin matches the room the flag stack takes at the top; see `FIT_FLAG_TOP_CSS`.
+const FIT_LABEL_CSS: f32 = 65.0;
+/// Extra room the fit leaves at the right edge for the flag chips, in CSS pixels. A chip
+/// extends right of its anchor above a drone, and the framing boxes cannot size it.
+const FIT_FLAG_RIGHT_CSS: f32 = 60.0;
+/// Extra room the fit leaves above the plant for the flag stack, in CSS pixels. A chip row is
+/// about 30 pixels, and four rows stack above a machine in a clash. Measured against the shots:
+/// three rows leave about 70 pixels of margin, four about 40.
+const FIT_FLAG_TOP_CSS: f32 = 100.0;
 /// Degrees of orbit per CSS pixel of drag.
 const ORBIT_DEG_PER_PX: f32 = 0.4;
 /// Degrees of tilt per CSS pixel of drag.
@@ -76,8 +87,9 @@ struct Loaded {
     repo: String,
     machines: Vec<PlantMachine>,
     layout: Layout,
-    /// Bounds of everything drawn, in plan units and height.
-    bounds: Aabb,
+    /// The boxes the camera frames: the machines and their drone seats, without belts. See
+    /// `scene::fit_boxes`.
+    framing: Vec<Aabb>,
     /// The solid box of every machine, each with its machine index, for label occlusion.
     occluders: Vec<(usize, Aabb)>,
     /// Each machine's label half width in CSS pixels, estimated from its name.
@@ -120,15 +132,14 @@ impl App {
             .map_err(js_err)?;
         let models = scene::models();
         renderer.set_models(&models);
-        // The default view looks at the plant from the front corner. A bot stands on the side
-        // nearest that corner first.
-        let facing = DEFAULT_AZIMUTH.to_radians();
-        let front = [facing.cos(), facing.sin()];
+        // A drone hovers beside each machine, behind it on either side of the default view, so its
+        // eye turns toward the camera. See `stand::beside`.
+        let drone = &models[usize::from(scene::mark_kinds().body)];
         let kind_spots = ALL
             .iter()
             .map(|&kind| {
                 let (w, d) = kind.footprint();
-                stand::spots(&models[kind::index(kind)], [w / 2.0, d / 2.0], front)
+                stand::beside(&models[kind::index(kind)], [w / 2.0, d / 2.0], drone)
             })
             .collect();
         Ok(App {
@@ -288,7 +299,8 @@ impl App {
     pub fn toggle_projection(&mut self) {
         self.camera.toggle_projection();
         if let Some(loaded) = &self.plant {
-            self.camera.fit(&loaded.bounds, FIT_MARGIN_CSS * self.dpr);
+            self.camera
+                .fit_boxes_room(&loaded.framing, FIT_MARGIN_CSS * self.dpr, self.fit_room());
         }
     }
 
@@ -353,8 +365,8 @@ impl App {
         self.turn = None;
         self.camera.set_angles(azimuth, elevation);
         if let Some(loaded) = &self.plant {
-            let bounds = loaded.bounds;
-            self.camera.fit(&bounds, FIT_MARGIN_CSS * self.dpr);
+            self.camera
+                .fit_boxes_room(&loaded.framing, FIT_MARGIN_CSS * self.dpr, self.fit_room());
         }
     }
 
@@ -362,8 +374,9 @@ impl App {
     pub fn fit(&mut self) {
         self.turn = None;
         if let Some(loaded) = &self.plant {
-            let bounds = loaded.bounds;
-            self.camera.reset_view(&bounds, FIT_MARGIN_CSS * self.dpr);
+            self.camera.set_angles(DEFAULT_AZIMUTH, DEFAULT_ELEVATION);
+            self.camera
+                .fit_boxes_room(&loaded.framing, FIT_MARGIN_CSS * self.dpr, self.fit_room());
         }
     }
 
@@ -666,6 +679,8 @@ impl App {
         self.card_clash = None;
         self.dirty = true;
         let belts = scene::belt_lines(&laid.belts);
+        let drone_reach = stand::reach(&self.models[usize::from(scene::mark_kinds().body)]);
+        let framing = scene::fit_boxes(&laid, &self.models, &self.kind_spots, drone_reach);
         self.plant = Some(Loaded {
             repo: plant.repo,
             rest: {
@@ -682,7 +697,7 @@ impl App {
                 .collect(),
             machines: plant.machines,
             layout: laid,
-            bounds: scene.bounds,
+            framing,
             occluders,
             base: scene,
             belts,
@@ -748,6 +763,16 @@ impl App {
         [x / self.dpr, y / self.dpr]
     }
 
+    /// The extra room the fit keeps for the page's overlays: flag chips above the plant and
+    /// at its right edge, machine names at the bottom.
+    fn fit_room(&self) -> FitRoom {
+        FitRoom {
+            top: FIT_FLAG_TOP_CSS * self.dpr,
+            right: FIT_FLAG_RIGHT_CSS * self.dpr,
+            bottom: FIT_LABEL_CSS * self.dpr,
+        }
+    }
+
     /// The zoom at which the plant fills the view at the default angles, in the current
     /// projection. Level of detail is measured against this, so orbiting never changes the
     /// detail.
@@ -756,7 +781,7 @@ impl App {
             Some(loaded) => {
                 let mut probe = self.camera;
                 probe.set_angles(DEFAULT_AZIMUTH, DEFAULT_ELEVATION);
-                probe.fit(&loaded.bounds, FIT_MARGIN_CSS * self.dpr);
+                probe.fit_boxes_room(&loaded.framing, FIT_MARGIN_CSS * self.dpr, self.fit_room());
                 probe.zoom()
             }
             None => 1.0,

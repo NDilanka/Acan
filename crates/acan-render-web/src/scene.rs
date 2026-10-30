@@ -81,20 +81,70 @@ pub fn plant_scene(layout: &Layout, models: &[Model]) -> Scene {
             turn: 0.0,
         });
     }
-    if bounds.min[0] > bounds.max[0] {
-        bounds = Aabb {
-            min: [0.0; 3],
-            max: [1.0; 3],
-        };
-    }
     Scene {
         ribbons,
         instances,
         hue_lines: Vec::new(),
         beams: Vec::new(),
         silhouettes: vec![mark_kinds().body],
-        bounds,
+        bounds: nonempty(bounds),
     }
+}
+
+/// The drone seats a machine's drones take first. They sit on either side of the default view.
+const SEATS: usize = 2;
+
+/// The boxes the camera frames: each machine's model box up to the top of its flag room, and a
+/// box round each of its first two drone seats, from the drone's underside to its crown. Belts
+/// are left out, so a belt's path cannot pull the plant off centre. The seats are framed whether
+/// or not a drone is there, so the frame does not move when an agent arrives. The machines' names
+/// and the flag chips are HTML, so the camera leaves them room in pixels instead; see
+/// `Camera::fit_boxes_room`. `spots` is indexed the way [`kind::index`] indexes kinds, and
+/// `reach` is a drone's reach in plan units.
+pub fn fit_boxes(
+    layout: &Layout,
+    models: &[Model],
+    spots: &[Vec<[f32; 2]>],
+    reach: f32,
+) -> Vec<Aabb> {
+    let mut boxes = Vec::with_capacity(layout.machines.len());
+    for placed in &layout.machines {
+        let (w, d) = placed.kind.footprint();
+        let index = kind::index(placed.kind);
+        let model = &models[index].bounds;
+        let offset = [placed.x + w / 2.0, placed.y + d / 2.0];
+        let hover = hover_height(model.max[2]);
+        boxes.push(Aabb {
+            min: [offset[0] + model.min[0], offset[1] + model.min[1], 0.0],
+            max: [
+                offset[0] + model.max[0],
+                offset[1] + model.max[1],
+                hover + BODY_RADIUS + FLAG_ROOM,
+            ],
+        });
+        for spot in spots[index].iter().take(SEATS) {
+            let at = [offset[0] + spot[0], offset[1] + spot[1]];
+            boxes.push(Aabb {
+                min: [at[0] - reach, at[1] - reach, hover - BODY_RADIUS],
+                max: [at[0] + reach, at[1] + reach, hover + BODY_RADIUS],
+            });
+        }
+    }
+    if boxes.is_empty() {
+        boxes.push(nonempty(Aabb::EMPTY));
+    }
+    boxes
+}
+
+/// The box itself when it holds anything, or a unit box for a plant with nothing to draw.
+fn nonempty(bounds: Aabb) -> Aabb {
+    if bounds.min[0] > bounds.max[0] {
+        return Aabb {
+            min: [0.0; 3],
+            max: [1.0; 3],
+        };
+    }
+    bounds
 }
 
 /// A belt as it draws: its rounded centre line on the plan, its width, and the machines it joins.

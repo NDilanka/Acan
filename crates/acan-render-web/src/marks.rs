@@ -22,14 +22,21 @@ use serde::Serialize;
 use crate::mirror::{CheckView, ClashView, View};
 use crate::plan::Plan;
 
-/// The clearance between a drone's body and its machine's top, in world units. The body's bottom
-/// sits this far above the top, so a drone over a machine never touches the machine's parts.
+/// The height of a drone's centre above its machine's top when it hovers beside the machine,
+/// in world units. The drone floats level with the machine's top rather than high above it. The
+/// spot is clear of the machine in plan, so the body's underside may sit below the top.
+pub const HOVER_LIFT: f32 = BODY_RADIUS * 0.5;
+
+/// The clearance between a drone's body and its machine's top when the drone hovers over the
+/// machine's centre, in world units. That only happens when every spot beside the machine is
+/// taken, and there the body must not touch the machine's parts.
 pub const HOVER_GAP: f32 = 6.0;
 
-/// The height of a drone's centre over a machine whose top is at `top`, in world units.
+/// The height of a drone's centre over a machine whose top is at `top`, in world units: beside
+/// the machine, level with its top.
 #[must_use]
 pub fn hover_height(top: f32) -> f32 {
-    top + HOVER_GAP + BODY_RADIUS
+    top + HOVER_LIFT
 }
 
 /// The room above a drone's crown that its flag takes, in world units. The plant's fit keeps it
@@ -144,16 +151,19 @@ pub fn shell_tint(slot: usize) -> u8 {
     u8::try_from(TINT_SHELL0 as usize + slot).expect("tint slots fit in a byte")
 }
 
-/// A drone over a machine. It hovers on a plinth spot beside the machine, with its body's bottom
-/// [`HOVER_GAP`] above the machine's top. Its shadow lies on the plinth top under its centre.
+/// A drone over a machine. It hovers on a spot beside the machine, its centre [`HOVER_LIFT`]
+/// above the machine's top, so it floats level with the top. Its shadow lies on the ground under
+/// its centre.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Body {
     pub agent: String,
     pub slot: usize,
     /// The plan index of the machine it works on.
     pub machine: usize,
-    /// Where the drone's centre hovers, in world units: over its plinth spot, one body radius and
-    /// [`HOVER_GAP`] above the machine's top.
+    /// Where the drone's centre hovers, in world units: over its spot beside the machine,
+    /// [`HOVER_LIFT`] above the machine's top. A drone seated at the machine's centre, when every
+    /// spot beside it is taken, hovers [`HOVER_GAP`] above the top instead, so it never touches
+    /// the machine's parts.
     pub at: [f32; 3],
     /// The point the drone faces and its beam ends at, in world units. It is the machine's centre on
     /// its top, lifted by the beacon's radius so the beacon stands on the top.
@@ -905,7 +915,7 @@ pub struct MarkKinds {
     pub beacon: u16,
 }
 
-/// A drone's instances: its shell and its accent at its centre, and its shadow on the plinth top
+/// A drone's instances: its shell and its accent at its centre, and its shadow on the ground
 /// under the centre. The shadow keeps its plan size, since it lies on the ground.
 fn drone(kinds: MarkKinds, at: [f32; 3], slot: usize, turn: f32, bot: [f32; 2]) -> [Instance; 3] {
     [
@@ -924,7 +934,7 @@ fn drone(kinds: MarkKinds, at: [f32; 3], slot: usize, turn: f32, bot: [f32; 2]) 
             turn,
         },
         Instance {
-            offset: [at[0], at[1], PLINTH_TOP],
+            offset: [at[0], at[1], 0.0],
             kind: kinds.shadow,
             tint: 0,
             grow: [0.0; 2],
@@ -1147,6 +1157,13 @@ fn place(
         let seats = seated.entry(machine).or_default();
         let spot = seat(spots, centre, seats);
         seats.push(spot);
+        // A drone beside its machine floats level with its top. The centre seat is over the
+        // machine, so a drone seated there keeps its body clear of the top instead.
+        let z = if spot == centre {
+            top + HOVER_GAP + BODY_RADIUS
+        } else {
+            hover_height(top)
+        };
         let id = agent.id.to_string();
         let check = agent
             .task
@@ -1157,7 +1174,7 @@ fn place(
             waiting: waiting.contains(&id),
             agent: id,
             machine,
-            at: [spot[0], spot[1], hover_height(top)],
+            at: [spot[0], spot[1], z],
             target: [centre[0], centre[1], top + BEACON_RADIUS],
             activity: agent.activity,
             check,
@@ -1754,9 +1771,10 @@ mod tests {
                 hover_height(top),
                 "a drone hovers at its height"
             );
-            assert!(
-                body.at[2] - BODY_RADIUS >= top + HOVER_GAP - 1e-4,
-                "the body's bottom clears the machine's top"
+            assert_eq!(
+                body.at[2],
+                top + HOVER_LIFT,
+                "a drone beside its machine floats level with its top"
             );
         }
         assert_ne!(first.slot, second.slot, "the two agents have distinct hues");
@@ -1774,8 +1792,13 @@ mod tests {
         let marks = Marks::build(&view, &plan, &bare, &slots_for(&view));
         let api = machine(&plan, "src/api");
         let centre = plan.machines[api].center();
+        let top = bare[api].top;
         for body in marks.bodies.iter().filter(|body| body.machine == api) {
             assert_eq!([body.at[0], body.at[1]], centre);
+            assert!(
+                body.at[2] - BODY_RADIUS >= top + HOVER_GAP - 1e-4,
+                "over the machine's centre the body's bottom clears its top"
+            );
         }
     }
 

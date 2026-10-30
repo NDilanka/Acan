@@ -68,6 +68,17 @@ pub enum Projection {
 /// eye sits `eye_distance` from the view centre, which is the distance at which the centre's scale
 /// is `zoom` for the vertical field of view. The orthographic view uses the same eye distance for
 /// fog, so the two projections look the same.
+/// Extra room a fit keeps at the top, right and bottom edges, in device pixels, for the HTML
+/// the page draws over the plant there: flag chips above their drones and to the right of their
+/// anchors, machine names below it. The fit's left edge keeps the plain margin. The room is in
+/// pixels because the overlays are HTML: their size does not change with the zoom.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FitRoom {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Camera {
     pivot: [f32; 2],
@@ -333,30 +344,55 @@ impl Camera {
     /// angles and projection. The projected corners end up centred, which the 3D centre alone
     /// does not give under perspective.
     pub fn fit(&mut self, bounds: &Aabb, margin_px: f32) {
+        self.fit_boxes(std::slice::from_ref(bounds), margin_px);
+    }
+
+    /// Centres several boxes and zooms so every corner of every box projects inside `margin_px`.
+    /// The boxes' corners are what count, so a few small boxes frame the parts of a scene that
+    /// matter, and the empty space between them does not push the picture off centre. Nothing
+    /// changes when `boxes` is empty.
+    pub fn fit_boxes(&mut self, boxes: &[Aabb], margin_px: f32) {
+        self.fit_boxes_room(boxes, margin_px, FitRoom::default());
+    }
+
+    /// Like [`fit_boxes`], but the top, right and bottom edges keep `room` of extra space, for
+    /// what the page draws over the plant there. The boxes' middle lands on the centre of the
+    /// region inside the margins, so the extra room stays empty.
+    pub fn fit_boxes_room(&mut self, boxes: &[Aabb], margin_px: f32, room: FitRoom) {
         const PASSES: usize = 4;
+        if boxes.is_empty() {
+            return;
+        }
+        let mut union = Aabb::EMPTY;
+        for bounds in boxes {
+            union.include(bounds.min);
+            union.include(bounds.max);
+        }
+        let corners: Vec<[f32; 3]> = boxes.iter().flat_map(|bounds| bounds.corners()).collect();
         let b = self.basis();
-        let centre = bounds.centre();
+        let centre = union.centre();
         // The ground point on the view ray through the box centre, so the centre lands mid-screen.
         // A fit centres on the ground, so the view centre is back on the ground too.
         let t = -centre[2] / b.toward[2];
         self.pivot = [centre[0] + t * b.toward[0], centre[1] + t * b.toward[1]];
         self.height = 0.0;
         for _ in 0..PASSES {
-            self.zoom = self.largest_zoom_fitting(bounds, margin_px);
-            self.centre_projected(bounds);
+            self.zoom = self.largest_zoom_fitting(&corners, margin_px, room);
+            self.centre_projected(&corners, centre, room);
         }
-        self.zoom = self.largest_zoom_fitting(bounds, margin_px);
+        self.zoom = self.largest_zoom_fitting(&corners, margin_px, room);
     }
 
-    /// Moves the pivot so the middle of the projected corners lands on the screen centre. A
-    /// pivot shift `v` moves a point's screen position by `scale * (-v·right, v·up)`, where
-    /// `scale` is the focal length over the depth at the box centre in perspective. The shift
-    /// is solved from that linear model, and the next pass corrects the error it leaves.
-    fn centre_projected(&mut self, bounds: &Aabb) {
+    /// Moves the pivot so the middle of the projected corners lands on the centre of the region
+    /// inside the margins, with `room` of extra space at the top, right and bottom. A pivot shift `v`
+    /// moves a point's screen position by `scale * (-v·right, v·up)`, where `scale` is the focal
+    /// length over the depth at `centre` in perspective. The shift is solved from that linear
+    /// model, and the next pass corrects the error it leaves.
+    fn centre_projected(&mut self, corners: &[[f32; 3]], centre: [f32; 3], room: FitRoom) {
         let [vw, vh] = self.viewport;
         let mut lo = [f32::INFINITY; 2];
         let mut hi = [f32::NEG_INFINITY; 2];
-        for corner in bounds.corners() {
+        for &corner in corners {
             let s = self.world_to_screen(corner);
             for axis in 0..2 {
                 lo[axis] = lo[axis].min(s[axis]);
@@ -364,13 +400,13 @@ impl Camera {
             }
         }
         let off = [
-            (lo[0] + hi[0]) * 0.5 - vw * 0.5,
-            (lo[1] + hi[1]) * 0.5 - vh * 0.5,
+            (lo[0] + hi[0]) * 0.5 - (vw - room.right) * 0.5,
+            (lo[1] + hi[1]) * 0.5 - (vh + room.top - room.bottom) * 0.5,
         ];
         let basis = self.basis();
         let scale = match self.projection {
             Projection::Perspective => {
-                let depth = -dot(sub(bounds.centre(), self.eye()), basis.toward);
+                let depth = -dot(sub(centre, self.eye()), basis.toward);
                 self.focal() / depth
             }
             Projection::Orthographic => self.zoom,
@@ -397,11 +433,11 @@ impl Camera {
         self.fit(bounds, margin_px);
     }
 
-    /// The largest zoom at which every corner of `bounds` projects inside the margin, found by
-    /// bisection on the geometric scale. The corners move monotonically with zoom.
-    fn largest_zoom_fitting(&self, bounds: &Aabb, margin_px: f32) -> f32 {
+    /// The largest zoom at which every one of `corners` projects inside the margin, with
+    /// `room` of extra space at the top, right and bottom, found by bisection on the geometric
+    /// scale. The corners move monotonically with zoom.
+    fn largest_zoom_fitting(&self, corners: &[[f32; 3]], margin_px: f32, room: FitRoom) -> f32 {
         let mut probe = *self;
-        let corners = bounds.corners();
         let [vw, vh] = self.viewport;
         let fits = |zoom: f32, probe: &mut Camera| {
             probe.set_zoom(zoom);
@@ -415,8 +451,8 @@ impl Camera {
                 let s = probe.world_to_screen(corner);
                 let inside = |v: f32, lo: f32, hi: f32| v >= lo - 0.5 && v <= hi + 0.5;
                 in_front
-                    && inside(s[0], margin_px, vw - margin_px)
-                    && inside(s[1], margin_px, vh - margin_px)
+                    && inside(s[0], margin_px, vw - margin_px - room.right)
+                    && inside(s[1], margin_px + room.top, vh - margin_px - room.bottom)
             })
         };
         let (mut lo, mut hi) = (MIN_ZOOM, MAX_ZOOM);
@@ -827,6 +863,99 @@ mod tests {
             450.0,
             "a normal view keeps the axis mid-screen"
         );
+    }
+
+    #[test]
+    fn fit_boxes_centres_the_boxes_and_ignores_the_space_between_them() {
+        // Two small boxes at opposite corners of a wide plan, so their union is mostly empty.
+        let near = Aabb {
+            min: [-200.0, -100.0, 0.0],
+            max: [-180.0, -80.0, 20.0],
+        };
+        let far = Aabb {
+            min: [180.0, 80.0, 0.0],
+            max: [200.0, 100.0, 20.0],
+        };
+        let margin = 24.0;
+        let viewport = [1440.0_f32, 900.0];
+        for projection in both_projections() {
+            let mut cam = Camera::new(viewport);
+            cam.set_projection(projection);
+            cam.set_angles(DEFAULT_AZIMUTH, DEFAULT_ELEVATION);
+            cam.fit_boxes(&[near, far], margin);
+            let mut lo = [f32::INFINITY; 2];
+            let mut hi = [f32::NEG_INFINITY; 2];
+            for bounds in [near, far] {
+                for corner in bounds.corners() {
+                    let s = cam.world_to_screen(corner);
+                    for axis in 0..2 {
+                        lo[axis] = lo[axis].min(s[axis]);
+                        hi[axis] = hi[axis].max(s[axis]);
+                    }
+                }
+            }
+            for axis in 0..2 {
+                let mid = (lo[axis] + hi[axis]) * 0.5;
+                let centre = viewport[axis] * 0.5;
+                assert!(
+                    (mid - centre).abs() < 2.0,
+                    "{projection:?} axis {axis}: the boxes' middle is {mid}, not {centre}"
+                );
+            }
+            assert!(lo[0] >= margin - 0.5 && hi[0] <= viewport[0] - margin + 0.5);
+            assert!(lo[1] >= margin - 0.5 && hi[1] <= viewport[1] - margin + 0.5);
+        }
+    }
+
+    #[test]
+    fn fit_boxes_room_leaves_the_extra_room_at_the_right_and_bottom() {
+        let bounds = block();
+        let margin = 24.0;
+        let room = FitRoom {
+            top: 60.0,
+            right: 80.0,
+            bottom: 120.0,
+        };
+        let viewport = [1440.0_f32, 900.0];
+        for projection in both_projections() {
+            let mut cam = Camera::new(viewport);
+            cam.set_projection(projection);
+            cam.set_angles(DEFAULT_AZIMUTH, DEFAULT_ELEVATION);
+            cam.fit_boxes_room(&[bounds], margin, room);
+            let mut lo = [f32::INFINITY; 2];
+            let mut hi = [f32::NEG_INFINITY; 2];
+            for corner in bounds.corners() {
+                let s = cam.world_to_screen(corner);
+                for axis in 0..2 {
+                    lo[axis] = lo[axis].min(s[axis]);
+                    hi[axis] = hi[axis].max(s[axis]);
+                }
+            }
+            let mid_x = (lo[0] + hi[0]) * 0.5;
+            let target_x = (viewport[0] - room.right) * 0.5;
+            assert!(
+                (mid_x - target_x).abs() < 2.0,
+                "{projection:?}: the box's middle is {mid_x}, not {target_x}"
+            );
+            let mid_y = (lo[1] + hi[1]) * 0.5;
+            let target_y = (viewport[1] + room.top - room.bottom) * 0.5;
+            assert!(
+                (mid_y - target_y).abs() < 2.0,
+                "{projection:?}: the box's middle is {mid_y}, not {target_y}"
+            );
+            assert!(
+                lo[1] >= margin + room.top - 0.5,
+                "{projection:?}: the box keeps the extra room at the top"
+            );
+            assert!(
+                hi[0] <= viewport[0] - margin - room.right + 0.5,
+                "{projection:?}: the box keeps the extra room at the right"
+            );
+            assert!(
+                hi[1] <= viewport[1] - margin - room.bottom + 0.5,
+                "{projection:?}: the box keeps the extra room at the bottom"
+            );
+        }
     }
 
     #[test]

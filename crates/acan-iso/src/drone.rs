@@ -29,14 +29,19 @@ const NACELLE_SIDE: f32 = (9.0 + 3.4) * SCALE;
 const NACELLE_DROP: f32 = -1.5 * SCALE;
 const NACELLE_RADIUS: f32 = 4.4 * SCALE;
 const NACELLE_HALF: f32 = 3.2 * SCALE;
-const NACELLE_SEGMENTS: usize = 16;
+const NACELLE_SEGMENTS: usize = 32;
 const BLADES: usize = 14;
 /// The glass cap and the bezel ring of the eye, and the inner ring, as angles from the nose.
 const GLASS_DEG: f32 = 31.0;
 const BEZEL_DEG: f32 = 40.0;
 const INNER_DEG: f32 = 20.0;
-/// The lamp on the crown is a small sphere whose centre sits on the body's top.
-const LAMP_RADIUS: f32 = 1.1 * SCALE;
+/// The eye dot's radius, which the pupil draws at.
+const EYE_DOT: f32 = 1.6 * SCALE;
+/// The lamp on the crown is a small sphere whose centre sits on the body's top. It is half the
+/// eye dot's size, so the saturated lamp reads as a dot rather than a blob.
+const LAMP_RADIUS: f32 = 0.5 * EYE_DOT;
+/// A grille dot's radius: a third of the grille's first size, so the grille reads as fine dots.
+const GRILLE_DOT: f32 = 0.13 * SCALE;
 /// A seam or a band that would cross the eye is cut where it passes this cosine from the nose.
 const NOSE_CLEAR: f32 = 0.72;
 /// Half the thickness of the fin, each side of its plane.
@@ -435,7 +440,7 @@ fn eye(build: &mut Build) {
     build.dot(
         add3(centre, scale3(NOSE, BODY_RADIUS + PROUD)),
         NOSE,
-        1.6 * SCALE,
+        EYE_DOT,
         Ink::Hi,
     );
     build.parts.eyes += 1;
@@ -452,7 +457,7 @@ fn grille(build: &mut Build) {
                 scale3(UP, lat),
             );
             let centre = add3(at(0.0, 0.0, 0.0), scale3(dir, BODY_RADIUS + PROUD));
-            build.dot(centre, dir, 0.4 * SCALE, Ink::Mid);
+            build.dot(centre, dir, GRILLE_DOT, Ink::Lo);
             build.parts.grille += 1;
         }
     }
