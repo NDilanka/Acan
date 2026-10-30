@@ -768,7 +768,7 @@ fn tool_list() -> Vec<Value> {
         ),
         tool(
             "get_worktree",
-            "The path and branch of the worktree for a task you hold.",
+            "The path, branch and protected-head snapshot of the worktree for a task you hold.",
             json!({
                 "type": "object",
                 "properties": { "task": task },

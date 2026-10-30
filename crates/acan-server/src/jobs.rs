@@ -32,6 +32,7 @@
 //! is missing or no longer confirmed is refused, so nothing installs.
 
 use std::collections::{BTreeSet, HashMap};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Arc;
@@ -79,6 +80,9 @@ const CONTRAST_DIR: &str = "contrasts";
 
 /// The state directory's folder that holds the stored observations, by hash.
 const OBSERVATIONS_DIR: &str = "observations";
+
+/// The state directory's folder that holds one protected-head snapshot per commit.
+const SNAPSHOT_DIR: &str = "snapshots";
 
 /// Starts the job loop for `host`.
 pub fn spawn<C: ModelClient + 'static>(host: Host<C>) -> JoinHandle<()> {
@@ -911,15 +915,7 @@ impl Pass {
         run: GateRunId,
     ) -> Result<Self, JobError> {
         let policy = observe::runner_policy();
-        let head = protected_sha(repo).await?;
-        let PrepareOutcome::Prepared(base) = repo
-            .prepare(&head, &observe::protected_paths(&policy))
-            .await?
-        else {
-            return Err(JobError::Unavailable(
-                "the protected head does not prepare onto itself".to_owned(),
-            ));
-        };
+        let base = protected_base(repo, &policy).await?;
         let state = host.repo().join(STATE_DIR);
         let dir = state
             .join(CONTRAST_DIR)
@@ -1200,6 +1196,63 @@ async fn protected_sha(repo: &Repo) -> Result<CommitSha, JobError> {
     let head = repo.protected_head().await?;
     CommitSha::from_str(&head.to_string())
         .map_err(|err| JobError::Unavailable(format!("the protected head: {err}")))
+}
+
+/// The protected head prepared on itself: the base every gate pass starts from.
+async fn protected_base(repo: &Repo, policy: &ContainerPolicy) -> Result<Preparation, JobError> {
+    let head = protected_sha(repo).await?;
+    let PrepareOutcome::Prepared(base) = repo
+        .prepare(&head, &observe::protected_paths(policy))
+        .await?
+    else {
+        return Err(JobError::Unavailable(
+            "the protected head does not prepare onto itself".to_owned(),
+        ));
+    };
+    Ok(base)
+}
+
+/// The protected-head snapshot a task's worktree is tested against: the protected paths of the
+/// protected head as it is now, prepared the way every gate pass prepares its base.
+///
+/// The snapshot sits under `state`, one directory per protected-head commit. A head that has not
+/// moved returns the directory already written. A new head is written under a temporary name and
+/// renamed into place once complete, so a directory a container mounts is never rewritten.
+///
+/// # Errors
+///
+/// Returns an error when git cannot prepare the protected head or the snapshot cannot be written.
+pub(crate) async fn protected_snapshot(repo: &Repo, state: &Path) -> anyhow::Result<PathBuf> {
+    let base = protected_base(repo, &observe::runner_policy()).await?;
+    let root = state.join(SNAPSHOT_DIR);
+    let head = base.protected_head();
+    let dir = root.join(head.as_str());
+    if dir.is_dir() {
+        return Ok(dir);
+    }
+    fs::create_dir_all(&root)?;
+    let partial = root.join(format!("{head}-{}.partial", unique_suffix()));
+    observe::snapshot(repo, &base, &partial).await?;
+    match fs::rename(&partial, &dir) {
+        Ok(()) => Ok(dir),
+        // Another caller renamed the same head's snapshot into place first. Its copy is complete.
+        Err(_) if dir.is_dir() => {
+            discard_partial(&partial);
+            Ok(dir)
+        }
+        Err(err) => {
+            discard_partial(&partial);
+            Err(err.into())
+        }
+    }
+}
+
+/// Removes a partial snapshot that did not reach its final name. The leftover is only clutter, so
+/// a failed removal is logged and not returned.
+fn discard_partial(partial: &Path) {
+    if let Err(err) = fs::remove_dir_all(partial) {
+        tracing::warn!(path = %partial.display(), error = %err, "a partial snapshot stays behind");
+    }
 }
 
 /// The commit a land records as landed, from the commit it installed.

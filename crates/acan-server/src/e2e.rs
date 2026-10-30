@@ -20,7 +20,7 @@ use acan_core::{
     Stamped, TaskId, TaskState, WitnessOutcome, WitnessSpec, World,
 };
 use acan_llm::{ChatRequest, ChatResponse, LlmError, ModelClient, Role, UsageLedger};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::time::{sleep, timeout};
 
 use crate::model::{self, Ask};
@@ -119,6 +119,97 @@ async fn an_order_is_gated_in_its_worktree_and_lands_on_the_protected_branch() {
     assert!(
         !root.join(LANDED).exists(),
         "the land never writes the user's working tree"
+    );
+    running.stop().await.expect("the server stops");
+}
+
+/// The snapshot a worktree names holds the protected head's `.acan` files, prepared the way the
+/// gate prepares its base. A candidate's own edit to `.acan` in its worktree never reaches it, over
+/// HTTP or over MCP, and a move of the protected head names a new snapshot.
+#[tokio::test]
+async fn a_worktree_names_a_snapshot_of_the_protected_head_that_a_candidate_cannot_change() {
+    const PROTECTED_APP: &str = ".acan/app.json";
+    const PROTECTED_CORPUS: &str = ".acan/probes/core.json";
+    const APP_BASE: &str = "{\"app\": \"base\"}\n";
+    const CORPUS_BASE: &str = "{\"probes\": [\"base\"]}\n";
+    const APP_CANDIDATE: &str = "{\"app\": \"candidate\"}\n";
+    const APP_MOVED: &str = "{\"app\": \"moved\"}\n";
+    let repo = user_repo();
+    let root = repo.path();
+    commit_on_protected(root, PROTECTED_APP, APP_BASE);
+    commit_on_protected(root, PROTECTED_CORPUS, CORPUS_BASE);
+    let running = start_plant(root).await;
+    let task = TaskId::from_str("t-0").expect("valid task id");
+
+    post_order(&running).await;
+    read_back(&running, task).await;
+    let fence = claim(&running, task).await;
+    wait_for_worktree(root, task, fence.generation).await;
+    let worktree = worktree_dir(root, task);
+
+    let first = worktree_view(&running, task).await;
+    let snapshot = PathBuf::from(
+        first["snapshot"]
+            .as_str()
+            .expect("the view names a snapshot"),
+    );
+    assert_eq!(
+        read_text(&snapshot.join(PROTECTED_APP)),
+        APP_BASE,
+        "the snapshot holds the protected head's app contract"
+    );
+    assert_eq!(
+        read_text(&snapshot.join(PROTECTED_CORPUS)),
+        CORPUS_BASE,
+        "the snapshot holds the protected head's probe corpus"
+    );
+    assert!(
+        !snapshot.join(MACHINE).exists(),
+        "the snapshot holds protected paths only"
+    );
+
+    commit_file(&worktree, PROTECTED_APP, APP_CANDIDATE);
+    assert_eq!(
+        read_text(&worktree.join(PROTECTED_APP)),
+        APP_CANDIDATE,
+        "the candidate edited .acan in its worktree"
+    );
+    let again = worktree_view(&running, task).await;
+    assert_eq!(
+        again["snapshot"], first["snapshot"],
+        "the same protected head names the same snapshot"
+    );
+    assert_eq!(
+        read_text(&snapshot.join(PROTECTED_APP)),
+        APP_BASE,
+        "the candidate's edit is not in the snapshot"
+    );
+    let over_mcp = mcp_worktree(&running, task).await;
+    assert_eq!(
+        over_mcp["snapshot"], first["snapshot"],
+        "MCP names the same snapshot as HTTP"
+    );
+
+    commit_on_protected(root, PROTECTED_APP, APP_MOVED);
+    let moved = worktree_view(&running, task).await;
+    let moved_snapshot = PathBuf::from(
+        moved["snapshot"]
+            .as_str()
+            .expect("the view names a snapshot"),
+    );
+    assert_ne!(
+        moved_snapshot, snapshot,
+        "a moved protected head names a new snapshot"
+    );
+    assert_eq!(
+        read_text(&moved_snapshot.join(PROTECTED_APP)),
+        APP_MOVED,
+        "the new snapshot holds the moved protected head"
+    );
+    assert_eq!(
+        read_text(&snapshot.join(PROTECTED_APP)),
+        APP_BASE,
+        "the earlier snapshot stays as it was"
     );
     running.stop().await.expect("the server stops");
 }
@@ -910,7 +1001,11 @@ async fn agent_command(running: &Running, cmd: AgentCmd) {
 
 /// Writes `file` in `dir`, commits it, and returns the new commit.
 fn commit_file(dir: &Path, file: &str, content: &str) -> CommitId {
-    fs::write(dir.join(file), content).expect("the file is written");
+    let path = dir.join(file);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("the file's directory exists");
+    }
+    fs::write(&path, content).expect("the file is written");
     git(dir, &["add", "-A"]);
     git(dir, &["commit", "-q", "-m", &format!("write {file}")]);
     git(dir, &["rev-parse", "HEAD"])
@@ -938,6 +1033,45 @@ async fn worktree_route(running: &Running, token: &str, task: TaskId) -> reqwest
         .send()
         .await
         .expect("the worktree request is sent")
+}
+
+/// The lease holder's worktree view over HTTP, which must answer.
+async fn worktree_view(running: &Running, task: TaskId) -> Value {
+    let response = worktree_route(running, AGENT_TOKEN, task).await;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    response.json().await.expect("the route answers JSON")
+}
+
+/// The lease holder's worktree view over MCP: the `get_worktree` tool's answer, parsed from its
+/// text. The tool must not fail.
+async fn mcp_worktree(running: &Running, task: TaskId) -> Value {
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": { "name": "get_worktree", "arguments": { "task": task.to_string() } },
+    });
+    let reply: Value = client()
+        .post(url(running, "/mcp"))
+        .bearer_auth(AGENT_TOKEN)
+        .json(&body)
+        .send()
+        .await
+        .expect("the MCP call is sent")
+        .json()
+        .await
+        .expect("the reply is JSON-RPC");
+    let result = &reply["result"];
+    assert_eq!(result["isError"], false, "the tool answers: {reply}");
+    let text = result["content"][0]["text"]
+        .as_str()
+        .expect("the result has its text");
+    serde_json::from_str(text).expect("the text is JSON")
+}
+
+/// A file's text, which the test expects to exist.
+fn read_text(path: &Path) -> String {
+    fs::read_to_string(path).unwrap_or_else(|err| panic!("{}: {err}", path.display()))
 }
 
 /// Waits until the loop has finished creating `task`'s worktree at `generation`.

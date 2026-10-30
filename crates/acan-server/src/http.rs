@@ -30,9 +30,10 @@ use serde_json::json;
 use crate::auth::Principal;
 use crate::host::{Host, SubmitError};
 use crate::intent_api::{self, IntentError};
+use crate::jobs;
 use crate::mcp;
 use crate::public::{self, PublicRoot};
-use crate::stream;
+use crate::{STATE_DIR, stream};
 
 /// Builds the router. The public files are served for every path the API does not claim.
 pub(crate) fn router<C: ModelClient + 'static>(host: Host<C>, web: Option<PublicRoot>) -> Router {
@@ -234,12 +235,14 @@ async fn get_usage<C: ModelClient + 'static>(
     Ok(Json(host.ledger().snapshot()))
 }
 
-/// Where a claimed task's worktree is, and the branch it is on.
+/// Where a claimed task's worktree is, the branch it is on, and the protected-head snapshot its
+/// tests mount protected paths from.
 #[derive(Serialize)]
 pub(crate) struct WorktreeView {
     task: String,
     path: String,
     branch: String,
+    snapshot: String,
 }
 
 /// Where the worktree of a claimed task is. Only the agent holding that task's lease may read
@@ -281,10 +284,12 @@ pub(crate) async fn worktree_of<C: ModelClient>(
         .worktree(task, generation)
         .await
         .map_err(|err| ApiError::Internal(err.into()))?;
+    let snapshot = jobs::protected_snapshot(workspace.repo(), &host.repo().join(STATE_DIR)).await?;
     Ok(WorktreeView {
         task: task.to_string(),
         path: worktree.path().display().to_string(),
         branch: worktree.branch().to_owned(),
+        snapshot: snapshot.display().to_string(),
     })
 }
 
