@@ -9,8 +9,9 @@ use std::time::{Duration, Instant};
 
 use acan_core::{ClashState, Locus, MAX_PREDICTIONS, Settlement};
 use acan_intent::{
-    CheckResult, GetReceiptResponse, GetScopeResponse, ItemClass, ItemState, Predicted, Prediction,
-    Receipt, ReceiptHash, ReceiptItem, Scope,
+    CheckResult, ContestKind, ContestResponse, Enforcement, EpisodeId, GetReceiptResponse,
+    GetRulingsResponse, GetScopeResponse, ItemClass, ItemState, NotEnforcedReason, Predicted,
+    Prediction, ProbeHash, Receipt, ReceiptHash, ReceiptItem, RulingSummary, RulingTagState, Scope,
 };
 use acan_llm::{ChatRequest, Message, ModelClient, Role, ToolCall, ToolSpec};
 use anyhow::{Context, bail};
@@ -213,6 +214,8 @@ struct Planned {
 /// already in the origin's normalized form. `gave_up` is every place a Narrow settlement took from
 /// this claim, in the order taken. No later plan of the claim may declare one of them again.
 /// `repair_rounds` is the confirmed scope's budget: how many bounced builds may be repaired.
+/// `rulings` are the rulings the origin held for the task's machines when the claim was made. They
+/// are text for the build brief, never a verdict on a build.
 #[derive(Debug, Clone)]
 struct Claim {
     task: String,
@@ -220,6 +223,7 @@ struct Claim {
     files: Vec<String>,
     gave_up: Vec<Given>,
     repair_rounds: u32,
+    rulings: Vec<RulingSummary>,
 }
 
 /// What one attempt at a task produced.
@@ -433,6 +437,24 @@ async fn try_claim<C: ModelClient>(
             )));
         }
     };
+    // The rulings in force on the task's machines are read with the scope, before the plan. A
+    // ruling is text the build brief shows the model; no ruling passes or fails anything here.
+    let rulings = match get_rulings(mcp, &task, row).await? {
+        Ok(rulings) => rulings,
+        Err(reason) => {
+            return Ok(Attempt::Skipped(format!(
+                "{task}: rulings refused: {reason}"
+            )));
+        }
+    };
+    log(
+        steps,
+        format!(
+            "read {} ruling(s) for {task} at ledger event {}",
+            rulings.rulings.len(),
+            rulings.ledger_head.event_seq
+        ),
+    );
     let repo = RepoFiles::load(&config.repo).await?;
     let planned = match plan_work(model, &repo, row, &[], steps).await {
         Ok(planned) => planned,
@@ -495,6 +517,7 @@ async fn try_claim<C: ModelClient>(
                 files: planned.footprint,
                 gave_up: Vec::new(),
                 repair_rounds,
+                rulings: rulings.rulings,
             }))
         }
     }
@@ -512,6 +535,34 @@ async fn get_scope(
     {
         Reply::Done(value) => Ok(Ok(serde_json::from_value(value).with_context(|| {
             format!("get_scope answered a scope the worker does not read for {task}")
+        })?)),
+        Reply::Refused(reason) => Ok(Err(reason)),
+    }
+}
+
+/// The rulings the origin holds for the task's scope machines, or the refusal it gave. The
+/// machines are the row's scope list; the origin answers only the rulings that apply to them.
+async fn get_rulings(
+    mcp: &McpClient,
+    task: &str,
+    row: &Value,
+) -> anyhow::Result<Result<GetRulingsResponse, String>> {
+    let machines: Vec<Value> = row["scope"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|machine| machine.is_string())
+        .cloned()
+        .collect();
+    match mcp
+        .call(
+            "get_rulings",
+            json!({ "version": MCP_VERSION, "task": task, "machine_ids": machines }),
+        )
+        .await?
+    {
+        Reply::Done(value) => Ok(Ok(serde_json::from_value(value).with_context(|| {
+            format!("get_rulings answered rulings the worker does not read for {task}")
         })?)),
         Reply::Refused(reason) => Ok(Err(reason)),
     }
@@ -651,6 +702,7 @@ async fn work<C: ModelClient>(
                         claim.repair_rounds
                     );
                     log(steps, format!("{} went to residue: {reason}", claim.task));
+                    contest_residue(mcp, &claim, &next, &reason, steps).await?;
                     return Ok(Exit::Residue {
                         task: claim.task.clone(),
                         reason,
@@ -667,14 +719,84 @@ async fn work<C: ModelClient>(
                 bounced = next;
                 round += 1;
             }
-            Repair::Residue(reason) => {
+            Repair::Residue { reason, given_up } => {
                 log(steps, format!("{} went to residue: {reason}", claim.task));
+                contest_residue(mcp, &claim, &given_up, &reason, steps).await?;
                 return Ok(Exit::Residue {
                     task: claim.task.clone(),
                     reason,
                 });
             }
         }
+    }
+}
+
+/// Files one contest for each item the worker gave up on that has an episode and a contest kind.
+/// A contest asks the human. It never widens the scope and never passes the item. A refused
+/// contest is logged and leaves the residue as it is.
+async fn contest_residue(
+    mcp: &McpClient,
+    claim: &Claim,
+    given_up: &[Reproducer],
+    reason: &str,
+    steps: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    for reproducer in given_up {
+        let (Some(episode), Some(kind)) = (reproducer.episode, contest_kind(reproducer.class))
+        else {
+            continue;
+        };
+        let reply = mcp
+            .call(
+                "file_contest",
+                json!({
+                    "version": MCP_VERSION,
+                    "task": claim.task,
+                    "episode_id": episode,
+                    "kind": kind,
+                    "reproducer": reproducer.probe,
+                    "rationale": reason,
+                }),
+            )
+            .await?;
+        match reply {
+            Reply::Done(value) => {
+                let filed: ContestResponse = serde_json::from_value(value).with_context(|| {
+                    format!(
+                        "file_contest answered a contest the worker does not read for {}",
+                        claim.task
+                    )
+                })?;
+                log(
+                    steps,
+                    format!(
+                        "filed contest {} on {} against episode {episode}",
+                        filed.contest_id, claim.task
+                    ),
+                );
+            }
+            Reply::Refused(refusal) => log(
+                steps,
+                format!("contest on {} refused: {refusal}", claim.task),
+            ),
+        }
+    }
+    Ok(())
+}
+
+/// The kind of contest an item the worker gave up on files. A ruling the item violates is a spec
+/// conflict. A difference no scope item allows, and an obligation the build could not meet inside
+/// the scope, are blocked work. Other classes are not contested by the worker.
+fn contest_kind(class: ItemClass) -> Option<ContestKind> {
+    match class {
+        ItemClass::ViolatesRuling => Some(ContestKind::SpecConflict),
+        ItemClass::OutOfScope | ItemClass::ObligationFailed => Some(ContestKind::Blocked),
+        ItemClass::Preserved
+        | ItemClass::ObligationFulfilled
+        | ItemClass::AuthorizedButUnspecified
+        | ItemClass::UnstableBase
+        | ItemClass::Incomparable
+        | ItemClass::Error => None,
     }
 }
 
@@ -780,8 +902,9 @@ fn tools_for(
 /// checked it, and the obligations that failed, all in the core's words.
 fn build_brief(claim: &Claim, round: u32, bounced: &[Reproducer]) -> String {
     let files = claim.files.join(", ");
+    let rulings = rulings_section(&claim.rulings);
     if bounced.is_empty() {
-        return format!("Task {}. Declared files: {files}.", claim.task);
+        return format!("Task {}. Declared files: {files}.\n\n{rulings}", claim.task);
     }
     let reproducers: Vec<String> = bounced
         .iter()
@@ -789,30 +912,67 @@ fn build_brief(claim: &Claim, round: u32, bounced: &[Reproducer]) -> String {
             format!(
                 "- item {} ({}) on probe {}: {}",
                 reproducer.item,
-                reproducer.class,
+                class_name(reproducer.class),
                 reproducer.probe,
                 reproducer.failed.join("; ")
             )
         })
         .collect();
     format!(
-        "Build {round} of {}. Declared files: {files}.\n\nThe gate bounced build {}. Repair only what it reports, in the files you declared:\n{}",
+        "Build {round} of {}. Declared files: {files}.\n\nThe gate bounced build {}. Repair only what it reports, in the files you declared:\n{}\n\n{rulings}",
         claim.task,
         round - 1,
         reproducers.join("\n")
     )
 }
 
+/// The rulings in force, one line each, labelled as the origin's text. Superseded rulings are
+/// left out. A ruling the gate checks is named as such; one it does not is a note. Neither one is
+/// a verdict on this build.
+fn rulings_section(rulings: &[RulingSummary]) -> String {
+    let lines: Vec<String> = rulings
+        .iter()
+        .filter(|ruling| ruling.state == RulingTagState::Active)
+        .map(ruling_line)
+        .collect();
+    if lines.is_empty() {
+        return "No rulings are in force on this task's machines.".to_owned();
+    }
+    format!(
+        "Rulings in force on this task's machines (the origin's text; the gate decides what passes):\n{}",
+        lines.join("\n")
+    )
+}
+
+/// One ruling as a brief line: its label, its lineage, and whether the gate checks it.
+fn ruling_line(ruling: &RulingSummary) -> String {
+    let gate = match &ruling.enforcement {
+        Enforcement::Enforced { .. } => "the gate checks it".to_owned(),
+        Enforcement::NotEnforced { reason, .. } => match reason {
+            NotEnforcedReason::Unexpressible { detail } => {
+                format!("a note the gate does not check: {detail}")
+            }
+            NotEnforcedReason::Deferred {} => {
+                "a note the gate does not check: the decision is deferred".to_owned()
+            }
+        },
+    };
+    format!("- {} ({}): {gate}", ruling.label, ruling.ruling_id)
+}
+
 /// The core's reproducer for one bounced item: what it checks, the probe that showed the
-/// difference, and the obligations that failed in the core's words.
+/// difference, the obligations that failed in the core's words, and the episode the core filed
+/// the difference under, when there is one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Reproducer {
     /// The receipt item's id.
     item: String,
-    /// The class the core gave the item, in its wire spelling.
-    class: String,
+    /// The class the core gave the item.
+    class: ItemClass,
     /// The probe that checked the item.
-    probe: String,
+    probe: ProbeHash,
+    /// The episode of the difference, which a contest names.
+    episode: Option<EpisodeId>,
     /// Each failed obligation, with the core's detail.
     failed: Vec<String>,
 }
@@ -832,8 +992,9 @@ impl Reproducer {
             .collect();
         Self {
             item: item.item_id.to_string(),
-            class: class_name(item.class),
-            probe: item.probe_hash.to_string(),
+            class: item.class,
+            probe: item.probe_hash,
+            episode: item.episode_id,
             failed: if failed.is_empty() {
                 vec![format!(
                     "no obligation failed; the core classed the difference as {}",
@@ -853,8 +1014,13 @@ enum Repair {
     Passed,
     /// Items to repair, each with its reproducer. The next round builds again with them.
     Bounced(Vec<Reproducer>),
-    /// The loop cannot take another round. The text is the difference it stopped on.
-    Residue(String),
+    /// The loop cannot take another round. `reason` is the difference it stopped on. `given_up`
+    /// holds the items the worker repaired without success, which it contests when they have an
+    /// episode. The core's own stops give up nothing: the core already decided them.
+    Residue {
+        reason: String,
+        given_up: Vec<Reproducer>,
+    },
 }
 
 /// Reads a receipt into the next round. A bounce is a difference the worker can repair. A residue
@@ -865,10 +1031,13 @@ fn repair(receipt: &Receipt, repeats: &mut BTreeMap<String, u32>) -> Repair {
     let mut bounced = Vec::new();
     for item in &receipt.items {
         if matches!(item.state, ItemState::Stopped | ItemState::Residue) {
-            return Repair::Residue(format!(
-                "{} is {:?}: the core stopped it, so a human decides",
-                item.item_id, item.state
-            ));
+            return Repair::Residue {
+                reason: format!(
+                    "{} is {:?}: the core stopped it, so a human decides",
+                    item.item_id, item.state
+                ),
+                given_up: Vec::new(),
+            };
         }
         match item.class {
             ItemClass::Preserved | ItemClass::ObligationFulfilled => {}
@@ -882,10 +1051,13 @@ fn repair(receipt: &Receipt, repeats: &mut BTreeMap<String, u32>) -> Repair {
                 let seen = repeats.entry(key).or_insert(0);
                 *seen += 1;
                 if *seen >= REPEAT_LIMIT {
-                    return Repair::Residue(format!(
-                        "{} bounced {} times on the same difference (probe {}), and the third repeat is residue",
-                        item.item_id, *seen, item.probe_hash
-                    ));
+                    return Repair::Residue {
+                        reason: format!(
+                            "{} bounced {} times on the same difference (probe {}), and the third repeat is residue",
+                            item.item_id, *seen, item.probe_hash
+                        ),
+                        given_up: vec![Reproducer::of(item)],
+                    };
                 }
                 bounced.push(Reproducer::of(item));
             }
@@ -893,11 +1065,14 @@ fn repair(receipt: &Receipt, repeats: &mut BTreeMap<String, u32>) -> Repair {
             | ItemClass::UnstableBase
             | ItemClass::Incomparable
             | ItemClass::Error => {
-                return Repair::Residue(format!(
-                    "{} is {}, which no build repairs",
-                    item.item_id,
-                    class_name(item.class)
-                ));
+                return Repair::Residue {
+                    reason: format!(
+                        "{} is {}, which no build repairs",
+                        item.item_id,
+                        class_name(item.class)
+                    ),
+                    given_up: Vec::new(),
+                };
             }
         }
     }
@@ -1689,6 +1864,7 @@ mod tests {
             files: vec!["model/store.ts".to_owned()],
             gave_up: Vec::new(),
             repair_rounds: 2,
+            rulings: Vec::new(),
         }
     }
 
@@ -1886,6 +2062,10 @@ mod tests {
     /// A real scope answer from the intent fixtures, confirmed at revision 2.
     const SCOPE: &str = include_str!("../../acan-intent/fixtures/mcp-get-scope-response.json");
     const PROBE: &str = "sha256:762703905cfc5ffa376dfb1b89d53c9ce693dc5f3e1628b39b06935364f62b45";
+    /// The episode `i-retry-after` is filed under in the same fixture.
+    const EPISODE: &str = "sha256:1acc401ccb3ea61be044f545a3612c535b8aebe6d8333b3d55cc56773f59e736";
+    /// The rulings the origin holds for the task, from the intent fixtures: one enforced, one note.
+    const RULINGS: &str = include_str!("../../acan-intent/fixtures/mcp-get-rulings-response.json");
     const STORE: &str = "model/store.ts";
 
     /// The gate's answer for build `build`, with only the item `keep` among its items. Each build
@@ -1915,8 +2095,15 @@ mod tests {
         };
         assert_eq!(next.len(), 1, "{next:?}");
         assert_eq!(next[0].item, "i-retry-after");
-        assert_eq!(next[0].class, "obligation_failed");
-        assert_eq!(next[0].probe, PROBE);
+        assert_eq!(next[0].class, ItemClass::ObligationFailed);
+        assert_eq!(next[0].probe.to_string(), PROBE);
+        assert_eq!(
+            next[0]
+                .episode
+                .map(|episode| episode.to_string())
+                .as_deref(),
+            Some(EPISODE)
+        );
         assert_eq!(
             next[0].failed,
             vec!["obl-retry-after failed: header.retry-after is absent at step s6".to_owned()]
@@ -1941,10 +2128,14 @@ mod tests {
         let mut repeats = BTreeMap::new();
         assert!(matches!(repair(&receipt, &mut repeats), Repair::Bounced(_)));
         assert!(matches!(repair(&receipt, &mut repeats), Repair::Bounced(_)));
-        let Repair::Residue(reason) = repair(&receipt, &mut repeats) else {
+        let Repair::Residue { reason, given_up } = repair(&receipt, &mut repeats) else {
             panic!("the third repeat is residue");
         };
         assert!(reason.contains("third repeat is residue"), "{reason}");
+        // The item the worker gave up on is the one it contests, under its own episode.
+        assert_eq!(given_up.len(), 1, "{given_up:?}");
+        assert_eq!(given_up[0].item, "i-retry-after");
+        assert!(given_up[0].episode.is_some(), "{given_up:?}");
     }
 
     #[test]
@@ -1953,19 +2144,78 @@ mod tests {
             repair(&receipt_items("chk-health", 1), &mut BTreeMap::new()),
             Repair::Passed
         );
-        let Repair::Residue(stopped) =
-            repair(&receipt_items("d-links-clicks", 1), &mut BTreeMap::new())
+        let Repair::Residue {
+            reason: stopped,
+            given_up,
+        } = repair(&receipt_items("d-links-clicks", 1), &mut BTreeMap::new())
         else {
             panic!("a stopped item is residue");
         };
         assert!(stopped.contains("the core stopped it"), "{stopped}");
+        // The core stopped the item, so the worker has nothing to contest.
+        assert!(given_up.is_empty(), "{given_up:?}");
         assert!(matches!(
             repair(
                 &receipt_items("d-login-error-body", 1),
                 &mut BTreeMap::new()
             ),
-            Repair::Residue(_)
+            Repair::Residue { .. }
         ));
+    }
+
+    #[test]
+    fn only_the_difference_classes_the_worker_repairs_are_contested_and_with_their_kind() {
+        assert_eq!(
+            contest_kind(ItemClass::ViolatesRuling),
+            Some(ContestKind::SpecConflict)
+        );
+        assert_eq!(
+            contest_kind(ItemClass::OutOfScope),
+            Some(ContestKind::Blocked)
+        );
+        assert_eq!(
+            contest_kind(ItemClass::ObligationFailed),
+            Some(ContestKind::Blocked)
+        );
+        assert_eq!(contest_kind(ItemClass::Preserved), None);
+        assert_eq!(contest_kind(ItemClass::AuthorizedButUnspecified), None);
+    }
+
+    #[test]
+    fn the_rulings_in_force_are_briefed_as_the_origins_text_and_superseded_ones_are_left_out() {
+        let response: GetRulingsResponse =
+            serde_json::from_str(RULINGS).expect("the rulings fixture decodes");
+        let section = rulings_section(&response.rulings);
+        assert!(
+            section.starts_with("Rulings in force on this task's machines (the origin's text; the gate decides what passes):"),
+            "{section}"
+        );
+        assert!(
+            section.contains("- Links list stays newest first (r-1): the gate checks it"),
+            "{section}"
+        );
+        assert!(
+            section.contains("- Error pages read as plain sentences (r-2): a note the gate does not check: tone of error text has no predicate"),
+            "{section}"
+        );
+        // A superseded ruling is no longer in force, so the brief does not name it.
+        let mut superseded: Value = serde_json::from_str(RULINGS).expect("JSON");
+        superseded["rulings"][0]["state"] = json!("superseded");
+        let response: GetRulingsResponse =
+            serde_json::from_value(superseded).expect("the edited rulings decode");
+        let section = rulings_section(&response.rulings);
+        assert!(
+            !section.contains("Links list stays newest first"),
+            "{section}"
+        );
+        assert!(
+            section.contains("Error pages read as plain sentences"),
+            "{section}"
+        );
+        assert_eq!(
+            rulings_section(&[]),
+            "No rulings are in force on this task's machines."
+        );
     }
 
     /// A repository with `model/store.ts` committed on `main`, and the worker's identity set.
@@ -2067,6 +2317,10 @@ mod tests {
         receipts: Vec<Value>,
         /// The scope `get_scope` answers, with the repair budget the test sets.
         scope: Value,
+        /// The rulings `get_rulings` answers.
+        rulings: Value,
+        /// The contests the worker filed, as it sent them.
+        contests: Vec<Value>,
         /// The worktree and its snapshot, as `get_worktree` names them.
         worktree: String,
         snapshot: String,
@@ -2119,6 +2373,16 @@ mod tests {
                 "scope": ["model"],
             }])),
             "get_scope" => Ok(origin.scope.clone()),
+            "get_rulings" => Ok(origin.rulings.clone()),
+            "file_contest" => {
+                origin.contests.push(args.clone());
+                Ok(json!({
+                    "version": "acan-mcp/1",
+                    "contest_id": "k-1",
+                    "target": args["episode_id"],
+                    "status": "open",
+                }))
+            }
             "claim_task" => Ok(json!({ "task": "t-1", "generation": 1 })),
             "declare_changes" => Ok(json!({ "clashes_found": [] })),
             "get_task" => {
@@ -2336,6 +2600,8 @@ mod tests {
         released: Vec<String>,
         /// Every tool the worker called.
         calls: Vec<String>,
+        /// The contests the worker filed.
+        contests: Vec<Value>,
     }
 
     /// Runs one worker against the fake origin. The gate answers build `n` with `receipts[n - 1]`,
@@ -2348,6 +2614,7 @@ mod tests {
             stage: "declared".to_owned(),
             receipts,
             scope,
+            rulings: serde_json::from_str(RULINGS).expect("the rulings fixture is JSON"),
             worktree: repo.display().to_string(),
             snapshot: snapshot.path().display().to_string(),
             ..Origin::default()
@@ -2380,6 +2647,7 @@ mod tests {
             reports: origin.reports,
             released: origin.released.clone(),
             calls: origin.calls.clone(),
+            contests: origin.contests.clone(),
         }
     }
 
@@ -2459,6 +2727,43 @@ mod tests {
             "{steps:#?}"
         );
         assert_eq!(ran.released, vec!["t-1".to_owned()]);
+        // The rulings are read at claim time and briefed as the origin's text.
+        assert!(
+            ran.calls.iter().any(|call| call == "get_rulings"),
+            "{:?}",
+            ran.calls
+        );
+        assert!(
+            ran.briefs[0].contains("- Links list stays newest first (r-1): the gate checks it"),
+            "{}",
+            ran.briefs[0]
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|step| step == "read 2 ruling(s) for t-1 at ledger event 2"),
+            "{steps:#?}"
+        );
+        // The worker contests the residue under the episode of the item it gave up on. The
+        // contest names the probe and carries the residue's reason as its rationale.
+        assert_eq!(ran.contests.len(), 1, "{:?}", ran.contests);
+        assert_eq!(ran.contests[0]["task"], json!("t-1"));
+        assert_eq!(ran.contests[0]["episode_id"], json!(EPISODE));
+        assert_eq!(ran.contests[0]["kind"], json!("blocked"));
+        assert_eq!(ran.contests[0]["reproducer"], json!(PROBE));
+        assert!(
+            ran.contests[0]["rationale"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("third repeat is residue")),
+            "{}",
+            ran.contests[0]
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|step| step == &format!("filed contest k-1 on t-1 against episode {EPISODE}")),
+            "{steps:#?}"
+        );
     }
 
     /// The second build gets the reproducer and passes, so the run is built and nothing bounces
@@ -2503,5 +2808,9 @@ mod tests {
         assert_eq!(ran.reports, 1, "{:?}", ran.calls);
         assert_eq!(ran.briefs.len(), 1, "{:#?}", ran.briefs);
         assert_eq!(ran.released, vec!["t-1".to_owned()]);
+        // The bounced item had no round left, so the worker contests it under its episode.
+        assert_eq!(ran.contests.len(), 1, "{:?}", ran.contests);
+        assert_eq!(ran.contests[0]["episode_id"], json!(EPISODE));
+        assert_eq!(ran.contests[0]["kind"], json!("blocked"));
     }
 }
