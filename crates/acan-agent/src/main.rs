@@ -92,6 +92,7 @@ async fn run_cli() -> Result<Exit> {
         test_command: cli.test_command,
         max_steps: cli.max_steps,
         wait: Duration::from_secs(cli.wait_secs),
+        receipt_wait: Duration::from_secs(cli.wait_secs),
         heartbeat: Duration::from_secs(cli.heartbeat_secs),
         poll: Duration::from_millis(500),
     };
