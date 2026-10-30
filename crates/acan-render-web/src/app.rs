@@ -36,11 +36,6 @@ const FIT_FLAG_RIGHT_CSS: f32 = 60.0;
 /// about 30 pixels, and four rows stack above a machine in a clash. Measured against the shots:
 /// three rows leave about 70 pixels of margin, four about 40.
 const FIT_FLAG_TOP_CSS: f32 = 100.0;
-/// The screen rectangle the fixed usage panel covers, in CSS pixels: the bottom-left corner,
-/// measured against the shots (the panel spans about 270 by 75 pixels there) and padded right
-/// and up so a machine's name beside or above the panel stays clear of it. The panel's height
-/// grows with the usage rows, so the pad is generous.
-const USAGE_PANEL_CSS: [f32; 4] = [0.0, 780.0, 360.0, 900.0];
 /// Degrees of orbit per CSS pixel of drag.
 const ORBIT_DEG_PER_PX: f32 = 0.4;
 /// Degrees of tilt per CSS pixel of drag.
@@ -728,7 +723,19 @@ impl App {
         self.view_version += 1;
         self.motion.sync(&marks);
         self.marks = marks;
+        let panel_was = self.panel_shows();
         self.view = Some(view);
+        if !panel_was && self.panel_shows() {
+            // The usage panel just appeared over the bottom-left corner, and the fit kept no
+            // room for it. Refit at the current angles so the machines' names move clear.
+            if let Some(loaded) = &self.plant {
+                self.camera.fit_boxes_room(
+                    &loaded.framing,
+                    FIT_MARGIN_CSS * self.dpr,
+                    self.fit_room(),
+                );
+            }
+        }
         self.apply_focus();
         self.sync_scene();
         Ok(())
@@ -770,14 +777,27 @@ impl App {
 
     /// The extra room the fit keeps for the page's overlays: flag chips above the plant and
     /// at its right edge, machine names at the bottom, and the fixed usage panel at the
-    /// bottom-left corner.
+    /// bottom-left corner while it shows.
     fn fit_room(&self) -> FitRoom {
+        let [_, vh] = self.camera.viewport();
         FitRoom {
             top: FIT_FLAG_TOP_CSS * self.dpr,
             right: FIT_FLAG_RIGHT_CSS * self.dpr,
             bottom: FIT_LABEL_CSS * self.dpr,
-            avoid: USAGE_PANEL_CSS.map(|edge| edge * self.dpr),
+            avoid: if self.panel_shows() {
+                labels::panel_avoid(vh, self.dpr)
+            } else {
+                [0.0; 4]
+            },
         }
+    }
+
+    /// Whether the usage panel is on screen: it shows once the view holds a model call, the
+    /// same rule the page uses to unhide it.
+    fn panel_shows(&self) -> bool {
+        self.view
+            .as_ref()
+            .is_some_and(|view| !view.usage.is_empty())
     }
 
     /// The zoom at which the plant fills the view at the default angles, in the current

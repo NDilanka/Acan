@@ -7,6 +7,19 @@
 use acan_render::camera::{Projection, Projector};
 use acan_render::{Aabb, Camera};
 
+/// The screen rectangle the usage panel covers on a viewport `viewport_height` device pixels
+/// tall, anchored to its bottom-left corner, as `(min x, min y, max x, max y)` in device pixels.
+/// The fit keeps the machines' names clear of it; see `Camera::fit_boxes_room`.
+pub fn panel_avoid(viewport_height: f32, dpr: f32) -> [f32; 4] {
+    let [width, height] = USAGE_PANEL_CSS;
+    [
+        0.0,
+        viewport_height - height * dpr,
+        width * dpr,
+        viewport_height,
+    ]
+}
+
 /// A machine named at rest needs at least this many CSS pixels of plate width on screen.
 pub const REST_MIN_CSS_PX: f32 = 18.0;
 /// With Alt held every machine may be named, but only once its plate is this wide on screen.
@@ -17,6 +30,11 @@ pub const CHAR_CSS_PX: f32 = 6.5;
 /// From the plate's front edge down to the middle of the label, in CSS pixels. Matches the
 /// label's offset and line height in `index.html`.
 pub const LABEL_DROP_CSS_PX: f32 = 13.0;
+/// The size of the screen rectangle the fixed usage panel covers, in CSS pixels: width and
+/// height, measured against the shots (the panel spans about 270 by 75 pixels there) and padded
+/// right and up so a machine's name beside or above the panel stays clear of it. The panel's
+/// height grows with the usage rows, so the pad is generous.
+pub const USAGE_PANEL_CSS: [f32; 2] = [360.0, 120.0];
 /// The label's bottom edge sits this many `LABEL_DROP_CSS_PX` below the plate's front edge.
 const LABEL_BOTTOM_DROPS: f32 = 1.6;
 /// Below the size to name, this many of the largest machines are still named, down to
@@ -486,6 +504,20 @@ fn unit2(v: [f32; 2]) -> [f32; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_usage_panel_room_anchors_to_the_bottom_left_corner() {
+        for (height, dpr) in [(700.0, 1.0), (1200.0, 2.0)] {
+            let avoid = panel_avoid(height, dpr);
+            assert_eq!(avoid[0], 0.0, "left edge is the screen's left edge");
+            assert_eq!(avoid[3], height, "bottom is the viewport height");
+            assert_eq!(
+                avoid[1],
+                height - 120.0 * dpr,
+                "top is the panel's height up from the bottom"
+            );
+        }
+    }
 
     const W: f32 = 96.0;
     const D: f32 = 86.0;
