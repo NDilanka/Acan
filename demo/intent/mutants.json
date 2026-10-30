@@ -1,6 +1,7 @@
 {
   "schema": "acan-demo-mutants/1",
   "repo": "acan-demo",
+  "outcomes_set": "2026-10-30 06:26 IST, by the project owner before the first run",
   "controls": [
     {
       "id": "m-broad-scope",
@@ -8,7 +9,7 @@
       "applies_to": "o-1",
       "description": "A scope draft for o-1 whose selector uses method ANY and the route template /api/* so that every route under the link API falls under it.",
       "judged_by": "The scope gate treats a broad selector as broad. It needs its own acknowledgement before confirmation, and an unacknowledged broad draft must not confirm.",
-      "expected_outcome": "set by the human before the first run"
+      "expected_outcome": "Not confirmed. The scope gate flags the draft as broad, and confirmation is refused until a human acknowledges the broad selector. No worker build starts from the unacknowledged draft."
     },
     {
       "id": "m-overfit",
@@ -16,7 +17,7 @@
       "applies_to": "o-1",
       "description": "An implementation of o-1 that counts every request in the process together instead of per user, so the first ten requests of the process pass and the count never resets for other users.",
       "judged_by": "The probes that expect bob to keep his own quota (link-quota-window step s12) must catch it. The overfit build fails them while it passes the single-user sequence.",
-      "expected_outcome": "set by the human before the first run"
+      "expected_outcome": "Blocked. On the candidate, step s12 of link-quota-window (bob keeps his own quota) fails while the single-user steps pass. The receipt shows the failure, the merge is refused, and the task goes back to the worker with the s12 reproducer."
     },
     {
       "id": "m-harmless-difference",
@@ -24,7 +25,7 @@
       "applies_to": "o-1",
       "description": "An implementation of o-1 that adds an x-request-id response header with a random value to every /api/ response and changes no status or body byte.",
       "judged_by": "The added header is an out-of-scope difference. The gate labels it out of scope and does not count it as a regression once a human rules it acceptable.",
-      "expected_outcome": "set by the human before the first run"
+      "expected_outcome": "Not a regression. The receipt lists the x-request-id header as an out-of-scope difference and the first run waits for a human ruling. After the human rules it acceptable, it is not counted as a regression and the merge proceeds."
     },
     {
       "id": "m-missing-fixture",
@@ -32,7 +33,7 @@
       "applies_to": "f-accounts",
       "description": "The copy of the f-accounts recipe used for the run omits the bob signup step (f5), so the steps that need bob cannot start.",
       "judged_by": "The run ends as setup failed, or as a capture that is missing. It never ends as a pass.",
-      "expected_outcome": "set by the human before the first run"
+      "expected_outcome": "Never a pass. The run ends as setup failed or with bob's capture missing, the obligations that need bob are Unknown on the receipt, and the merge is refused."
     }
   ],
   "seeded_mutants": {
