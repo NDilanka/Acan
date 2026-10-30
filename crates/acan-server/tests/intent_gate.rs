@@ -1534,6 +1534,205 @@ async fn a_land_installed_before_its_result_was_recorded_is_recorded_as_landed()
     host.shutdown().await.expect("the writer drains");
 }
 
+/// Records a passing receipt for `run` on the context it was prepared with, as a judge that passed
+/// would. The task is queued when this returns. Returns the merged commit that receipt tests.
+async fn pass_on_prepared(host: &Host<Stub>, order: OrderId, run: GateRunId) -> CommitSha {
+    let prepared = host
+        .read(|world| {
+            world
+                .lane(order)
+                .and_then(|lane| lane.runs.get(&run))
+                .and_then(|lane_run| lane_run.prepared.clone())
+        })
+        .expect("the run is prepared");
+    let receipt = passing_receipt(
+        &order.to_string(),
+        &scope_of(&order.to_string(), &prepared.base_commit),
+        &serde_json::to_value(&prepared).expect("the prepared context encodes"),
+    );
+    host.submit(Command::System(SystemCmd::ReceiptReady {
+        run,
+        receipt: Box::new(serde_json::from_value(receipt).expect("the receipt decodes")),
+    }))
+    .await
+    .expect("the passing receipt is recorded");
+    prepared.context.merged_commit
+}
+
+/// The protected head moves after the scope was confirmed and the candidate was prepared on the
+/// old head, before its receipt lands. Nothing the run was tested under moved but the head, so the
+/// core re-binds the confirmed scope to the new head. The run is then prepared and judged again on
+/// it, and the candidate lands on the new head. The merged commit of the old head is never
+/// installed.
+#[tokio::test]
+async fn a_moved_protected_head_rebinds_the_scope_and_the_candidate_is_judged_again() {
+    let _docker = DOCKER.lock().await;
+    let demo = Demo::pinned().await;
+    let old_head = demo.head();
+    let candidate = demo.candidate("rebind-head", touch_notes);
+
+    // The job loop prepares the candidate on the old head and is stopped before its judge
+    // records a receipt. The receipt below is the one the run passed with on the old head.
+    let live = Live::start(&demo.root).await;
+    let (order, task) = report_built(&live, &demo, &candidate).await;
+    let run = until("the candidate to be prepared", || {
+        live.host.read(|world| prepared_run(world, order))
+    })
+    .await;
+    live.stop().await;
+
+    let host = host_over(&demo.root, foreman()).await;
+    let old_merged = pass_on_prepared(&host, order, run).await;
+
+    let moved = demo.advance(|root| {
+        fs::write(root.join("MOVED.md"), "The protected head moved.\n")
+            .expect("the note is written");
+    });
+    assert_ne!(moved, old_head, "the protected head moved");
+
+    let jobs = spawn_jobs(host.clone());
+    host.wake_jobs();
+    until("the candidate to land on the moved head", || {
+        host.read(|world| landed(world, task).then_some(()))
+    })
+    .await;
+
+    let landed_head = demo.head();
+    assert_ne!(
+        landed_head, old_merged,
+        "the merged commit of the old head is never installed"
+    );
+    git(
+        &demo.root,
+        &[
+            "merge-base",
+            "--is-ancestor",
+            moved.as_str(),
+            landed_head.as_str(),
+        ],
+    );
+    let receipted = host
+        .read(|world| {
+            world
+                .lane(order)
+                .and_then(|lane| lane.latest_receipt())
+                .map(|record| {
+                    (
+                        record.receipt.prepared.base_commit.clone(),
+                        record.receipt.prepared.context.merged_commit.clone(),
+                    )
+                })
+        })
+        .expect("the landed candidate has a receipt");
+    assert_eq!(
+        receipted,
+        (moved.clone(), landed_head.clone()),
+        "the receipt that landed names the moved head and the merged commit it installed"
+    );
+
+    let log = host
+        .store()
+        .load_from(Seq::new(0))
+        .await
+        .expect("the log reads");
+    let rebound = log
+        .iter()
+        .filter(|stamped| matches!(&stamped.event, Event::ScopeRebound { order: found, .. } if *found == order))
+        .count();
+    assert_eq!(rebound, 1, "the confirmed scope was re-bound once");
+    let prepared_runs = log
+        .iter()
+        .filter(|stamped| matches!(&stamped.event, Event::CandidatePrepared { run: found, .. } if *found == run))
+        .count();
+    assert_eq!(prepared_runs, 2, "the run was prepared on each head, once");
+
+    jobs.abort();
+    let _ = jobs.await;
+    host.shutdown().await.expect("the writer drains");
+}
+
+/// The protected head moves, and so does a protected input the candidate was tested under: a fixture
+/// recipe in the probe corpus. A re-bound run would be judged under inputs no human confirmed, so
+/// the core refuses the re-bind. The queued land is refused, nothing installs, and the scope stays
+/// confirmed on the old head until a human confirms it again.
+#[tokio::test]
+async fn a_moved_protected_input_refuses_the_rebind_and_nothing_lands() {
+    let _docker = DOCKER.lock().await;
+    let demo = Demo::pinned().await;
+    let old_head = demo.head();
+    let candidate = demo.candidate("refuse-rebind", touch_notes);
+
+    let live = Live::start(&demo.root).await;
+    let (order, task) = report_built(&live, &demo, &candidate).await;
+    let run = until("the candidate to be prepared", || {
+        live.host.read(|world| prepared_run(world, order))
+    })
+    .await;
+    live.stop().await;
+
+    let host = host_over(&demo.root, foreman()).await;
+    pass_on_prepared(&host, order, run).await;
+
+    let moved = demo.advance(|root| {
+        let corpus = root.join(PROTECTED_CORPUS);
+        let text = fs::read_to_string(&corpus).expect("the corpus reads");
+        let edited = text.replacen("alice-fixture-pw", "alice-fixture-pw-moved", 1);
+        assert_ne!(edited, text, "the corpus has a fixture password to move");
+        fs::write(&corpus, edited).expect("the corpus is written");
+    });
+    assert_ne!(moved, old_head, "the protected head moved");
+
+    let jobs = spawn_jobs(host.clone());
+    host.wake_jobs();
+    until("the queued land to be decided", || {
+        host.read(|world| {
+            (!matches!(
+                world.task(task).map(|found| &found.state),
+                Some(TaskState::Queued { .. })
+            ))
+            .then_some(())
+        })
+    })
+    .await;
+
+    assert_eq!(demo.head(), moved, "nothing was installed");
+    assert!(
+        host.read(|world| !landed(world, task)),
+        "the task did not land"
+    );
+    assert_eq!(
+        host.read(|world| world
+            .lane(order)
+            .and_then(|lane| lane.confirmation.as_ref())
+            .map(|confirmation| confirmation.base_commit.clone())),
+        Some(old_head),
+        "the scope stays confirmed on the old head"
+    );
+
+    let log = host
+        .store()
+        .load_from(Seq::new(0))
+        .await
+        .expect("the log reads");
+    let rebound = log
+        .iter()
+        .filter(|stamped| matches!(&stamped.event, Event::ScopeRebound { .. }))
+        .count();
+    assert_eq!(rebound, 0, "no re-bind was recorded");
+    let refused = log
+        .iter()
+        .filter(|stamped| matches!(&stamped.event, Event::LandFailed { task: found, reason } if *found == task && reason.contains("confirmed again")))
+        .count();
+    assert_eq!(
+        refused, 1,
+        "the land is refused: the scope must be confirmed again"
+    );
+
+    jobs.abort();
+    let _ = jobs.await;
+    host.shutdown().await.expect("the writer drains");
+}
+
 /// The same for a cancel: a delivery read before the order is cancelled does not stand after it.
 #[tokio::test]
 async fn a_delivery_read_before_a_cancel_does_not_stand() {

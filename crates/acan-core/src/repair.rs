@@ -249,7 +249,7 @@ pub(crate) fn decide_receipt(
             ))
         };
     }
-    if !lane::is_gating(world, lane_run.task, run) {
+    if !lane::awaits_receipt(world, lane_run.task, run) {
         return Err(Rejection::wrong_state("gate run", "closed"));
     }
     let prepared = lane_run

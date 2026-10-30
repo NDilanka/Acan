@@ -7,8 +7,8 @@ use std::borrow::Cow;
 use std::fmt;
 
 use acan_intent::{
-    Contest, ContestId, ContestKind, ContestStatus, EpisodeId, LedgerEvent, Prediction,
-    PreparedCommit, ProbeHash, Receipt, Scope, ScopeConfirmation, ScopeHash, ScopeRev,
+    CommitSha, Contest, ContestId, ContestKind, ContestStatus, EpisodeId, GateContext, LedgerEvent,
+    Prediction, PreparedCommit, ProbeHash, Receipt, Scope, ScopeConfirmation, ScopeHash, ScopeRev,
 };
 use serde::{Deserialize, Serialize};
 
@@ -274,6 +274,17 @@ pub enum SystemCmd {
         /// The receipt.
         receipt: Box<Receipt>,
     },
+    /// The protected head moved after the scope was confirmed, and nothing the scope binds
+    /// moved. The host computed the gate context on `base`; the core re-binds the confirmation
+    /// to `base` and checks that context against what each prepared run was tested under.
+    RebindBase {
+        /// The order.
+        order: OrderId,
+        /// The protected head the confirmation moves to.
+        base: CommitSha,
+        /// The gate context computed on `base` with the current scope and rulings.
+        context: Box<GateContext>,
+    },
 }
 
 /// Who caused an event.
@@ -447,6 +458,16 @@ pub enum Event {
     ScopeConfirmed {
         order: OrderId,
         confirmation: Box<ScopeConfirmation>,
+    },
+    /// The confirmed scope moved to a new protected head. Its executable content is unchanged.
+    /// Each run in `runs` lost its prepared commit and receipt, so none of them is reused: each
+    /// is prepared on the new base and receipted again.
+    ScopeRebound {
+        order: OrderId,
+        scope: Box<Scope>,
+        scope_hash: ScopeHash,
+        confirmation: Box<ScopeConfirmation>,
+        runs: Vec<GateRunId>,
     },
     /// An agent read back a scope-first task; the acknowledgement is derived from it.
     ScopedReadbackPosted {

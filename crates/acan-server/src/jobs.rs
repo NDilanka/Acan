@@ -46,7 +46,8 @@ use acan_core::{
 };
 use acan_git::{Preparation, PrepareOutcome, Repo};
 use acan_intent::{
-    AppContract, CommitSha, ContainerPolicy, PreparedCommit, ProbeCorpus, Scope, ScopeConfirmation,
+    AppContract, CommitSha, ContainerPolicy, GateContext, PreparedCommit, ProbeCorpus, Scope,
+    ScopeConfirmation,
 };
 use acan_llm::{CallRecord, LlmError, ModelClient, Role};
 use acan_witness::RunnerConfig;
@@ -751,7 +752,14 @@ async fn land<C: ModelClient>(
 ) -> Result<Option<SystemCmd>, JobError> {
     let result = match host.workspace() {
         Some(workspace) => match host.read(|world| landing(world, task)) {
-            Landing::Gated(delivery) => gated_land(host, &workspace, &delivery, head).await?,
+            Landing::Gated(delivery) => {
+                match gated_land(host, &workspace, &delivery, head).await? {
+                    Some(result) => result,
+                    // The scope was re-bound to the new head. The candidate is prepared again, and
+                    // this land decided nothing, so it records no result.
+                    None => return Ok(None),
+                }
+            }
             Landing::Legacy => legacy_land(host, &workspace, task, head).await?,
             Landing::Refused(reason) => Err(reason),
         },
@@ -1052,7 +1060,7 @@ async fn gated_land<C: ModelClient>(
     workspace: &Arc<Workspace>,
     delivery: &Delivery,
     head: &CommitId,
-) -> Result<Result<CommitId, String>, JobError> {
+) -> Result<Option<Result<CommitId, String>>, JobError> {
     let repo = workspace.repo();
     // The fence holds every command that can change the delivery from the check below through
     // the install, so the check never passes for a state the install then ignores. The writes
@@ -1061,7 +1069,7 @@ async fn gated_land<C: ModelClient>(
     let fence = host.fence_landings().await;
     let writes = workspace.lock_writes().await;
     if let Err(reason) = host.read(|world| delivery.stands(world)) {
-        return Ok(Err(reason));
+        return Ok(Some(Err(reason)));
     }
     // The receipt names the merged commit the land installs. It was persisted before any install,
     // so it is the install intent. When the branch already holds that commit, an earlier install
@@ -1071,7 +1079,7 @@ async fn gated_land<C: ModelClient>(
     if protected_sha(repo).await? == *tested {
         let blockers = land::blockers(&delivery.receipt);
         if !blockers.is_empty() {
-            return Ok(Err(refusal(&LandError::Blocked(blockers))));
+            return Ok(Some(Err(refusal(&LandError::Blocked(blockers)))));
         }
         drop(writes);
         drop(fence);
@@ -1082,7 +1090,7 @@ async fn gated_land<C: ModelClient>(
         );
         let landed = landed_commit(tested)?;
         catch_up(host, workspace, &landed).await;
-        return Ok(Ok(landed));
+        return Ok(Some(Ok(landed)));
     }
     let pass = Pass::new(host, repo, delivery.run).await?;
     let candidate = prepare_candidate(repo, &pass, head).await?;
@@ -1096,6 +1104,14 @@ async fn gated_land<C: ModelClient>(
     let scratch = pass.scratch.join("land");
     let plan = pass.plan(repo, &candidate, &scratch);
     let current = observe::current(&plan, &order).await?;
+    // Only the protected head moved since the receipt: the core may re-bind the scope to it, and
+    // the candidate is then prepared and receipted again. The receipt here is never installed.
+    if current.protected_head != delivery.receipt.prepared.base_commit {
+        let rebound = rebind(host, delivery, &current).await;
+        drop(writes);
+        drop(fence);
+        return rebound;
+    }
     let installed = match land::final_gate(&delivery.receipt, &current, &candidate) {
         Ok(clearance) => land::install(repo, clearance).await,
         Err(err) => Err(err),
@@ -1106,10 +1122,43 @@ async fn gated_land<C: ModelClient>(
         Ok(commit) => {
             let landed = landed_commit(&commit)?;
             catch_up(host, workspace, &landed).await;
-            Ok(Ok(landed))
+            Ok(Some(Ok(landed)))
         }
         Err(LandError::Git(err)) => Err(JobError::Git(err)),
-        Err(err) => Ok(Err(refusal(&err))),
+        Err(err) => Ok(Some(Err(refusal(&err)))),
+    }
+}
+
+/// The protected head moved after the candidate was prepared. The core re-binds the confirmed
+/// scope to `current`'s head only when nothing else the run was tested under moved. The re-bind
+/// clears the run's prepared commit and receipt, so the run is prepared and receipted again on
+/// the new head; the old receipt is never reused. Otherwise the core refuses, and a human must
+/// confirm the scope again.
+///
+/// Returns `None` when the scope was re-bound: the land decided nothing, so it records no result.
+async fn rebind<C: ModelClient>(
+    host: &Host<C>,
+    delivery: &Delivery,
+    current: &GateContext,
+) -> Result<Option<Result<CommitId, String>>, JobError> {
+    let order = host
+        .read(|world| world.task(delivery.task).map(|task| task.order))
+        .ok_or_else(|| {
+            JobError::Unavailable(format!("task {} is not in the origin", delivery.task))
+        })?;
+    let command = SystemCmd::RebindBase {
+        order,
+        base: current.protected_head.clone(),
+        context: Box::new(current.clone()),
+    };
+    match host.submit(Command::System(command)).await {
+        Ok(_) => Ok(None),
+        Err(SubmitError::Rejected(rejection)) => Ok(Some(Err(format!(
+            "the protected head moved and the scope must be confirmed again: {rejection}"
+        )))),
+        Err(SubmitError::Internal(err)) => Err(JobError::Unavailable(format!(
+            "re-binding the scope to the protected head: {err}"
+        ))),
     }
 }
 

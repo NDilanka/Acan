@@ -476,6 +476,174 @@ impl LaneFx for Fx {
     }
 }
 
+/// The gate context the host computes on `base` after the protected head moved. The protected
+/// inputs are the ones `prepared` was tested under; only the head is new.
+fn context_on(prepared: &Value, base: &str) -> Value {
+    let mut context = prepared["context"].clone();
+    context["protected_head"] = json!(base);
+    context
+}
+
+#[test]
+fn a_moved_protected_head_rebinds_the_scope_and_prepares_the_run_again() {
+    let mut fx = Fx::new();
+    let scope = fx.open_lane();
+    fx.readback(fx.task1, &scope, vec![]);
+    let run = fx.gate_run(fx.task1);
+    let prepared = fx.prepared_json(&scope, &commit(9));
+    fx.prepare(run, prepared.clone());
+    let old_receipt = fx.passing_receipt(&scope, &prepared);
+    fx.send_receipt(run, old_receipt.clone())
+        .expect("the receipt on the old head is recorded");
+
+    // The protected head moves to commit 7. Nothing the scope binds moved, so the core re-binds.
+    let moved = commit(7);
+    let rebind = SystemCmd::RebindBase {
+        order: fx.order,
+        base: moved.parse().expect("a commit sha"),
+        context: Box::new(from(context_on(&prepared, &moved))),
+    };
+    let events = fx
+        .system(rebind)
+        .expect("the scope re-binds to the moved head");
+    assert!(
+        events
+            .iter()
+            .any(|stamped| matches!(stamped.event, Event::ScopeRebound { .. })),
+        "the re-bind is recorded"
+    );
+    let (bound, scope_base, has_receipt) = {
+        let lane = fx.origin.world().lane(fx.order).expect("lane");
+        (
+            lane.confirmation
+                .as_ref()
+                .map(|c| c.base_commit.to_string()),
+            lane.scope.base_commit.to_string(),
+            lane.latest_receipt().is_some(),
+        )
+    };
+    assert_eq!(bound.as_deref(), Some(moved.as_str()));
+    assert_eq!(scope_base, moved);
+    // A receipt accepts only a confirmation whose semantic digest matches the scope, and that
+    // digest covers the base, so the re-bound confirmation must carry the re-bound digest.
+    let (confirmed_digest, scope_digest) = {
+        let lane = fx.origin.world().lane(fx.order).expect("lane");
+        (
+            lane.confirmation
+                .as_ref()
+                .and_then(|c| c.semantic_scope_hash),
+            lane.scope.semantic_scope_hash().expect("the scope hashes"),
+        )
+    };
+    assert_eq!(
+        confirmed_digest,
+        Some(scope_digest),
+        "the confirmation binds the re-bound scope"
+    );
+    assert!(!has_receipt, "the receipt on the old head is cleared");
+    assert!(
+        fx.origin.world().pending_contrasts()[0].prepared.is_none(),
+        "the run is prepared again"
+    );
+
+    // The old receipt is not reused, and a candidate prepared on the old head is refused.
+    assert!(
+        fx.send_receipt(run, old_receipt).is_err(),
+        "the old receipt is not reused"
+    );
+    let stale = fx
+        .system(SystemCmd::CandidatePrepared {
+            run,
+            prepared: Box::new(from(fx.prepared_json(&scope, &commit(9)))),
+        })
+        .unwrap_err();
+    assert!(
+        matches!(stale, Rejection::StaleEvidence { .. }),
+        "{stale:?}"
+    );
+
+    // Prepared on the new head, the run is receipted again, and that receipt is the one that counts.
+    let rebound = fx
+        .origin
+        .world()
+        .lane(fx.order)
+        .expect("lane")
+        .scope
+        .clone();
+    let mut fresh = prepared.clone();
+    fresh["base_commit"] = json!(moved);
+    fresh["context"] = context_on(&prepared, &moved);
+    fresh["context"]["scope_hash"] = json!(rebound.scope_hash().expect("hashing"));
+    fx.prepare(run, fresh.clone());
+    assert!(fx.origin.world().pending_contrasts()[0].prepared.is_some());
+    let receipt = fx.passing_receipt(&rebound, &fresh);
+    fx.send_receipt(run, receipt)
+        .expect("the re-prepared run is receipted");
+    fx.assert_replays();
+}
+
+#[test]
+fn a_moved_protected_input_or_ruling_needs_the_scope_confirmed_again() {
+    let mut fx = Fx::new();
+    let scope = fx.open_lane();
+    fx.readback(fx.task1, &scope, vec![]);
+    let run = fx.gate_run(fx.task1);
+    let prepared = fx.prepared_json(&scope, &commit(9));
+    fx.prepare(run, prepared.clone());
+    let moved = commit(7);
+    let order = fx.order;
+    let rebind = |context: Value| SystemCmd::RebindBase {
+        order,
+        base: moved.parse().expect("a commit sha"),
+        context: Box::new(from(context)),
+    };
+
+    // The overlay of the protected inputs changed with the head.
+    let mut overlay = context_on(&prepared, &moved);
+    overlay["overlay_hash"] = json!(sha(9));
+    let refused = fx.system(rebind(overlay)).unwrap_err();
+    assert!(
+        matches!(refused, Rejection::StaleEvidence { .. }),
+        "{refused:?}"
+    );
+
+    // A probe's normalization plan changed with the head.
+    let mut probes = context_on(&prepared, &moved);
+    probes["probe_set_hash"] = json!(sha(8));
+    let refused = fx.system(rebind(probes)).unwrap_err();
+    assert!(
+        matches!(refused, Rejection::StaleEvidence { .. }),
+        "{refused:?}"
+    );
+
+    // A ruling was recorded after the run was prepared, so the context names the old ruling head.
+    fx.record_ruling("owner", fx.decision_json(1, "r-1", None))
+        .expect("the ruling is recorded");
+    let refused = fx
+        .system(rebind(context_on(&prepared, &moved)))
+        .unwrap_err();
+    assert!(
+        matches!(refused, Rejection::StaleEvidence { .. }),
+        "{refused:?}"
+    );
+
+    // Nothing was re-bound: the confirmation still names the old head and the prepared run stays.
+    let bound = fx
+        .origin
+        .world()
+        .lane(fx.order)
+        .expect("lane")
+        .confirmation
+        .as_ref()
+        .map(|c| c.base_commit.to_string());
+    assert_eq!(bound.as_deref(), Some(BASE));
+    assert!(
+        fx.origin.world().pending_contrasts()[0].prepared.is_some(),
+        "the prepared run is kept"
+    );
+    fx.assert_replays();
+}
+
 #[test]
 fn a_confirmation_is_bound_to_revision_base_rulings_and_hashes() {
     let mut fx = Fx::new();
