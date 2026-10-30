@@ -21,7 +21,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
-use acan_git::{Preparation, Repo};
+use acan_git::{Preparation, ProtectedPaths, Repo};
 use acan_intent::admit::AdmitError;
 use acan_intent::compare::{self, CompareError, Contrast};
 use acan_intent::receipt::{self, ProbeResult, ReceiptError, ReceiptInputs};
@@ -54,36 +54,6 @@ const ARTIFACTS_DIR: &str = "artifacts";
 const RUNNER_BUILD: &str = "acan-witness/0.1.0";
 /// The evaluator that classifies the runs: the receipt builder in acan-intent.
 const EVALUATOR: &str = "acan-intent/0.1.0";
-/// The home directory the runner sets in every container, from `docker.rs`.
-const RUNNER_HOME: &str = "/tmp";
-
-/// The container policy every run applies: no network, a read-only root, a pinned image, and the
-/// protected paths mounted read-only from the snapshot. The protected set is the policy's, so the
-/// snapshot and the candidate's preparation always agree on what is protected.
-const RUNNER_POLICY: &str = r#"{
-  "image": {
-    "name": "oven/bun",
-    "digest": "sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d"
-  },
-  "user": "1000:1000",
-  "cpus_milli": 2000,
-  "memory_bytes": 1073741824,
-  "pids": 256,
-  "timeout_ms": 60000,
-  "tmp_bytes": 268435456,
-  "network": { "kind": "none" },
-  "root": "read_only",
-  "privileges": "dropped",
-  "mounts": {
-    "workdir": "/work",
-    "protected": [".acan", "test"],
-    "missing_protected": "refused"
-  }
-}"#;
-
-/// The protected paths every preparation must use, the same set [`RUNNER_POLICY`] mounts.
-pub(crate) const PROTECTED_PATHS: [&str; 2] = [".acan", "test"];
-
 /// Why a contrast could not be observed or judged. Every variant stops the candidate.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -146,9 +116,6 @@ pub(crate) enum ObserveError {
     /// A built-in name is not a valid value. A build bug.
     #[error(transparent)]
     Name(#[from] InvalidValue),
-    /// The built-in container policy does not decode. A build bug.
-    #[error("the container policy does not decode: {0}")]
-    Policy(#[source] serde_json::Error),
 }
 
 /// One admitted run and the hashes of the observations it stored, in step order.
@@ -246,13 +213,17 @@ pub(crate) struct Judged {
     pub(crate) receipt: Receipt,
 }
 
-/// The container policy every run applies.
-///
-/// # Errors
-///
-/// Returns [`ObserveError::Policy`] when the built-in policy does not decode.
-pub(crate) fn runner_policy() -> Result<ContainerPolicy, ObserveError> {
-    serde_json::from_str(RUNNER_POLICY).map_err(ObserveError::Policy)
+/// The container policy every run applies: the contract default, which the witness and the
+/// fixture `container-policy.json` also use. It pins the image by digest, gives no network, and
+/// mounts `.acan` read-only from the snapshot.
+pub(crate) fn runner_policy() -> ContainerPolicy {
+    ContainerPolicy::default_run()
+}
+
+/// The paths the preparation of every candidate restores from the protected head: the policy's
+/// protected mounts, which are exactly the paths the containers mount from the snapshot.
+pub(crate) fn protected_paths(policy: &ContainerPolicy) -> ProtectedPaths {
+    ProtectedPaths::new(policy.mounts.protected.iter().cloned())
 }
 
 /// Writes the protected paths of `base`'s protected head into `dir`, the snapshot the containers
@@ -392,8 +363,9 @@ impl Facts {
             app: plan.app.clone(),
         }
         .runner_hash()?;
-        let mut vars = plan.app.env.clone();
-        vars.insert("HOME".to_owned(), RUNNER_HOME.to_owned());
+        // The controlled environment is the policy's variables, with the app's port variable set
+        // to the port the driver gives the app, as the witness does when it starts a run.
+        let mut vars = plan.policy.environment.clone();
         vars.insert(plan.app.port_env.clone(), plan.runner.port.to_string());
         let env = EnvManifest {
             vars,
@@ -608,15 +580,13 @@ fn io_error(path: &Path, source: io::Error) -> ObserveError {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
-
     use acan_intent::ContainerNetwork;
 
     use super::*;
 
     #[test]
     fn the_runner_policy_is_offline_and_pinned_by_digest() {
-        let policy = runner_policy().expect("the runner policy decodes");
+        let policy = runner_policy();
         assert!(
             matches!(policy.network, ContainerNetwork::None {}),
             "runs have no network: {:?}",
@@ -626,13 +596,21 @@ mod tests {
             policy.image.digest.is_some(),
             "the image is pinned by digest"
         );
-        let expected: BTreeSet<RepoPath> = PROTECTED_PATHS
-            .iter()
-            .map(|path| path.parse().expect("protected path is a repo path"))
-            .collect();
-        assert_eq!(
-            policy.mounts.protected, expected,
-            "the policy protects the paths the preparation protects"
+    }
+
+    #[test]
+    fn the_preparation_protects_every_path_the_containers_mount() {
+        let policy = runner_policy();
+        let protected = protected_paths(&policy);
+        for path in &policy.mounts.protected {
+            assert!(
+                protected.iter().any(|kept| kept == path),
+                "{path} is restored from the protected head"
+            );
+        }
+        assert!(
+            protected.covers(".acan/probes/core.json"),
+            "the protected inputs are always protected"
         );
     }
 }

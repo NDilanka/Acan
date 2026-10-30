@@ -41,7 +41,7 @@ use std::str::FromStr;
 use acan_git::{Preparation, PrepareOutcome, ProtectedPaths, Repo};
 use acan_intent::{
     AppContract, CommitSha, ContainerPolicy, CoreDerived, FoldedLedger, ItemClass, Outcome,
-    ProbeCorpus, RepoPath, Scope, ScopeConfirmation, fold,
+    ProbeCorpus, Scope, ScopeConfirmation, fold,
 };
 use acan_witness::RunnerConfig;
 use serde_json::{Value, json};
@@ -51,7 +51,7 @@ use tokio::sync::Mutex;
 /// The environment variable that names the acan-demo checkout. The tests only read it.
 const DEMO_DIR_VAR: &str = "ACAN_DEMO_DIR";
 /// The acan-demo commit the protected branch is pinned to.
-const DEMO_COMMIT: &str = "97f6a0102dbda9ea01f283505d2c18fed0236c81";
+const DEMO_COMMIT: &str = "f91962156841332d5753d869554839f7c4cdea79";
 /// The protected branch of the pinned clone.
 const PROTECTED_BRANCH: &str = "main";
 /// The port the app listens on inside its own container.
@@ -65,8 +65,6 @@ const SIGNUP_RESPONSE: &str = "return { id: user.id, username: user.username };"
 /// The seeded regression: the answer upper-cases the username, so the answer differs from base.
 const REGRESSED_SIGNUP_RESPONSE: &str =
     "return { id: user.id, username: user.username.toUpperCase() };";
-/// Protected paths of the demo. Each preparation restores them from the protected head.
-const PROTECTED: [&str; 2] = [".acan", "test"];
 
 /// Serializes the Docker tests, so their containers do not compete for the same CPU budget and
 /// their sequences stay inside the 30 s budget.
@@ -164,7 +162,7 @@ impl Gate {
         let scope = scope(&demo.head());
         let confirmation = confirmation(&scope);
         let ledger = fold::fold(&[]).expect("the empty ruling log folds");
-        let policy = observe::runner_policy().expect("the runner policy decodes");
+        let policy = observe::runner_policy();
         Self {
             base,
             candidate,
@@ -219,9 +217,7 @@ async fn prepare(repo: &Repo, commit: &CommitSha) -> Preparation {
 }
 
 fn protected() -> ProtectedPaths {
-    ProtectedPaths::new(
-        PROTECTED.map(|path| RepoPath::from_str(path).expect("a protected path is a repo path")),
-    )
+    observe::protected_paths(&observe::runner_policy())
 }
 
 fn runner() -> RunnerConfig {
