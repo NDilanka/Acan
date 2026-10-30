@@ -723,19 +723,7 @@ impl App {
         self.view_version += 1;
         self.motion.sync(&marks);
         self.marks = marks;
-        let panel_was = self.panel_shows();
         self.view = Some(view);
-        if !panel_was && self.panel_shows() {
-            // The usage panel just appeared over the bottom-left corner, and the fit kept no
-            // room for it. Refit at the current angles so the machines' names move clear.
-            if let Some(loaded) = &self.plant {
-                self.camera.fit_boxes_room(
-                    &loaded.framing,
-                    FIT_MARGIN_CSS * self.dpr,
-                    self.fit_room(),
-                );
-            }
-        }
         self.apply_focus();
         self.sync_scene();
         Ok(())
@@ -776,28 +764,17 @@ impl App {
     }
 
     /// The extra room the fit keeps for the page's overlays: flag chips above the plant and
-    /// at its right edge, machine names at the bottom, and the fixed usage panel at the
-    /// bottom-left corner while it shows.
+    /// at its right edge, machine names at the bottom, and the usage panel's corner at the
+    /// bottom-left. The panel's room is always kept, so the frame never moves when the panel
+    /// first shows.
     fn fit_room(&self) -> FitRoom {
         let [_, vh] = self.camera.viewport();
         FitRoom {
             top: FIT_FLAG_TOP_CSS * self.dpr,
             right: FIT_FLAG_RIGHT_CSS * self.dpr,
             bottom: FIT_LABEL_CSS * self.dpr,
-            avoid: if self.panel_shows() {
-                labels::panel_avoid(vh, self.dpr)
-            } else {
-                [0.0; 4]
-            },
+            avoid: labels::panel_avoid(vh, self.dpr),
         }
-    }
-
-    /// Whether the usage panel is on screen: it shows once the view holds a model call, the
-    /// same rule the page uses to unhide it.
-    fn panel_shows(&self) -> bool {
-        self.view
-            .as_ref()
-            .is_some_and(|view| !view.usage.is_empty())
     }
 
     /// The zoom at which the plant fills the view at the default angles, in the current
