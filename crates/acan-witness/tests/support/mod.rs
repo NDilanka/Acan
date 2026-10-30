@@ -42,18 +42,21 @@ const SIGNUP_RESPONSE: &str = "return { id: user.id, username: user.username };"
 const CHANGED_SIGNUP_RESPONSE: &str =
     "return { id: user.id, username: user.username.toUpperCase() };";
 
-/// The container policy the tests run under: the pinned image digest and the spike's limits.
+/// The container policy the tests run under: the contract default, which pins the image digest
+/// the spike ran and names the demo's variables. Its sequence budget is the spike's 30 seconds.
 const POLICY: &str = r#"{
   "image": {
-    "name": "oven/bun",
+    "name": "oven/bun:1.4.4",
     "digest": "sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d"
   },
   "user": "1000:1000",
   "cpus_milli": 2000,
   "memory_bytes": 1073741824,
   "pids": 256,
-  "timeout_ms": 60000,
+  "timeout_ms": 30000,
+  "role_timeout_ms": 3600000,
   "tmp_bytes": 268435456,
+  "environment": { "HOME": "/tmp", "PORT": "3000" },
   "network": { "kind": "none" },
   "root": "read_only",
   "privileges": "dropped",

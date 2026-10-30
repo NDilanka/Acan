@@ -32,6 +32,7 @@ interface StartOp {
   op: "start";
   argv: string[];
   cwd: string;
+  environment: Record<string, string>;
   port_env: string;
   port: number;
   max_output_bytes: number;
@@ -157,7 +158,7 @@ async function start(op: StartOp) {
   const child = Bun.spawn({
     cmd: argv,
     cwd: op.cwd,
-    env: { [op.port_env]: String(op.port), HOME: "/tmp" },
+    env: { ...op.environment, [op.port_env]: String(op.port) },
     stdin: "ignore",
     stdout: "ignore",
     stderr: "ignore",
