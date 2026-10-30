@@ -54,9 +54,14 @@ pub struct Snapshot {
 
 /// Below this gap the drone's eye sits on the target, so its side has no direction.
 const EYE_ON_TARGET: f32 = 1e-3;
+/// The share of the view height that the machine's model box spans at scale 1.
+const SPAN_TARGET: f32 = 0.5;
+/// The span is not exactly proportional to 1/d under perspective, so the solve repeats.
+const SPAN_PASSES: usize = 2;
 
-/// The camera at `scale` times the distance that fits the machine's box to half the view height,
-/// on the side of its drone's eye. The viewport, projection and fog bounds come from `base`.
+/// The camera at `scale` times the distance that spans the machine's model box half the view
+/// height, on the side of its drone's eye. The viewport, projection and fog bounds come from
+/// `base`.
 pub fn pov_camera(base: &Camera, goal: &Goal, scale: f32) -> Camera {
     let eye_drone = [
         goal.at[0] + EYE_DISTANCE * goal.heading.cos(),
@@ -75,9 +80,50 @@ pub fn pov_camera(base: &Camera, goal: &Goal, scale: f32) -> Camera {
     } else {
         std::array::from_fn(|axis| rel[axis] / reach)
     };
+    // A sphere of this radius fills half the view, but a flat box projects less than its sphere,
+    // so the sphere distance only starts the solve.
     let radius = norm(sub(goal.machine.max, goal.machine.min)) * 0.5;
-    let fit = radius / (0.5 * (VERTICAL_FOV * 0.5).to_radians().tan());
-    let distance = scale * fit;
+    let sphere = radius / (0.5 * (VERTICAL_FOV * 0.5).to_radians().tan());
+    let distance = scale * solved_distance(base, goal, dir, sphere);
+    aimed(base, goal, dir, distance)
+}
+
+/// The distance along `dir` at which the machine's model box spans `SPAN_TARGET` of the view
+/// height. `first` starts the solve. A pass whose span is unusable, or whose corner falls behind
+/// the eye, keeps the distance it had.
+fn solved_distance(base: &Camera, goal: &Goal, dir: [f32; 3], first: f32) -> f32 {
+    let mut distance = first;
+    for _ in 0..SPAN_PASSES {
+        let Some(span) =
+            span_at(base, goal, dir, distance).filter(|span| span.is_finite() && *span > 0.0)
+        else {
+            break;
+        };
+        distance *= span / SPAN_TARGET;
+    }
+    distance
+}
+
+/// The model box's vertical span as a share of the view height, from a camera `distance` out
+/// along `dir`. `None` when a corner is behind the eye.
+fn span_at(base: &Camera, goal: &Goal, dir: [f32; 3], distance: f32) -> Option<f32> {
+    let camera = aimed(base, goal, dir, distance);
+    let corners = goal.machine.corners();
+    if corners.iter().any(|&corner| !camera.in_front(corner)) {
+        return None;
+    }
+    let (low, high) = corners.iter().fold(
+        (f32::INFINITY, f32::NEG_INFINITY),
+        |(low, high), &corner| {
+            let y = camera.world_to_screen(corner)[1];
+            (low.min(y), high.max(y))
+        },
+    );
+    Some((high - low) / camera.viewport()[1])
+}
+
+/// The base camera looking at the target from `distance` out along `dir`.
+fn aimed(base: &Camera, goal: &Goal, dir: [f32; 3], distance: f32) -> Camera {
     let mut camera = *base;
     camera.look_at(
         std::array::from_fn(|axis| goal.target[axis] + dir[axis] * distance),
@@ -408,14 +454,42 @@ fn norm(a: [f32; 3]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::kind::{self, Kind};
+    use crate::layout::Placed;
+    use crate::scene;
 
     const VIEWPORT: [f32; 2] = [1440.0, 900.0];
 
-    fn machine() -> Aabb {
+    /// The model box of a machine of `kind` at the origin, moved so its centre sits on the origin.
+    fn centred_model_box(kind: Kind) -> Aabb {
+        let bounds = scene::machine_model_box(
+            &Placed {
+                x: 0.0,
+                y: 0.0,
+                kind,
+            },
+            &scene::models(),
+        );
+        let centre: [f32; 2] =
+            std::array::from_fn(|axis| (bounds.min[axis] + bounds.max[axis]) * 0.5);
         Aabb {
-            min: [-20.0, -15.0, 0.0],
-            max: [20.0, 15.0, 42.0],
+            min: [
+                bounds.min[0] - centre[0],
+                bounds.min[1] - centre[1],
+                bounds.min[2],
+            ],
+            max: [
+                bounds.max[0] - centre[0],
+                bounds.max[1] - centre[1],
+                bounds.max[2],
+            ],
         }
+    }
+
+    /// The model box of an auth machine, which is a gate, centred on the origin. The goals below
+    /// sit on the origin, so they frame a real machine's size.
+    fn machine() -> Aabb {
+        centred_model_box(Kind::Gate)
     }
 
     fn goal() -> Goal {
@@ -502,19 +576,41 @@ mod tests {
     }
 
     #[test]
-    fn the_default_distance_does_not_grow_with_the_drone_distance() {
-        let near = pov_camera(&overview(), &goal(), 1.0);
+    fn the_solved_span_is_half_the_view_at_the_default_angles_for_every_kind() {
+        for kind in kind::ALL {
+            let machine = centred_model_box(kind);
+            let goal = Goal { machine, ..goal() };
+            let camera = pov_camera(&overview(), &goal, 1.0);
+            let span = vertical_extent(&camera, &machine);
+            assert!(
+                (span - 0.5).abs() <= 0.05,
+                "{kind:?} spans {span} of the view height"
+            );
+            for corner in machine.corners() {
+                assert!(
+                    camera.in_front(corner),
+                    "{kind:?} corner {corner:?} is behind the eye"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_span_stays_half_the_view_when_the_drone_is_far_from_its_target() {
         let far = Goal {
             at: [400.0, 0.0, 26.0],
             ..goal()
         };
-        let far = pov_camera(&overview(), &far, 1.0);
-        assert!(
-            (far.eye_distance() - near.eye_distance()).abs() < 1e-3,
-            "the far eye sits {} from the target, the near one {}",
-            far.eye_distance(),
-            near.eye_distance()
-        );
+        let machine = machine();
+        for goal in [goal(), far] {
+            let camera = pov_camera(&overview(), &goal, 1.0);
+            let span = vertical_extent(&camera, &machine);
+            assert!(
+                (span - 0.5).abs() <= 0.05,
+                "the machine spans {span} with the drone at {:?}",
+                goal.at
+            );
+        }
     }
 
     #[test]

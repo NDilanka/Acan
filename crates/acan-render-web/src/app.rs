@@ -113,8 +113,9 @@ struct Loaded {
     plan_instance: Vec<usize>,
     /// For each plan machine, its model's top and the free spots on its plinth top.
     stands: Vec<Stand>,
-    /// Each machine's box, as `framing` frames it, in the layout's machine order.
-    machine_boxes: Vec<Aabb>,
+    /// Each machine's model box, which a ride sizes its distance from, in the layout's machine
+    /// order. See `scene::machine_model_boxes`.
+    machine_bounds: Vec<Aabb>,
 }
 
 #[wasm_bindgen]
@@ -594,7 +595,7 @@ impl App {
         let at = self.motion.body_at(agent).unwrap_or(body.at);
         let heading = self.motion.heading_of(agent).unwrap_or(0.0);
         let instance = *loaded.plan_instance.get(body.machine)?;
-        let machine = *loaded.machine_boxes.get(instance)?;
+        let machine = *loaded.machine_bounds.get(instance)?;
         Some(pov::snapshot(view, plan, body, at, heading, machine))
     }
 
@@ -900,9 +901,9 @@ impl App {
         let belts = scene::belt_lines(&laid.belts);
         let drone_reach = stand::reach(&self.models[usize::from(scene::mark_kinds().body)]);
         let framing = scene::fit_boxes(&laid, &self.models, &self.kind_spots, drone_reach);
-        let machine_boxes = scene::machine_boxes(&laid, &self.models);
+        let machine_bounds = scene::machine_model_boxes(&laid, &self.models);
         self.plant = Some(Loaded {
-            machine_boxes,
+            machine_bounds,
             repo: plant.repo,
             rest: {
                 let mut named = vec![false; plant.machines.len()];

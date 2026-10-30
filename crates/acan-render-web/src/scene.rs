@@ -130,29 +130,48 @@ pub fn fit_boxes(
 }
 
 /// The box of one machine that the camera frames: its model's footprint from the plinth up to the
-/// top of its flag room. `fit_boxes` frames it, and a ride measures its distance from it.
+/// top of its flag room.
 pub fn machine_box(placed: &Placed, models: &[Model]) -> Aabb {
-    let (w, d) = placed.kind.footprint();
-    let index = kind::index(placed.kind);
-    let model = &models[index].bounds;
-    let offset = [placed.x + w / 2.0, placed.y + d / 2.0];
+    let model = &models[kind::index(placed.kind)].bounds;
+    let spot = on_spot(placed, model);
     let hover = hover_height(model.max[2]);
     Aabb {
-        min: [offset[0] + model.min[0], offset[1] + model.min[1], 0.0],
+        min: [spot.min[0], spot.min[1], 0.0],
+        max: [spot.max[0], spot.max[1], hover + BODY_RADIUS + FLAG_ROOM],
+    }
+}
+
+/// The box of one machine's model alone, on its plinth: no drone hover, flag room or seats. A ride
+/// solves its distance so this box spans half the view height (`pov::pov_camera`).
+pub fn machine_model_box(placed: &Placed, models: &[Model]) -> Aabb {
+    on_spot(placed, &models[kind::index(placed.kind)].bounds)
+}
+
+/// A model's bounds moved to the machine's place: its heights stay, and its footprint offset is
+/// the centre of the machine's footprint.
+fn on_spot(placed: &Placed, model: &Aabb) -> Aabb {
+    let (w, d) = placed.kind.footprint();
+    let offset = [placed.x + w / 2.0, placed.y + d / 2.0];
+    Aabb {
+        min: [
+            offset[0] + model.min[0],
+            offset[1] + model.min[1],
+            model.min[2],
+        ],
         max: [
             offset[0] + model.max[0],
             offset[1] + model.max[1],
-            hover + BODY_RADIUS + FLAG_ROOM,
+            model.max[2],
         ],
     }
 }
 
-/// The machine boxes of a layout, in the layout's machine order.
-pub fn machine_boxes(layout: &Layout, models: &[Model]) -> Vec<Aabb> {
+/// The model boxes of a layout, in the layout's machine order.
+pub fn machine_model_boxes(layout: &Layout, models: &[Model]) -> Vec<Aabb> {
     layout
         .machines
         .iter()
-        .map(|placed| machine_box(placed, models))
+        .map(|placed| machine_model_box(placed, models))
         .collect()
 }
 
@@ -304,6 +323,30 @@ mod tests {
             assert!(
                 b.min[1] >= -d / 2.0 - 1e-3 && b.max[1] <= d / 2.0 + 1e-3,
                 "{kind:?} depth"
+            );
+        }
+    }
+
+    #[test]
+    fn a_ride_measures_each_machine_from_its_model_alone() {
+        let plant = from_scan_json(FIXTURE).expect("fixture parses");
+        let (kinds, edges) = plant.layout_input();
+        let laid = layout(&kinds, &edges);
+        let models = models();
+        let boxes = machine_model_boxes(&laid, &models);
+        assert_eq!(boxes.len(), laid.machines.len());
+        for (placed, bounds) in laid.machines.iter().zip(&boxes) {
+            let model = models[kind::index(placed.kind)].bounds;
+            assert_eq!(
+                bounds.max[2], model.max[2],
+                "{:?} stops at its model top",
+                placed.kind
+            );
+            let framed = machine_box(placed, &models);
+            assert!(
+                bounds.max[2] < framed.max[2],
+                "{:?} leaves its hover and flag room out",
+                placed.kind
             );
         }
     }
