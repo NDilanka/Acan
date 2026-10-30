@@ -1043,7 +1043,7 @@ async fn mcp_refuses_a_wrong_or_member_token_as_the_http_routes_do() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn tools_list_offers_the_nine_tools() {
+async fn tools_list_offers_the_fourteen_tools() {
     let _scenario = SCENARIO.lock().await;
     let repo = user_repo();
     let running = start_origin(repo.path(), 2).await;
@@ -1067,11 +1067,16 @@ async fn tools_list_offers_the_nine_tools() {
         [
             "claim_task",
             "declare_changes",
+            "file_contest",
+            "get_receipt",
+            "get_rulings",
+            "get_scope",
             "get_task",
             "get_worktree",
             "heartbeat_task",
             "list_tasks",
             "post_readback",
+            "post_scoped_readback",
             "release_task",
             "report_built",
         ]
