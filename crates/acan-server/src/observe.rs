@@ -336,7 +336,7 @@ pub(crate) fn compare_runs<'a>(
 }
 
 /// The receipt inputs of each judgement, in the same order.
-pub(crate) fn results<'j, 'a>(judgements: &'j [Judgement<'a>]) -> Vec<ProbeResult<'j>> {
+pub(crate) fn results<'j>(judgements: &'j [Judgement<'_>]) -> Vec<ProbeResult<'j>> {
     judgements
         .iter()
         .map(|judgement| ProbeResult {

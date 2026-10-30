@@ -246,12 +246,13 @@ impl RulingLog {
     }
 }
 
-/// The episode an event answers, when it answers one.
+/// The episode an event answers, when it answers one. Every variant is named, so a new kind of
+/// event forces a decision here instead of silently leaving its episode pending.
 fn answered_episode(event: &LedgerEvent) -> Option<EpisodeId> {
     match event {
         LedgerEvent::DecisionConfirmed(decision) => decision.episode_id,
         LedgerEvent::NoteRecorded(note) => note.episode_id,
-        _ => None,
+        LedgerEvent::ProbeRetired(_) => None,
     }
 }
 
