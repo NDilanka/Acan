@@ -86,10 +86,6 @@ pub struct RetainedExample<'a> {
 }
 
 impl<'a> RetainedExample<'a> {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "admit::retained_example is still a stub")
-    )]
     pub(crate) fn admitted(
         hash: ContrastExampleHash,
         contrast: Contrast<'a>,

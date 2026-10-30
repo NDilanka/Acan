@@ -40,16 +40,6 @@ fn fixture_scope() -> Scope {
     decode(SCOPE)
 }
 
-/// The receipt rebound to the scope file's own hash. The contract fixtures disagree: `scope.json`
-/// hashes to a value that `receipt.json` and `scope-confirmation.json` do not bind, so the view
-/// tests rebind a copy of the receipt to the scope they pass. The refusal of the fixtures as they
-/// stand is tested separately.
-fn receipt_bound_to_scope_file() -> Receipt {
-    let mut receipt = fixture_receipt();
-    receipt.scope_hash = fixture_scope().scope_hash().expect("the scope hashes");
-    receipt
-}
-
 fn plain_view() -> Value {
     decode(PLAIN_VIEW)
 }
@@ -275,20 +265,30 @@ fn the_receipt_hash_is_the_one_the_plain_view_names() {
 }
 
 #[test]
-fn plant_view_refuses_the_fixture_pair_while_its_scope_hash_disagrees() {
+fn plant_view_refuses_a_scope_that_is_not_the_one_the_receipt_binds() {
     let plain = plain_view();
     let (plate, machines) = plate_and_machines(&plain);
+    let mut scope: Value = decode(SCOPE);
+    scope["body"]["may"][0]["change"] = json!("add");
+    let edited: Scope = serde_json::from_value(scope).expect("the scope decodes");
     assert!(matches!(
-        plant_view(&fixture_receipt(), &fixture_scope(), &plate, &machines),
+        plant_view(&fixture_receipt(), &edited, &plate, &machines),
         Err(PlantViewError::ScopeMismatch("hash"))
     ));
+}
+
+#[test]
+fn the_fixture_pair_binds_and_builds_a_view() {
+    let plain = plain_view();
+    let (plate, machines) = plate_and_machines(&plain);
+    assert!(plant_view(&fixture_receipt(), &fixture_scope(), &plate, &machines).is_ok());
 }
 
 #[test]
 fn plant_view_matches_the_plain_fixture_where_the_receipt_decides_it() {
     let plain = plain_view();
     let (plate, machines) = plate_and_machines(&plain);
-    let receipt = receipt_bound_to_scope_file();
+    let receipt = fixture_receipt();
     let view = plant_view(&receipt, &fixture_scope(), &plate, &machines)
         .expect("the fixture builds a view");
     let built = serde_json::to_value(&view).expect("the view serializes");
@@ -338,29 +338,21 @@ fn plant_view_matches_the_plain_fixture_where_the_receipt_decides_it() {
             built_machine["coverage"], plain_machine["coverage"],
             "{name} coverage"
         );
-        if name != "errors" {
-            assert_eq!(
-                built_machine["probes"], plain_machine["probes"],
-                "{name} probes"
-            );
-        }
+        assert_eq!(
+            built_machine["probes"], plain_machine["probes"],
+            "{name} probes"
+        );
     }
 }
 
 #[test]
 fn plant_view_counts_errors_probes_from_the_receipt_alone() {
-    // The plain fixture says six probes pass through `errors`. The receipt's item route paths put
-    // one probe there, and the receipt carries no other route per probe, so the view cannot reach
-    // six from the receipt. This is the open contract gap; see the report.
+    // A machine's probes are the distinct probes of its items' route paths. The receipt carries
+    // no route for a probe that produced no item, so `errors` has the one probe its item names.
     let plain = plain_view();
     let (plate, machines) = plate_and_machines(&plain);
-    let view = plant_view(
-        &receipt_bound_to_scope_file(),
-        &fixture_scope(),
-        &plate,
-        &machines,
-    )
-    .expect("the fixture builds a view");
+    let view = plant_view(&fixture_receipt(), &fixture_scope(), &plate, &machines)
+        .expect("the fixture builds a view");
     let errors = view
         .machines
         .iter()
@@ -388,7 +380,7 @@ fn plant_view_refuses_a_machine_the_plant_does_not_list() {
     let (plate, mut machines) = plate_and_machines(&plain);
     machines.retain(|machine| machine.machine_id.as_str() != "errors");
     assert!(matches!(
-        plant_view(&receipt_bound_to_scope_file(), &fixture_scope(), &plate, &machines),
+        plant_view(&fixture_receipt(), &fixture_scope(), &plate, &machines),
         Err(PlantViewError::UnknownMachine(machine)) if machine.as_str() == "errors"
     ));
 }
@@ -399,12 +391,7 @@ fn plant_view_refuses_a_machine_listed_twice() {
     let (plate, mut machines) = plate_and_machines(&plain);
     machines.push(machines[0].clone());
     assert!(matches!(
-        plant_view(
-            &receipt_bound_to_scope_file(),
-            &fixture_scope(),
-            &plate,
-            &machines
-        ),
+        plant_view(&fixture_receipt(), &fixture_scope(), &plate, &machines),
         Err(PlantViewError::DuplicateMachine(_))
     ));
 }

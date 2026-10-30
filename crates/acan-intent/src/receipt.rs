@@ -30,7 +30,7 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::compare::Contrast;
-use crate::episode::{Contest, DiscrepancyEpisode, EpisodeState};
+use crate::episode::{Contest, DiscrepancyEpisode, EpisodeState, canonical_episode_selector};
 use crate::expr::{Operand, Predicate, ValueRef};
 use crate::gate::PreparedCommit;
 use crate::hash::{CanonicalError, ContentHash, ProbeHash};
@@ -40,8 +40,9 @@ use crate::predicate::{self, RetainedExample, method_admits, principal_admits};
 use crate::probe::{ProbeCorpus, RouteStatus, RunOutcome, RunRole};
 use crate::provenance::{CoreDerived, Provenance};
 use crate::report::{
-    BehaviorCounts, ClassCounts, EvidenceRow, EvidenceSlot, GateState, ProbeCounts, Receipt,
-    ReceiptItem, RouteCounts, RulingCheck, RulingStatus, SequenceStep, StepTint, UncoveredRoute,
+    BehaviorCounts, ClassCounts, EvidenceRow, EvidenceSlot, GateState, NotReached, ProbeCounts,
+    Receipt, ReceiptItem, RouteCounts, RulingCheck, RulingStatus, SequenceStep, StepTint,
+    UncoveredRoute,
 };
 use crate::scope::{Change, PredicateRef, Scope, ScopeConfirmation, ScopeItem, Selector};
 use crate::types::{
@@ -128,10 +129,20 @@ pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>,
     let mut must_items = Vec::new();
     let mut may_items = Vec::new();
     let mut ruling_items = Vec::new();
+    let mut not_reached = Vec::new();
 
     for rule in &inputs.scope.body.must_keep {
         let reaching = reaching_probes(inputs, &rule.selector);
         let judged = judge_obligations(inputs, rule.obligations.iter(), &reaching);
+        if reaching.is_empty() {
+            let item_id = ItemId::from_str(rule.id.as_str()).map_err(|_| {
+                inconsistent(&format!(
+                    "must-keep id {} is not an item id",
+                    rule.id.as_str()
+                ))
+            })?;
+            not_reached.push(unreached(item_id, &rule.selector, &judged));
+        }
         let covered: Vec<usize> = (0..claims.len())
             .filter(|&index| claims[index].covered_by(&rule.selector))
             .collect();
@@ -156,11 +167,16 @@ pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>,
         let claimed: Vec<&Claim> = covered.iter().map(|&index| &claims[index]).collect();
         let episode = episode_for(inputs.episodes, &rule.selector, &failing_ids(&judged));
         must_items.push(ReceiptItem {
-            item_id: ItemId::from_str(rule.id.as_str())
-                .map_err(|_| inconsistent("a must-keep id is not an item id"))?,
+            item_id: ItemId::from_str(rule.id.as_str()).map_err(|_| {
+                inconsistent(&format!(
+                    "must-keep id {} is not an item id",
+                    rule.id.as_str()
+                ))
+            })?,
             class,
             state: state_of(episode),
             machine_id: rule.machine_ids.first().clone(),
+            selector: Some(canonical_episode_selector(&rule.selector)),
             probe_hash: hashes[probe],
             episode_id: episode.map(|episode| episode.id),
             ruling_id: None,
@@ -182,6 +198,9 @@ pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>,
     for item in &inputs.scope.body.may {
         let reaching = reaching_probes(inputs, &item.selector);
         let judged = judge_obligations(inputs, item.acceptance.iter(), &reaching);
+        if reaching.is_empty() {
+            not_reached.push(unreached(item.id.clone(), &item.selector, &judged));
+        }
         let covered: Vec<usize> = (0..claims.len())
             .filter(|&index| {
                 owners[index] == Owner::Unclaimed
@@ -287,9 +306,13 @@ pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>,
             .collect(),
         rulings,
         contests: inputs.contests.to_vec(),
+        not_reached,
     };
     receipt
         .check_counts()
+        .map_err(|err| inconsistent(&err.to_string()))?;
+    receipt
+        .check_episode_ids()
         .map_err(|err| inconsistent(&err.to_string()))?;
     Ok(CoreDerived::derived(receipt))
 }
@@ -307,8 +330,10 @@ fn hashing(err: CanonicalError) -> ReceiptError {
 }
 
 /// The scope, its confirmation and the prepared commit must name the same revision and base,
-/// and the confirmation must list the scope's selectors and examples in scope order. Those
-/// hashes never cover wording, so a wording edit cannot change them.
+/// and the confirmation must list the scope's selectors and examples in scope order. The
+/// confirmation must also bind the scope's semantic digest, which covers every executable field,
+/// so a changed predicate or change kind is refused under the old confirmation. None of these
+/// hashes covers wording, so a wording edit cannot change them.
 fn bind(inputs: &ReceiptInputs<'_>) -> Result<(), ReceiptError> {
     let (scope, confirmation) = (inputs.scope, inputs.confirmation);
     if confirmation.order != scope.order {
@@ -317,6 +342,12 @@ fn bind(inputs: &ReceiptInputs<'_>) -> Result<(), ReceiptError> {
     if confirmation.scope_rev != scope.rev {
         return Err(inconsistent(
             "the confirmation is for another scope revision",
+        ));
+    }
+    let executable = scope.semantic_scope_hash().map_err(hashing)?;
+    if confirmation.semantic_scope_hash != Some(executable) {
+        return Err(inconsistent(
+            "the confirmation does not bind this scope's executable content",
         ));
     }
     if confirmation.base_commit != scope.base_commit
@@ -824,6 +855,18 @@ fn claimed_in<'c>(claimed: &[&'c Claim], probe: usize) -> Vec<&'c Claim> {
         .collect()
 }
 
+/// A scope item or rule no probe reached, with every obligation it has, all unchecked.
+fn unreached(item_id: ItemId, selector: &Selector, judged: &[Judged]) -> NotReached {
+    NotReached {
+        item_id,
+        selector: canonical_episode_selector(selector),
+        obligation_ids: judged
+            .iter()
+            .map(|judgment| judgment.obligation_id.clone())
+            .collect(),
+    }
+}
+
 fn obligation_checks(judged: &[Judged]) -> Vec<ObligationCheck> {
     judged
         .iter()
@@ -882,6 +925,7 @@ fn item_for(inputs: &ReceiptInputs<'_>, placement: Placement<'_, '_>) -> Receipt
         class,
         state: state_of(episode),
         machine_id: item.machine_ids.first().clone(),
+        selector: Some(canonical_episode_selector(&item.selector)),
         probe_hash: hashes[probe],
         episode_id: episode.map(|episode| episode.id),
         ruling_id: None,
@@ -951,6 +995,7 @@ fn ruling(
             class: ItemClass::ViolatesRuling,
             state: ItemState::Open,
             machine_id: expectation.machine_ids.first().clone(),
+            selector: Some(canonical_episode_selector(&expectation.selector)),
             probe_hash: hashes[index],
             episode_id: None,
             ruling_id: Some(expectation.ruling_id.clone()),
@@ -1000,6 +1045,7 @@ fn out_of_scope(
         class: ItemClass::OutOfScope,
         state: state_of(episode),
         machine_id: result.contrast.probe.route_path.machines.first().clone(),
+        selector: selector.as_ref().map(canonical_episode_selector),
         probe_hash: hashes[claim.probe],
         episode_id: episode.map(|episode| episode.id),
         ruling_id: None,

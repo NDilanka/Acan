@@ -358,6 +358,10 @@ fn confirmation_for(scope: &Scope) -> ScopeConfirmation {
         .map(|item| item.example.example_hash())
         .map(|hash| serde_json::to_value(hash.expect("the example hashes")).expect("serializes"))
         .collect();
+    let executable = scope
+        .semantic_scope_hash()
+        .expect("the scope's executable content hashes");
+    value["semantic_scope_hash"] = serde_json::to_value(executable).expect("serializes");
     value["selector_hashes"] = Value::Array(selectors);
     value["example_hashes"] = Value::Array(examples);
     serde_json::from_value(value).expect("the confirmation decodes")
@@ -987,23 +991,11 @@ fn an_item_claims_a_difference_only_when_its_change_kind_matches() {
         sequence(SIX_FAILURES),
         sequence(FIVE_THEN_LIMITED),
     );
-    // scope.json says `add` for the window item. The status moves 401 to 429, which is a
-    // modification, so the item does not claim it and the difference is out of scope.
+    // scope.json says `modify` for the window item. The status moves 401 to 429, a change of
+    // the kind the item claims, so the difference is not out of scope.
     let as_written = scope();
     let as_written_confirmation = confirmation_for(&as_written);
-    let receipt = receipt_of(&as_written, &as_written_confirmation, &trio);
-    assert!(
-        receipt
-            .items
-            .iter()
-            .any(|item| item.class == ItemClass::OutOfScope
-                && matches!(&item.evaluation.outcome, Outcome::Changed { differences }
-                if differences.iter().any(|d| d.path.as_str() == "status"))),
-        "the status change was not reported as out of scope"
-    );
-    let modified = scope_that_claims_the_status();
-    let modified_confirmation = confirmation_for(&modified);
-    let claimed = receipt_of(&modified, &modified_confirmation, &trio);
+    let claimed = receipt_of(&as_written, &as_written_confirmation, &trio);
     assert!(
         !claimed
             .items
@@ -1016,6 +1008,20 @@ fn an_item_claims_a_difference_only_when_its_change_kind_matches() {
     assert_eq!(
         item(&claimed, "i-login-limit").class,
         ItemClass::ObligationFulfilled
+    );
+
+    // The same item as `add` does not claim a modification, so the status change is out of scope.
+    let added = edited_scope(|value| value["body"]["may"][0]["change"] = json!("add"));
+    let added_confirmation = confirmation_for(&added);
+    let receipt = receipt_of(&added, &added_confirmation, &trio);
+    assert!(
+        receipt
+            .items
+            .iter()
+            .any(|item| item.class == ItemClass::OutOfScope
+                && matches!(&item.evaluation.outcome, Outcome::Changed { differences }
+                if differences.iter().any(|d| d.path.as_str() == "status"))),
+        "the status change was not reported as out of scope"
     );
 }
 

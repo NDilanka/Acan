@@ -954,6 +954,36 @@ fn a_non_default_policy_renders_its_own_limits_into_the_arguments() {
     );
 }
 
+#[test]
+fn readonly_git_decides_whether_git_is_mounted_read_only() {
+    let dir = repo();
+    let root = dir.path();
+    let host = std::path::absolute(root).expect("an absolute worktree");
+    let git_mount = ro_mount(&host.join(".git"), "/work/.git");
+    let args_with = |readonly_git: bool| {
+        Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned()))
+            .with_policy(policy_with(|v| {
+                v["mounts"]["readonly_git"] = json!(readonly_git);
+            }))
+            .test_container_args("acan-test-6")
+            .expect("the container arguments")
+    };
+    let guarded = args_with(true);
+    assert!(
+        guarded.contains(&git_mount),
+        "readonly_git true left .git writable: {guarded:?}"
+    );
+    let open = args_with(false);
+    assert!(
+        !open.contains(&git_mount),
+        "readonly_git false still mounted .git read-only: {open:?}"
+    );
+    assert!(
+        open.contains(&ro_mount(&host.join(".acan"), "/work/.acan")),
+        "readonly_git false dropped the protected .acan mount: {open:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_missing_protected_path_is_refused_when_the_policy_says_so() {
     let dir = repo();

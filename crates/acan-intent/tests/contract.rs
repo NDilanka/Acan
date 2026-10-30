@@ -8,17 +8,20 @@ use std::path::{Path, PathBuf};
 use acan_intent::admit::{
     self, AdmitError, MISSING_VALUE_TEXT, SlotMismatch, SlotPresence, StepFault, TourRejection,
 };
+use acan_intent::compare;
 use acan_intent::{
-    AppContract, CaptionCatalog, Card, CardRequest, ContainerNetwork, ContainerPolicy, Contest,
-    ContestRequest, ContestResponse, ContrastExample, CorpusProbe, Coverage, DiscrepancyEpisode,
-    Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern, Fixture, GateState,
-    GetReceiptRequest, GetReceiptResponse, GetRulingsRequest, GetRulingsResponse, GetScopeRequest,
-    GetScopeResponse, ItemClass, ItemState, LedgerEvent, LedgerHash, LedgerHead, MaskablePath,
-    McpError, McpErrorCode, Observation, ObservationHash, ObservationPath, PlantView,
-    PostReadbackRequest, PostReadbackResponse, ProbeCorpus, Receipt, RepairRound, RouteSource,
-    RulingId, Run, Scope, ScopeConfirmation, ScopeDraft, ScopeItem, Selector, SlotSpec, Step,
-    StepId, TourView, TwinError, TwinRunRequest, TwinRunResponse, TwinSaveRequest,
-    TwinSaveResponse, Unsupported, ValueType, WindowMs,
+    AppContract, CaptionCatalog, CaptureOutcome, Card, CardRequest, CommitSha, Comparison,
+    ContainerNetwork, ContainerPolicy, ContentHash, Contest, ContestKind, ContestRequest,
+    ContestResponse, ContestStatus, ContrastExample, CoreDerived, CorpusProbe, Coverage,
+    DiscrepancyEpisode, EpisodeKey, Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern,
+    Fixture, GateState, GetReceiptRequest, GetReceiptResponse, GetRulingsRequest,
+    GetRulingsResponse, GetScopeRequest, GetScopeResponse, ItemClass, ItemState, LedgerEvent,
+    LedgerHash, LedgerHead, MaskablePath, McpError, McpErrorCode, NotReached, Observation,
+    ObservationHash, ObservationPath, ObservedRun, PlantView, PostReadbackRequest,
+    PostReadbackResponse, ProbeCorpus, Receipt, RepairRound, RouteSource, RulingId, Run,
+    RunManifest, RunOutcome, RunRole, Scope, ScopeConfirmation, ScopeDraft, ScopeItem, Selector,
+    SlotSpec, Step, StepId, TourView, TwinError, TwinRunRequest, TwinRunResponse, TwinSaveRequest,
+    TwinSaveResponse, Unsupported, ValueType, WindowMs, canonical_episode_selector,
 };
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -892,6 +895,89 @@ fn hashes_do_not_depend_on_field_order() {
     assert!(shown.starts_with("sha256:") && shown.len() == 71);
 }
 
+/// Every `scope_hash` a fixture names for the current revision. Older revisions in a
+/// `scope_lineage` and the per-revision `evidence_revisions` are history, not bindings.
+fn bound_scope_hashes(value: &Value, current_rev: u64, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, child) in map {
+                match key.as_str() {
+                    "evidence_revisions" => {}
+                    "scope_lineage" => {
+                        for entry in child.as_array().into_iter().flatten() {
+                            if entry.get("rev").and_then(Value::as_u64) == Some(current_rev) {
+                                out.extend(
+                                    entry
+                                        .get("scope_hash")
+                                        .and_then(Value::as_str)
+                                        .map(str::to_owned),
+                                );
+                            }
+                        }
+                    }
+                    _ => {
+                        if key == "scope_hash" {
+                            out.extend(child.as_str().map(str::to_owned));
+                        }
+                        bound_scope_hashes(child, current_rev, out);
+                    }
+                }
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                bound_scope_hashes(child, current_rev, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Every fixture that binds a scope binds `scope.json` by its hash. The one exception is order
+/// o-1, whose scope has no fixture file: its decision and contrast example name it and nothing
+/// else does.
+#[test]
+fn every_fixture_binds_the_scope_file_by_its_hash() {
+    const ORDER_ONE_SCOPE: &str =
+        "sha256:ab2d2883c994bc3d9c7555b4eeba14752aa8af8fd473544361960cfea13a03ba";
+    let scope: Scope = load("scope.json");
+    let expected = scope.scope_hash().expect("hashing the scope").to_string();
+    let mut bound_to_expected = BTreeSet::new();
+    let mut bound_to_order_one = BTreeSet::new();
+    for name in fixture_names() {
+        let mut bound = Vec::new();
+        bound_scope_hashes(&raw(&name), u64::from(scope.rev.0), &mut bound);
+        for hash in bound {
+            if hash == expected {
+                bound_to_expected.insert(name.clone());
+            } else if hash == ORDER_ONE_SCOPE {
+                bound_to_order_one.insert(name.clone());
+            } else {
+                panic!("{name} binds {hash}, which is neither scope.json nor the order o-1 scope");
+            }
+        }
+    }
+    for name in [
+        "card.json",
+        "episode.json",
+        "ledger-decision-dashboard.json",
+        "ledger-decision-supersede.json",
+        "mcp-get-receipt-response.json",
+        "mcp-get-scope-response.json",
+        "receipt.json",
+        "scope-confirmation.json",
+    ] {
+        assert!(bound_to_expected.contains(name), "{name} binds no scope");
+    }
+    assert_eq!(
+        bound_to_order_one,
+        BTreeSet::from([
+            "contrast-example.json".to_owned(),
+            "ledger-decision.json".to_owned()
+        ])
+    );
+}
+
 #[test]
 fn the_unsupported_mcp_error_names_the_operation() {
     let built = McpError::unsupported(Unsupported("API01: get_scope"));
@@ -1358,4 +1444,443 @@ fn a_decision_rules_only_on_examples_retained_before_it() {
         }
     }
     assert!(ruled > 0, "no decision lists the example fixture");
+}
+
+/// A retained example of the corpus's login-rate-limit probe, with its three runs admitted.
+///
+/// Each run logs in with its own session token, which the capture `alice_session` binds from
+/// the cookie of step f2, so every capture reads the fingerprint its run recorded and the
+/// comparison can be made. The context is the contrast example fixture's.
+fn login_example() -> (ContrastExample, [ObservedRun; 3]) {
+    let corpus: ProbeCorpus = load("probe-corpus.json");
+    let probe = corpus
+        .probes
+        .iter()
+        .find(|probe| probe.label == "login-rate-limit")
+        .expect("the corpus has the login probe")
+        .clone();
+    let fixture = corpus
+        .fixtures
+        .iter()
+        .find(|fixture| fixture.id == probe.spec.fixture)
+        .expect("the probe's fixture is in the corpus")
+        .clone();
+    let mut example: ContrastExample = load("contrast-example.json");
+    let probe_hash = probe.spec.probe_hash().expect("hashing");
+    let fixture_hash = fixture.fixture_hash().expect("hashing");
+    let run = |id: &str, role: RunRole, commit: CommitSha, token: &str| {
+        let mut record: Run = load("run.json");
+        record.id = id.parse().expect("a run id");
+        record.probe = probe_hash;
+        record.commit = commit;
+        record.role = role;
+        record.env.fixture_hash = fixture_hash;
+        record.outcome = RunOutcome::Completed {};
+        record.captures = vec![CaptureOutcome::Captured {
+            binding: "alice_session".parse().expect("a binding"),
+            step_id: step("f3"),
+            value_hash: ContentHash::of(&Value::String(token.to_owned()))
+                .expect("hashing")
+                .into(),
+        }];
+        let mut stored = observations_for(&probe, &fixture, &record, &[]);
+        for (hash, observation) in &mut stored {
+            if observation.step_id == step("f2") {
+                observation
+                    .channels
+                    .cookies
+                    .insert("session".to_owned(), token.to_owned());
+                *hash = observation.observation_hash().expect("hashing");
+            }
+        }
+        let manifest = RunManifest {
+            run: record.clone(),
+            observations: stored.iter().map(|(hash, _)| *hash).collect(),
+        };
+        let admitted =
+            admit::observed_run(&probe, &fixture, record, stored).expect("the run is admitted");
+        (manifest, admitted)
+    };
+    let protected = example.context.protected_head.clone();
+    let merged = example.context.merged_commit.clone();
+    let (base_a, run_a) = run(
+        "run-base-a",
+        RunRole::BaseA,
+        protected.clone(),
+        "tok-base-a-0001",
+    );
+    let (base_b, run_b) = run("run-base-b", RunRole::BaseB, protected, "tok-base-b-0002");
+    let (candidate, run_c) = run("run-candidate", RunRole::Candidate, merged, "tok-cand-0003");
+    example.probe = probe;
+    example.fixture = fixture;
+    example.base_a = base_a;
+    example.base_b = base_b;
+    example.candidate = candidate;
+    (example, [run_a, run_b, run_c])
+}
+
+/// The contrast of the example's probe and fixture over three admitted runs.
+fn contrast_over<'a>(
+    example: &'a ContrastExample,
+    [base_a, base_b, candidate]: &'a [ObservedRun; 3],
+) -> compare::Contrast<'a> {
+    compare::Contrast {
+        probe: &example.probe,
+        fixture: &example.fixture,
+        base_a,
+        base_b,
+        candidate,
+    }
+}
+
+/// The comparison of a contrast under the masks its base runs derive.
+fn comparison_of(contrast: &compare::Contrast<'_>) -> CoreDerived<Comparison> {
+    let masks = compare::derive_masks(contrast).expect("the bases derive masks");
+    compare::compare(contrast, &masks).expect("the contrast compares")
+}
+
+fn refused_as(
+    manifest: &ContrastExample,
+    contrast: compare::Contrast<'_>,
+    comparison: &CoreDerived<Comparison>,
+) -> Result<(), AdmitError> {
+    admit::retained_example(manifest, contrast, comparison).map(|_| ())
+}
+
+#[test]
+fn a_retained_example_is_admitted_from_its_own_runs_and_comparison() {
+    let (example, runs) = login_example();
+    let contrast = contrast_over(&example, &runs);
+    let comparison = comparison_of(&contrast);
+    let retained =
+        admit::retained_example(&example, contrast, &comparison).expect("the example is admitted");
+    assert_eq!(
+        retained.hash(),
+        example.contrast_example_hash().expect("hashing")
+    );
+    assert_eq!(retained.comparison(), &comparison);
+    assert_eq!(
+        retained.contrast().candidate,
+        runs.last().expect("three runs")
+    );
+}
+
+#[test]
+fn crossed_evidence_is_refused_at_admission() {
+    let (example, runs) = login_example();
+    let contrast = contrast_over(&example, &runs);
+    let comparison = comparison_of(&contrast);
+    assert_eq!(refused_as(&example, contrast, &comparison), Ok(()));
+    let crossed = |what| Err(AdmitError::CrossedEvidence { what });
+
+    let mut other = example.clone();
+    other.probe.label = "another-probe".to_owned();
+    assert_eq!(refused_as(&other, contrast, &comparison), crossed("probe"));
+
+    let mut other = example.clone();
+    other.fixture.recipe.clear();
+    assert_eq!(
+        refused_as(&other, contrast, &comparison),
+        crossed("fixture")
+    );
+
+    let mut fixture = example.fixture.clone();
+    fixture.recipe.clear();
+    let mut other = example.clone();
+    other.fixture = fixture.clone();
+    let runs_of_another_fixture = compare::Contrast {
+        fixture: &fixture,
+        ..contrast
+    };
+    assert_eq!(
+        refused_as(&other, runs_of_another_fixture, &comparison),
+        Err(AdmitError::WrongSpec)
+    );
+
+    let another_candidate = compare::Contrast {
+        candidate: &runs[0],
+        ..contrast
+    };
+    assert_eq!(
+        refused_as(&example, another_candidate, &comparison),
+        crossed("candidate run record")
+    );
+
+    let mut stored: Vec<(ObservationHash, Observation)> = runs[2]
+        .observations()
+        .map(|(hash, observation)| (*hash, observation.clone()))
+        .collect();
+    let mut value = serde_json::to_value(&stored[0].1).expect("encoding");
+    value["channels"]["body"]["error"] = json!("another error");
+    let edited: Observation = serde_json::from_value(value).expect("decoding");
+    stored[0] = (edited.observation_hash().expect("hashing"), edited);
+    let edited_candidate = admit::observed_run(
+        &example.probe,
+        &example.fixture,
+        example.candidate.run.clone(),
+        stored,
+    )
+    .expect("the edited candidate is still a complete run");
+    let edited_contrast = compare::Contrast {
+        candidate: &edited_candidate,
+        ..contrast
+    };
+    assert_eq!(
+        refused_as(&example, edited_contrast, &comparison),
+        crossed("candidate observations")
+    );
+
+    let mut other = example.clone();
+    other.base_b.observations.swap(0, 1);
+    assert_eq!(
+        refused_as(&other, contrast, &comparison),
+        crossed("base B observations")
+    );
+
+    let mut other = example.clone();
+    other.context.merged_commit = other.context.protected_head.clone();
+    assert_eq!(
+        refused_as(&other, contrast, &comparison),
+        crossed("context")
+    );
+
+    let another_comparison = comparison_of(&edited_contrast);
+    assert_ne!(
+        another_comparison, comparison,
+        "the edited candidate must change the comparison"
+    );
+    assert_eq!(
+        refused_as(&example, contrast, &another_comparison),
+        crossed("comparison")
+    );
+}
+
+/// The scope fixture with one edit to its JSON, decoded again.
+fn edited_scope(edit: impl FnOnce(&mut Value)) -> Scope {
+    let mut value = raw("scope.json");
+    edit(&mut value);
+    serde_json::from_value(value).expect("the edited scope still decodes")
+}
+
+#[test]
+fn a_predicate_or_change_kind_moves_the_semantic_scope_digest() {
+    let scope: Scope = load("scope.json");
+    let digest = scope.semantic_scope_hash().expect("hashing");
+    let allowed = edited_scope(|v| {
+        v["body"]["may"][0]["acceptance"][0]["predicate"]["policy"]["allowed_count"] = json!(6);
+    });
+    assert_ne!(allowed.semantic_scope_hash().expect("hashing"), digest);
+    let changed = edited_scope(|v| v["body"]["may"][0]["change"] = json!("remove"));
+    assert_ne!(changed.semantic_scope_hash().expect("hashing"), digest);
+    let moved = edited_scope(|v| v["body"]["must_keep"][0]["machine_ids"] = json!(["plant-b"]));
+    assert_ne!(moved.semantic_scope_hash().expect("hashing"), digest);
+}
+
+#[test]
+fn prose_alone_does_not_move_the_semantic_scope_digest() {
+    let scope: Scope = load("scope.json");
+    let digest = scope.semantic_scope_hash().expect("hashing");
+    let reworded = edited_scope(|v| {
+        v["body"]["may"][0]["acceptance"][0]["text"] = json!("Reworded for the card");
+        v["body"]["must_keep"][0]["text"] = json!("Reworded rule");
+        v["body"]["open"][0]["question"] = json!("Reworded question?");
+        v["body"]["open"][0]["options"][0]["label"] = json!("Reworded answer");
+    });
+    assert_eq!(reworded.semantic_scope_hash().expect("hashing"), digest);
+    assert_ne!(
+        reworded.scope_hash().expect("hashing"),
+        scope.scope_hash().expect("hashing"),
+        "the document digest still covers wording"
+    );
+}
+
+#[test]
+fn a_contest_rationale_does_not_move_the_semantic_receipt_identity() {
+    let scope: Scope = load("scope.json");
+    let receipt: Receipt = load("receipt.json");
+    let identity = receipt.semantic_hash(&scope).expect("hashing");
+    let mut reasoned = receipt.clone();
+    reasoned.contests[0].rationale = "A different reason with the same claim.".to_owned();
+    assert_ne!(
+        reasoned.receipt_hash().expect("hashing"),
+        receipt.receipt_hash().expect("hashing"),
+        "the document identity still covers the rationale"
+    );
+    assert_eq!(reasoned.semantic_hash(&scope).expect("hashing"), identity);
+
+    let mut retargeted = receipt.clone();
+    retargeted.contests[0].status = ContestStatus::Rejected;
+    assert_ne!(retargeted.semantic_hash(&scope).expect("hashing"), identity);
+}
+
+#[test]
+fn every_other_contest_field_moves_the_semantic_receipt_identity() {
+    let scope: Scope = load("scope.json");
+    let receipt: Receipt = load("receipt.json");
+    let identity = receipt.semantic_hash(&scope).expect("hashing");
+    let moves = |edit: fn(&mut Contest)| {
+        let mut changed = receipt.clone();
+        edit(&mut changed.contests[0]);
+        changed.semantic_hash(&scope).expect("hashing") != identity
+    };
+    assert!(
+        moves(|c| c.id = "k-2".parse().expect("a contest id")),
+        "the id"
+    );
+    assert!(
+        moves(|c| c.target = ContentHash::of_bytes(b"another episode").into()),
+        "the target"
+    );
+    assert!(moves(|c| c.kind = ContestKind::ProposedChange), "the kind");
+    assert!(
+        moves(|c| c.reproducer = ContentHash::of_bytes(b"another probe").into()),
+        "the reproducer"
+    );
+}
+
+#[test]
+fn a_receipt_item_episode_id_is_the_hash_of_its_own_selector_and_order() {
+    let scope: Scope = load("scope.json");
+    let receipt: Receipt = load("receipt.json");
+    let selector = canonical_episode_selector(&scope.body.may[0].selector);
+    let episode = EpisodeKey {
+        order: receipt.order.clone(),
+        selector: selector.clone(),
+        obligation_id: None,
+    }
+    .episode_id()
+    .expect("hashing the key");
+    let mut item = receipt.items[0].clone();
+    item.episode_id = Some(episode);
+    item.selector = Some(selector);
+    let mut consistent = receipt.clone();
+    consistent.items = vec![item];
+    consistent
+        .check_episode_ids()
+        .expect("the item's episode id is the hash of its key");
+
+    let mut crossed = consistent.clone();
+    crossed.items[0].selector = Some(scope.body.may[1].selector.clone());
+    assert!(
+        crossed.check_episode_ids().is_err(),
+        "an episode id under another selector is refused"
+    );
+    let mut reordered = consistent.clone();
+    reordered.order = serde_json::from_value(json!("o-9")).expect("an order");
+    assert!(
+        reordered.check_episode_ids().is_err(),
+        "an episode id under another order is refused"
+    );
+    let mut unkeyed = consistent.clone();
+    unkeyed.items[0].selector = None;
+    unkeyed
+        .check_episode_ids()
+        .expect("an item with no selector has no key to check");
+}
+
+#[test]
+fn an_unreached_item_is_named_by_id_with_its_unchecked_obligations() {
+    let scope: Scope = load("scope.json");
+    let receipt: Receipt = load("receipt.json");
+    assert!(
+        serde_json::to_value(&receipt)
+            .expect("encoding the receipt")
+            .get("not_reached")
+            .is_none(),
+        "a receipt with nothing unreached keeps its bytes"
+    );
+    let item = &scope.body.may[1];
+    let mut unreached = receipt.clone();
+    unreached.not_reached.push(NotReached {
+        item_id: item.id.clone(),
+        selector: canonical_episode_selector(&item.selector),
+        obligation_ids: item
+            .acceptance
+            .iter()
+            .map(|p| p.obligation_id.clone())
+            .collect(),
+    });
+    let value = serde_json::to_value(&unreached).expect("encoding the receipt");
+    assert_eq!(
+        value["not_reached"][0]["item_id"],
+        serde_json::to_value(&item.id).expect("encoding the id")
+    );
+    assert_eq!(
+        value["not_reached"][0]["obligation_ids"]
+            .as_array()
+            .map(Vec::len),
+        Some(item.acceptance.iter().count())
+    );
+    assert_ne!(
+        unreached.receipt_hash().expect("hashing"),
+        receipt.receipt_hash().expect("hashing")
+    );
+    let decoded: Receipt = serde_json::from_value(value).expect("decoding the receipt");
+    assert_eq!(decoded, unreached);
+}
+
+#[test]
+fn value_hash_is_sha256_over_the_canonical_json_of_the_value() {
+    use sha2::{Digest, Sha256};
+
+    let file = raw("value-hash-vectors.json");
+    let vectors = file["vectors"].as_array().expect("the vectors");
+    assert!(vectors.len() >= 4, "a string, a number, an escape and f3");
+    for vector in vectors {
+        let name = vector["name"].as_str().expect("a vector name");
+        let canonical = serde_jcs::to_vec(&vector["value"]).expect("the canonical JSON");
+        assert_eq!(
+            canonical,
+            vector["canonical"]
+                .as_str()
+                .expect("the canonical form")
+                .as_bytes(),
+            "{name}: the canonical JSON"
+        );
+        let digest = format!("sha256:{:x}", Sha256::digest(&canonical));
+        assert_eq!(
+            digest,
+            vector["value_hash"].as_str().expect("the value hash"),
+            "{name}: the value hash"
+        );
+    }
+}
+
+#[test]
+fn a_must_keep_selector_is_keyed_by_its_canonical_form() {
+    let scope: Scope = load("scope.json");
+    let canonical = canonical_episode_selector(&scope.body.must_keep[0].selector);
+    let value = serde_json::to_value(&canonical).expect("encoding the selector");
+    assert_eq!(value["step_context"], json!({ "kind": "any" }));
+    assert_eq!(value["principal"], json!({ "kind": "authenticated" }));
+    assert_eq!(
+        canonical_episode_selector(&canonical),
+        canonical,
+        "canonicalizing twice changes nothing"
+    );
+}
+
+#[test]
+fn the_scope_confirmation_binds_the_scope_semantically() {
+    let scope: Scope = load("scope.json");
+    let confirmation: ScopeConfirmation = load("scope-confirmation.json");
+    let expected = scope.semantic_scope_hash().expect("hashing");
+    assert_eq!(
+        confirmation.semantic_scope_hash,
+        Some(expected),
+        "scope-confirmation.json must bind the scope's semantic digest"
+    );
+}
+
+#[test]
+fn scope_wording_does_not_move_the_semantic_receipt_identity() {
+    let scope: Scope = load("scope.json");
+    let receipt: Receipt = load("receipt.json");
+    let reworded = edited_scope(|v| {
+        v["body"]["may"][0]["acceptance"][0]["text"] = json!("Reworded for the card");
+    });
+    assert_eq!(
+        receipt.semantic_hash(&reworded).expect("hashing"),
+        receipt.semantic_hash(&scope).expect("hashing")
+    );
 }

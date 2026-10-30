@@ -19,7 +19,7 @@
           },
           "channel": "status"
         },
-        "change": "add",
+        "change": "modify",
         "acceptance": [
           {
             "obligation_id": "obl-login-window",

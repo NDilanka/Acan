@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::hash::{
     CanonicalError, ContentHash, EpisodeId, EvidenceHash, ObservationHash, ProbeHash, ScopeHash,
 };
-use crate::scope::{Change, Selector};
+use crate::scope::{Change, Principal, Selector, StepContext};
 use crate::types::{
     AgentRef, CommitSha, ContestId, Evidence, ObligationId, ObservationPath, OrderRef, Scalar,
     ScopeRev, StepId, TaskRef, UnixMillis,
@@ -48,6 +48,18 @@ impl EpisodeKey {
     pub fn episode_id(&self) -> Result<EpisodeId, CanonicalError> {
         ContentHash::of(self).map(EpisodeId::from)
     }
+}
+
+/// The selector an episode is keyed by: the authored selector with `step_context` set to `any`
+/// and an actor principal widened to `authenticated`, as [`EpisodeKey`] documents.
+#[must_use]
+pub fn canonical_episode_selector(selector: &Selector) -> Selector {
+    let mut canonical = selector.clone();
+    canonical.step_context = StepContext::Any {};
+    if matches!(canonical.principal, Principal::Actor { .. }) {
+        canonical.principal = Principal::Authenticated {};
+    }
+    canonical
 }
 
 /// One scope revision an episode lived through.

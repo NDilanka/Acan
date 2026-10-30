@@ -168,6 +168,15 @@ pub struct MountPolicy {
     pub protected: BTreeSet<RepoPath>,
     /// How a protected path missing from the snapshot is covered.
     pub missing_protected: MissingProtected,
+    /// Whether `.git` is mounted read-only over the worktree. Hooks written there would run on
+    /// the host at the next commit, so a policy keeps it read-only unless it says otherwise.
+    #[serde(default = "readonly_git_by_default")]
+    pub readonly_git: bool,
+}
+
+/// The default for [`MountPolicy::readonly_git`]: `.git` is mounted read-only.
+const fn readonly_git_by_default() -> bool {
+    true
 }
 
 /// The container policy of every isolated run. Its hash is the [`SandboxPolicyHash`].
@@ -253,7 +262,7 @@ mod tests {
             mounts: _,
         } = &base;
         type Edit = fn(&mut ContainerPolicy);
-        let edits: [(&str, Edit); 14] = [
+        let edits: [(&str, Edit); 15] = [
             ("image name", |p| {
                 p.image.name = "oven/bun:2".parse().expect("a name");
             }),
@@ -282,6 +291,7 @@ mod tests {
             ("missing protected", |p| {
                 p.mounts.missing_protected = MissingProtected::Refused;
             }),
+            ("readonly git", |p| p.mounts.readonly_git = false),
         ];
         let original = base.sandbox_policy_hash().expect("hashing");
         let mut seen = BTreeSet::from([original]);
@@ -365,6 +375,28 @@ mod tests {
         assert!(!with(
             |v| v["mounts"]["missing_protected"] = json!("writable")
         ));
+        assert!(!with(|v| v["mounts"]["readonly_git"] = json!("no")));
+    }
+
+    #[test]
+    fn readonly_git_defaults_to_true_and_is_hashed() {
+        let base = fixture();
+        assert!(base.mounts.readonly_git);
+        let mut absent: Value =
+            serde_json::from_str(include_str!("../fixtures/container-policy.json")).expect("JSON");
+        absent["mounts"]
+            .as_object_mut()
+            .expect("mounts")
+            .remove("readonly_git");
+        let decoded: ContainerPolicy = serde_json::from_value(absent).expect("the policy decodes");
+        assert_eq!(decoded, base, "an absent readonly_git is true");
+        let mut opened = base.clone();
+        opened.mounts.readonly_git = false;
+        assert_ne!(
+            opened.sandbox_policy_hash().expect("hashing"),
+            base.sandbox_policy_hash().expect("hashing"),
+            "a writable .git kept the policy hash"
+        );
     }
 
     #[test]

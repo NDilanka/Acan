@@ -10,7 +10,6 @@
 
 use std::collections::BTreeSet;
 use std::fmt::Display;
-use std::iter::once;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
@@ -328,8 +327,8 @@ impl Worktree {
     /// The `docker` arguments and host bookkeeping for `command` in a container named `name`.
     /// Every limit, mount and network rule comes from the policy, except the fixed rules this
     /// function states: a fresh container removed after the run, `HOME` as the only environment
-    /// variable, `.git` mounted read-only, and every protected path mounted read-only on top of
-    /// the worktree.
+    /// variable, and every protected path mounted read-only on top of the worktree. `.git` is
+    /// mounted read-only only when the policy's `readonly_git` says so.
     fn container_plan(&self, name: &str, command: &str) -> Result<Plan, String> {
         let policy = &self.policy;
         let root = std::path::absolute(&self.root)
@@ -363,9 +362,13 @@ impl Worktree {
         let mut mounted: Vec<String> = Vec::new();
         let mut mount_points: Vec<PathBuf> = Vec::new();
         let mut mask_source: Option<PathBuf> = None;
-        // `.git` is a fixed rule, not a policy field: hooks written there would run on the host
-        // at the next commit, and the contract has no field for it.
-        for relative in once(".git").chain(protected.iter().map(String::as_str)) {
+        // Hooks written under `.git` would run on the host at the next commit, so the policy
+        // keeps it read-only unless `readonly_git` turns that off.
+        let guarded_git = policy.mounts.readonly_git.then_some(".git");
+        for relative in guarded_git
+            .into_iter()
+            .chain(protected.iter().map(String::as_str))
+        {
             let (path, existing) = match self.existing_real(relative)? {
                 Some(real) => (real, true),
                 None => (relative.to_owned(), false),
@@ -734,6 +737,7 @@ fn default_policy() -> ContainerPolicy {
             workdir: "/work".parse().expect("the default workdir"),
             protected: BTreeSet::from([".acan".parse().expect("the default protected path")]),
             missing_protected: MissingProtected::Masked,
+            readonly_git: true,
         },
     }
 }
