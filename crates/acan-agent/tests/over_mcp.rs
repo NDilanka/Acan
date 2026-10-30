@@ -1,5 +1,10 @@
-//! The harness over MCP against a real origin. The origin, its writer, its git worktrees, and its
-//! gate are real. The foreman and the workers are scripted, so no test needs the network.
+//! The harness over MCP against a real origin on the scope-first lane. The origin, its writer, its
+//! git worktrees, and its gate are real. The foreman and the workers are scripted, so no test
+//! needs the network.
+//!
+//! The owner confirms the order's scope before any worker claims. A worker reads that scope over
+//! MCP, posts a readback that carries it, and only then claims. The legacy model review is not
+//! scripted anywhere: the lane never derives it.
 //!
 //! Each worker's first edit waits on a gate the test opens after it has seen the clash. A real
 //! model call takes longer than a second declaration, so the gate stands in for that delay. The
@@ -52,15 +57,21 @@ const WAIT: Duration = Duration::from_secs(120);
 /// while it waits on worktrees, so this outlasts the scenario's own waits.
 const WORKER_WAIT: Duration = Duration::from_secs(600);
 const POLL: Duration = Duration::from_millis(20);
+/// How long a worker waits for a gate receipt after it reports its build. The harness runs no
+/// gate that answers, so the wait ends and the build stays reported.
+const RECEIPT_WAIT: Duration = Duration::from_millis(500);
 /// How long the test lets the workers run after the gate opens, to show nothing is cleared.
 const HOLD: Duration = Duration::from_millis(300);
+/// The confirmation's acceptance time. The core binds the confirmation to its scope, not to a clock.
+const CONFIRMED_AT: u64 = 1_700_000_000_000;
 /// The scenarios run one at a time. Each starts an origin and its own git work, so in parallel
 /// they slow each other's git calls, and the deadlines would then measure that contention.
 static SCENARIO: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
-/// The foreman answers by the shape of its request: a review carries readbacks, an explanation
-/// carries a clash, and a split carries a machine. It splits the order into `tasks` tasks on one
-/// machine, at most two, matches every readback, and explains a clash without a suggestion.
+/// The foreman answers by the shape of its request: an explanation carries a clash, and a split
+/// carries a machine. It splits the order into `tasks` tasks on one machine, at most two, and
+/// explains a clash without a suggestion. It never reviews readbacks: the scope-first lane has no
+/// review request, so a request of that shape is refused.
 struct Foreman {
     tasks: usize,
 }
@@ -71,9 +82,7 @@ impl ModelClient for Foreman {
             .last_user_text()
             .and_then(|text| serde_json::from_str(text).ok())
             .ok_or(LlmError::NoScriptedReply { role })?;
-        let reply = if context.get("readbacks").is_some() {
-            review(&context)
-        } else if context.get("clash").is_some() {
+        let reply = if context.get("clash").is_some() {
             explain()
         } else if context.get("machine").is_some() {
             split(self.tasks)
@@ -112,24 +121,6 @@ fn split(tasks: usize) -> Value {
     };
     let all = [task("Change the loader"), task("Change the loader again")];
     json!({ "tasks": all[..tasks] })
-}
-
-fn review(context: &Value) -> Value {
-    let witnesses: Vec<Value> = context["witnesses"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|witness| witness["id"].as_str())
-        .map(|id| json!({ "witness": id, "judgement": { "judgement": "match" } }))
-        .collect();
-    let readbacks: Vec<Value> = context["readbacks"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|readback| readback["readback"].as_str())
-        .map(|id| json!({ "readback": id, "witnesses": witnesses }))
-        .collect();
-    json!({ "readbacks": readbacks, "question": null })
 }
 
 fn explain() -> Value {
@@ -233,6 +224,7 @@ fn worker_config(base: &str, token: &str, repo: &Path) -> WorkerConfig {
         test_command: None,
         max_steps: 5,
         wait: WORKER_WAIT,
+        receipt_wait: RECEIPT_WAIT,
         heartbeat: Duration::from_secs(1),
         poll: POLL,
     }
@@ -479,6 +471,125 @@ async fn register(running: &Running, agent: &str) {
     );
 }
 
+/// The protected head the scope binds to: `main`, where the repository starts.
+fn base_commit(root: &Path) -> String {
+    git(root, &["rev-parse", "main"]).trim().to_owned()
+}
+
+/// The order the split made, as the scope names it, such as `o-1`.
+async fn split_order_id(running: &Running) -> String {
+    events(running)
+        .await
+        .iter()
+        .find_map(|stamped| match &stamped.event {
+            Event::OrderSplit { order, .. } => Some(order.to_string()),
+            _ => None,
+        })
+        .expect("the order was split before its scope is set")
+}
+
+/// A scope on `order` at revision 1 that binds `base`. It has no may-change items and one must-keep
+/// rule over the signup answer's body, the same rule the server's scope-first tests confirm. The
+/// scenarios check the claim, the clash and the redeclaration, not the rule's verdict.
+fn scope_json(order: &str, base: &str) -> Value {
+    json!({
+        "version": "acan-scope/1",
+        "order": order,
+        "rev": 1,
+        "base_commit": base,
+        "body": {
+            "may": [],
+            "must_keep": [{
+                "id": "keep-signup-body",
+                "selector": {
+                    "surface": "http",
+                    "method": "POST",
+                    "route_template": "/api/signup",
+                    "step_context": { "kind": "step", "step_id": "s1" },
+                    "principal": { "kind": "anonymous" },
+                    "channel": "body"
+                },
+                "obligations": [{
+                    "obligation_id": "obl-signup-body",
+                    "predicate": {
+                        "predicate": "equals_base",
+                        "step_id": "s1",
+                        "path": "body",
+                        "anchor": { "kind": "fresh" }
+                    },
+                    "text": "The signup answer's body matches the base run"
+                }],
+                "text": "Signup answers with the same body as before the change",
+                "machine_ids": ["auth"]
+            }],
+            "open": []
+        }
+    })
+}
+
+/// The owner sets the split order's scope to revision 1 and confirms it, so workers may read the
+/// scope and claim. Both commands go through the typed owner route, and each must be accepted.
+async fn confirm_scope(running: &Running, base: &str) {
+    let order = split_order_id(running).await;
+    let order_no: u64 = order
+        .strip_prefix("o-")
+        .and_then(|number| number.parse().ok())
+        .expect("an order id such as o-3");
+    let scope_value = scope_json(&order, base);
+    let scope: acan_intent::Scope =
+        serde_json::from_value(scope_value.clone()).expect("the scope decodes");
+    let revise: HumanCmd = serde_json::from_value(json!({
+        "cmd": "revise_scope",
+        "order": order_no,
+        "scope": scope_value,
+    }))
+    .expect("the revision is a human command");
+    let response = owner_command(running, &revise).await;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    assert!(status.is_success(), "the scope is set: {status} {body}");
+
+    let selector_hashes: Vec<Value> = scope
+        .body
+        .must_keep
+        .iter()
+        .map(|rule| json!(rule.selector.selector_hash().expect("the selector hashes")))
+        .collect();
+    let confirm: HumanCmd = serde_json::from_value(json!({
+        "cmd": "confirm_scope",
+        "order": order_no,
+        "confirmation": {
+            "version": "acan-scope-confirmation/1",
+            "order": order,
+            "scope_rev": scope.rev,
+            "scope_hash": scope.scope_hash().expect("the scope hashes"),
+            "semantic_scope_hash": scope.semantic_scope_hash().expect("the scope hashes"),
+            "base_commit": scope.base_commit,
+            "ruling_versions": [],
+            "selector_hashes": selector_hashes,
+            "example_hashes": [],
+            "answers": [],
+            "broad_grants": [],
+            "budget": {
+                "repair_rounds": 2,
+                "wall_time_ms": 600_000,
+                "model_cost_micros": 0,
+                "max_episodes": 4
+            },
+            "by": "owner",
+            "at": CONFIRMED_AT
+        }
+    }))
+    .expect("the confirmation is a human command");
+    let response = owner_command(running, &confirm).await;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    assert!(
+        status.is_success(),
+        "the scope is confirmed: {status} {body}"
+    );
+}
+
 /// The stored log, replayed to a world. Read through the owner's events route.
 async fn events(running: &Running) -> Vec<Stamped> {
     client()
@@ -671,6 +782,7 @@ async fn two_workers_on_one_file_clash_before_either_writes() {
     })
     .await;
     assert_eq!(tasks.len(), 2, "the order splits into two tasks");
+    confirm_scope(&running, &base_commit(root)).await;
 
     let (gate, open) = watch::channel(false);
     let one = spawn_worker(&base, ONE_TOKEN, repo.path(), open.clone());
@@ -769,6 +881,15 @@ async fn two_workers_on_one_file_clash_before_either_writes() {
         "the first worker builds its task: {}",
         outcome.exit
     );
+    // The claim rests on the scope-first readback, which the worker logs before it claims.
+    assert!(
+        outcome
+            .steps
+            .iter()
+            .any(|step| step.starts_with(&format!("read back {first_task} at scope rev 1"))),
+        "the worker reads back the confirmed scope before it claims: {:#?}",
+        outcome.steps
+    );
     assert_eq!(
         fs::read_to_string(worktree_dir(root, first_task).join(FILE))
             .expect("the file is readable"),
@@ -805,6 +926,7 @@ async fn two_declared_on_one_file(
     })
     .await;
     assert_eq!(tasks.len(), 2, "the order splits into two tasks");
+    confirm_scope(running, &base_commit(root)).await;
 
     let one = spawn_scripted(&base, ONE_TOKEN, root, one_script, open.clone());
     let two = spawn_scripted(&base, TWO_TOKEN, root, two_script, open);
@@ -1098,40 +1220,40 @@ async fn a_stale_fence_is_refused_with_the_rejection_text() {
     })
     .await;
 
+    confirm_scope(&running, &base_commit(root)).await;
+
     let mcp = McpClient::new(&base, ONE_TOKEN.to_owned());
     mcp.connect().await.expect("the harness connects");
+    // The agent reads the confirmed scope and posts a readback at its revision and hash. The
+    // origin acknowledges the readback, and the claim rests on that acknowledgement.
+    let scope = mcp
+        .call(
+            "get_scope",
+            json!({ "version": "acan-mcp/1", "task": task.to_string() }),
+        )
+        .await
+        .expect("the scope call completes");
+    let Reply::Done(scope) = scope else {
+        panic!("the confirmed scope is read: {scope:?}");
+    };
     let posted = mcp
         .call(
-            "post_readback",
+            "post_scoped_readback",
             json!({
+                "version": "acan-mcp/1",
                 "task": task.to_string(),
+                "scope_rev": scope["scope"]["rev"],
+                "scope_hash": scope["scope_hash"],
                 "summary": "change the loader",
-                "touches": [{ "at": "machine", "machine": MACHINE }],
+                "predictions": [],
             }),
         )
         .await
         .expect("the readback call completes");
-    assert!(matches!(posted, Reply::Done(_)), "the readback is accepted");
-    let mut seen = String::from("no read of the task");
-    let matched = timeout(WAIT, async {
-        loop {
-            let detail = mcp
-                .call("get_task", json!({ "task": task.to_string() }))
-                .await
-                .expect("get_task completes");
-            seen = format!("{detail:?}");
-            if let Reply::Done(detail) = detail
-                && detail["your_readback"]["status"] == "match"
-            {
-                return;
-            }
-            sleep(POLL).await;
-        }
-    })
-    .await;
-    matched.unwrap_or_else(|_| {
-        panic!("the foreman matches the readback within {WAIT:?}; get_task showed {seen}")
-    });
+    assert!(
+        matches!(posted, Reply::Done(_)),
+        "the readback is acknowledged: {posted:?}"
+    );
     let claimed = mcp
         .call("claim_task", json!({ "task": task.to_string() }))
         .await
@@ -1251,6 +1373,7 @@ async fn a_lost_claim_stops_the_work_and_nothing_is_written() {
         (tasks_of_world(world).len() == 1).then_some(())
     })
     .await;
+    confirm_scope(&running, &base_commit(root)).await;
 
     // The gate stays shut, so the worker waits inside its first edit step, holding its claim.
     let (gate, open) = watch::channel(false);
@@ -1334,6 +1457,7 @@ async fn a_model_error_releases_the_claim() {
         (tasks_of_world(world).len() == 1).then_some(())
     })
     .await;
+    confirm_scope(&running, &base_commit(repo.path())).await;
 
     let config = worker_config(&base, ONE_TOKEN, repo.path());
     let worker = tokio::spawn(async move {
