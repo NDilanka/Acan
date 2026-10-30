@@ -1,6 +1,6 @@
 # Acan receipt for order `o-3`
 
-- Receipt: `sha256:c61697acfbf70c8878a004d8cfc111f9a01735c3602a3d2a105b66ddfa9fe3c6`
+- Receipt: `sha256:dcd24a773280538b33214f5808daa50a811f2bfb65604ab35738788af3c135f8`
 - Version: `acan-receipt/1`
 - Scope: revision 2, hash `sha256:ed58ef8d58d4e29959f80110656bbaeb9d82ad3e12eb5baa5f80ac6bf5ce2d3e`
 - Gate state: `blocked`
@@ -370,12 +370,12 @@ Contests: 1. A contest asks the human; it never widens the scope. The rationale 
 The gate compares every field below. Land is refused when any of them moved.
 
 - Overlay: `sha256:c27af44102a1dd3819def6db27bb5e79c2ff5023379faf9e8feddba8a780fd64`
-- Ledger head: event 3 at hash `sha256:9f625efcb35f0da551bb4bcf00d038001e8d597d0ec671677736a41d021908ab`
+- Ledger head: event 3 at hash `sha256:ac4533416a1cf7e85f3b4c9dc45bfe90f2159132f241ab5772839195f94be7d3`
 - Probe set: `sha256:08cbc55fe91e0a7d35d66a97b619a7931d518dccb0a3268d75ab7b9eac74af03`
 - Fixture set: `sha256:29007a22a25a34d8c43c2e3aba058bc33e54d60e6db3aae1c2ae84eb5459cf94`
 - Runner: `sha256:02b428f772fbef62ede2b5c9d022c4e49f7e17dbed2e7a396f402aad28a24b47`
 - Evaluator: `acan-intent/0.1.0`
 - Runtime: `bun-1.4.4`
 - Controlled environment: `sha256:96f3b648e7620cf579630eeb0f7234347766890e6ea45f8d4fe429c791493989`
-- Container policy: `sha256:cfb49e83d5d93287bae5444e4c4f20e4a44fb65bc82d845fc008c5a05e6394ac`
+- Container policy: `sha256:7e6e773e14a0d8f78f181356e5097fa59cd92791d95eca91851525c00f6fda2f`
 - Artifact `bun.lock`: `sha256:5dd3909fd7cc889f9d3635f02a8b1eb462eaf95a85f550fad2aae6ef409f7b54`
