@@ -7,6 +7,11 @@ use std::time::Duration;
 
 use acan_core::{Check, WitnessOutcome};
 use acan_witness::{Limits, run};
+use tokio::sync::Mutex;
+
+/// Held by every test that binds a loopback port. The closed-port test releases its scratch port
+/// before connecting, and a parallel fixture server could otherwise be handed that same port.
+static PORTS: Mutex<()> = Mutex::const_new(());
 
 fn limits() -> Limits {
     Limits {
@@ -145,6 +150,7 @@ async fn the_output_tail_is_bounded() {
 
 #[tokio::test]
 async fn an_http_check_passes_and_the_server_stops_after() {
+    let _ports = PORTS.lock().await;
     let (base, server) = serve_once(200, "all good");
     let limits = Limits {
         http_base_url: Some(base),
@@ -163,6 +169,7 @@ async fn an_http_check_passes_and_the_server_stops_after() {
 
 #[tokio::test]
 async fn an_http_check_fails_on_a_wrong_status() {
+    let _ports = PORTS.lock().await;
     let (base, server) = serve_once(500, "broken");
     let limits = Limits {
         http_base_url: Some(base),
@@ -184,6 +191,7 @@ async fn an_http_check_fails_on_a_wrong_status() {
 
 #[tokio::test]
 async fn an_http_check_fails_on_a_missing_body_substring() {
+    let _ports = PORTS.lock().await;
     let (base, server) = serve_once(200, "the actual body");
     let limits = Limits {
         http_base_url: Some(base),
@@ -205,6 +213,7 @@ async fn an_http_check_fails_on_a_missing_body_substring() {
 
 #[tokio::test]
 async fn an_http_check_errors_when_nothing_listens() {
+    let _ports = PORTS.lock().await;
     let port = TcpListener::bind("127.0.0.1:0")
         .expect("bind a scratch listener")
         .local_addr()
