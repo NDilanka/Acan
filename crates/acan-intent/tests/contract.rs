@@ -9,6 +9,7 @@ use acan_intent::admit::{
     self, AdmitError, MISSING_VALUE_TEXT, SlotMismatch, SlotPresence, StepFault, TourRejection,
 };
 use acan_intent::compare;
+use acan_intent::fold;
 use acan_intent::{
     AppContract, CaptionCatalog, CaptureOutcome, Card, CardRequest, CommitSha, Comparison,
     ContainerNetwork, ContainerPolicy, ContentHash, Contest, ContestKind, ContestRequest,
@@ -23,6 +24,7 @@ use acan_intent::{
     SlotSpec, Step, StepId, TourView, TwinError, TwinRunRequest, TwinRunResponse, TwinSaveRequest,
     TwinSaveResponse, Unsupported, ValueType, WindowMs, canonical_episode_selector,
 };
+use acan_intent::{FixtureSetManifest, ProbeSetManifest, RepoPath};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -1019,6 +1021,118 @@ fn every_tested_context_ran_under_the_container_policy_fixture() {
         current, receipt.prepared.context,
         "a policy change kept the context"
     );
+}
+
+/// Every field of the receipt's prepared block is what the fixtures compute for it. The probe set
+/// and the fixture set come from the corpus. The ledger head and the retired probes come from the
+/// ruling log folded to the revision the receipt names. The scope comes from `scope.json`, the
+/// lockfile, runner and runtime from the run record and the app contract, and the evaluator from
+/// this crate. The overlay and the controlled environment have no fixture that recomputes them,
+/// so they must agree with the other fixtures that carry them.
+#[test]
+fn the_receipt_prepared_context_is_what_the_fixtures_compute() {
+    let receipt: Receipt = load("receipt.json");
+    let prepared = &receipt.prepared;
+    let context = &prepared.context;
+    let scope: Scope = load("scope.json");
+    let confirmation: ScopeConfirmation = load("scope-confirmation.json");
+    let run: Run = load("run.json");
+    let app: AppContract = load("app-contract.json");
+    let corpus: ProbeCorpus = load("probe-corpus.json");
+
+    // The receipt was built at the revision it names, the prefix of the log through that event.
+    let events: Vec<LedgerEvent> = LEDGER.into_iter().map(load::<LedgerEvent>).collect();
+    let revision = usize::try_from(context.ledger_head.event_seq).expect("a small revision");
+    assert!(
+        revision <= events.len(),
+        "the receipt names revision {revision}, past the {} events of the log",
+        events.len()
+    );
+    let folded = fold::fold(&events[..revision]).expect("the log folds to the receipt's revision");
+    let at = folded.value();
+    assert_eq!(context.ledger_head, at.head, "ledger head");
+
+    assert_eq!(prepared.base_commit, scope.base_commit, "base commit");
+    assert_eq!(
+        prepared.base_commit, confirmation.base_commit,
+        "base commit"
+    );
+    assert_eq!(
+        context.protected_head, prepared.base_commit,
+        "protected head"
+    );
+    assert_eq!(context.merged_commit, run.commit, "merged commit");
+
+    assert_eq!(context.scope_hash, confirmation.scope_hash, "scope hash");
+    assert_eq!(
+        context.scope_hash,
+        scope.scope_hash().expect("hashing the scope"),
+        "scope hash"
+    );
+
+    let probe_set = ProbeSetManifest::of(&corpus, &at.retired_probes)
+        .and_then(|manifest| manifest.probe_set_hash())
+        .expect("the probe set hashes");
+    assert_eq!(context.probe_set_hash, probe_set, "probe set hash");
+    let fixture_set = FixtureSetManifest::of(&corpus)
+        .and_then(|manifest| manifest.fixture_set_hash())
+        .expect("the fixture set hashes");
+    assert_eq!(context.fixture_set_hash, fixture_set, "fixture set hash");
+
+    let bun_lock: RepoPath = "bun.lock".parse().expect("a repo path");
+    assert_eq!(
+        context.effective_artifact_hashes.keys().collect::<Vec<_>>(),
+        vec![&bun_lock],
+        "the artifact inputs are the lockfile the run recorded"
+    );
+    assert_eq!(
+        context.effective_artifact_hashes.get(&bun_lock),
+        Some(&run.env.lockfile_hash),
+        "lockfile hash"
+    );
+
+    assert_eq!(context.runner_hash, run.runner, "runner hash");
+    assert_eq!(context.runtime, app.runtime, "runtime");
+    assert_eq!(context.runtime, run.env.runtime, "runtime");
+    assert_eq!(
+        context.evaluator_version.to_string(),
+        format!("acan-intent/{}", env!("CARGO_PKG_VERSION")),
+        "evaluator version"
+    );
+
+    let policy: ContainerPolicy = load("container-policy.json");
+    assert_eq!(
+        context.sandbox_policy_hash,
+        policy.sandbox_policy_hash().expect("hashing the policy"),
+        "sandbox policy hash"
+    );
+
+    let card: Card = load("card.json");
+    let example: ContrastExample = load("contrast-example.json");
+    for (name, other) in [
+        ("card.json", &card.prepared.context),
+        ("contrast-example.json", &example.context),
+    ] {
+        assert_eq!(context.overlay_hash, other.overlay_hash, "{name} overlay");
+        assert_eq!(
+            context.controlled_env_hash, other.controlled_env_hash,
+            "{name} controlled environment"
+        );
+        assert_eq!(context.runner_hash, other.runner_hash, "{name} runner hash");
+        assert_eq!(context.runtime, other.runtime, "{name} runtime");
+        assert_eq!(
+            context.evaluator_version, other.evaluator_version,
+            "{name} evaluator version"
+        );
+        assert_eq!(
+            context.fixture_set_hash, other.fixture_set_hash,
+            "{name} fixture set hash"
+        );
+        assert_eq!(
+            context.sandbox_policy_hash, other.sandbox_policy_hash,
+            "{name} sandbox policy hash"
+        );
+    }
 }
 
 /// The demo's ruling log, one fixture per event, in log order.
