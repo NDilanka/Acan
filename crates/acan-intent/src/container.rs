@@ -228,14 +228,14 @@ fn environment_names<'de, D: Deserializer<'de>>(
 ) -> Result<BTreeMap<String, String>, D::Error> {
     let environment = BTreeMap::<String, String>::deserialize(deserializer)?;
     for (name, value) in &environment {
-        check_environment(name, value).map_err(serde::de::Error::custom)?;
+        check_variable(name, value).map_err(serde::de::Error::custom)?;
     }
     Ok(environment)
 }
 
 /// Refuses a variable whose name is not `A-Z 0-9 _` from an uppercase letter, whose name could
 /// carry a credential, or whose value is not short printable text.
-fn check_environment(name: &str, value: &str) -> Result<(), String> {
+fn check_variable(name: &str, value: &str) -> Result<(), String> {
     let well_formed = name.len() <= ENVIRONMENT_NAME_MAX
         && name.starts_with(|c: char| c.is_ascii_uppercase())
         && name
@@ -244,10 +244,7 @@ fn check_environment(name: &str, value: &str) -> Result<(), String> {
     if !well_formed {
         return Err(format!("{name:?} is not an environment variable name"));
     }
-    if CREDENTIAL_NAME_PARTS
-        .iter()
-        .any(|part| name.contains(part))
-    {
+    if CREDENTIAL_NAME_PARTS.iter().any(|part| name.contains(part)) {
         return Err(format!(
             "{name} may carry a credential, so no container may receive it"
         ));
@@ -339,6 +336,18 @@ impl ContainerPolicy {
                 harness: harness_by_default(),
             },
         }
+    }
+
+    /// Refuses an environment a container must not get. The decoder applies the same rule, so a
+    /// policy built in code is checked before any runner passes its variables on.
+    ///
+    /// # Errors
+    ///
+    /// Returns the reason for the first variable that fails.
+    pub fn check_environment(&self) -> Result<(), String> {
+        self.environment
+            .iter()
+            .try_for_each(|(name, value)| check_variable(name, value))
     }
 
     /// The policy's identity, carried in [`crate::GateContext::sandbox_policy_hash`].
@@ -527,7 +536,9 @@ mod tests {
 
     #[test]
     fn environment_names_refuse_credentials_and_control_text() {
-        assert!(with(|v| v["environment"] = json!({ "HOME": "/tmp", "PORT": "3000" })));
+        assert!(with(
+            |v| v["environment"] = json!({ "HOME": "/tmp", "PORT": "3000" })
+        ));
         assert!(with(|v| v["environment"] = json!({})));
         for name in [
             "OPENAI_API_KEY",

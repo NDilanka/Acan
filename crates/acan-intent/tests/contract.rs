@@ -12,17 +12,17 @@ use acan_intent::compare;
 use acan_intent::fold;
 use acan_intent::{
     AppContract, CaptionCatalog, CaptureOutcome, Card, CardRequest, CommitSha, Comparison,
-    ContainerPolicy, ContentHash, Contest, ContestKind, ContestRequest,
-    ContestResponse, ContestStatus, ContrastExample, CoreDerived, CorpusProbe, Coverage,
-    DiscrepancyEpisode, EpisodeKey, Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern,
-    Fixture, GateState, GetReceiptRequest, GetReceiptResponse, GetRulingsRequest,
-    GetRulingsResponse, GetScopeRequest, GetScopeResponse, ItemClass, ItemState, LedgerEvent,
-    LedgerHash, LedgerHead, MaskablePath, McpError, McpErrorCode, NotReached, Observation,
-    ObservationHash, ObservationPath, ObservedRun, Outcome, PlantView, PostReadbackRequest,
-    PostReadbackResponse, ProbeCorpus, Receipt, RepairRound, RouteSource, RulingId, Run,
-    RunManifest, RunOutcome, RunRole, Scope, ScopeConfirmation, ScopeDraft, ScopeItem, Selector,
-    SlotSpec, Step, StepId, TourView, TwinError, TwinRunRequest, TwinRunResponse, TwinSaveRequest,
-    TwinSaveResponse, Unsupported, ValueType, WindowMs, canonical_episode_selector,
+    ContainerPolicy, ContentHash, Contest, ContestKind, ContestRequest, ContestResponse,
+    ContestStatus, ContrastExample, CoreDerived, CorpusProbe, Coverage, DiscrepancyEpisode,
+    EpisodeKey, Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern, Fixture, GateState,
+    GetReceiptRequest, GetReceiptResponse, GetRulingsRequest, GetRulingsResponse, GetScopeRequest,
+    GetScopeResponse, ItemClass, ItemState, LedgerEvent, LedgerHash, LedgerHead, MaskablePath,
+    McpError, McpErrorCode, NotReached, Observation, ObservationHash, ObservationPath, ObservedRun,
+    Outcome, PlantView, PostReadbackRequest, PostReadbackResponse, ProbeCorpus, Receipt,
+    RepairRound, RouteSource, RulingId, Run, RunManifest, RunOutcome, RunRole, Scope,
+    ScopeConfirmation, ScopeDraft, ScopeItem, Selector, SlotSpec, Step, StepId, TourView,
+    TwinError, TwinRunRequest, TwinRunResponse, TwinSaveRequest, TwinSaveResponse, Unsupported,
+    ValueType, WindowMs, canonical_episode_selector,
 };
 use acan_intent::{FixtureSetManifest, ProbeSetManifest, RepoPath};
 use serde::Serialize;
@@ -1002,9 +1002,7 @@ fn the_fixture_is_the_default_run() {
     assert_eq!(fixture, ContainerPolicy::default_run(), "fixture drifted");
     assert_eq!(
         fixture.image.digest.as_ref().map(ToString::to_string),
-        Some(
-            "sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d".to_owned()
-        ),
+        Some("sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d".to_owned()),
         "the image is pinned by the digest the H01 spike ran"
     );
 }
