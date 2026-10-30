@@ -2,7 +2,7 @@
   "event": "note_recorded",
   "schema_version": "acan-ledger/1",
   "event_seq": 2,
-  "prev_hash": "sha256:ae9dc4b99f237a574bf1efd51ff28db7067df9107796c4f727a6dcba226eb4fa",
+  "prev_hash": "sha256:32a341ce32df745d3037b67ff607af098cc1d8c2eb7ed4b334414cd8aba18b00",
   "actor": "owner",
   "at": 1793255400000,
   "ruling_id": "r-2",

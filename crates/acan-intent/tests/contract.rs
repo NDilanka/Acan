@@ -9,20 +9,22 @@ use acan_intent::admit::{
     self, AdmitError, MISSING_VALUE_TEXT, SlotMismatch, SlotPresence, StepFault, TourRejection,
 };
 use acan_intent::compare;
+use acan_intent::fold;
 use acan_intent::{
     AppContract, CaptionCatalog, CaptureOutcome, Card, CardRequest, CommitSha, Comparison,
-    ContainerNetwork, ContainerPolicy, ContentHash, Contest, ContestKind, ContestRequest,
-    ContestResponse, ContestStatus, ContrastExample, CoreDerived, CorpusProbe, Coverage,
-    DiscrepancyEpisode, EpisodeKey, Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern,
-    Fixture, GateState, GetReceiptRequest, GetReceiptResponse, GetRulingsRequest,
-    GetRulingsResponse, GetScopeRequest, GetScopeResponse, ItemClass, ItemState, LedgerEvent,
-    LedgerHash, LedgerHead, MaskablePath, McpError, McpErrorCode, NotReached, Observation,
-    ObservationHash, ObservationPath, ObservedRun, PlantView, PostReadbackRequest,
-    PostReadbackResponse, ProbeCorpus, Receipt, RepairRound, RouteSource, RulingId, Run,
-    RunManifest, RunOutcome, RunRole, Scope, ScopeConfirmation, ScopeDraft, ScopeItem, Selector,
-    SlotSpec, Step, StepId, TourView, TwinError, TwinRunRequest, TwinRunResponse, TwinSaveRequest,
-    TwinSaveResponse, Unsupported, ValueType, WindowMs, canonical_episode_selector,
+    ContainerPolicy, ContentHash, Contest, ContestKind, ContestRequest, ContestResponse,
+    ContestStatus, ContrastExample, CoreDerived, CorpusProbe, Coverage, DiscrepancyEpisode,
+    EpisodeKey, Evidence, EvidenceRef, EvidenceRow, EvidenceSlot, FieldPattern, Fixture, GateState,
+    GetReceiptRequest, GetReceiptResponse, GetRulingsRequest, GetRulingsResponse, GetScopeRequest,
+    GetScopeResponse, ItemClass, ItemState, LedgerEvent, LedgerHash, LedgerHead, MaskablePath,
+    McpError, McpErrorCode, NotReached, Observation, ObservationHash, ObservationPath, ObservedRun,
+    Outcome, PlantView, PostReadbackRequest, PostReadbackResponse, ProbeCorpus, Receipt,
+    RepairRound, RouteSource, RulingId, Run, RunManifest, RunOutcome, RunRole, Scope,
+    ScopeConfirmation, ScopeDraft, ScopeItem, Selector, SlotSpec, Step, StepId, TourView,
+    TwinError, TwinRunRequest, TwinRunResponse, TwinSaveRequest, TwinSaveResponse, Unsupported,
+    ValueType, WindowMs, canonical_episode_selector,
 };
+use acan_intent::{FixtureSetManifest, ProbeSetManifest, RepoPath};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -992,6 +994,33 @@ fn the_container_policy_round_trips_and_refuses_unknown_fields() {
     refuses_unknown_fields::<ContainerPolicy>("container-policy.json");
 }
 
+/// The fixture is the policy the runtime runs under by default, so the two cannot drift apart: the
+/// worker's test command and the contract name one image, one digest and one set of limits.
+#[test]
+fn the_fixture_is_the_default_run() {
+    let fixture: ContainerPolicy = load("container-policy.json");
+    assert_eq!(fixture, ContainerPolicy::default_run(), "fixture drifted");
+    assert_eq!(
+        fixture.image.digest.as_ref().map(ToString::to_string),
+        Some("sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d".to_owned()),
+        "the image is pinned by the digest the H01 spike ran"
+    );
+}
+
+/// The environment and the probe harness are what the probe runner reads from the policy. The
+/// fixture names exactly the variables the demo needs and no credential.
+#[test]
+fn the_fixture_names_only_the_variables_the_demo_needs() {
+    let fixture: ContainerPolicy = load("container-policy.json");
+    let names: Vec<&str> = fixture.environment.keys().map(String::as_str).collect();
+    assert_eq!(names, vec!["HOME", "PORT"]);
+    assert_eq!(fixture.mounts.harness.as_str(), "/harness");
+    assert!(
+        fixture.role_timeout_ms > fixture.timeout_ms,
+        "a role container's limit is longer than one sequence's"
+    );
+}
+
 #[test]
 fn every_tested_context_ran_under_the_container_policy_fixture() {
     let policy: ContainerPolicy = load("container-policy.json");
@@ -1009,16 +1038,126 @@ fn every_tested_context_ran_under_the_container_policy_fixture() {
             "{name} ran under another policy"
         );
     }
-    let opened = ContainerPolicy {
-        network: ContainerNetwork::None {},
-        ..policy
-    };
+    let mut opened = policy.clone();
+    opened.mounts.readonly_git = false;
     let mut current = receipt.prepared.context.clone();
     current.sandbox_policy_hash = opened.sandbox_policy_hash().expect("hashing");
     assert_ne!(
         current, receipt.prepared.context,
         "a policy change kept the context"
     );
+}
+
+/// Every field of the receipt's prepared block is what the fixtures compute for it. The probe set
+/// and the fixture set come from the corpus. The ledger head and the retired probes come from the
+/// ruling log folded to the revision the receipt names. The scope comes from `scope.json`, the
+/// lockfile, runner and runtime from the run record and the app contract, and the evaluator from
+/// this crate. The overlay and the controlled environment have no fixture that recomputes them,
+/// so they must agree with the other fixtures that carry them.
+#[test]
+fn the_receipt_prepared_context_is_what_the_fixtures_compute() {
+    let receipt: Receipt = load("receipt.json");
+    let prepared = &receipt.prepared;
+    let context = &prepared.context;
+    let scope: Scope = load("scope.json");
+    let confirmation: ScopeConfirmation = load("scope-confirmation.json");
+    let run: Run = load("run.json");
+    let app: AppContract = load("app-contract.json");
+    let corpus: ProbeCorpus = load("probe-corpus.json");
+
+    // The receipt was built at the revision it names, the prefix of the log through that event.
+    let events: Vec<LedgerEvent> = LEDGER.into_iter().map(load::<LedgerEvent>).collect();
+    let revision = usize::try_from(context.ledger_head.event_seq).expect("a small revision");
+    assert!(
+        revision <= events.len(),
+        "the receipt names revision {revision}, past the {} events of the log",
+        events.len()
+    );
+    let folded = fold::fold(&events[..revision]).expect("the log folds to the receipt's revision");
+    let at = folded.value();
+    assert_eq!(context.ledger_head, at.head, "ledger head");
+
+    assert_eq!(prepared.base_commit, scope.base_commit, "base commit");
+    assert_eq!(
+        prepared.base_commit, confirmation.base_commit,
+        "base commit"
+    );
+    assert_eq!(
+        context.protected_head, prepared.base_commit,
+        "protected head"
+    );
+    assert_eq!(context.merged_commit, run.commit, "merged commit");
+
+    assert_eq!(context.scope_hash, confirmation.scope_hash, "scope hash");
+    assert_eq!(
+        context.scope_hash,
+        scope.scope_hash().expect("hashing the scope"),
+        "scope hash"
+    );
+
+    let probe_set = ProbeSetManifest::of(&corpus, &at.retired_probes)
+        .and_then(|manifest| manifest.probe_set_hash())
+        .expect("the probe set hashes");
+    assert_eq!(context.probe_set_hash, probe_set, "probe set hash");
+    let fixture_set = FixtureSetManifest::of(&corpus)
+        .and_then(|manifest| manifest.fixture_set_hash())
+        .expect("the fixture set hashes");
+    assert_eq!(context.fixture_set_hash, fixture_set, "fixture set hash");
+
+    let bun_lock: RepoPath = "bun.lock".parse().expect("a repo path");
+    assert_eq!(
+        context.effective_artifact_hashes.keys().collect::<Vec<_>>(),
+        vec![&bun_lock],
+        "the artifact inputs are the lockfile the run recorded"
+    );
+    assert_eq!(
+        context.effective_artifact_hashes.get(&bun_lock),
+        Some(&run.env.lockfile_hash),
+        "lockfile hash"
+    );
+
+    assert_eq!(context.runner_hash, run.runner, "runner hash");
+    assert_eq!(context.runtime, app.runtime, "runtime");
+    assert_eq!(context.runtime, run.env.runtime, "runtime");
+    assert_eq!(
+        context.evaluator_version.to_string(),
+        format!("acan-intent/{}", env!("CARGO_PKG_VERSION")),
+        "evaluator version"
+    );
+
+    let policy: ContainerPolicy = load("container-policy.json");
+    assert_eq!(
+        context.sandbox_policy_hash,
+        policy.sandbox_policy_hash().expect("hashing the policy"),
+        "sandbox policy hash"
+    );
+
+    let card: Card = load("card.json");
+    let example: ContrastExample = load("contrast-example.json");
+    for (name, other) in [
+        ("card.json", &card.prepared.context),
+        ("contrast-example.json", &example.context),
+    ] {
+        assert_eq!(context.overlay_hash, other.overlay_hash, "{name} overlay");
+        assert_eq!(
+            context.controlled_env_hash, other.controlled_env_hash,
+            "{name} controlled environment"
+        );
+        assert_eq!(context.runner_hash, other.runner_hash, "{name} runner hash");
+        assert_eq!(context.runtime, other.runtime, "{name} runtime");
+        assert_eq!(
+            context.evaluator_version, other.evaluator_version,
+            "{name} evaluator version"
+        );
+        assert_eq!(
+            context.fixture_set_hash, other.fixture_set_hash,
+            "{name} fixture set hash"
+        );
+        assert_eq!(
+            context.sandbox_policy_hash, other.sandbox_policy_hash,
+            "{name} sandbox policy hash"
+        );
+    }
 }
 
 /// The demo's ruling log, one fixture per event, in log order.
@@ -1280,18 +1419,52 @@ fn step(id: &str) -> StepId {
     id.parse().expect("a step id")
 }
 
+/// The shipped example's stored observations, in the order its runs list them. Each record
+/// carries the response body or cookie its capture reads.
+fn stored_example_observations() -> Vec<Observation> {
+    load("contrast-example-observations.json")
+}
+
+/// The stored observations of one run, hashed, in sequence order, as admission takes them.
+fn stored_for(run: &Run) -> Vec<(ObservationHash, Observation)> {
+    stored_example_observations()
+        .into_iter()
+        .filter(|observation| observation.run_id == run.id)
+        .map(|observation| {
+            (
+                observation.observation_hash().expect("hashing"),
+                observation,
+            )
+        })
+        .collect()
+}
+
 #[test]
 fn every_run_of_the_contrast_example_is_admitted_with_its_listed_observations() {
     let example: ContrastExample = load("contrast-example.json");
+    let listed: usize = [&example.base_a, &example.base_b, &example.candidate]
+        .iter()
+        .map(|manifest| manifest.observations.len())
+        .sum();
+    assert_eq!(
+        stored_example_observations().len(),
+        listed,
+        "the store holds an observation no run lists, or misses one a run lists"
+    );
     for (role, manifest) in [
         ("base_a", &example.base_a),
         ("base_b", &example.base_b),
         ("candidate", &example.candidate),
     ] {
-        let stored = observations_for(&example.probe, &example.fixture, &manifest.run, &[]);
+        let stored = stored_for(&manifest.run);
+        let hashes: Vec<ObservationHash> = stored.iter().map(|(hash, _)| *hash).collect();
+        assert_eq!(
+            hashes, manifest.observations,
+            "{role} lists other observations than the store holds, in order"
+        );
         assert_eq!(
             stored.len(),
-            manifest.observations.len(),
+            observations_for(&example.probe, &example.fixture, &manifest.run, &[]).len(),
             "{role} lists another number of observations than its HTTP and sink steps"
         );
         let admitted = admit::observed_run(
@@ -1303,6 +1476,45 @@ fn every_run_of_the_contrast_example_is_admitted_with_its_listed_observations() 
         .unwrap_or_else(|err| panic!("{role} was refused: {err}"));
         assert_eq!(admitted.observations().count(), manifest.observations.len());
     }
+}
+
+#[test]
+fn the_stored_example_observations_round_trip_and_refuse_unknown_fields() {
+    round_trip::<Vec<Observation>>("contrast-example-observations.json");
+    refuses_unknown_fields::<Vec<Observation>>("contrast-example-observations.json");
+}
+
+#[test]
+fn the_shipped_contrast_example_compares_end_to_end() {
+    let example: ContrastExample = load("contrast-example.json");
+    let runs = [&example.base_a, &example.base_b, &example.candidate].map(|manifest| {
+        admit::observed_run(
+            &example.probe,
+            &example.fixture,
+            manifest.run.clone(),
+            stored_for(&manifest.run),
+        )
+        .unwrap_or_else(|err| panic!("{} was refused: {err}", manifest.run.id))
+    });
+    let contrast = contrast_over(&example, &runs);
+    compare::check_contrast(&contrast).expect("the three runs are comparable");
+    let masks = compare::derive_masks(&contrast).expect("the bases derive their masks");
+    assert!(masks.is_empty(), "the bases agree outside the captures");
+    let comparison = compare::compare(&contrast, &masks).expect("the contrast compares");
+    compare::verify_comparison(&contrast, &comparison).expect("the comparison is recomputed");
+    let Outcome::Changed { differences } = &comparison.value().outcome else {
+        panic!(
+            "the candidate drops a field: {:?}",
+            comparison.value().outcome
+        );
+    };
+    let found: Vec<(&str, &str)> = differences
+        .iter()
+        .map(|difference| (difference.step_id.as_str(), difference.path.as_str()))
+        .collect();
+    assert_eq!(found, [("s4", "body.links[0].clicks")]);
+    admit::retained_example(&example, contrast, &comparison)
+        .expect("the example is admitted from its own runs and comparison");
 }
 
 /// The example's probe with a clock step and a store read appended, and a base run of it.

@@ -25,8 +25,9 @@ const UNRECORDED_HEADERS: [&str; 2] = ["date", "set-cookie"];
 
 /// The channels one response produced, and why the observation is incomplete, if it is.
 ///
-/// A response body that is not JSON leaves the body channel empty and marks the observation
-/// incomplete. A body the output bound cut is marked the same way, with its own reason.
+/// A body that is not JSON is kept as an opaque value. A body whose content type claims JSON and
+/// does not parse marks the observation incomplete, and so does a body the output bound cut. A
+/// binary body has no bytes on the wire to hash, so it marks the observation incomplete too.
 pub(crate) fn channels(reply: &Reply) -> (Channels, Vec<IncompleteReason>) {
     let mut channels = Channels {
         status: reply.status,
@@ -53,9 +54,9 @@ pub(crate) fn channels(reply: &Reply) -> (Channels, Vec<IncompleteReason>) {
     } else if reply.binary {
         reasons.push(IncompleteReason::BodyNotJson {});
     } else if let Some(text) = reply.body.as_deref().filter(|text| !text.is_empty()) {
-        match serde_json::from_str::<Value>(text) {
-            Ok(body) => channels.body = Some(body),
-            Err(_) => reasons.push(IncompleteReason::BodyNotJson {}),
+        let content_type = header(reply, "content-type");
+        if let Err(reason) = channels.set_body_text(text, content_type.as_deref()) {
+            reasons.push(reason);
         }
     }
     (channels, reasons)
@@ -269,6 +270,8 @@ pub(crate) fn method_text(method: HttpMethod) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use acan_intent::ContentHash;
+
     use super::*;
 
     fn binding(name: &str) -> CaptureName {
@@ -327,5 +330,58 @@ mod tests {
         );
         assert_eq!(same_origin_path("http://example.com/z", 3000), None);
         assert_eq!(same_origin_path("//example.com/z", 3000), None);
+    }
+
+    fn reply(content_type: Option<&str>, body: &str) -> Reply {
+        let headers = match content_type {
+            Some(value) => {
+                BTreeMap::from([("content-type".to_owned(), Value::String(value.to_owned()))])
+            }
+            None => BTreeMap::new(),
+        };
+        Reply {
+            ok: true,
+            crashed: false,
+            detail: String::new(),
+            status: Some(200),
+            headers,
+            body: Some(body.to_owned()),
+            binary: false,
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn a_body_that_is_not_json_is_kept_opaque_and_the_observation_stays_complete() {
+        let html = "<!doctype html><h1>Links</h1>";
+        let (channels, reasons) = channels(&reply(Some("text/html; charset=utf-8"), html));
+        assert!(reasons.is_empty(), "{reasons:?}");
+        let body = channels.body.expect("the body is kept");
+        assert_eq!(
+            body["acan_opaque_body"]["content_type"],
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(body["acan_opaque_body"]["bytes"], html.len());
+        assert_eq!(
+            body["acan_opaque_body"]["sha256"],
+            ContentHash::of_bytes(html.as_bytes()).to_string()
+        );
+    }
+
+    #[test]
+    fn a_body_that_claims_json_and_does_not_parse_is_incomplete() {
+        let (channels, reasons) = channels(&reply(Some("application/json"), "<html>"));
+        assert_eq!(reasons, vec![IncompleteReason::BodyNotJson {}]);
+        assert!(channels.body.is_none());
+    }
+
+    #[test]
+    fn a_json_body_under_the_opaque_key_is_kept_opaque() {
+        let text = r#"{"acan_opaque_body": {"bytes": 1}}"#;
+        let (channels, reasons) = channels(&reply(Some("application/json"), text));
+        assert!(reasons.is_empty(), "{reasons:?}");
+        let body = channels.body.expect("the body is kept");
+        assert_eq!(body["acan_opaque_body"]["content_type"], "application/json");
+        assert_eq!(body["acan_opaque_body"]["bytes"], text.len());
     }
 }

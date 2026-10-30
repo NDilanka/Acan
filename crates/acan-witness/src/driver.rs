@@ -50,6 +50,7 @@ pub(crate) enum Op<'a> {
     Start {
         argv: &'a [String],
         cwd: &'a str,
+        environment: &'a BTreeMap<String, String>,
         port_env: &'a str,
         port: u16,
         max_output_bytes: u64,

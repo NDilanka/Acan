@@ -11,9 +11,9 @@
 //! example it accepts and actually fails on every example it rejects. An unknown on either side
 //! is a misjudgement.
 //!
-//! The rate window ([`Predicate::Window`]) proves an upper bound only, as its policy says: no
-//! attempt beyond the allowance is allowed. It does not prove that the first attempts were
-//! allowed, nor that a window recovers when it ends. A run that allows nothing is unknown.
+//! The rate window ([`Predicate::Window`]) always proves that no attempt beyond the allowance is
+//! allowed. The first attempts being allowed, and recovery once a window ends, are proven only
+//! when the window lists [`WindowObligation`]s for them. A run that allows nothing is unknown.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -27,7 +27,8 @@ use crate::compare::{
 };
 use crate::expr::{
     BaseAnchor, Boundary, CompareOp, EventFilter, GroupBy, Operand, Predicate, QuotaCounting,
-    RejectedAttempts, RunSelector, SchemaType, ValueRef, ValueSchema, WindowAnchor, WindowPolicy,
+    RejectedAttempts, RunSelector, SchemaType, ValueRef, ValueSchema, WindowAnchor,
+    WindowObligation, WindowPolicy,
 };
 use crate::hash::{CanonicalError, ContrastExampleHash};
 use crate::observation::{ObservedRun, RequestRecord};
@@ -260,7 +261,8 @@ fn judge(
         }),
         Predicate::AfterNWithin { .. } => Ok(CheckResult::Unknown {
             reason: UnknownReason::Error {
-                detail: "after_n_within names no event filter in the contract".to_owned(),
+                detail: "after_n_within is unsupported: the contract names no event filter for it"
+                    .to_owned(),
             },
         }),
         Predicate::All { of } => {
@@ -706,10 +708,29 @@ pub(crate) fn principal_admits(
     }
 }
 
-/// One open window of one group: where it starts and how many counted events it holds.
+/// One group's state while a window is evaluated.
 struct Open {
+    /// Where the group's current window starts; `None` before its first request without an
+    /// anchor.
     start: Option<u64>,
+    /// Counted requests in the current window.
     count: u32,
+    /// Matching requests in the current window, counted or not.
+    seen: u32,
+    /// A request in an earlier window was rejected and the request that opens the next window
+    /// has not come yet.
+    awaiting_recovery: bool,
+}
+
+impl Open {
+    fn new(anchor_at: Option<u64>) -> Self {
+        Self {
+            start: anchor_at,
+            count: 0,
+            seen: 0,
+            awaiting_recovery: false,
+        }
+    }
 }
 
 /// A bounded rate window. Each group's windows are tumbling: a window opens at its first event
@@ -717,11 +738,12 @@ struct Open {
 /// window. Within a window the first `allowed_count` counted events are allowed; every event
 /// after them must receive a rejected status.
 ///
-/// This proves an upper bound only, as [`WindowPolicy`] says. It does not prove that the first
-/// `allowed_count` attempts were allowed, and it does not prove that a window recovers after it
-/// ends: a run that rejects every attempt passes the bound and says nothing else. So a run in
-/// which no matching attempt was allowed is unknown, never a pass. Stating that the first N are
-/// allowed, or that the window recovers, needs its own predicate in the contract.
+/// Without obligations this proves an upper bound only, as [`WindowPolicy`] says: a run that
+/// rejects every attempt passes it, so a run with no allowed attempt is unknown rather than a
+/// pass. [`WindowObligation::FirstAllowed`] makes the first `allowed_count` requests of every
+/// window a fail when rejected. [`WindowObligation::Recovers`] requires that a group which saw a
+/// rejection is allowed again by the request that opens its next window: no such request is
+/// unknown, and a rejected one fails.
 fn window(contrast: &Contrast<'_>, policy: &WindowPolicy) -> CheckResult {
     let run = run_for(contrast, policy.event_filter.run);
     let mut events = matching(run, &policy.event_filter);
@@ -751,24 +773,45 @@ fn window(contrast: &Contrast<'_>, policy: &WindowPolicy) -> CheckResult {
     }
     let duration = policy.duration_ms.get();
     let allowed = policy.allowed_count.get();
+    let first_allowed = policy
+        .obligations
+        .contains(&WindowObligation::FirstAllowed {});
+    let recovers = policy.obligations.contains(&WindowObligation::Recovers {});
     let mut groups: BTreeMap<Option<String>, Open> = BTreeMap::new();
     let mut any_allowed = false;
+    let mut any_rejected = false;
     for event in &events {
         let key = group_key(policy.group_by, event.record);
-        let open = groups.entry(key).or_insert(Open {
-            start: anchor_at,
-            count: 0,
-        });
+        let open = groups.entry(key).or_insert_with(|| Open::new(anchor_at));
         let at = event.record.sent_at_ms;
+        let rejected = is_rejected(&policy.rejected_attempts, event.status);
         if !open
             .start
             .is_some_and(|start| inside(start, at, duration, policy.boundary))
         {
+            if recovers && open.awaiting_recovery && rejected {
+                return fail(&format!(
+                    "the request at {} that opens the next window was rejected",
+                    event.step_id
+                ));
+            }
+            open.awaiting_recovery = false;
             open.start = Some(at);
             open.count = 0;
+            open.seen = 0;
         }
-        let rejected = is_rejected(&policy.rejected_attempts, event.status);
+        if first_allowed && open.seen < allowed && rejected {
+            return fail(&format!(
+                "a request at {} within the first {allowed} of its window was rejected",
+                event.step_id
+            ));
+        }
+        open.seen = open.seen.saturating_add(1);
         any_allowed |= !rejected;
+        if rejected {
+            any_rejected = true;
+            open.awaiting_recovery = true;
+        }
         if open.count < allowed {
             if !rejected || policy.rejected_attempts.counted == QuotaCounting::Counted {
                 open.count += 1;
@@ -778,6 +821,18 @@ fn window(contrast: &Contrast<'_>, policy: &WindowPolicy) -> CheckResult {
                 "an attempt at {} beyond the {allowed} allowed was not rejected",
                 event.step_id
             ));
+        }
+    }
+    if recovers {
+        if !any_rejected {
+            return unknown_incomparable(
+                "no request was rejected, so recovery after the window is not shown",
+            );
+        }
+        if groups.values().any(|open| open.awaiting_recovery) {
+            return unknown_incomparable(
+                "no request follows a rejected window's end, so recovery is not shown",
+            );
         }
     }
     if !any_allowed {

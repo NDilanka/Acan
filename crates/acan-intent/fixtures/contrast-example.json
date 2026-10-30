@@ -202,7 +202,7 @@
     "evaluator_version": "acan-intent/0.1.0",
     "runtime": "bun-1.4.4",
     "controlled_env_hash": "sha256:96f3b648e7620cf579630eeb0f7234347766890e6ea45f8d4fe429c791493989",
-    "sandbox_policy_hash": "sha256:cfb49e83d5d93287bae5444e4c4f20e4a44fb65bc82d845fc008c5a05e6394ac",
+    "sandbox_policy_hash": "sha256:7e6e773e14a0d8f78f181356e5097fa59cd92791d95eca91851525c00f6fda2f",
     "overlay_hash": "sha256:c27af44102a1dd3819def6db27bb5e79c2ff5023379faf9e8feddba8a780fd64",
     "fixture_set_hash": "sha256:29007a22a25a34d8c43c2e3aba058bc33e54d60e6db3aae1c2ae84eb5459cf94"
   },
@@ -227,24 +227,24 @@
           "outcome": "captured",
           "binding": "alice_session",
           "step_id": "f3",
-          "value_hash": "sha256:249148a132e0957585b3f74b4feaa15c5196c062ee430d7c9302406ea2f226a2"
+          "value_hash": "sha256:efffbbffc7e0e9ce485e7d5e9368b1753351fbdae64796d44ad2f34a682a540d"
         },
         {
           "outcome": "captured",
           "binding": "link_code",
           "step_id": "s2",
-          "value_hash": "sha256:5017cd53e72f093682071d71f7518fa648d76a74319dc89eb3b573b0d0a8c35d"
+          "value_hash": "sha256:b43ec1b3a3bc8c94ba440294d1a66b6aa9d1fca0f79f182d1e7774e1ec9edc78"
         }
       ],
       "started_at": 1793259600000,
       "finished_at": 1793259603000
     },
     "observations": [
-      "sha256:9627756b9a7b83077662f6cc105540a41d315309332ee55e91f7644e50b22e2c",
-      "sha256:6312441e112117100b44eecfd436ca33ce07413732e827ebe1017e265a062f67",
-      "sha256:6542da32277656b83b4ffdfc81e239f091e20614ac833eb6a4f9c87af44d9254",
-      "sha256:0dd000cb90fca40193a242a5073c078e64d099602c1b0d6cb157368288d9d39d",
-      "sha256:589829241e2fabd7153e5b9abe873679710093b90c91eaf246f8b2fe81f6f22d"
+      "sha256:90fe60ae4d8fdd6a4ada6054ba76e8982276f31951d1b0e34b25ff2f6b47563d",
+      "sha256:f411408b01a068928b5163927ba908845c8f13fadc3d577c2eeb2fa34b80fb3d",
+      "sha256:c51afef29c53db0e15ddd52799ddd69787629a4bb6e281cb5f2a91868f711692",
+      "sha256:ddfbe49987f112c9ba687b88dcd085ec6c17a1660e99e502d9abed0a5855bc7f",
+      "sha256:f9f82156bead5da4cab94a71f9d61bb8bdce1486bde10e487d66d82123224d52"
     ]
   },
   "base_b": {
@@ -268,24 +268,24 @@
           "outcome": "captured",
           "binding": "alice_session",
           "step_id": "f3",
-          "value_hash": "sha256:f75041c89c483ddbe7aeea5072908f28c66ae370b53a77a043e7b926ccd5159d"
+          "value_hash": "sha256:d30992484c3c84470e1ebb30b8f43efcda08a9fb2ef5f5e7a4b9bfc19d92f8da"
         },
         {
           "outcome": "captured",
           "binding": "link_code",
           "step_id": "s2",
-          "value_hash": "sha256:fc0dcd059ebca896398225f596945a46d554dc54359881a9b919018ddd54c28b"
+          "value_hash": "sha256:b43ec1b3a3bc8c94ba440294d1a66b6aa9d1fca0f79f182d1e7774e1ec9edc78"
         }
       ],
       "started_at": 1793259610000,
       "finished_at": 1793259613000
     },
     "observations": [
-      "sha256:8cccf384f9b3d75b2b206e846ce5a37d8091c3fc8c2d1d0cba258f911051e81d",
-      "sha256:2d85a5e5d7a6958dc13c704c3a8770fb3fa995dddc74d16691a8205224945010",
-      "sha256:e2710297a7941b7718689b35cee66dcd702e91ded4ccec7cc68da318ece5a6bf",
-      "sha256:643fdbadaf4a7fc1b0879104ea2ce458bcd6d83cc551cadfcc66421e435caffd",
-      "sha256:be2a9972672d72d869c76bc50a5d91b4fe05a2c8d66a3c340c1c0a1c31d3aa37"
+      "sha256:db0bf0de376734c9f7d2fb89c5717f6496086488807b3a205a3f62dad887a52c",
+      "sha256:3b89bf69b5987d83c8633531060a5c176c73e44f40f28c4e36d0aa305097d257",
+      "sha256:565df4e5803261e2ff78d0fe881f931b99ba4df2542794231f5b68f020dfabf3",
+      "sha256:b1a0d7e72b489c9692ad2cf44ad7f2478898b41ab3f9fa648d5fad15250b661f",
+      "sha256:05743d0e18a73cf004f23bfdb11ff0de18798395a4e57075e9fbb5283cd21749"
     ]
   },
   "candidate": {
@@ -309,24 +309,24 @@
           "outcome": "captured",
           "binding": "alice_session",
           "step_id": "f3",
-          "value_hash": "sha256:2b5e00fa03187fad6d68a8c19163869b795169f58c4c0b6969c639172a74ec9e"
+          "value_hash": "sha256:5cd06639e50ac5f4e6f75f8e9bfc9ca87039a1611e64b640ff71422abcac7f45"
         },
         {
           "outcome": "captured",
           "binding": "link_code",
           "step_id": "s2",
-          "value_hash": "sha256:01915cb3e81613e4ea0ea77e0149f8be11f0f27516adafd4866ca772eaf728a2"
+          "value_hash": "sha256:e4973d8f15475ab9be4cd6b122a940299335dd27de97038665f1cfa176dc2e88"
         }
       ],
       "started_at": 1793259620000,
       "finished_at": 1793259623000
     },
     "observations": [
-      "sha256:493b1899c6aeb839391655ae8483b2d969df1566811949bb234b364de134fbf7",
-      "sha256:6ad1bfe23ff8fa2ab752fea78d2d3099ad91c53e5ae38bbedb0b398c75409296",
-      "sha256:d1a41bedd71377f8c68e5bee731c7f05b3fb4c0b13674f527f6c9a78cf4de232",
-      "sha256:a18baa95e59e23e0be0750421b43e26dd39c4d71c5c9bdc0a781b0e085cbdb09",
-      "sha256:954da543343a343b8917a3d370510b4f2476109fe4919534834ab74b9e303295"
+      "sha256:ad9c4f0f8a248dbe2da982f1f390092cd8e458901d1c05b865e05d6708316060",
+      "sha256:91566adb31c31a6c69057afdfad14be4d1485ea3e3a8c55b7d538e561aae0ae8",
+      "sha256:307fbdde9cc2ae89036834bc0723f6de0fcd660389045d884e40902b52c55b85",
+      "sha256:1dde26efcbdc65673df0f84301000682600a60139359e72637584076ee5ba086",
+      "sha256:c6fbaf3983bd31bf4cd5c03981c44688dfa2b36344d8b89b7ea9b1e79a0814ea"
     ]
   }
 }
