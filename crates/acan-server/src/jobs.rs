@@ -28,7 +28,8 @@
 //! state lives in the origin, so a restart reads the same pending runs and continues each from
 //! the recorded step: a run with a recorded preparation is judged, never prepared again. A
 //! scope-first land runs the final gate and installs the tested merged commit only when the gate
-//! passes. Every other land keeps the legacy path.
+//! passes. An order with no scope lane keeps the legacy path. A scope-first land whose evidence
+//! is missing or no longer confirmed is refused, so nothing installs.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -750,9 +751,10 @@ async fn land<C: ModelClient>(
     head: &CommitId,
 ) -> Result<Option<SystemCmd>, JobError> {
     let result = match host.workspace() {
-        Some(workspace) => match host.read(|world| delivery_of(world, task)) {
-            Some(delivery) => gated_land(host, &workspace, &delivery, head).await?,
-            None => legacy_land(host, &workspace, task, head).await?,
+        Some(workspace) => match host.read(|world| landing(world, task)) {
+            Landing::Gated(delivery) => gated_land(host, &workspace, &delivery, head).await?,
+            Landing::Legacy => legacy_land(host, &workspace, task, head).await?,
+            Landing::Refused(reason) => Err(reason),
         },
         None => Err("this server has no git repository to land in".to_owned()),
     };
@@ -864,18 +866,57 @@ struct Delivery {
     confirmation: ScopeConfirmation,
 }
 
-fn delivery_of(world: &World, task: TaskId) -> Option<Delivery> {
-    let found = world.task(task)?;
-    let TaskState::Queued { run, .. } = &found.state else {
-        return None;
+/// How a queued task lands. Only an order with no scope lane takes the legacy merge; a
+/// scope-first order whose evidence is missing is refused, so nothing installs.
+enum Landing {
+    /// No scope lane: the legacy merge of the worker's head.
+    Legacy,
+    /// Scope-first: the receipt the run passed with, and the scope it was judged against.
+    Gated(Box<Delivery>),
+    /// Scope-first evidence is missing or no longer confirmed. The reason is the land refusal.
+    Refused(String),
+}
+
+fn landing(world: &World, task: TaskId) -> Landing {
+    let Some(found) = world.task(task) else {
+        return Landing::Refused(format!("task {task} is not in the origin"));
     };
-    let lane = world.lane(found.order)?;
-    let receipt = lane.runs.get(run)?.receipt.as_ref()?.receipt.clone();
-    Some(Delivery {
+    if world.lane(found.order).is_none() {
+        return Landing::Legacy;
+    }
+    match delivery_of(world, task) {
+        Ok(delivery) => Landing::Gated(Box::new(delivery)),
+        Err(reason) => Landing::Refused(reason),
+    }
+}
+
+/// The delivery of a queued scope-first task. Each missing piece is named, because a refusal
+/// is the land result the origin records.
+fn delivery_of(world: &World, task: TaskId) -> Result<Delivery, String> {
+    let found = world
+        .task(task)
+        .ok_or_else(|| format!("task {task} is not in the origin"))?;
+    let TaskState::Queued { run, .. } = &found.state else {
+        return Err(format!("task {task} is not queued"));
+    };
+    let lane = world
+        .lane(found.order)
+        .ok_or_else(|| format!("order {} has no scope", found.order))?;
+    let receipt = lane
+        .runs
+        .get(run)
+        .and_then(|record| record.receipt.as_ref())
+        .ok_or_else(|| format!("run {run} has no receipt"))?
+        .receipt
+        .clone();
+    let confirmation = lane.confirmation.clone().ok_or_else(|| {
+        "the scope was revised after the candidate passed, so it must be confirmed again".to_owned()
+    })?;
+    Ok(Delivery {
         run: *run,
         receipt,
         scope: lane.scope.clone(),
-        confirmation: lane.confirmation.clone()?,
+        confirmation,
     })
 }
 

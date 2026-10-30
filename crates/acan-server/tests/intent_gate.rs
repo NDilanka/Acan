@@ -48,8 +48,8 @@ use std::time::Duration;
 
 use acan_core::{
     AgentCmd, AgentId, Command, CommitId, Event, Fence, GateRunId, HumanCmd, LaneVerdict,
-    MachineKey, MemberId, OrderId, Origin, Seq, TaskId, TaskState, Timestamp, World, WorldId,
-    WorldRef,
+    MachineKey, MemberId, OrderId, Origin, ScopeBinding, Seq, Stage, SystemCmd, TaskId, TaskState,
+    Timestamp, World, WorldId, WorldRef,
 };
 use acan_git::{InstallOutcome, Preparation, PrepareOutcome, ProtectedPaths, Repo};
 use acan_intent::{
@@ -92,6 +92,10 @@ const RULING: &str = "r-2";
 /// valid hash will do for this test.
 const EPISODE_PROBE: &str =
     "sha256:0000000000000000000000000000000000000000000000000000000000000000";
+/// The may-change item of the scope the Docker-free tests confirm.
+const LIMIT_ITEM: &str = "i-limit";
+/// The obligation that item must meet.
+const LIMIT_OBLIGATION: &str = "obl-limit";
 
 /// Serializes the Docker tests, so their containers do not compete for the same CPU budget and
 /// their sequences stay inside the 30 s budget.
@@ -316,25 +320,20 @@ fn scope_of(order: &str, base: &CommitSha) -> Scope {
     .expect("the demo scope decodes")
 }
 
-/// The human confirmation of `scope`, binding its hashes and selectors.
+/// The human confirmation of `scope`, binding its hashes, selectors and examples.
 fn confirmation(scope: &Scope) -> ScopeConfirmation {
-    let selector_hashes: Vec<Value> = scope
-        .body
-        .must_keep
-        .iter()
-        .map(|rule| json!(rule.selector.selector_hash().expect("the selector hashes")))
-        .collect();
+    let binding = ScopeBinding::of(scope).expect("the scope binds");
     let order = serde_json::to_value(scope).expect("the scope serializes")["order"].clone();
     serde_json::from_value(json!({
         "version": "acan-scope-confirmation/1",
         "order": order,
         "scope_rev": scope.rev,
-        "scope_hash": scope.scope_hash().expect("the scope hashes"),
+        "scope_hash": binding.scope_hash,
         "semantic_scope_hash": scope.semantic_scope_hash().expect("the scope hashes"),
         "base_commit": scope.base_commit,
         "ruling_versions": [],
-        "selector_hashes": selector_hashes,
-        "example_hashes": [],
+        "selector_hashes": binding.selector_hashes,
+        "example_hashes": binding.example_hashes,
         "answers": [],
         "broad_grants": [],
         "budget": {
@@ -1022,7 +1021,15 @@ fn claimed_generation(world: &World, task: TaskId) -> Option<acan_core::Generati
 /// worker, posts the order, and confirms the scope once the job loop has split it. The worker
 /// reads back, claims, declares, and reports `candidate`. Returns the order and its one task.
 async fn report_built(live: &Live, demo: &Demo, candidate: &CommitSha) -> (OrderId, TaskId) {
-    let host = &live.host;
+    let (order, task) = post_and_split(&live.host).await;
+    let scope = scope_of(&order.to_string(), &demo.head());
+    build(&live.host, order, task, &scope, candidate).await;
+    (order, task)
+}
+
+/// Registers the worker, posts the demo order, and waits for the job loop to split it. Returns
+/// the order and its one task.
+async fn post_and_split(host: &Host<Stub>) -> (OrderId, TaskId) {
     owner_says(host, HumanCmd::RegisterAgent { agent: worker() }).await;
     owner_says(
         host,
@@ -1041,8 +1048,18 @@ async fn report_built(live: &Live, demo: &Demo, candidate: &CommitSha) -> (Order
         host.read(|world| world.tasks_of(order).next().map(|task| task.id))
     })
     .await;
+    (order, task)
+}
 
-    let scope = scope_of(&order.to_string(), &demo.head());
+/// The owner confirms `scope` for `order`, the worker reads it back, claims, declares, and
+/// reports `candidate` built. The gate run it starts waits for its prepared candidate.
+async fn build(
+    host: &Host<Stub>,
+    order: OrderId,
+    task: TaskId,
+    scope: &Scope,
+    candidate: &CommitSha,
+) {
     owner_says(
         host,
         HumanCmd::ReviseScope {
@@ -1055,7 +1072,7 @@ async fn report_built(live: &Live, demo: &Demo, candidate: &CommitSha) -> (Order
         host,
         HumanCmd::ConfirmScope {
             order,
-            confirmation: Box::new(confirmation(&scope)),
+            confirmation: Box::new(confirmation(scope)),
         },
     )
     .await;
@@ -1091,7 +1108,6 @@ async fn report_built(live: &Live, demo: &Demo, candidate: &CommitSha) -> (Order
         },
     )
     .await;
-    (order, task)
 }
 
 /// The run that is prepared and still waits for its receipt, when there is one.
@@ -1223,4 +1239,211 @@ async fn a_restart_between_the_prepared_run_and_its_receipt_neither_repeats_nor_
     assert_eq!(prepared, 1, "the run was prepared once");
     assert_eq!(receipts, 1, "the run has exactly one receipt");
     live.stop().await;
+}
+
+/// A scope with one may-change item: the login route's 429 status. Its receipt shape is the one
+/// the core's fixtures use, so a run can pass without a container. `rev` tells revisions apart.
+fn limit_scope(order: &str, base: &CommitSha, rev: u32) -> Scope {
+    serde_json::from_value(json!({
+        "version": "acan-scope/1",
+        "order": order,
+        "rev": rev,
+        "base_commit": base,
+        "body": {
+            "may": [{
+                "id": LIMIT_ITEM,
+                "selector": {
+                    "surface": "http", "method": "POST", "route_template": "/api/login",
+                    "step_context": {"kind": "step", "step_id": "s6"},
+                    "principal": {"kind": "anonymous"}, "channel": "status"
+                },
+                "change": "add",
+                "acceptance": [{
+                    "obligation_id": LIMIT_OBLIGATION,
+                    "predicate": {"predicate": "present", "at": {"ref": "field", "run": "candidate", "step_id": "s6", "path": "status"}},
+                    "text": "the 429 status shows"
+                }],
+                "provenance": "user",
+                "example": {"kind": "target", "step_id": "s6", "path": "status", "after": {"state": "present", "value": 429}},
+                "machine_ids": [MACHINE]
+            }],
+            "must_keep": [],
+            "open": []
+        }
+    }))
+    .expect("the limit scope decodes")
+}
+
+/// A content hash in the form the contract spells, from one byte.
+fn sha(byte: u8) -> String {
+    format!("sha256:{byte:064x}")
+}
+
+/// The may-change item a passing run reports for [`limit_scope`].
+fn limit_item() -> Value {
+    json!({
+        "item_id": LIMIT_ITEM,
+        "class": "obligation_fulfilled",
+        "state": "open",
+        "machine_id": MACHINE,
+        "probe_hash": sha(7),
+        "episode_id": null,
+        "attempts": 0,
+        "budget": 2,
+        "route_path": {"machines": [MACHINE], "source": "static"},
+        "sequence": [],
+        "evidence": [],
+        "evaluation": {
+            "authorization": {"kind": "may_change", "item_id": LIMIT_ITEM},
+            "outcome": {"kind": "changed", "differences": [{
+                "probe_hash": sha(7), "step_id": "s6", "path": "status",
+                "base": {"state": "present", "value": 401},
+                "candidate": {"state": "present", "value": 429}
+            }]},
+            "obligations": [{"obligation_id": LIMIT_OBLIGATION, "result": {"result": "pass"}}]
+        }
+    })
+}
+
+/// The receipt a run passes with for [`limit_scope`], built on the context `prepared` records.
+fn passing_receipt(order: &str, scope: &Scope, prepared: &Value) -> Value {
+    json!({
+        "version": "acan-receipt/1",
+        "order": order,
+        "scope_rev": scope.rev,
+        "scope_hash": scope.scope_hash().expect("the scope hashes"),
+        "prepared": prepared,
+        "gate_state": "running",
+        "items": [limit_item()],
+        "counts": {
+            "preserved": 0, "obligation_fulfilled": 1, "obligation_failed": 0,
+            "authorized_but_unspecified": 0, "out_of_scope": 0, "violates_ruling": 0,
+            "unstable_base": 0, "incomparable": 0, "error": 0
+        },
+        "probes": {"total": 1, "run": 1, "errored": 0},
+        "routes": {"total": 1, "covered": 1, "uncovered": []},
+        "behavior": {"obligations_total": 1, "passed": 1, "failed": 0, "unknown": 0},
+        "masks": [],
+        "rulings": [],
+        "contests": []
+    })
+}
+
+/// The prepared context of a candidate: `merged` is the commit the run tests, and the ledger head
+/// is the one the origin holds now.
+fn prepared_json(base: &CommitSha, scope: &Scope, merged: &CommitSha, ledger_head: Value) -> Value {
+    json!({
+        "base_commit": base,
+        "context": {
+            "protected_head": base,
+            "merged_commit": merged,
+            "overlay_hash": sha(1),
+            "effective_artifact_hashes": {},
+            "ledger_head": ledger_head,
+            "scope_hash": scope.scope_hash().expect("the scope hashes"),
+            "probe_set_hash": sha(2),
+            "fixture_set_hash": sha(3),
+            "runner_hash": sha(4),
+            "evaluator_version": "eval-1",
+            "runtime": "rt-1",
+            "controlled_env_hash": sha(5),
+            "sandbox_policy_hash": sha(6)
+        }
+    })
+}
+
+/// The gate run a task is in, while it is gating.
+fn gating_run(world: &World, task: TaskId) -> Option<GateRunId> {
+    match &world.task(task)?.state {
+        TaskState::Claimed {
+            stage: Stage::Gating { run, .. },
+            ..
+        } => Some(*run),
+        _ => None,
+    }
+}
+
+/// A scope-first order whose candidate passed its gate, with no job running and no container.
+/// The owner and the worker drive the world through the split and the build, then the prepared
+/// context and a passing receipt are recorded directly, as the job loop would record them. The
+/// task is queued when this returns. Returns the host, the order, the task and the run.
+async fn passed_candidate(
+    demo: &Demo,
+    candidate: &CommitSha,
+) -> (Host<Stub>, OrderId, TaskId, GateRunId) {
+    let live = Live::start(&demo.root).await;
+    let (order, task) = post_and_split(&live.host).await;
+    live.stop().await;
+
+    let host = host_over(&demo.root, foreman()).await;
+    let scope = limit_scope(&order.to_string(), &demo.head(), 1);
+    build(&host, order, task, &scope, candidate).await;
+    let run = host
+        .read(|world| gating_run(world, task))
+        .expect("the build starts a gate run");
+    let ledger_head = host
+        .read(|world| serde_json::to_value(world.ledger().head()))
+        .expect("the ledger head serializes");
+    let prepared = prepared_json(&demo.head(), &scope, candidate, ledger_head);
+    host.submit(Command::System(SystemCmd::CandidatePrepared {
+        run,
+        prepared: Box::new(serde_json::from_value(prepared.clone()).expect("the context decodes")),
+    }))
+    .await
+    .expect("the candidate is prepared");
+    let receipt = passing_receipt(&order.to_string(), &scope, &prepared);
+    host.submit(Command::System(SystemCmd::ReceiptReady {
+        run,
+        receipt: Box::new(serde_json::from_value(receipt).expect("the receipt decodes")),
+    }))
+    .await
+    .expect("the passing receipt is recorded");
+    assert!(
+        host.read(|world| matches!(
+            world.task(task).map(|found| &found.state),
+            Some(TaskState::Queued { .. })
+        )),
+        "the passing receipt queues the task"
+    );
+    (host, order, task, run)
+}
+
+#[tokio::test]
+async fn a_scope_revised_while_queued_never_installs() {
+    let demo = Demo::pinned().await;
+    let before = demo.head();
+    let candidate = demo.candidate("queued-revise", touch_notes);
+    let (host, order, task, _run) = passed_candidate(&demo, &candidate).await;
+
+    // The owner revises the scope after the candidate passed and before it lands. Nothing
+    // confirmed the new revision, so the queued candidate must not reach the protected branch.
+    owner_says(
+        &host,
+        HumanCmd::ReviseScope {
+            order,
+            scope: Box::new(limit_scope(&order.to_string(), &before, 2)),
+        },
+    )
+    .await;
+    let jobs = spawn_jobs(host.clone());
+    host.wake_jobs();
+    until("the queued land to be decided", || {
+        host.read(|world| {
+            matches!(
+                world.task(task).map(|found| &found.state),
+                Some(TaskState::Open | TaskState::Landed { .. })
+            )
+            .then_some(())
+        })
+    })
+    .await;
+
+    assert_eq!(demo.head(), before, "nothing was installed");
+    assert!(
+        host.read(|world| !landed(world, task)),
+        "the task did not land"
+    );
+    jobs.abort();
+    let _ = jobs.await;
+    host.shutdown().await.expect("the writer drains");
 }
