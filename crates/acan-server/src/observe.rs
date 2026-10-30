@@ -27,11 +27,11 @@ use acan_intent::compare::{self, CompareError, Contrast};
 use acan_intent::receipt::{self, ProbeResult, ReceiptError, ReceiptInputs};
 use acan_intent::{
     AppContract, ArtifactHash, CanonicalError, Comparison, ContainerPolicy, ContentHash,
-    CoreDerived, CorpusProbe, EnvHash, EnvManifest, EvaluatorVersion, Fixture, FixtureId,
-    FixtureSetHash, FixtureSetManifest, FoldedLedger, GateContext, GateState, InvalidValue, Mask,
-    ObservationHash, ObservedRun, PreparedCommit, ProbeCorpus, ProbeHash, ProbeSetHash,
-    ProbeSetManifest, Receipt, RepoPath, RunRole, RunnerBuild, RunnerHash, RunnerManifest,
-    RuntimeId, SandboxPolicyHash, Scope, ScopeConfirmation, UnixMillis,
+    CoreDerived, CorpusProbe, DiscrepancyEpisode, EnvHash, EnvManifest, EvaluatorVersion, Fixture,
+    FixtureId, FixtureSetHash, FixtureSetManifest, FoldedLedger, GateContext, GateState,
+    InvalidValue, Mask, ObservationHash, ObservedRun, PreparedCommit, ProbeCorpus, ProbeHash,
+    ProbeSetHash, ProbeSetManifest, Receipt, RepoPath, RunRole, RunnerBuild, RunnerHash,
+    RunnerManifest, RuntimeId, SandboxPolicyHash, Scope, ScopeConfirmation, UnixMillis,
 };
 use acan_witness::{RunnerConfig, SequenceInput, run_sequence};
 use serde::de::DeserializeOwned;
@@ -177,6 +177,9 @@ pub(crate) struct Order<'a> {
     pub(crate) confirmation: &'a ScopeConfirmation,
     /// The ruling log, folded.
     pub(crate) ledger: &'a CoreDerived<FoldedLedger>,
+    /// The discrepancy episodes the receipt tracks. An episode in `residue` or `contested`
+    /// state makes its item wait for a human ruling.
+    pub(crate) episodes: &'a [DiscrepancyEpisode],
 }
 
 /// One probe's contrast with the masks and comparison the core derives from it.
@@ -460,7 +463,7 @@ fn build(
         corpus: plan.corpus,
         results,
         anchors: &[],
-        episodes: &[],
+        episodes: order.episodes,
         contests: &[],
         gate_state: state,
     };

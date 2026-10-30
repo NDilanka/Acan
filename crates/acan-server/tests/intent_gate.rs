@@ -2,13 +2,14 @@
 //!
 //! A candidate that changes nothing a probe reads lands on the protected branch. A candidate that
 //! seeds a regression in the signup response is blocked, and its receipt names the must-keep rule
-//! it breaks. A runtime that cannot isolate a run never installs anything. The gate only reads the
-//! repository, so nothing here writes to `ACAN_DEMO_DIR`.
+//! it breaks. A runtime that cannot isolate a run never installs anything. A ruling that is
+//! waiting for a human survives a restart of the ruling log, and land refuses it until its answer
+//! is in the log. The gate only reads the repository, so nothing here writes to `ACAN_DEMO_DIR`.
 
 #[path = "../src/ledger.rs"]
 #[allow(
     dead_code,
-    reason = "the gate reads the ruling log through the ledger module, which this test only reaches for its atomic replace"
+    reason = "the gate reads and appends the ruling log through the ledger module, and this test reaches only some of its functions"
 )]
 mod ledger;
 
@@ -40,8 +41,9 @@ use std::str::FromStr;
 
 use acan_git::{InstallOutcome, Preparation, PrepareOutcome, ProtectedPaths, Repo};
 use acan_intent::{
-    AppContract, CommitSha, ContainerPolicy, CoreDerived, FoldedLedger, ItemClass, Outcome,
-    ProbeCorpus, Scope, ScopeConfirmation, fold,
+    AppContract, CommitSha, ContainerPolicy, CoreDerived, DiscrepancyEpisode, EpisodeId,
+    EpisodeKey, FoldedLedger, ItemClass, ItemState, LedgerEvent, Outcome, ProbeCorpus, Scope,
+    ScopeConfirmation, canonical_episode_selector, fold,
 };
 use acan_witness::RunnerConfig;
 use serde_json::{Value, json};
@@ -67,6 +69,14 @@ const SIGNUP_RESPONSE: &str = "return { id: user.id, username: user.username };"
 /// The seeded regression: the answer upper-cases the username, so the answer differs from base.
 const REGRESSED_SIGNUP_RESPONSE: &str =
     "return { id: user.id, username: user.username.toUpperCase() };";
+/// The obligation of the signup rule that the seeded regression breaks.
+const SIGNUP_OBLIGATION: &str = "obl-signup-body";
+/// The ruling lineage the human answer belongs to.
+const RULING: &str = "r-2";
+/// The probe hash the residue episode names. The episode's identity does not include it, so any
+/// valid hash will do for this test.
+const EPISODE_PROBE: &str =
+    "sha256:0000000000000000000000000000000000000000000000000000000000000000";
 
 /// Serializes the Docker tests, so their containers do not compete for the same CPU budget and
 /// their sequences stay inside the 30 s budget.
@@ -161,6 +171,7 @@ struct Gate {
     scope: Scope,
     confirmation: ScopeConfirmation,
     ledger: CoreDerived<FoldedLedger>,
+    episodes: Vec<DiscrepancyEpisode>,
 }
 
 impl Gate {
@@ -190,6 +201,7 @@ impl Gate {
             scope,
             confirmation,
             ledger,
+            episodes: Vec::new(),
             _dir: dir,
         }
     }
@@ -209,11 +221,18 @@ impl Gate {
         }
     }
 
+    /// The same gate with the given discrepancy episodes, which the receipt reads.
+    fn with_episodes(mut self, episodes: Vec<DiscrepancyEpisode>) -> Self {
+        self.episodes = episodes;
+        self
+    }
+
     fn order(&self) -> observe::Order<'_> {
         observe::Order {
             scope: &self.scope,
             confirmation: &self.confirmation,
             ledger: &self.ledger,
+            episodes: &self.episodes,
         }
     }
 }
@@ -592,4 +611,201 @@ async fn a_missing_protected_path_is_masked_and_the_run_is_judged() {
         "every role answered, so no run failed to start: {:?}",
         item.sequence
     );
+}
+
+/// The episode the seeded regression opens, as the repair loop leaves it once its budget runs
+/// out: in residue, waiting for a human ruling. The receipt keys the signup item by it.
+fn residue_episode(scope: &Scope) -> DiscrepancyEpisode {
+    let selector = canonical_episode_selector(&scope.body.must_keep[0].selector);
+    let key: EpisodeKey = serde_json::from_value(json!({
+        "order": ORDER,
+        "selector": selector,
+        "obligation_id": SIGNUP_OBLIGATION,
+    }))
+    .expect("the episode key decodes");
+    let id = key.episode_id().expect("the episode key hashes");
+    serde_json::from_value(json!({
+        "version": "acan-episode/1",
+        "id": id,
+        "order": ORDER,
+        "scope_lineage": [{
+            "rev": scope.rev,
+            "scope_hash": scope.scope_hash().expect("the scope hashes"),
+        }],
+        "probe_hash": EPISODE_PROBE,
+        "step_id": "s1",
+        "selector": selector,
+        "obligation_id": SIGNUP_OBLIGATION,
+        "evidence_revisions": [],
+        "candidate_attempts": [],
+        "bounce_count": 2,
+        "state": "residue",
+    }))
+    .expect("the residue episode decodes")
+}
+
+/// The human's answer to `episode`: a note that records the ruling without enforcing it. A note
+/// is never counted as a check, so the item stays a blocker until a run on the answered head
+/// carries it.
+fn answer(episode: &EpisodeId) -> LedgerEvent {
+    serde_json::from_value(json!({
+        "event": "note_recorded",
+        "schema_version": "acan-ledger/1",
+        "event_seq": 1,
+        "actor": "owner",
+        "at": 1_700_000_100_000_u64,
+        "ruling_id": RULING,
+        "order": ORDER,
+        "episode_id": episode,
+        "text": "The signup answer changes on purpose; a later decision will settle it",
+        "reason": {
+            "kind": "unexpressible",
+            "detail": "the change is a product call, not a predicate",
+        },
+        "machine_ids": ["auth"],
+    }))
+    .expect("the answer decodes")
+}
+
+/// The gate's order with `ledger` as its folded ruling state, so the context it computes binds
+/// that ledger's head.
+fn order_on<'a>(gate: &'a Gate, ledger: &'a CoreDerived<FoldedLedger>) -> observe::Order<'a> {
+    observe::Order {
+        scope: &gate.scope,
+        confirmation: &gate.confirmation,
+        ledger,
+        episodes: &gate.episodes,
+    }
+}
+
+#[tokio::test]
+async fn a_pending_ruling_survives_a_restart_and_is_answered_in_the_log() {
+    let _docker = DOCKER.lock().await;
+    let demo = Demo::pinned().await;
+    let before = demo.head();
+    let candidate = demo.candidate("residue", seed_regression);
+    let episode = residue_episode(&scope(&before));
+    let gate = Gate::new(&demo, &candidate, runner())
+        .await
+        .with_episodes(vec![episode.clone()]);
+    let judged = observe::judge(&gate.plan(&demo.repo), &gate.order())
+        .await
+        .expect("the regressed candidate is judged");
+    let item = judged
+        .receipt
+        .items
+        .iter()
+        .find(|item| item.item_id.as_str() == SIGNUP_RULE)
+        .expect("the receipt names the signup rule");
+    assert_eq!(
+        item.state,
+        ItemState::Residue,
+        "the episode waits for a human ruling"
+    );
+    assert_eq!(
+        item.episode_id.as_ref(),
+        Some(&episode.id),
+        "the item is keyed by the episode"
+    );
+    let waiting = item.item_id.clone();
+
+    // The state dir does not exist yet. An append into it is refused, so the first open has to
+    // create the directory before the first append can land.
+    let state = tempfile::tempdir().expect("a temporary state root");
+    let state_dir = state.path().join("state");
+    let log = state_dir.join(ledger::RULINGS_LOG);
+    let answer_event = answer(&episode.id);
+    assert!(
+        !state_dir.exists(),
+        "the state dir is absent before the first open"
+    );
+    let empty = ledger::head(&log).expect("an absent log reads as empty");
+    let refused = ledger::append(&log, &empty, &answer_event)
+        .expect_err("an append into an absent state dir is refused");
+    assert!(
+        matches!(refused, ledger::LedgerError::Io { .. }),
+        "the refusal is the missing directory: {refused:?}"
+    );
+    assert!(!state_dir.exists(), "a refused append creates nothing");
+
+    // The first start creates the state dir and reads the log, then the host stops.
+    let first = land::RulingLog::open(&state_dir).expect("the first start creates the state dir");
+    assert!(state_dir.is_dir(), "the state dir exists before any append");
+    assert!(
+        first.answered().expect("the log reads").is_empty(),
+        "nothing is answered yet"
+    );
+    drop(first);
+
+    // A restart rebuilds the host from the same state dir. Nothing from the first start is kept.
+    let restarted = land::RulingLog::open(&state_dir).expect("the restart opens the same log");
+    let answered = restarted.answered().expect("the log reads back");
+    assert_eq!(
+        land::pending(&judged.receipt, &answered),
+        vec![waiting.clone()],
+        "the ruling is still pending after the restart"
+    );
+    let folded = restarted.folded().expect("the log folds");
+    let current = observe::current(&gate.plan(&demo.repo), &order_on(&gate, &folded))
+        .await
+        .expect("the current context computes");
+    let error = land::final_gate(&judged.receipt, &current, &gate.candidate)
+        .expect_err("land refuses a pending ruling");
+    let land::LandError::Blocked(blockers) = error else {
+        panic!("the pending ruling is refused by the receipt: {error:?}");
+    };
+    assert!(
+        blockers
+            .iter()
+            .any(|blocker| blocker.item.as_ref() == Some(&waiting)),
+        "the blockers name the pending item: {blockers:?}"
+    );
+    assert_eq!(demo.head(), before, "nothing was installed");
+
+    // The answer is appended after the open that created its directory.
+    let answered_head = restarted
+        .answer(&answer_event)
+        .expect("the answer appends after the head it read");
+    assert_eq!(
+        answered_head.event_seq, 1,
+        "the answer is the log's first event"
+    );
+    drop(restarted);
+
+    // A second restart folds the answer, and nothing is pending.
+    let again = land::RulingLog::open(&state_dir)
+        .expect("the second restart opens the log with the answer");
+    let answered = again.answered().expect("the log reads back");
+    assert!(
+        answered.contains(&episode.id),
+        "the answer names the episode"
+    );
+    assert!(
+        land::pending(&judged.receipt, &answered).is_empty(),
+        "no ruling is pending after the answer"
+    );
+    let folded = again.folded().expect("the log folds");
+    assert_eq!(
+        folded.value().head,
+        answered_head,
+        "the folded head is the answer"
+    );
+    assert_eq!(
+        folded.value().notes.len(),
+        1,
+        "the answer folds as one note"
+    );
+
+    // The answer moved the ledger head, so the receipt from before it names another context.
+    // Only a run on the answered head can clear the gate.
+    let current = observe::current(&gate.plan(&demo.repo), &order_on(&gate, &folded))
+        .await
+        .expect("the current context computes");
+    let stale = land::final_gate(&judged.receipt, &current, &gate.candidate)
+        .expect_err("the receipt from before the answer is refused");
+    assert!(
+        matches!(stale, land::LandError::ContextChanged),
+        "the old receipt is for another ledger head: {stale:?}"
+    );
+    assert_eq!(demo.head(), before, "nothing was installed");
 }
