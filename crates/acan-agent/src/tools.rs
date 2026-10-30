@@ -6,19 +6,20 @@
 //! command runs is held back only by the container [`Worktree::run_tests`] starts, and when no
 //! container runtime answers, the test command does not run at all. The container's limits are
 //! read from a [`ContainerPolicy`]; this module only renders that policy as `docker run`
-//! arguments.
+//! arguments. A protected path is mounted from the protected-head snapshot, never from the
+//! worktree, so a protected file the task edited is not what the container sees.
 
 use std::collections::BTreeSet;
 use std::fmt::Display;
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::NonZeroU32;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use acan_intent::{
-    ContainerImage, ContainerNetwork, ContainerPolicy, ContainerUser, ImageName, MissingProtected,
-    MountPolicy, Privileges, RepoPath, RootFilesystem,
+    ContainerImage, ContainerNetwork, ContainerPolicy, MissingProtected, Privileges, RepoPath,
+    RootFilesystem,
 };
 use acan_llm::ToolSpec;
 use serde_json::{Value, json};
@@ -54,6 +55,18 @@ pub struct Worktree {
     test_command: Option<String>,
     container: Container,
     policy: ContainerPolicy,
+    /// The protected-head snapshot the container's protected paths are mounted from. Unset, the
+    /// test command does not run, because there is nothing safe to mount them from.
+    snapshot: Option<PathBuf>,
+}
+
+/// Where a covered path's mount comes from.
+#[derive(Clone, Copy)]
+enum Origin {
+    /// The worktree itself, read-only: `.git`, which the policy keeps read-only.
+    Worktree,
+    /// The protected-head snapshot: every protected path.
+    Snapshot,
 }
 
 /// The docker CLI the test command runs through.
@@ -73,11 +86,18 @@ struct Plan {
 }
 
 impl Plan {
-    /// Removes what the run left on the host. `remove_dir` removes only an empty directory, so a
-    /// file the candidate wrote into the worktree is never deleted.
+    /// Removes what the run left on the host. A directory is removed only when it is empty, and
+    /// a file only when it is empty and docker made it as a mount point, so a file the candidate
+    /// wrote into the worktree is never deleted.
     fn clean_up(&self) {
         for path in &self.mount_points {
-            let _ = std::fs::remove_dir(path);
+            let empty_file =
+                std::fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.len() == 0);
+            if empty_file {
+                let _ = std::fs::remove_file(path);
+            } else {
+                let _ = std::fs::remove_dir(path);
+            }
         }
         if let Some(source) = &self.mask_source {
             let _ = std::fs::remove_dir(source);
@@ -99,7 +119,8 @@ impl Worktree {
     /// so it can never be written. The worker only passes paths it has already normalized.
     ///
     /// `.acan/` is protected from the start. The test command runs with `docker` from `PATH`
-    /// under [`default_policy`].
+    /// under [`ContainerPolicy::default_run`], and it runs only once a protected-head snapshot
+    /// is set with [`Worktree::with_snapshot`].
     #[must_use]
     pub fn new(root: PathBuf, declared: &[String], test_command: Option<String>) -> Self {
         let declared = declared
@@ -114,7 +135,8 @@ impl Worktree {
             container: Container {
                 docker: PathBuf::from(DEFAULT_DOCKER),
             },
-            policy: default_policy(),
+            policy: ContainerPolicy::default_run(),
+            snapshot: None,
         }
     }
 
@@ -142,11 +164,12 @@ impl Worktree {
         self
     }
 
-    /// Runs the test command in the image `name`. The image has no digest pin; use
-    /// [`Worktree::with_policy`] to pin one.
+    /// Mounts the protected paths from the protected-head snapshot at `snapshot`, a directory
+    /// holding the protected paths as they are at the task's base. The worktree is never the
+    /// source of a protected mount.
     #[must_use]
-    pub fn with_image(mut self, name: ImageName) -> Self {
-        self.policy.image = ContainerImage { name, digest: None };
+    pub fn with_snapshot(mut self, snapshot: impl Into<PathBuf>) -> Self {
+        self.snapshot = Some(snapshot.into());
         self
     }
 
@@ -325,17 +348,20 @@ impl Worktree {
     }
 
     /// The `docker` arguments and host bookkeeping for `command` in a container named `name`.
-    /// Every limit, mount and network rule comes from the policy, except the fixed rules this
-    /// function states: a fresh container removed after the run, `HOME` as the only environment
-    /// variable, and every protected path mounted read-only on top of the worktree. `.git` is
-    /// mounted read-only only when the policy's `readonly_git` says so.
+    /// Every limit, mount, network and environment rule comes from the policy, except the fixed
+    /// rules this function states: a fresh container removed after the run, and every protected
+    /// path mounted read-only on top of the worktree from the snapshot. A protected path the
+    /// snapshot lacks is covered as the policy's `missing_protected` says, never from the
+    /// worktree. `.git` is mounted read-only from the worktree only when `readonly_git` says so.
     fn container_plan(&self, name: &str, command: &str) -> Result<Plan, String> {
         let policy = &self.policy;
+        policy.check_environment()?;
         let root = std::path::absolute(&self.root)
             .map_err(|err| format!("the worktree cannot be resolved: {err}"))?;
+        let snapshot = self.snapshot_root()?;
         let workdir = policy.mounts.workdir.as_str();
         let mut args: Vec<String> = ["run", "--rm", "--name", name].map(str::to_owned).to_vec();
-        args.extend(network_args(&policy.network)?);
+        args.extend(network_args(policy.network));
         args.extend(root_args(policy.root));
         args.extend(privilege_args(policy.privileges));
         args.extend([
@@ -352,58 +378,72 @@ impl Worktree {
             policy.pids.to_string(),
             "--tmpfs".to_owned(),
             format!("{TMP_DIR}:rw,nosuid,nodev,size={}", policy.tmp_bytes),
-            "--env".to_owned(),
-            format!("HOME={TMP_DIR}"),
-            "--mount".to_owned(),
-            bind(&root, workdir)?,
         ]);
+        // Only the variables the policy names reach the container, and no other host variable.
+        for (key, value) in &policy.environment {
+            args.extend(["--env".to_owned(), format!("{key}={value}")]);
+        }
+        args.extend(["--mount".to_owned(), bind(&root, workdir)?]);
 
         let protected = self.protected_paths();
-        let mut mounted: Vec<String> = Vec::new();
-        let mut mount_points: Vec<PathBuf> = Vec::new();
-        let mut mask_source: Option<PathBuf> = None;
         // Hooks written under `.git` would run on the host at the next commit, so the policy
         // keeps it read-only unless `readonly_git` turns that off.
-        let guarded_git = policy.mounts.readonly_git.then_some(".git");
-        for relative in guarded_git
-            .into_iter()
-            .chain(protected.iter().map(String::as_str))
-        {
-            let (path, existing) = match self.existing_real(relative)? {
-                Some(real) => (real, true),
-                None => (relative.to_owned(), false),
-            };
-            if mounted.iter().any(|covering| covers(covering, &path)) {
+        let guarded = policy
+            .mounts
+            .readonly_git
+            .then_some((".git", Origin::Worktree));
+        let sources = guarded.into_iter().chain(
+            protected
+                .iter()
+                .map(|path| (path.as_str(), Origin::Snapshot)),
+        );
+        let mut covered: Vec<String> = Vec::new();
+        let mut mount_points: Vec<PathBuf> = Vec::new();
+        let mut mask_source: Option<PathBuf> = None;
+        for (relative, origin) in sources {
+            if covered.iter().any(|covering| covers(covering, relative)) {
                 continue;
             }
-            if existing {
-                let target = format!("{workdir}/{path}");
-                args.push("--mount".to_owned());
-                args.push(format!(
-                    "{},readonly",
-                    bind(&host_path(&root, &path), &target)?
-                ));
-            } else {
-                // A missing path is covered as the policy says, never skipped. Masking binds an
-                // empty read-only directory over it. Docker creates the mount point on the host,
-                // so the run removes the empty mount points afterwards.
-                match policy.mounts.missing_protected {
+            let source = match origin {
+                Origin::Worktree => self
+                    .existing_real(relative)?
+                    .map(|real| host_path(&root, &real)),
+                Origin::Snapshot => {
+                    self.no_links(relative)?;
+                    snapshot_source(&snapshot, relative)?
+                }
+            };
+            let target = format!("{workdir}/{relative}");
+            match source {
+                Some(source) => {
+                    // Docker makes a mount point the worktree lacks. The run removes what it
+                    // made, and nothing when the worktree already has the path.
+                    mount_points.extend(missing_chain(&root, relative).into_iter().rev());
+                    args.extend([
+                        "--mount".to_owned(),
+                        format!("{},readonly", bind(&source, &target)?),
+                    ]);
+                }
+                None => match policy.mounts.missing_protected {
                     MissingProtected::Refused => {
                         return Err(format!(
-                            "{relative} is protected and missing from the worktree, and the policy refuses a run without it"
+                            "{relative} is protected and missing from the protected-head snapshot, and the policy refuses a run without it"
                         ));
                     }
                     MissingProtected::Masked => {
+                        // Masking binds an empty read-only directory over the path, so a copy the
+                        // task added in the worktree is covered too.
                         self.no_links(relative)?;
                         mount_points.extend(missing_chain(&root, relative).into_iter().rev());
                         let source = mask_source.get_or_insert_with(|| mask_dir(name));
-                        let target = format!("{workdir}/{relative}");
-                        args.push("--mount".to_owned());
-                        args.push(format!("{},readonly", bind(source.as_path(), &target)?));
+                        args.extend([
+                            "--mount".to_owned(),
+                            format!("{},readonly", bind(source.as_path(), &target)?),
+                        ]);
                     }
-                }
+                },
             }
-            mounted.push(path);
+            covered.push(relative.to_owned());
         }
 
         args.extend([
@@ -626,6 +666,17 @@ impl Worktree {
         self.no_links(relative)?;
         self.resolve(relative).map(|resolved| Some(resolved.real))
     }
+
+    /// The absolute snapshot directory. Without one, no protected path can be mounted from a
+    /// source the task did not write, so the run is refused rather than mounted from the worktree.
+    fn snapshot_root(&self) -> Result<PathBuf, String> {
+        let snapshot = self.snapshot.as_deref().ok_or_else(|| {
+            "no protected-head snapshot is set, so protected paths have nothing to be mounted from"
+                .to_owned()
+        })?;
+        std::path::absolute(snapshot)
+            .map_err(|err| format!("the protected-head snapshot cannot be resolved: {err}"))
+    }
 }
 
 impl Container {
@@ -713,52 +764,11 @@ impl Container {
     }
 }
 
-/// The policy the test command runs under when the caller passes none. It is the contract's
-/// container policy with the test command's network closed. The image has no digest pin yet.
-fn default_policy() -> ContainerPolicy {
-    ContainerPolicy {
-        image: ContainerImage {
-            name: "oven/bun:1".parse().expect("the default image name"),
-            digest: None,
-        },
-        user: ContainerUser {
-            uid: nonzero32(1000),
-            gid: nonzero32(1000),
-        },
-        cpus_milli: nonzero32(2000),
-        memory_bytes: nonzero64(1 << 30),
-        pids: nonzero32(256),
-        timeout_ms: nonzero64(120_000),
-        tmp_bytes: nonzero64(256 << 20),
-        network: ContainerNetwork::None {},
-        root: RootFilesystem::ReadOnly,
-        privileges: Privileges::Dropped,
-        mounts: MountPolicy {
-            workdir: "/work".parse().expect("the default workdir"),
-            protected: BTreeSet::from([".acan".parse().expect("the default protected path")]),
-            missing_protected: MissingProtected::Masked,
-            readonly_git: true,
-        },
-    }
-}
-
-fn nonzero32(value: u32) -> NonZeroU32 {
-    NonZeroU32::new(value).expect("a container limit is never zero")
-}
-
-fn nonzero64(value: u64) -> NonZeroU64 {
-    NonZeroU64::new(value).expect("a container limit is never zero")
-}
-
-/// The `--network` arguments of the policy. Only `none` can be applied here: a published port
-/// needs a route that plain `docker run` cannot close off from the rest of the network, so a
-/// policy that asks for one is refused rather than run with more reach than it names.
-fn network_args(network: &ContainerNetwork) -> Result<Vec<String>, String> {
+/// The `--network` arguments of the policy. The policy can name no other network: a container
+/// that publishes no port has no route to the host or to the rest of the network.
+fn network_args(network: ContainerNetwork) -> Vec<String> {
     match network {
-        ContainerNetwork::None {} => Ok(vec!["--network".to_owned(), "none".to_owned()]),
-        ContainerNetwork::LoopbackPublished { port } => Err(format!(
-            "the loopback_published network on port {port} cannot be applied by the test command's runner, which applies only none"
-        )),
+        ContainerNetwork::None {} => vec!["--network".to_owned(), "none".to_owned()],
     }
 }
 
@@ -833,6 +843,26 @@ fn host_path(root: &Path, relative: &str) -> PathBuf {
     relative
         .split('/')
         .fold(root.to_path_buf(), |path, part| path.join(part))
+}
+
+/// The host path of `relative` in the protected-head snapshot, or nothing when the snapshot does
+/// not hold it. A link on the way is refused, because a mount of a link exposes its target.
+fn snapshot_source(snapshot: &Path, relative: &str) -> Result<Option<PathBuf>, String> {
+    let mut path = snapshot.to_path_buf();
+    for part in relative.split('/') {
+        path.push(part);
+        match std::fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(format!(
+                    "the snapshot's {relative} runs through a link, and a mount does not follow links"
+                ));
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(format!("cannot inspect the snapshot's {relative}: {err}")),
+        }
+    }
+    Ok(Some(path))
 }
 
 /// The form a protected path is kept in: normalized when it can be, otherwise as given.
