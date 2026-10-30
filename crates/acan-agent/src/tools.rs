@@ -4,15 +4,22 @@
 //!
 //! The path checks bind these tools and nothing else; they are not a sandbox. Code the test
 //! command runs is held back only by the container [`Worktree::run_tests`] starts, and when no
-//! container runtime answers, the test command does not run at all.
+//! container runtime answers, the test command does not run at all. The container's limits are
+//! read from a [`ContainerPolicy`]; this module only renders that policy as `docker run`
+//! arguments.
 
+use std::collections::BTreeSet;
 use std::fmt::Display;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use acan_intent::{Isolation, RepoPath};
+use acan_intent::{
+    ContainerImage, ContainerNetwork, ContainerPolicy, ContainerUser, ImageName, MissingProtected,
+    MountPolicy, Privileges, RepoPath, RootFilesystem,
+};
 use acan_llm::ToolSpec;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -23,44 +30,59 @@ const MAX_READ_BYTES: usize = 32 * 1024;
 /// The most entries a directory listing returns.
 const MAX_LISTING: usize = 200;
 
-/// Paths no tool writes or commits, whatever the task declares.
+/// Paths no tool writes or commits, whatever the task declares or the policy lists. A floor:
+/// a policy can add protected paths but cannot drop these.
 const ALWAYS_PROTECTED: &[&str] = &[".acan"];
 
 /// How every refusal for a missing or failed container runtime begins.
 const ISOLATION_UNAVAILABLE: &str = "isolation unavailable";
 const DEFAULT_DOCKER: &str = "docker";
-const DEFAULT_IMAGE: &str = "oven/bun:1";
-/// Where the worktree is mounted inside the container.
-const CONTAINER_WORKDIR: &str = "/work";
-const CONTAINER_USER: &str = "1000:1000";
-const CONTAINER_CPUS: &str = "2";
-const CONTAINER_MEMORY: &str = "1g";
-const CONTAINER_PIDS: &str = "256";
-/// The root filesystem is read-only, so the only scratch space is a bounded tmpfs.
-const CONTAINER_TMP: &str = "/tmp:rw,nosuid,nodev,size=256m";
-const CONTAINER_HOME: &str = "HOME=/tmp";
-const TEST_TIMEOUT: Duration = Duration::from_secs(120);
+/// The writable temporary directory, which is also `HOME`. Its size comes from the policy.
+const TMP_DIR: &str = "/tmp";
 const DOCKER_ANSWER_TIMEOUT: Duration = Duration::from_secs(15);
 /// Bytes kept from the end of the test command's stdout and of its stderr.
 const OUTPUT_TAIL_BYTES: usize = 4 * 1024;
 
-/// One task's worktree, with the files it declared, the paths it may never change, and the
-/// test command it may run.
+/// One task's worktree, with the files it declared, the paths it may never change, the test
+/// command it may run, and the container policy that command runs under.
 #[derive(Debug)]
 pub struct Worktree {
     root: PathBuf,
     declared: Vec<String>,
-    protected: Vec<String>,
+    /// The protected paths the caller added with [`Worktree::with_protected`].
+    extra_protected: Vec<String>,
     test_command: Option<String>,
     container: Container,
+    policy: ContainerPolicy,
 }
 
-/// The container the test command runs in.
+/// The docker CLI the test command runs through.
 #[derive(Debug)]
 struct Container {
     docker: PathBuf,
-    image: String,
-    isolation: Isolation,
+}
+
+/// The `docker run` arguments of one test run, and what the run puts on the host.
+struct Plan {
+    args: Vec<String>,
+    /// The empty directory bound read-only over each masked path. Created before the run.
+    mask_source: Option<PathBuf>,
+    /// Host directories that were missing when the plan was made and that docker creates as the
+    /// mount points of masked paths, deepest first.
+    mount_points: Vec<PathBuf>,
+}
+
+impl Plan {
+    /// Removes what the run left on the host. `remove_dir` removes only an empty directory, so a
+    /// file the candidate wrote into the worktree is never deleted.
+    fn clean_up(&self) {
+        for path in &self.mount_points {
+            let _ = std::fs::remove_dir(path);
+        }
+        if let Some(source) = &self.mask_source {
+            let _ = std::fs::remove_dir(source);
+        }
+    }
 }
 
 /// A path inside the worktree: as joined from the request, and as it really is on disk.
@@ -77,7 +99,7 @@ impl Worktree {
     /// so it can never be written. The worker only passes paths it has already normalized.
     ///
     /// `.acan/` is protected from the start. The test command runs with `docker` from `PATH`
-    /// in the `oven/bun:1` image.
+    /// under [`default_policy`].
     #[must_use]
     pub fn new(root: PathBuf, declared: &[String], test_command: Option<String>) -> Self {
         let declared = declared
@@ -87,27 +109,22 @@ impl Worktree {
         Self {
             root,
             declared,
-            protected: ALWAYS_PROTECTED
-                .iter()
-                .map(|&path| path.to_owned())
-                .collect(),
+            extra_protected: Vec::new(),
             test_command,
             container: Container {
                 docker: PathBuf::from(DEFAULT_DOCKER),
-                image: DEFAULT_IMAGE.to_owned(),
-                isolation: Isolation::default(),
             },
+            policy: default_policy(),
         }
     }
 
-    /// Protects `paths` as well as `.acan/`. A protected path covers itself and everything
-    /// under it. No tool writes, restores or commits it, even when the task declares it, and
-    /// the test command's container mounts it read-only.
+    /// Protects `paths` as well as `.acan/` and the policy's protected paths. A protected path
+    /// covers itself and everything under it. No tool writes, restores or commits it, even when
+    /// the task declares it, and the test command's container mounts it read-only.
     #[must_use]
     pub fn with_protected(mut self, paths: &[RepoPath]) -> Self {
-        self.protected.extend(paths.iter().map(|path| {
-            normalize_path(path.as_str()).unwrap_or_else(|_| path.as_str().to_owned())
-        }));
+        self.extra_protected
+            .extend(paths.iter().map(|path| protected_form(path.as_str())));
         self
     }
 
@@ -118,11 +135,26 @@ impl Worktree {
         self
     }
 
-    /// Runs the test command in `image`.
+    /// Runs the test command under `policy` instead of the default one.
     #[must_use]
-    pub fn with_image(mut self, image: impl Into<String>) -> Self {
-        self.container.image = image.into();
+    pub fn with_policy(mut self, policy: ContainerPolicy) -> Self {
+        self.policy = policy;
         self
+    }
+
+    /// Runs the test command in the image `name`. The image has no digest pin; use
+    /// [`Worktree::with_policy`] to pin one.
+    #[must_use]
+    pub fn with_image(mut self, name: ImageName) -> Self {
+        self.policy.image = ContainerImage { name, digest: None };
+        self
+    }
+
+    /// The container policy the test command runs under. Its hash is the sandbox policy hash
+    /// of the run.
+    #[must_use]
+    pub fn container_policy(&self) -> &ContainerPolicy {
+        &self.policy
     }
 
     /// The local tools, as the model sees them.
@@ -255,7 +287,8 @@ impl Worktree {
 
     /// Runs the configured test command in a fresh container over the worktree and reports
     /// its outcome. The command never runs on the host: when the container runtime is missing
-    /// or does not answer, the reason begins with `isolation unavailable`.
+    /// or does not answer, or the policy cannot be applied, the reason begins with
+    /// `isolation unavailable`.
     ///
     /// # Errors
     ///
@@ -266,112 +299,126 @@ impl Worktree {
             return Err(no_test_command());
         };
         let name = container_name();
-        let args = self.container_args(&name, command).map_err(unavailable)?;
+        let plan = self.container_plan(&name, command).map_err(unavailable)?;
         self.container.answers().await?;
-        self.container.run(&name, &args).await
+        if let Some(source) = &plan.mask_source {
+            std::fs::create_dir(source)
+                .map_err(|err| unavailable(format!("cannot create {}: {err}", source.display())))?;
+        }
+        let timeout = Duration::from_millis(self.policy.timeout_ms.get());
+        let outcome = self.container.run(&name, &plan.args, timeout).await;
+        plan.clean_up();
+        outcome
     }
 
-    /// The `docker` arguments that run the test command in a container named `name`: a fresh
-    /// container removed after the run, as a non-root user, on a read-only root filesystem
-    /// with a bounded `/tmp`, no network, no capabilities, CPU, memory and process limits, and
-    /// `HOME` as its only environment variable. The worktree is mounted read-write, and `.git`
-    /// and every protected path that exists are mounted read-only on top of it.
+    /// The `docker` arguments that run the test command in a container named `name`. Nothing is
+    /// created on the host, so the arguments can be checked without a container runtime.
     ///
     /// # Errors
     ///
-    /// Returns the reason when no test command is configured, the image name is not usable,
-    /// or the worktree or a protected path cannot be mounted (a protected path that is a link
-    /// is refused).
+    /// Returns the reason when no test command is configured, the policy names a network this
+    /// runner cannot apply, a protected path is missing and the policy refuses that, or a path
+    /// runs through a link or cannot be mounted.
     pub fn test_container_args(&self, name: &str) -> Result<Vec<String>, String> {
         let command = self.test_command.as_deref().ok_or_else(no_test_command)?;
-        self.container_args(name, command)
+        self.container_plan(name, command).map(|plan| plan.args)
     }
 
-    fn container_args(&self, name: &str, command: &str) -> Result<Vec<String>, String> {
-        let image = &self.container.image;
-        if image.is_empty() || image.starts_with('-') {
-            return Err(format!("{image:?} is not an image name"));
-        }
+    /// The `docker` arguments and host bookkeeping for `command` in a container named `name`.
+    /// Every limit, mount and network rule comes from the policy, except the fixed rules this
+    /// function states: a fresh container removed after the run, `HOME` as the only environment
+    /// variable, and every protected path mounted read-only on top of the worktree. `.git` is
+    /// mounted read-only only when the policy's `readonly_git` says so.
+    fn container_plan(&self, name: &str, command: &str) -> Result<Plan, String> {
+        let policy = &self.policy;
         let root = std::path::absolute(&self.root)
             .map_err(|err| format!("the worktree cannot be resolved: {err}"))?;
-        let mut args = vec!["run".to_owned()];
-        match self.container.isolation {
-            Isolation::FreshInstance => args.push("--rm".to_owned()),
-        }
-        args.extend(
-            [
-                "--name",
-                name,
-                "--network",
-                "none",
-                "--read-only",
-                "--user",
-                CONTAINER_USER,
-                "--cap-drop",
-                "ALL",
-                "--security-opt",
-                "no-new-privileges",
-                "--cpus",
-                CONTAINER_CPUS,
-                "--memory",
-                CONTAINER_MEMORY,
-                "--memory-swap",
-                CONTAINER_MEMORY,
-                "--pids-limit",
-                CONTAINER_PIDS,
-                "--tmpfs",
-                CONTAINER_TMP,
-                "--env",
-                CONTAINER_HOME,
-                "--mount",
-            ]
-            .map(str::to_owned),
-        );
-        args.push(bind(&root, CONTAINER_WORKDIR)?);
+        let workdir = policy.mounts.workdir.as_str();
+        let mut args: Vec<String> = ["run", "--rm", "--name", name].map(str::to_owned).to_vec();
+        args.extend(network_args(&policy.network)?);
+        args.extend(root_args(policy.root));
+        args.extend(privilege_args(policy.privileges));
+        args.extend([
+            "--user".to_owned(),
+            policy.user.to_string(),
+            "--cpus".to_owned(),
+            cpus(policy.cpus_milli),
+            "--memory".to_owned(),
+            policy.memory_bytes.to_string(),
+            // Equal to `--memory`, so the container gets no swap beyond its memory cap.
+            "--memory-swap".to_owned(),
+            policy.memory_bytes.to_string(),
+            "--pids-limit".to_owned(),
+            policy.pids.to_string(),
+            "--tmpfs".to_owned(),
+            format!("{TMP_DIR}:rw,nosuid,nodev,size={}", policy.tmp_bytes),
+            "--env".to_owned(),
+            format!("HOME={TMP_DIR}"),
+            "--mount".to_owned(),
+            bind(&root, workdir)?,
+        ]);
+
+        let protected = self.protected_paths();
         let mut mounted: Vec<String> = Vec::new();
-        // `.git` is read-only too: hooks written there would run on the host at the next commit.
-        for relative in std::iter::once(".git").chain(self.protected.iter().map(String::as_str)) {
-            let Some(real) = self.existing_real(relative)? else {
-                continue;
+        let mut mount_points: Vec<PathBuf> = Vec::new();
+        let mut mask_source: Option<PathBuf> = None;
+        // Hooks written under `.git` would run on the host at the next commit, so the policy
+        // keeps it read-only unless `readonly_git` turns that off.
+        let guarded_git = policy.mounts.readonly_git.then_some(".git");
+        for relative in guarded_git
+            .into_iter()
+            .chain(protected.iter().map(String::as_str))
+        {
+            let (path, existing) = match self.existing_real(relative)? {
+                Some(real) => (real, true),
+                None => (relative.to_owned(), false),
             };
-            if mounted.contains(&real) {
+            if mounted.iter().any(|covering| covers(covering, &path)) {
                 continue;
             }
-            let source = real
-                .split('/')
-                .fold(root.clone(), |path, part| path.join(part));
-            args.push("--mount".to_owned());
-            args.push(format!(
-                "{},readonly",
-                bind(&source, &format!("{CONTAINER_WORKDIR}/{real}"))?
-            ));
-            mounted.push(real);
+            if existing {
+                let target = format!("{workdir}/{path}");
+                args.push("--mount".to_owned());
+                args.push(format!(
+                    "{},readonly",
+                    bind(&host_path(&root, &path), &target)?
+                ));
+            } else {
+                // A missing path is covered as the policy says, never skipped. Masking binds an
+                // empty read-only directory over it. Docker creates the mount point on the host,
+                // so the run removes the empty mount points afterwards.
+                match policy.mounts.missing_protected {
+                    MissingProtected::Refused => {
+                        return Err(format!(
+                            "{relative} is protected and missing from the worktree, and the policy refuses a run without it"
+                        ));
+                    }
+                    MissingProtected::Masked => {
+                        self.no_links(relative)?;
+                        mount_points.extend(missing_chain(&root, relative).into_iter().rev());
+                        let source = mask_source.get_or_insert_with(|| mask_dir(name));
+                        let target = format!("{workdir}/{relative}");
+                        args.push("--mount".to_owned());
+                        args.push(format!("{},readonly", bind(source.as_path(), &target)?));
+                    }
+                }
+            }
+            mounted.push(path);
         }
-        args.extend(
-            [
-                "--workdir",
-                CONTAINER_WORKDIR,
-                "--entrypoint",
-                "sh",
-                image,
-                "-c",
-                command,
-            ]
-            .map(str::to_owned),
-        );
-        Ok(args)
-    }
 
-    /// The resolved form of `relative` when it exists, refusing one that runs through a link,
-    /// because a read-only mount of a link would expose whatever it points to.
-    fn existing_real(&self, relative: &str) -> Result<Option<String>, String> {
-        match self.root.join(relative).symlink_metadata() {
-            Ok(_) => {}
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(err) => return Err(format!("cannot inspect {relative}: {err}")),
-        }
-        self.no_links(relative)?;
-        self.resolve(relative).map(|resolved| Some(resolved.real))
+        args.extend([
+            "--workdir".to_owned(),
+            workdir.to_owned(),
+            "--entrypoint".to_owned(),
+            "sh".to_owned(),
+        ]);
+        args.push(image_reference(&policy.image));
+        args.extend(["-c".to_owned(), command.to_owned()]);
+        Ok(Plan {
+            args,
+            mask_source,
+            mount_points,
+        })
     }
 
     /// Stages every change, refuses it when a protected path or a file outside the declaration
@@ -468,11 +515,28 @@ impl Worktree {
         Ok(())
     }
 
+    /// Every protected path: `.acan/`, the policy's and the caller's. Sorted, so a path comes
+    /// after the path that covers it.
+    fn protected_paths(&self) -> BTreeSet<String> {
+        ALWAYS_PROTECTED
+            .iter()
+            .map(|&path| path.to_owned())
+            .chain(
+                self.policy
+                    .mounts
+                    .protected
+                    .iter()
+                    .map(|path| protected_form(path.as_str())),
+            )
+            .chain(self.extra_protected.iter().cloned())
+            .collect()
+    }
+
     /// Whether `relative` is a protected path or lies under one. Case is ignored, because
     /// Windows and macOS name one file by every case of its name.
     fn is_protected(&self, relative: &str) -> bool {
         let path = relative.to_lowercase();
-        self.protected.iter().any(|protected| {
+        self.protected_paths().iter().any(|protected| {
             let protected = protected.to_lowercase();
             path.strip_prefix(&protected)
                 .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
@@ -550,6 +614,18 @@ impl Worktree {
         }
         Ok(())
     }
+
+    /// The resolved form of `relative` when it exists, refusing one that runs through a link,
+    /// because a read-only mount of a link would expose whatever it points to.
+    fn existing_real(&self, relative: &str) -> Result<Option<String>, String> {
+        match self.root.join(relative).symlink_metadata() {
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(format!("cannot inspect {relative}: {err}")),
+        }
+        self.no_links(relative)?;
+        self.resolve(relative).map(|resolved| Some(resolved.real))
+    }
 }
 
 impl Container {
@@ -582,7 +658,7 @@ impl Container {
         )))
     }
 
-    async fn run(&self, name: &str, args: &[String]) -> Result<String, String> {
+    async fn run(&self, name: &str, args: &[String], timeout: Duration) -> Result<String, String> {
         let mut child = Command::new(&self.docker)
             .args(args)
             .stdin(Stdio::null())
@@ -598,15 +674,14 @@ impl Container {
         };
         let stdout = tokio::spawn(read_tail(stdout));
         let stderr = tokio::spawn(read_tail(stderr));
-        let status = match tokio::time::timeout(TEST_TIMEOUT, child.wait()).await {
+        let status = match tokio::time::timeout(timeout, child.wait()).await {
             Err(_) => {
                 // Killing the docker CLI leaves its container running, so the container is
                 // killed by name.
                 self.kill(name).await;
                 let _ = child.kill().await;
                 return Err(format!(
-                    "the test command timed out after {}s; its container was killed",
-                    TEST_TIMEOUT.as_secs()
+                    "the test command timed out after {timeout:?}; its container was killed"
                 ));
             }
             Ok(Err(err)) => return Err(format!("could not wait on docker: {err}")),
@@ -636,6 +711,133 @@ impl Container {
             .kill_on_drop(true);
         let _ = tokio::time::timeout(DOCKER_ANSWER_TIMEOUT, kill.status()).await;
     }
+}
+
+/// The policy the test command runs under when the caller passes none. It is the contract's
+/// container policy with the test command's network closed. The image has no digest pin yet.
+fn default_policy() -> ContainerPolicy {
+    ContainerPolicy {
+        image: ContainerImage {
+            name: "oven/bun:1".parse().expect("the default image name"),
+            digest: None,
+        },
+        user: ContainerUser {
+            uid: nonzero32(1000),
+            gid: nonzero32(1000),
+        },
+        cpus_milli: nonzero32(2000),
+        memory_bytes: nonzero64(1 << 30),
+        pids: nonzero32(256),
+        timeout_ms: nonzero64(120_000),
+        tmp_bytes: nonzero64(256 << 20),
+        network: ContainerNetwork::None {},
+        root: RootFilesystem::ReadOnly,
+        privileges: Privileges::Dropped,
+        mounts: MountPolicy {
+            workdir: "/work".parse().expect("the default workdir"),
+            protected: BTreeSet::from([".acan".parse().expect("the default protected path")]),
+            missing_protected: MissingProtected::Masked,
+            readonly_git: true,
+        },
+    }
+}
+
+fn nonzero32(value: u32) -> NonZeroU32 {
+    NonZeroU32::new(value).expect("a container limit is never zero")
+}
+
+fn nonzero64(value: u64) -> NonZeroU64 {
+    NonZeroU64::new(value).expect("a container limit is never zero")
+}
+
+/// The `--network` arguments of the policy. Only `none` can be applied here: a published port
+/// needs a route that plain `docker run` cannot close off from the rest of the network, so a
+/// policy that asks for one is refused rather than run with more reach than it names.
+fn network_args(network: &ContainerNetwork) -> Result<Vec<String>, String> {
+    match network {
+        ContainerNetwork::None {} => Ok(vec!["--network".to_owned(), "none".to_owned()]),
+        ContainerNetwork::LoopbackPublished { port } => Err(format!(
+            "the loopback_published network on port {port} cannot be applied by the test command's runner, which applies only none"
+        )),
+    }
+}
+
+fn root_args(root: RootFilesystem) -> Vec<String> {
+    match root {
+        RootFilesystem::ReadOnly => vec!["--read-only".to_owned()],
+    }
+}
+
+fn privilege_args(privileges: Privileges) -> Vec<String> {
+    match privileges {
+        Privileges::Dropped => ["--cap-drop", "ALL", "--security-opt", "no-new-privileges"]
+            .map(str::to_owned)
+            .to_vec(),
+    }
+}
+
+/// The `--cpus` value for a cap in thousandths of a core, exact to the thousandth.
+fn cpus(milli: NonZeroU32) -> String {
+    let (whole, frac) = (milli.get() / 1000, milli.get() % 1000);
+    if frac == 0 {
+        return whole.to_string();
+    }
+    format!("{whole}.{frac:03}")
+        .trim_end_matches('0')
+        .to_owned()
+}
+
+/// The image reference docker runs: the name, and `@digest` when the policy pins one.
+fn image_reference(image: &ContainerImage) -> String {
+    match &image.digest {
+        Some(digest) => format!("{}@{digest}", image.name),
+        None => image.name.to_string(),
+    }
+}
+
+/// The host directory that stands in for a masked path. It is named after the container, so
+/// two runs never share one.
+fn mask_dir(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("{name}-mask"))
+}
+
+/// The directories `relative` names under `root` that do not exist yet, top first. Nothing
+/// exists past the first missing one, so the chain runs to the end of `relative`.
+fn missing_chain(root: &Path, relative: &str) -> Vec<PathBuf> {
+    let mut path = root.to_path_buf();
+    let mut chain = Vec::new();
+    for part in relative.split('/') {
+        path.push(part);
+        let missing = matches!(
+            path.symlink_metadata(),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound
+        );
+        if !chain.is_empty() || missing {
+            chain.push(path.clone());
+        }
+    }
+    chain
+}
+
+/// Whether a mount of `covering` already covers `path`: they are the same path, or `path` lies
+/// under `covering`.
+fn covers(covering: &str, path: &str) -> bool {
+    path == covering
+        || path
+            .strip_prefix(covering)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// The host path of a `/`-separated path under the worktree.
+fn host_path(root: &Path, relative: &str) -> PathBuf {
+    relative
+        .split('/')
+        .fold(root.to_path_buf(), |path, part| path.join(part))
+}
+
+/// The form a protected path is kept in: normalized when it can be, otherwise as given.
+fn protected_form(path: &str) -> String {
+    normalize_path(path).unwrap_or_else(|_| path.to_owned())
 }
 
 /// A `--mount` value binding `source` on the host to `target` in the container.

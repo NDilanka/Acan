@@ -364,13 +364,175 @@ pub struct Scope {
 }
 
 impl Scope {
-    /// The scope's identity, bound into its confirmation.
+    /// The scope's document identity, which a confirmation binds. It covers every byte of the
+    /// document, wording included.
     ///
     /// # Errors
     ///
     /// Returns [`CanonicalError`] only if serialization fails.
     pub fn scope_hash(&self) -> Result<ScopeHash, CanonicalError> {
         ContentHash::of(self).map(ScopeHash::from)
+    }
+
+    /// The scope's executable identity: every field a selector, acceptance predicate, must-keep
+    /// obligation, change kind or open choice reads. It leaves out exactly the presentation
+    /// fields, [`PredicateRef::text`], [`MustKeep::text`], [`OpenChoice::question`] and
+    /// [`ChoiceOption::label`]. Each projection destructures its struct, so a new field fails to
+    /// compile until it is digested or named there. Answers to open choices live on the
+    /// confirmation, not in the scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] only if serialization fails.
+    pub fn semantic_scope_hash(&self) -> Result<ScopeHash, CanonicalError> {
+        ContentHash::of(&SemanticScope::from(self)).map(ScopeHash::from)
+    }
+}
+
+/// The executable content of a [`Scope`], digested by [`Scope::semantic_scope_hash`].
+#[derive(Serialize)]
+struct SemanticScope<'a> {
+    version: &'a ScopeV1,
+    order: &'a OrderRef,
+    rev: ScopeRev,
+    base_commit: &'a CommitSha,
+    may: Vec<SemanticItem<'a>>,
+    must_keep: Vec<SemanticRule<'a>>,
+    open: Vec<SemanticChoice<'a>>,
+}
+
+#[derive(Serialize)]
+struct SemanticItem<'a> {
+    id: &'a ItemId,
+    selector: &'a Selector,
+    change: Change,
+    acceptance: Vec<SemanticObligation<'a>>,
+    provenance: ItemProvenance,
+    example: &'a TargetExample,
+    machine_ids: &'a NonEmpty<MachineId>,
+}
+
+#[derive(Serialize)]
+struct SemanticRule<'a> {
+    id: &'a MustKeepId,
+    selector: &'a Selector,
+    obligations: Vec<SemanticObligation<'a>>,
+    ruling_id: Option<&'a RulingId>,
+    machine_ids: &'a NonEmpty<MachineId>,
+}
+
+#[derive(Serialize)]
+struct SemanticObligation<'a> {
+    obligation_id: &'a ObligationId,
+    predicate: &'a Predicate,
+}
+
+#[derive(Serialize)]
+struct SemanticChoice<'a> {
+    id: &'a ChoiceId,
+    machine_id: &'a MachineId,
+    options: Vec<&'a OptionKey>,
+}
+
+impl<'a> From<&'a Scope> for SemanticScope<'a> {
+    fn from(scope: &'a Scope) -> Self {
+        let Scope {
+            version,
+            order,
+            rev,
+            base_commit,
+            body:
+                ScopeBody {
+                    may,
+                    must_keep,
+                    open,
+                },
+        } = scope;
+        Self {
+            version,
+            order,
+            rev: *rev,
+            base_commit,
+            may: may.iter().map(SemanticItem::from).collect(),
+            must_keep: must_keep.iter().map(SemanticRule::from).collect(),
+            open: open.iter().map(SemanticChoice::from).collect(),
+        }
+    }
+}
+
+impl<'a> From<&'a ScopeItem> for SemanticItem<'a> {
+    fn from(item: &'a ScopeItem) -> Self {
+        let ScopeItem {
+            id,
+            selector,
+            change,
+            acceptance,
+            provenance,
+            example,
+            machine_ids,
+        } = item;
+        Self {
+            id,
+            selector,
+            change: *change,
+            acceptance: acceptance.iter().map(SemanticObligation::from).collect(),
+            provenance: *provenance,
+            example,
+            machine_ids,
+        }
+    }
+}
+
+impl<'a> From<&'a MustKeep> for SemanticRule<'a> {
+    fn from(rule: &'a MustKeep) -> Self {
+        let MustKeep {
+            id,
+            selector,
+            obligations,
+            text: _,
+            ruling_id,
+            machine_ids,
+        } = rule;
+        Self {
+            id,
+            selector,
+            obligations: obligations.iter().map(SemanticObligation::from).collect(),
+            ruling_id: ruling_id.as_ref(),
+            machine_ids,
+        }
+    }
+}
+
+impl<'a> From<&'a PredicateRef> for SemanticObligation<'a> {
+    fn from(obligation: &'a PredicateRef) -> Self {
+        let PredicateRef {
+            obligation_id,
+            predicate,
+            text: _,
+        } = obligation;
+        Self {
+            obligation_id,
+            predicate,
+        }
+    }
+}
+
+impl<'a> From<&'a OpenChoice> for SemanticChoice<'a> {
+    fn from(choice: &'a OpenChoice) -> Self {
+        let OpenChoice {
+            id,
+            machine_id,
+            question: _,
+            options,
+        } = choice;
+        Self {
+            id,
+            machine_id,
+            options: options
+                .iter()
+                .map(|ChoiceOption { key, label: _ }| key)
+                .collect(),
+        }
     }
 }
 
@@ -449,6 +611,11 @@ pub struct ScopeConfirmation {
     pub scope_rev: ScopeRev,
     /// The hash of the confirmed [`Scope`].
     pub scope_hash: ScopeHash,
+    /// The [`Scope::semantic_scope_hash`] of the confirmed scope. A receipt accepts only a scope
+    /// whose executable content matches it, and accepts a wording edit. A confirmation without it
+    /// predates the semantic digest and is refused.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_scope_hash: Option<ScopeHash>,
     /// The commit the scope was confirmed against.
     pub base_commit: CommitSha,
     /// The ruling versions in force.

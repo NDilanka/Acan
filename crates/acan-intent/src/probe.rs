@@ -621,7 +621,9 @@ pub enum CaptureOutcome {
         binding: CaptureName,
         /// The capture step.
         step_id: StepId,
-        /// The hash of the captured value.
+        /// The hash of the captured value: SHA-256 over the RFC 8785 canonical JSON of the
+        /// extracted JSON value. Not the raw bytes of the value, and not an `Evidence` wrapper.
+        /// `fixtures/value-hash-vectors.json` holds the shared vectors every producer must match.
         value_hash: EvidenceHash,
     },
     /// The value could not be bound. Never a pass.

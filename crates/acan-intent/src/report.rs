@@ -8,7 +8,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::episode::Contest;
+use crate::episode::{Contest, ContestKind, ContestStatus, EpisodeKey};
 use crate::gate::PreparedCommit;
 use crate::hash::{
     CanonicalError, ContentHash, EpisodeId, ObservationHash, ProbeHash, ReceiptHash, ScopeHash,
@@ -17,12 +17,14 @@ use crate::ledger::NotEnforcedReason;
 use crate::observation::Mask;
 use crate::probe::{RoutePath, RunRole};
 use crate::provenance::{EvidenceAddress, Provenance};
+use crate::scope::{Scope, Selector};
 use crate::types::{
-    CommitSha, Evidence, HttpMethod, InvalidValue, ItemId, MachineId, NonEmpty, ObservationPath,
-    OrderRef, RouteTemplate, RulingId, RunId, ScopeRev, StepId,
+    AgentRef, CommitSha, ContestId, Evidence, HttpMethod, InvalidValue, ItemId, MachineId,
+    NonEmpty, ObligationId, ObservationPath, OrderRef, RouteTemplate, RulingId, RunId, ScopeRev,
+    StepId, TaskRef, UnixMillis,
 };
-use crate::verdict::{Evaluation, ItemClass, ItemState, UnknownReason};
-use crate::version::ReceiptV1;
+use crate::verdict::{CheckResult, Evaluation, ItemClass, ItemState, UnknownReason};
+use crate::version::{ContestV1, ReceiptV1};
 
 /// Items per class. Core-derived: the fields are private to this crate and no public
 /// constructor exists, so a count can only come from the core's classification. A decoded
@@ -287,6 +289,12 @@ pub struct ReceiptItem {
     pub state: ItemState,
     /// The machine its mark goes on.
     pub machine_id: MachineId,
+    /// The canonical episode selector of what this item checks:
+    /// [`crate::canonical_episode_selector`] of its scope selector, or of the difference's
+    /// selector for an item no scope selector names. Its episode id, when present, is the hash
+    /// of an [`EpisodeKey`] built from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selector: Option<Selector>,
     /// The probe that checked it.
     pub probe_hash: ProbeHash,
     /// Its episode, if it failed.
@@ -419,6 +427,20 @@ pub struct RulingCheck {
     pub status: RulingStatus,
 }
 
+/// A scope item or must-keep rule that no probe reached. It has no receipt item, because a receipt
+/// item needs the probe that checked it, and it carries no probe hash for the same reason. Its
+/// obligations count as unknown in [`BehaviorCounts`], never as passed.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NotReached {
+    /// The scope item or must-keep rule.
+    pub item_id: ItemId,
+    /// Its canonical episode selector, as on [`ReceiptItem::selector`].
+    pub selector: Selector,
+    /// The obligations no probe checked.
+    pub obligation_ids: Vec<ObligationId>,
+}
+
 /// The receipt of one candidate. Core-derived: every class, count and denominator is a pure
 /// function of observations, masks, the scope and the expectations.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize, JsonSchema)]
@@ -452,6 +474,10 @@ pub struct Receipt {
     pub rulings: Vec<RulingCheck>,
     /// Every contest filed in the order.
     pub contests: Vec<Contest>,
+    /// Scope items and must-keep rules no probe reached, each with its unchecked obligations. They
+    /// count as unknown in [`Receipt::behavior`]; this list names them by item id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_reached: Vec<NotReached>,
 }
 
 impl Receipt {
@@ -464,6 +490,19 @@ impl Receipt {
         ContentHash::of(self).map(ReceiptHash::from)
     }
 
+    /// The receipt's semantic identity: the receipt with model prose left out. The scope enters
+    /// as its [`Scope::semantic_scope_hash`], so wording does not move it, and each contest's
+    /// `rationale` is the only prose it leaves out. `scope` must be the scope this receipt was
+    /// built from.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] only if serialization fails.
+    pub fn semantic_hash(&self, scope: &Scope) -> Result<ReceiptHash, CanonicalError> {
+        let view = SemanticReceipt::new(self, scope.semantic_scope_hash()?);
+        ContentHash::of(&view).map(ReceiptHash::from)
+    }
+
     /// The tested merged commit.
     #[must_use]
     pub fn merged_commit(&self) -> &CommitSha {
@@ -474,6 +513,43 @@ impl Receipt {
     #[must_use]
     pub fn base_commit(&self) -> &CommitSha {
         &self.prepared.base_commit
+    }
+
+    /// Checks that every item's episode id is the hash of its [`EpisodeKey`]: the order, the
+    /// item's selector, and either no obligation or one of its failing obligations. An item with
+    /// no selector has no key to check.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InvalidValue`] for the first item whose episode id matches no such key.
+    pub fn check_episode_ids(&self) -> Result<(), InvalidValue> {
+        for item in &self.items {
+            let (Some(episode), Some(selector)) = (item.episode_id, item.selector.as_ref()) else {
+                continue;
+            };
+            let failing = item
+                .evaluation
+                .obligations
+                .iter()
+                .filter(|check| matches!(check.result, CheckResult::Fail { .. }))
+                .map(|check| Some(check.obligation_id.clone()));
+            let matched = std::iter::once(None).chain(failing).any(|obligation_id| {
+                EpisodeKey {
+                    order: self.order.clone(),
+                    selector: selector.clone(),
+                    obligation_id,
+                }
+                .episode_id()
+                .is_ok_and(|id| id == episode)
+            });
+            if !matched {
+                return Err(InvalidValue::Malformed {
+                    what: "episode id",
+                    raw: item.item_id.to_string(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Checks that `counts` are exactly the classes of `items`. Every reader of a stored receipt
@@ -494,8 +570,117 @@ impl Receipt {
     }
 }
 
+/// The receipt's semantic content, digested by [`Receipt::semantic_hash`]. Each projection
+/// destructures its struct, so a new field fails to compile until it is digested or named as
+/// prose there.
+#[derive(Serialize)]
+struct SemanticReceipt<'a> {
+    version: &'a ReceiptV1,
+    order: &'a OrderRef,
+    scope_rev: &'a ScopeRev,
+    scope_hash: ScopeHash,
+    prepared: &'a PreparedCommit,
+    gate_state: &'a GateState,
+    items: &'a [ReceiptItem],
+    counts: &'a ClassCounts,
+    probes: &'a ProbeCounts,
+    routes: &'a RouteCounts,
+    behavior: &'a BehaviorCounts,
+    masks: &'a [Mask],
+    rulings: &'a [RulingCheck],
+    contests: Vec<SemanticContest<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    not_reached: Option<&'a [NotReached]>,
+}
+
+/// A contest without its `rationale`, the model's own reason for filing it.
+#[derive(Serialize)]
+struct SemanticContest<'a> {
+    version: &'a ContestV1,
+    id: &'a ContestId,
+    order: &'a OrderRef,
+    agent: &'a AgentRef,
+    task: &'a TaskRef,
+    target: &'a EpisodeId,
+    kind: &'a ContestKind,
+    reproducer: &'a ProbeHash,
+    status: &'a ContestStatus,
+    filed_at: &'a UnixMillis,
+}
+
+impl<'a> SemanticReceipt<'a> {
+    fn new(receipt: &'a Receipt, scope_hash: ScopeHash) -> Self {
+        let Receipt {
+            version,
+            order,
+            scope_rev,
+            scope_hash: _,
+            prepared,
+            gate_state,
+            items,
+            counts,
+            probes,
+            routes,
+            behavior,
+            masks,
+            rulings,
+            contests,
+            not_reached,
+        } = receipt;
+        Self {
+            version,
+            order,
+            scope_rev,
+            scope_hash,
+            prepared,
+            gate_state,
+            items,
+            counts,
+            probes,
+            routes,
+            behavior,
+            masks,
+            rulings,
+            contests: contests.iter().map(SemanticContest::from).collect(),
+            not_reached: (!not_reached.is_empty()).then_some(not_reached.as_slice()),
+        }
+    }
+}
+
+impl<'a> From<&'a Contest> for SemanticContest<'a> {
+    fn from(contest: &'a Contest) -> Self {
+        let Contest {
+            version,
+            id,
+            order,
+            agent,
+            task,
+            target,
+            kind,
+            reproducer,
+            rationale: _,
+            status,
+            filed_at,
+        } = contest;
+        Self {
+            version,
+            id,
+            order,
+            agent,
+            task,
+            target,
+            kind,
+            reproducer,
+            status,
+            filed_at,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use serde_json::{Value, json};
 
     use super::*;
@@ -575,5 +760,33 @@ mod tests {
         assert_ne!(missing.value, null.value);
         assert_eq!(empty.value, Evidence::Present { value: json!([]) });
         assert!(missing.address().is_some());
+    }
+
+    #[test]
+    fn the_semantic_view_names_every_receipt_field_but_contest_prose() {
+        let value = receipt();
+        let typed: Receipt = serde_json::from_value(value.clone()).expect("decoding");
+        let view =
+            serde_json::to_value(SemanticReceipt::new(&typed, typed.scope_hash)).expect("encoding");
+        let keys = |object: &Value| -> BTreeSet<String> {
+            object
+                .as_object()
+                .expect("an object")
+                .keys()
+                .cloned()
+                .collect()
+        };
+        let mut contest = keys(&value["contests"][0]);
+        contest.remove("rationale");
+        assert_eq!(
+            keys(&view),
+            keys(&value),
+            "the view names every receipt field"
+        );
+        assert_eq!(
+            keys(&view["contests"][0]),
+            contest,
+            "each contest leaves out only its rationale"
+        );
     }
 }

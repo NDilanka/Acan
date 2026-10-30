@@ -21,6 +21,7 @@
       ".acan",
       "test"
     ],
-    "missing_protected": "masked"
+    "missing_protected": "masked",
+    "readonly_git": true
   }
 }

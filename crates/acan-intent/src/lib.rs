@@ -47,6 +47,7 @@ pub use container::{
 pub use episode::{
     CandidateAttempt, Contest, ContestKind, ContestStatus, DiscrepancyEpisode, EpisodeKey,
     EpisodeState, EvidenceRevision, Predicted, Prediction, ProposedValue, ScopeRevision,
+    canonical_episode_selector,
 };
 pub use error::Unsupported;
 pub use expr::{
@@ -92,8 +93,9 @@ pub use provenance::{
 };
 pub use repair::{RepairRound, ResultKey, RoundKey, RoundNumber, RoundResult};
 pub use report::{
-    BehaviorCounts, ClassCounts, EvidenceRow, EvidenceSlot, GateState, ProbeCounts, Receipt,
-    ReceiptItem, RouteCounts, RulingCheck, RulingStatus, SequenceStep, StepTint, UncoveredRoute,
+    BehaviorCounts, ClassCounts, EvidenceRow, EvidenceSlot, GateState, NotReached, ProbeCounts,
+    Receipt, ReceiptItem, RouteCounts, RulingCheck, RulingStatus, SequenceStep, StepTint,
+    UncoveredRoute,
 };
 pub use scope::{
     BroadGrantAck, Change, ChoiceAnswer, ChoiceOption, ItemProvenance, MustKeep, OpenChoice,

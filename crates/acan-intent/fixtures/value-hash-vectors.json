@@ -1,0 +1,35 @@
+{
+  "rule": "value_hash is sha256 over the RFC 8785 canonical JSON of the extracted JSON value. It is not the raw bytes of the value and not an Evidence wrapper.",
+  "vectors": [
+    {
+      "name": "string",
+      "value": "Acan",
+      "canonical": "\"Acan\"",
+      "value_hash": "sha256:030b9167d448b627091f3e0451d4552f990445aec6d1afc6562cff7bf5a2aa5c"
+    },
+    {
+      "name": "number",
+      "value": 42.5,
+      "canonical": "42.5",
+      "value_hash": "sha256:7b713affffacc53f6dbd3a5fd52117bc3eb5f3881789d2eb26b5f636daa066df"
+    },
+    {
+      "name": "escaped string",
+      "value": "say \"hi\"\n",
+      "canonical": "\"say \\\"hi\\\"\\n\"",
+      "value_hash": "sha256:3c0ab52397c20652784450ed7cb071754da5f3f8b46420b9eafc2095b2533b33"
+    },
+    {
+      "name": "capture f3, session cookie",
+      "capture": "f3",
+      "binding": "alice_session",
+      "source": {
+        "part": "cookie",
+        "name": "session"
+      },
+      "value": "alice-session-7f3a",
+      "canonical": "\"alice-session-7f3a\"",
+      "value_hash": "sha256:8b24bd7396fffad7b0b52550fd27e5f651f745de95b7e66759713e2c39fec58d"
+    }
+  ]
+}
