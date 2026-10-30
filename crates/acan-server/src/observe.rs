@@ -424,7 +424,8 @@ impl Order<'_> {
 /// candidate has no receipt and nothing may install it.
 pub(crate) async fn judge(plan: &Plan<'_>, order: &Order<'_>) -> Result<Judged, ObserveError> {
     let facts = Facts::of(plan, order, artifacts(plan).await?)?;
-    let runs = observe(plan).await?;
+    // Three containers per probe make this future large, so it is boxed where it is awaited.
+    let runs = Box::pin(observe(plan)).await?;
     let judgements = compare_runs(&runs, plan.corpus)?;
     let results = results(&judgements);
     let context = order.context(&facts, plan.candidate);

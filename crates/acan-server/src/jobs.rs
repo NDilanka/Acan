@@ -1052,6 +1052,10 @@ async fn gated_land<C: ModelClient>(
     head: &CommitId,
 ) -> Result<Result<CommitId, String>, JobError> {
     let repo = workspace.repo();
+    // The writes lock is held from the read of the protected head to the install, so a legacy
+    // land cannot move the branch between the context and the install. Install still compares
+    // the head itself.
+    let writes = workspace.lock_writes().await;
     let pass = Pass::new(host, repo, delivery.run).await?;
     let candidate = prepare_candidate(repo, &pass, head).await?;
     let ledger = host.folded_rulings().map_err(JobError::Rulings)?;
@@ -1061,9 +1065,6 @@ async fn gated_land<C: ModelClient>(
         ledger: &ledger,
         episodes: &[],
     };
-    // The writes lock keeps a legacy land from moving the protected branch between the context
-    // and the install. Install still compares the head itself.
-    let writes = workspace.lock_writes().await;
     let scratch = pass.scratch.join("land");
     let plan = pass.plan(repo, &candidate, &scratch);
     let current = observe::current(&plan, &order).await?;
