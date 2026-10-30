@@ -36,6 +36,11 @@ const FIT_FLAG_RIGHT_CSS: f32 = 60.0;
 /// about 30 pixels, and four rows stack above a machine in a clash. Measured against the shots:
 /// three rows leave about 70 pixels of margin, four about 40.
 const FIT_FLAG_TOP_CSS: f32 = 100.0;
+/// The screen rectangle the fixed usage panel covers, in CSS pixels: the bottom-left corner,
+/// measured against the shots (the panel spans about 270 by 75 pixels there) and padded right
+/// and up so a machine's name beside or above the panel stays clear of it. The panel's height
+/// grows with the usage rows, so the pad is generous.
+const USAGE_PANEL_CSS: [f32; 4] = [0.0, 780.0, 360.0, 900.0];
 /// Degrees of orbit per CSS pixel of drag.
 const ORBIT_DEG_PER_PX: f32 = 0.4;
 /// Degrees of tilt per CSS pixel of drag.
@@ -764,12 +769,14 @@ impl App {
     }
 
     /// The extra room the fit keeps for the page's overlays: flag chips above the plant and
-    /// at its right edge, machine names at the bottom.
+    /// at its right edge, machine names at the bottom, and the fixed usage panel at the
+    /// bottom-left corner.
     fn fit_room(&self) -> FitRoom {
         FitRoom {
             top: FIT_FLAG_TOP_CSS * self.dpr,
             right: FIT_FLAG_RIGHT_CSS * self.dpr,
             bottom: FIT_LABEL_CSS * self.dpr,
+            avoid: USAGE_PANEL_CSS.map(|edge| edge * self.dpr),
         }
     }
 

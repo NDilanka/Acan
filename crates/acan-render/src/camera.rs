@@ -77,6 +77,11 @@ pub struct FitRoom {
     pub top: f32,
     pub right: f32,
     pub bottom: f32,
+    /// A screen rectangle the projected corners stay clear of, as `(min x, min y, max x, max
+    /// y)` in device pixels, for a fixed panel the page draws over the plant. The rectangle
+    /// must sit against the bottom-left corner of the screen: the fit shifts the picture right
+    /// past it or up over it, whichever moves less. A degenerate rectangle avoids nothing.
+    pub avoid: [f32; 4],
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -381,13 +386,71 @@ impl Camera {
             self.centre_projected(&corners, centre, room);
         }
         self.zoom = self.largest_zoom_fitting(&corners, margin_px, room);
+        // The page's fixed panel sits in the bottom-left corner of the screen. Shift the
+        // picture right past the panel or up over it, whichever moves less, until every corner
+        // is clear. The margins leave enough slack for the shift.
+        for _ in 0..PASSES {
+            if room.avoid[2] <= room.avoid[0] || room.avoid[3] <= room.avoid[1] {
+                break;
+            }
+            let mut right = 0.0_f32;
+            let mut up = 0.0_f32;
+            for &corner in &corners {
+                let s = self.world_to_screen(corner);
+                if s[0] > room.avoid[0]
+                    && s[0] < room.avoid[2]
+                    && s[1] > room.avoid[1]
+                    && s[1] < room.avoid[3]
+                {
+                    right = right.max(room.avoid[2] - s[0]);
+                    up = up.max(s[1] - room.avoid[1]);
+                }
+            }
+            if right == 0.0 && up == 0.0 {
+                break;
+            }
+            let delta = if right <= up {
+                [right + 2.0, 0.0]
+            } else {
+                [0.0, -(up + 2.0)]
+            };
+            self.shift_picture(delta, centre);
+        }
+    }
+
+    /// Shifts the pivot so the picture moves by `delta` device pixels on screen, positive x
+    /// right and positive y down. A pivot shift `v` moves a point's screen position by
+    /// `scale * (-v dot right, v dot up)`, where `scale` is the focal length over the depth at
+    /// `centre` in perspective; the shift is solved from that linear model.
+    fn shift_picture(&mut self, delta: [f32; 2], centre: [f32; 3]) {
+        let basis = self.basis();
+        let scale = match self.projection {
+            Projection::Perspective => {
+                let depth = -dot(sub(centre, self.eye()), basis.toward);
+                self.focal() / depth
+            }
+            Projection::Orthographic => self.zoom,
+        };
+        if !scale.is_finite() || scale <= 0.0 {
+            return;
+        }
+        // Solve dot(v, right) = -delta_x / scale and dot(v, up) = delta_y / scale for the
+        // ground shift `v`. The determinant is -sin(elevation), so it is nonzero above the
+        // minimum tilt.
+        let (a, b) = (basis.right[0], basis.right[1]);
+        let (c, d) = (basis.up[0], basis.up[1]);
+        let (p, q) = (-delta[0] / scale, delta[1] / scale);
+        let det = a * d - b * c;
+        if det.abs() < 1e-6 {
+            return;
+        }
+        self.pivot[0] += (p * d - b * q) / det;
+        self.pivot[1] += (a * q - c * p) / det;
     }
 
     /// Moves the pivot so the middle of the projected corners lands on the centre of the region
-    /// inside the margins, with `room` of extra space at the top, right and bottom. A pivot shift `v`
-    /// moves a point's screen position by `scale * (-v·right, v·up)`, where `scale` is the focal
-    /// length over the depth at `centre` in perspective. The shift is solved from that linear
-    /// model, and the next pass corrects the error it leaves.
+    /// inside the margins, with `room` of extra space at the top, right and bottom. The next pass
+    /// corrects the error the linear shift leaves.
     fn centre_projected(&mut self, corners: &[[f32; 3]], centre: [f32; 3], room: FitRoom) {
         let [vw, vh] = self.viewport;
         let mut lo = [f32::INFINITY; 2];
@@ -403,28 +466,7 @@ impl Camera {
             (lo[0] + hi[0]) * 0.5 - (vw - room.right) * 0.5,
             (lo[1] + hi[1]) * 0.5 - (vh + room.top - room.bottom) * 0.5,
         ];
-        let basis = self.basis();
-        let scale = match self.projection {
-            Projection::Perspective => {
-                let depth = -dot(sub(centre, self.eye()), basis.toward);
-                self.focal() / depth
-            }
-            Projection::Orthographic => self.zoom,
-        };
-        if !scale.is_finite() || scale <= 0.0 {
-            return;
-        }
-        // Solve dot(v, right) = off_x / scale and dot(v, up) = -off_y / scale for the ground
-        // shift `v`. The determinant is -sin(elevation), so it is nonzero above the minimum tilt.
-        let (a, b) = (basis.right[0], basis.right[1]);
-        let (c, d) = (basis.up[0], basis.up[1]);
-        let (p, q) = (off[0] / scale, -off[1] / scale);
-        let det = a * d - b * c;
-        if det.abs() < 1e-6 {
-            return;
-        }
-        self.pivot[0] += (p * d - b * q) / det;
-        self.pivot[1] += (a * q - c * p) / det;
+        self.shift_picture([-off[0], -off[1]], centre);
     }
 
     /// Returns to the kit's angles and fits the box.
@@ -915,6 +957,7 @@ mod tests {
             top: 60.0,
             right: 80.0,
             bottom: 120.0,
+            avoid: [0.0; 4],
         };
         let viewport = [1440.0_f32, 900.0];
         for projection in both_projections() {
@@ -955,6 +998,49 @@ mod tests {
                 hi[1] <= viewport[1] - margin - room.bottom + 0.5,
                 "{projection:?}: the box keeps the extra room at the bottom"
             );
+        }
+    }
+
+    #[test]
+    fn fit_boxes_room_shifts_the_picture_clear_of_a_fixed_panel() {
+        let bounds = block();
+        let margin = 24.0;
+        let viewport = [1440.0_f32, 900.0];
+        for projection in both_projections() {
+            // Learn where the near bottom-left corner lands with no panel, then put a panel
+            // over that spot.
+            let mut cam = Camera::new(viewport);
+            cam.set_projection(projection);
+            cam.set_angles(DEFAULT_AZIMUTH, DEFAULT_ELEVATION);
+            cam.fit_boxes(&[bounds], margin);
+            let mut lo = [f32::INFINITY; 2];
+            let mut hi = [f32::NEG_INFINITY; 2];
+            for corner in bounds.corners() {
+                let s = cam.world_to_screen(corner);
+                for axis in 0..2 {
+                    lo[axis] = lo[axis].min(s[axis]);
+                    hi[axis] = hi[axis].max(s[axis]);
+                }
+            }
+            let avoid = [0.0, hi[1] - 100.0, lo[0] + 100.0, viewport[1]];
+            let mut cam = Camera::new(viewport);
+            cam.set_projection(projection);
+            cam.set_angles(DEFAULT_AZIMUTH, DEFAULT_ELEVATION);
+            cam.fit_boxes_room(
+                &[bounds],
+                margin,
+                FitRoom {
+                    avoid,
+                    ..FitRoom::default()
+                },
+            );
+            for corner in bounds.corners() {
+                let s = cam.world_to_screen(corner);
+                assert!(
+                    s[0] <= avoid[0] || s[0] >= avoid[2] || s[1] <= avoid[1] || s[1] >= avoid[3],
+                    "{projection:?}: corner {s:?} still lands inside the panel {avoid:?}"
+                );
+            }
         }
     }
 
