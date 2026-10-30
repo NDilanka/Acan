@@ -6,17 +6,13 @@
 //! installed over. Every error leaves the protected branch where it was.
 
 use std::collections::BTreeSet;
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
 
+use acan_core::{GateRunId, OrderId, TaskId, TaskState, World};
 use acan_git::{InstallOutcome, Preparation, Repo};
 use acan_intent::{
-    CommitSha, CoreDerived, EpisodeId, FoldedLedger, GateContext, GateState, ItemId, ItemState,
-    LedgerEvent, LedgerHead, Receipt, RulingStatus,
+    CommitSha, EpisodeId, GateContext, GateState, ItemId, ItemState, LedgerEvent, Receipt,
+    RulingStatus, Scope, ScopeConfirmation,
 };
-
-use crate::ledger::{self, LedgerError};
 
 /// One reason a receipt does not pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -172,78 +168,86 @@ pub(crate) async fn install(repo: &Repo, clearance: Clearance) -> Result<CommitS
     }
 }
 
-/// Why the ruling log could not be opened or appended.
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum RulingError {
-    /// The state directory could not be created, so nothing can be appended to it.
-    #[error("cannot create the state directory {}: {source}", path.display())]
-    StateDir {
-        /// The directory.
-        path: PathBuf,
-        /// The cause.
-        #[source]
-        source: io::Error,
-    },
-    /// The log does not verify, fold, or accept the answer.
-    #[error(transparent)]
-    Ledger(#[from] LedgerError),
+/// The receipt of a scope-first task waiting in the land queue, with the scope and confirmation
+/// it was judged against. A delivery is read from the world, so it can be stale by the time it
+/// is used. [`Delivery::stands`] checks it again.
+#[derive(Debug, Clone)]
+pub(crate) struct Delivery {
+    /// The queued task.
+    pub(crate) task: TaskId,
+    /// The order the task belongs to.
+    pub(crate) order: OrderId,
+    /// The gate run that passed.
+    pub(crate) run: GateRunId,
+    /// The receipt the run passed with.
+    pub(crate) receipt: Receipt,
+    /// The scope the receipt was judged against.
+    pub(crate) scope: Scope,
+    /// The confirmation of that scope.
+    pub(crate) confirmation: ScopeConfirmation,
 }
 
-/// The ruling log in a state directory. Every open verifies and folds the log from disk, so a
-/// restart rebuilds the ruling state from the file, and nothing held in memory survives.
-#[derive(Debug)]
-pub(crate) struct RulingLog {
-    log: PathBuf,
-}
-
-impl RulingLog {
-    /// Opens the ruling log in `state_dir`. The directory is created first, so the first append
-    /// always has a place to write. An absent log is empty.
+impl Delivery {
+    /// The delivery of a queued scope-first task. Each missing piece is named, because a refusal
+    /// is the land result the origin records.
     ///
     /// # Errors
     ///
-    /// Returns [`RulingError::StateDir`] when the directory cannot be created, and
-    /// [`RulingError::Ledger`] when the log does not verify or fold.
-    pub(crate) fn open(state_dir: &Path) -> Result<Self, RulingError> {
-        fs::create_dir_all(state_dir).map_err(|source| RulingError::StateDir {
-            path: state_dir.to_path_buf(),
-            source,
+    /// Returns the refusal reason when the task is missing, not queued, has no scope, its run has
+    /// no receipt, or its scope was revised since the candidate passed and was not confirmed.
+    pub(crate) fn of(world: &World, task: TaskId) -> Result<Self, String> {
+        let found = world
+            .task(task)
+            .ok_or_else(|| format!("task {task} is not in the origin"))?;
+        let TaskState::Queued { run, .. } = &found.state else {
+            return Err(format!("task {task} is not queued"));
+        };
+        let lane = world
+            .lane(found.order)
+            .ok_or_else(|| format!("order {} has no scope", found.order))?;
+        let receipt = lane
+            .runs
+            .get(run)
+            .and_then(|record| record.receipt.as_ref())
+            .ok_or_else(|| format!("run {run} has no receipt"))?
+            .receipt
+            .clone();
+        let confirmation = lane.confirmation.clone().ok_or_else(|| {
+            "the scope was revised after the candidate passed, so it must be confirmed again"
+                .to_owned()
         })?;
-        let log = state_dir.join(ledger::RULINGS_LOG);
-        ledger::load(&log)?;
-        Ok(Self { log })
+        Ok(Self {
+            task,
+            order: found.order,
+            run: *run,
+            receipt,
+            scope: lane.scope.clone(),
+            confirmation,
+        })
     }
 
-    /// The folded ruling state, read from disk.
+    /// Whether this delivery still stands in `world`: the task is still queued on the same run,
+    /// and the scope and its confirmation are the ones the run was judged against. A revision, a
+    /// cancel, or a newer run each refuse it.
     ///
     /// # Errors
     ///
-    /// Returns [`RulingError::Ledger`] when the log does not verify or fold.
-    pub(crate) fn folded(&self) -> Result<CoreDerived<FoldedLedger>, RulingError> {
-        Ok(ledger::load(&self.log)?)
+    /// Returns the refusal reason when the delivery no longer stands.
+    pub(crate) fn stands(&self, world: &World) -> Result<(), String> {
+        let now = Self::of(world, self.task)?;
+        if now.run == self.run && now.scope == self.scope && now.confirmation == self.confirmation {
+            Ok(())
+        } else {
+            Err("the queued delivery changed after the candidate passed".to_owned())
+        }
     }
+}
 
-    /// The episodes with an answer in the log. A decision or a note answers the episode it names.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RulingError::Ledger`] when the log does not verify.
-    pub(crate) fn answered(&self) -> Result<BTreeSet<EpisodeId>, RulingError> {
-        Ok(ledger::read(&self.log)?
-            .iter()
-            .filter_map(answered_episode)
-            .collect())
-    }
-
-    /// Appends `event` after the log's current head and returns the new head.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RulingError::Ledger`] when the log does not verify or the append is refused.
-    pub(crate) fn answer(&self, event: &LedgerEvent) -> Result<LedgerHead, RulingError> {
-        let head = ledger::head(&self.log)?;
-        Ok(ledger::append(&self.log, &head, event)?)
-    }
+/// The episodes with an answer in `events`, the core ledger in log order. A decision or a note
+/// answers the episode it names. The core ledger is the one authority for rulings, so answers are
+/// read from it and never from a file.
+pub(crate) fn answered(events: &[LedgerEvent]) -> BTreeSet<EpisodeId> {
+    events.iter().filter_map(answered_episode).collect()
 }
 
 /// The episode an event answers, when it answers one. Every variant is named, so a new kind of

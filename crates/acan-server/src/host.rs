@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use acan_core::{Command, Origin, Rejection, Stamped, Timestamp, World};
+use acan_core::{Command, HumanCmd, Origin, Rejection, Stamped, Timestamp, World};
+use acan_intent::{CoreDerived, FoldedLedger, fold};
 use acan_llm::{ModelClient, UsageLedger};
 use anyhow::Context as _;
 use tokio::sync::{Notify, Semaphore, broadcast, watch};
@@ -82,6 +83,10 @@ struct Inner<C> {
     workspace: Option<Arc<Workspace>>,
     witness_http_base_url: Option<String>,
     witness_slots: Arc<Semaphore>,
+    /// Held by a land from its final check through its install, and by every command that
+    /// [`invalidates_landing`]. A command cannot change what a land is checking while the land
+    /// checks and installs.
+    landing: tokio::sync::Mutex<()>,
 }
 
 impl<C> Clone for Host<C> {
@@ -132,6 +137,7 @@ impl<C: ModelClient> Host<C> {
                 workspace: parts.git.map(|repo| Arc::new(Workspace::new(repo))),
                 witness_http_base_url: parts.witness_http_base_url,
                 witness_slots: Arc::new(Semaphore::new(parts.witness_concurrency)),
+                landing: tokio::sync::Mutex::new(()),
             }),
         }
     }
@@ -139,6 +145,26 @@ impl<C: ModelClient> Host<C> {
     /// The git workspace, or `None` when the served directory is not a usable repository.
     pub(crate) fn workspace(&self) -> Option<Arc<Workspace>> {
         self.inner.workspace.clone()
+    }
+
+    /// The ruling state folded from the core ledger, as the host reads it now. The core ledger is
+    /// the one authority for rulings: the gate and land read it here, and no file holds a copy
+    /// that could disagree with what the origin accepted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the accepted rulings do not fold, or fold to another head than the
+    /// ledger holds.
+    pub fn folded_rulings(&self) -> anyhow::Result<CoreDerived<FoldedLedger>> {
+        let (folded, head) =
+            self.read(|world| (fold::fold(world.ledger().events()), world.ledger().head()));
+        let folded = folded?;
+        anyhow::ensure!(
+            folded.value().head == head,
+            "the rulings fold to {:?}, not the ledger head {head:?}",
+            folded.value().head,
+        );
+        Ok(folded)
     }
 
     /// The limits every witness run uses. Only the HTTP base URL comes from configuration.
@@ -206,12 +232,27 @@ impl<C: ModelClient> Host<C> {
     /// published and broadcast before this resolves. Dropping the returned future never cancels
     /// a write the writer has accepted. A refused command changes nothing.
     ///
+    /// A command that [`invalidates_landing`] waits for any land in its final check and install
+    /// to finish, then writes. The land therefore never checks one state and installs another.
+    ///
     /// # Errors
     ///
     /// Returns [`SubmitError::Rejected`] when the origin refuses the command, and
     /// [`SubmitError::Internal`] when the events cannot be stored or the writer is gone.
     pub async fn submit(&self, command: Command) -> Result<Vec<Stamped>, SubmitError> {
+        let _fence = if invalidates_landing(&command) {
+            Some(self.inner.landing.lock().await)
+        } else {
+            None
+        };
         self.inner.writer.submit(command).await
+    }
+
+    /// Holds the landing fence until the guard drops. A land takes it before it checks the
+    /// queued delivery and keeps it through the install, so no invalidating command writes in
+    /// between.
+    pub(crate) async fn fence_landings(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.inner.landing.lock().await
     }
 
     /// Scans the repository again and commits the new code index together with its
@@ -261,6 +302,22 @@ impl<C: ModelClient> Host<C> {
     pub(crate) fn writer(&self) -> Writer {
         self.inner.writer.clone()
     }
+}
+
+/// Whether `command` can change what a queued scope-first land checks: the scope and its
+/// confirmation, the order itself, or the ruling ledger. Such a command runs under the landing
+/// fence.
+fn invalidates_landing(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Human {
+            cmd: HumanCmd::ReviseScope { .. }
+                | HumanCmd::ConfirmScope { .. }
+                | HumanCmd::CancelOrder { .. }
+                | HumanCmd::RecordRuling { .. },
+            ..
+        }
+    )
 }
 
 /// The origin's clock: unix milliseconds at the moment of the call.

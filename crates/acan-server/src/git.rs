@@ -40,6 +40,16 @@ impl Workspace {
         }
     }
 
+    /// The repository the workspace works in.
+    pub(crate) fn repo(&self) -> &Repo {
+        &self.repo
+    }
+
+    /// Holds the write lock that serializes every change to the protected branch.
+    pub(crate) async fn lock_writes(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.writes.lock().await
+    }
+
     /// Holds `task`'s lock until the guard drops.
     pub(crate) async fn lock_task(&self, task: TaskId) -> OwnedMutexGuard<()> {
         let cell = {

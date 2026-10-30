@@ -11,6 +11,8 @@
 //! Claim --> needs the agent's acknowledged readback at the confirmed revision and hash
 //! ReportBuilt --> a run with no witnesses that waits for its receipt  [BuildReported]
 //! CandidatePrepared: same base, scope and ruling head --> prepared    [CandidatePrepared]
+//! RebindBase: protected head moved, every bound input the same --> re-bound, prepared runs
+//!     cleared, so each is prepared and receipted again                 [ScopeRebound]
 //! ```
 //!
 //! The legacy model review never authorizes anything here. The lane reads only its own
@@ -20,10 +22,10 @@
 use std::collections::BTreeMap;
 
 use acan_intent::{
-    BroadGrantAck, CanonicalError, ChoiceAnswer, Contest, ContestId, ContestStatus, EpisodeId,
-    ExampleHash, GateState, InvalidValue, ItemId, McpV1, OrderRef, PostReadbackResponse,
-    Prediction, PreparedCommit, RepairBudget, RepairRound, Scope, ScopeConfirmation, ScopeHash,
-    ScopeRev, ScopeRevision, SelectorHash,
+    BroadGrantAck, CanonicalError, ChoiceAnswer, CommitSha, Contest, ContestId, ContestStatus,
+    EpisodeId, ExampleHash, GateContext, GateState, InvalidValue, ItemId, McpV1, OrderRef,
+    PostReadbackResponse, Prediction, PreparedCommit, RepairBudget, RepairRound, Scope,
+    ScopeConfirmation, ScopeHash, ScopeRev, ScopeRevision, SelectorHash,
 };
 use serde::{Deserialize, Serialize};
 
@@ -569,6 +571,16 @@ pub(crate) fn is_gating(world: &World, task: TaskId, run: GateRunId) -> bool {
     })
 }
 
+/// Whether `run` still waits for its prepared commit and receipt: its task is gating, or it is
+/// queued. A queued run waits only after a re-bind cleared its receipt, so a passed run that is
+/// queued and still receipted waits for nothing.
+pub(crate) fn awaits_receipt(world: &World, task: TaskId, run: GateRunId) -> bool {
+    is_gating(world, task, run)
+        || world.task(task).is_some_and(
+            |t| matches!(&t.state, TaskState::Queued { run: queued, .. } if *queued == run),
+        )
+}
+
 /// `CandidatePrepared`: the merged commit a gating run tests. It must sit on the confirmed
 /// base, carry the confirmed scope, and name the current ruling head.
 pub(crate) fn decide_prepared(
@@ -584,7 +596,7 @@ pub(crate) fn decide_prepared(
             Err(Rejection::wrong_state("gate run", "prepared"))
         };
     }
-    if !is_gating(world, lane_run.task, run) {
+    if !awaits_receipt(world, lane_run.task, run) {
         return Err(Rejection::wrong_state("gate run", "closed"));
     }
     let confirmation = confirmed(lane)?;
@@ -617,6 +629,112 @@ pub(crate) fn decide_prepared(
         run,
         prepared: Box::new(prepared),
     }])
+}
+
+/// `RebindBase`: the protected head moved after the scope was confirmed. The confirmation moves
+/// to `base` only when the scope's executable content, the ruling log and every protected input
+/// that a prepared run was tested under are unchanged. Then each gating run that was prepared
+/// loses its prepared commit and receipt, so no old receipt is reused. Anything else needs the
+/// scope confirmed again by a human.
+pub(crate) fn decide_rebind(
+    world: &World,
+    order: OrderId,
+    base: &CommitSha,
+    context: &GateContext,
+) -> Result<Vec<Event>, Rejection> {
+    let lane = world
+        .lane(order)
+        .ok_or_else(|| Rejection::unknown("order", order))?;
+    let confirmation = confirmed(lane)?;
+    if confirmation.base_commit == *base {
+        return Ok(Vec::new());
+    }
+    if context.protected_head != *base {
+        return Err(Rejection::invalid(
+            "the gate context was computed on another protected head",
+        ));
+    }
+    if context.ledger_head != world.ledger().head() {
+        return Err(Rejection::StaleEvidence {
+            detail: "the ruling log moved since the candidate was prepared".to_owned(),
+        });
+    }
+    let mut runs = Vec::new();
+    for (run, lane_run) in &lane.runs {
+        // A landed or dropped task keeps its record: only a live run is re-bound.
+        let live = world.task(lane_run.task).is_some_and(|task| {
+            !matches!(task.state, TaskState::Landed { .. } | TaskState::Dropped)
+        });
+        let Some(prepared) = lane_run.prepared.as_ref().filter(|_| live) else {
+            continue;
+        };
+        if !same_inputs(&prepared.context, context) {
+            return Err(Rejection::StaleEvidence {
+                detail: format!(
+                    "a protected input of run {run} moved: the scope must be confirmed again"
+                ),
+            });
+        }
+        runs.push(*run);
+    }
+    if runs.is_empty() {
+        return Err(Rejection::wrong_state(
+            "scope",
+            "has no prepared run to re-bind",
+        ));
+    }
+    let scope = Scope {
+        base_commit: base.clone(),
+        ..lane.scope.clone()
+    };
+    let scope_hash = scope.scope_hash().map_err(hash_failed)?;
+    // The semantic digest covers the base too, so the confirmation carries the digest of the
+    // re-bound scope. Only the base changed, so its executable content is the confirmed one.
+    let semantic_scope_hash = scope.semantic_scope_hash().map_err(hash_failed)?;
+    let rebound = ScopeConfirmation {
+        base_commit: base.clone(),
+        scope_hash,
+        semantic_scope_hash: Some(semantic_scope_hash),
+        ..confirmation.clone()
+    };
+    Ok(vec![Event::ScopeRebound {
+        order,
+        scope: Box::new(scope),
+        scope_hash,
+        confirmation: Box::new(rebound),
+        runs,
+    }])
+}
+
+/// Whether two gate contexts agree on every input a re-bind must keep. The protected head, the
+/// merged commit and the scope hash are left out: a re-bind changes exactly those.
+fn same_inputs(prepared: &GateContext, current: &GateContext) -> bool {
+    // Destructured so that a new field must be compared, or named as left out, to compile.
+    let GateContext {
+        protected_head: _,
+        merged_commit: _,
+        scope_hash: _,
+        overlay_hash,
+        effective_artifact_hashes,
+        ledger_head,
+        probe_set_hash,
+        fixture_set_hash,
+        runner_hash,
+        evaluator_version,
+        runtime,
+        controlled_env_hash,
+        sandbox_policy_hash,
+    } = prepared;
+    *overlay_hash == current.overlay_hash
+        && *effective_artifact_hashes == current.effective_artifact_hashes
+        && *ledger_head == current.ledger_head
+        && *probe_set_hash == current.probe_set_hash
+        && *fixture_set_hash == current.fixture_set_hash
+        && *runner_hash == current.runner_hash
+        && *evaluator_version == current.evaluator_version
+        && *runtime == current.runtime
+        && *controlled_env_hash == current.controlled_env_hash
+        && *sandbox_policy_hash == current.sandbox_policy_hash
 }
 
 /// A scope-first run the host still has to prepare or contrast.

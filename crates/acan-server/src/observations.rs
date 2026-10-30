@@ -7,15 +7,13 @@
 //! rename, so a crash mid-write leaves the observation missing, not half there.
 
 use std::fmt::Write as _;
-use std::fs;
-use std::io;
+use std::fs::{self, File};
+use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use acan_intent::{CanonicalError, ContentHash, Observation, ObservationHash, canonical_json};
-
-use crate::ledger::replace_file;
 
 /// Distinguishes the temporary files of concurrent puts within one process.
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -148,4 +146,38 @@ fn io_error(path: &Path, source: io::Error) -> ObservationError {
         path: path.to_owned(),
         source,
     }
+}
+
+/// Replaces `target` with `bytes` so that a crash leaves the old file or the new one: writes
+/// `temp`, flushes it to disk, renames it over `target`, and on unix flushes the directory.
+/// Removes `temp` if writing or renaming fails.
+///
+/// # Errors
+///
+/// Returns the I/O error of the failing step.
+fn replace_file(target: &Path, temp: &Path, bytes: &[u8]) -> io::Result<()> {
+    let written = write_synced(temp, bytes).and_then(|()| fs::rename(temp, target));
+    if written.is_err() {
+        let _ = fs::remove_file(temp);
+    }
+    written?;
+    // std cannot open a directory for flushing on Windows; NTFS journals the rename itself.
+    #[cfg(unix)]
+    sync_parent(target)?;
+    Ok(())
+}
+
+fn write_synced(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let mut file = File::create(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+#[cfg(unix)]
+fn sync_parent(path: &Path) -> io::Result<()> {
+    let dir = match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    File::open(dir)?.sync_all()
 }

@@ -435,7 +435,8 @@ impl Repo {
 
     /// The commit to test: the candidate itself when the overlaid tree is its tree and it
     /// contains the head, the head itself when the candidate adds nothing, and otherwise a
-    /// new merge commit of the two.
+    /// new merge commit of the two. The merge commit depends only on its inputs: the tree,
+    /// the two parents, the candidate's identity and dates, and the message.
     async fn merged_commit(
         &self,
         head: &CommitSha,
@@ -453,7 +454,7 @@ impl Repo {
             return Ok(head.clone());
         }
         let message = format!("acan: prepare {candidate} on {head}");
-        let envs = self.author_env();
+        let envs = self.candidate_identity(candidate).await?;
         let args = [
             "-c",
             "commit.gpgsign=false",
@@ -467,6 +468,38 @@ impl Repo {
             &message,
         ];
         Ok(git::ok(self.root(), &args, &envs).await?.trim().parse()?)
+    }
+
+    /// The author and committer of a merge commit: the candidate's own names, emails and dates,
+    /// as git records them. The clock and the server's configuration play no part, so a
+    /// candidate prepared again after a restart gets the commit id the origin recorded.
+    async fn candidate_identity(
+        &self,
+        candidate: &CommitSha,
+    ) -> Result<[(String, String); 6], Error> {
+        const FORMAT: &str = "--format=%an%x1f%ae%x1f%ad%x1f%cn%x1f%ce%x1f%cd";
+        let args = ["log", "-1", "--date=raw", FORMAT, candidate.as_str()];
+        let out = git::ok(self.root(), &args, &[]).await?;
+        let found: Vec<&str> = out.trim_end().split('\u{1f}').collect();
+        let [
+            author_name,
+            author_email,
+            author_date,
+            committer_name,
+            committer_email,
+            committer_date,
+        ] = <[&str; 6]>::try_from(found).map_err(|found| Error::BadOutput {
+            args: "log -1".to_owned(),
+            detail: format!("expected six identity fields, got {}", found.len()),
+        })?;
+        Ok([
+            ("GIT_AUTHOR_NAME".to_owned(), author_name.to_owned()),
+            ("GIT_AUTHOR_EMAIL".to_owned(), author_email.to_owned()),
+            ("GIT_AUTHOR_DATE".to_owned(), author_date.to_owned()),
+            ("GIT_COMMITTER_NAME".to_owned(), committer_name.to_owned()),
+            ("GIT_COMMITTER_EMAIL".to_owned(), committer_email.to_owned()),
+            ("GIT_COMMITTER_DATE".to_owned(), committer_date.to_owned()),
+        ])
     }
 
     async fn tree_of(&self, commit: &CommitSha) -> Result<String, Error> {

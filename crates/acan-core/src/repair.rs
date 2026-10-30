@@ -24,10 +24,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use acan_intent::{
     Authorization, Change, CheckResult, CommitSha, Contest, ContestId, ContestKind, ContestStatus,
-    ContestV1, EpisodeId, EpisodeState, Evidence, EvidenceSlot, ItemClass, ItemId, LedgerEvent,
-    NonEmpty, ObligationId, ObservationPath, Outcome, Predicted, Prediction, ProbeHash, Receipt,
-    ReceiptHash, ReceiptItem, RepairRound, RepairRoundV1, ResultKey, RoundKey, RoundNumber,
-    RoundResult, RulingId, RulingStatus, Scope, StepId, UnixMillis,
+    ContestV1, DiscrepancyEpisode, EpisodeId, EpisodeState, EpisodeV1, Evidence, EvidenceSlot,
+    ItemClass, ItemId, LedgerEvent, NonEmpty, ObligationId, ObservationPath, OrderRef, Outcome,
+    Predicted, Prediction, ProbeHash, Receipt, ReceiptHash, ReceiptItem, RepairRound,
+    RepairRoundV1, ResultKey, RoundKey, RoundNumber, RoundResult, RulingId, RulingStatus, Scope,
+    ScopeRevision, Selector, StepId, UnixMillis,
 };
 use serde::{Deserialize, Serialize};
 
@@ -60,6 +61,10 @@ pub struct Episode {
     pub id: EpisodeId,
     /// The receipt item it was found on.
     pub item_id: ItemId,
+    /// Where the difference is: the selector the identity keys on.
+    pub selector: Selector,
+    /// The step that reproduced it when it opened. Not part of its identity.
+    pub step_id: StepId,
     /// The obligations that did not pass when it opened. Fixed means each passes fresh.
     pub failing: Vec<ObligationId>,
     /// The latest class.
@@ -74,6 +79,29 @@ pub struct Episode {
     pub state: EpisodeState,
     /// The state a contest interrupted, restored if the human rejects the contest.
     pub contested_from: Option<EpisodeState>,
+}
+
+impl Episode {
+    /// This episode as the judge reads it, under the order's scope lineage. The judge matches a
+    /// failing item to its episode by selector and failed obligation, and shows a repeat by its
+    /// state and bounce count. The evidence stays with the core: the judge does not read it.
+    #[must_use]
+    pub fn judged(&self, order: &OrderRef, lineage: &[ScopeRevision]) -> DiscrepancyEpisode {
+        DiscrepancyEpisode {
+            version: EpisodeV1,
+            id: self.id,
+            order: order.clone(),
+            scope_lineage: lineage.to_vec(),
+            probe_hash: self.probe_hash,
+            step_id: self.step_id.clone(),
+            selector: self.selector.clone(),
+            obligation_id: self.failing.first().cloned(),
+            evidence_revisions: Vec::new(),
+            candidate_attempts: Vec::new(),
+            bounce_count: self.bounce_count,
+            state: self.state,
+        }
+    }
 }
 
 /// The answer a receipt gave to the order's open round.
@@ -249,7 +277,7 @@ pub(crate) fn decide_receipt(
             ))
         };
     }
-    if !lane::is_gating(world, lane_run.task, run) {
+    if !lane::awaits_receipt(world, lane_run.task, run) {
         return Err(Rejection::wrong_state("gate run", "closed"));
     }
     let prepared = lane_run
@@ -452,9 +480,21 @@ fn classify(
         let residue = route(item.class) == Route::Residue;
         match episodes.entry(id) {
             Entry::Vacant(slot) => {
+                let selector = item.selector.clone().ok_or_else(|| Rejection::Invalid {
+                    why: format!("failing item {} names no selector", item.item_id),
+                })?;
+                let step_id = item
+                    .sequence
+                    .first()
+                    .map(|step| step.step_id.clone())
+                    .ok_or_else(|| Rejection::Invalid {
+                        why: format!("failing item {} has no sequence", item.item_id),
+                    })?;
                 slot.insert(Episode {
                     id,
                     item_id: item.item_id.clone(),
+                    selector,
+                    step_id,
                     failing: failing_obligations(item),
                     class: item.class,
                     probe_hash: item.probe_hash,

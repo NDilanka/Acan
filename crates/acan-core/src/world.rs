@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::{fmt, mem};
 
-use acan_intent::{ContestStatus, EpisodeState, OrderRef, ScopeRevision};
+use acan_intent::{ContestStatus, DiscrepancyEpisode, EpisodeState, OrderRef, ScopeRevision};
 use serde::{Deserialize, Serialize};
 
 use crate::clash::{
@@ -259,8 +259,9 @@ impl World {
         self.lanes.values().map(|lane| lane.contests.len()).sum()
     }
 
-    /// The scope-first runs the host still has to prepare or answer with a receipt: every
-    /// current gating run without a receipt. The host's side of the lane; no [`Job`] covers it.
+    /// The scope-first runs the host still has to prepare or answer with a receipt: every run
+    /// without a receipt that awaits one, gating or queued by a re-bind. The host's side of the
+    /// lane; no [`Job`] covers it.
     #[must_use]
     pub fn pending_contrasts(&self) -> Vec<PendingContrast<'_>> {
         self.lanes
@@ -268,7 +269,9 @@ impl World {
             .flat_map(|l| {
                 l.runs
                     .iter()
-                    .filter(|(run, r)| r.receipt.is_none() && lane::is_gating(self, r.task, **run))
+                    .filter(|(run, r)| {
+                        r.receipt.is_none() && lane::awaits_receipt(self, r.task, **run)
+                    })
                     .map(|(run, r)| PendingContrast {
                         order: l.order,
                         task: r.task,
@@ -278,6 +281,33 @@ impl World {
                     })
             })
             .collect()
+    }
+
+    /// The episodes of `order`'s lane as the judge reads them, for `Order::episodes`. A repeat of
+    /// a failure is judged with its state and bounce count, not as a first failure. Empty for an
+    /// order without a scope-first lane.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Rejection`] when the order id has no contract spelling.
+    pub fn judged_episodes(&self, order: OrderId) -> Result<Vec<DiscrepancyEpisode>, Rejection> {
+        let Some(lane) = self.lane(order) else {
+            return Ok(Vec::new());
+        };
+        let order_ref = lane::order_ref(order)?;
+        Ok(lane
+            .episodes
+            .values()
+            .map(|episode| episode.judged(&order_ref, &lane.lineage))
+            .collect())
+    }
+
+    /// Whether `run` belongs to a scope-first lane and has no receipt. Only a re-bind leaves a
+    /// queued run without one: it must be receipted on the new head before it can land.
+    fn is_unreceipted(&self, run: GateRunId) -> bool {
+        self.lane_of_run(run)
+            .and_then(|lane| lane.runs.get(&run))
+            .is_some_and(|lane_run| lane_run.receipt.is_none())
     }
 
     fn lane_of_run(&self, run: GateRunId) -> Option<&ScopeLane> {
@@ -469,9 +499,10 @@ impl World {
             .and_then(|&id| self.tasks.get(&id));
         if let Some(Task {
             id,
-            state: TaskState::Queued { head, .. },
+            state: TaskState::Queued { head, run, .. },
             ..
         }) = front
+            && !self.is_unreceipted(*run)
         {
             jobs.push(Job::Land {
                 task: *id,
@@ -766,6 +797,30 @@ impl World {
                     || confirmation.scope_hash != lane.scope_hash
                 {
                     return Err(format!("order {order} confirms another scope revision"));
+                }
+                Ok(())
+            }
+            Event::ScopeRebound {
+                order,
+                scope,
+                scope_hash,
+                confirmation,
+                runs,
+            } => {
+                let lane = self
+                    .lanes
+                    .get(order)
+                    .ok_or_else(|| format!("order {order} has no scope"))?;
+                if scope.rev != lane.scope.rev
+                    || scope.body != lane.scope.body
+                    || scope.scope_hash().ok() != Some(*scope_hash)
+                    || confirmation.scope_hash != *scope_hash
+                    || confirmation.base_commit != scope.base_commit
+                {
+                    return Err(format!("order {order} re-binds a scope it does not hold"));
+                }
+                if let Some(run) = runs.iter().find(|run| !lane.runs.contains_key(*run)) {
+                    return Err(format!("order {order} re-binds run {run}, which it lacks"));
                 }
                 Ok(())
             }
@@ -1155,6 +1210,29 @@ impl World {
                 if let Some(lane) = self.lanes.get_mut(order) {
                     lane.budget.get_or_insert(confirmation.budget);
                     lane.confirmation = Some((**confirmation).clone());
+                }
+            }
+            Event::ScopeRebound {
+                order,
+                scope,
+                scope_hash,
+                confirmation,
+                runs,
+            } => {
+                if let Some(lane) = self.lanes.get_mut(order) {
+                    lane.lineage.push(ScopeRevision {
+                        rev: scope.rev,
+                        scope_hash: *scope_hash,
+                    });
+                    lane.scope = (**scope).clone();
+                    lane.scope_hash = *scope_hash;
+                    lane.confirmation = Some((**confirmation).clone());
+                    for run in runs {
+                        if let Some(lane_run) = lane.runs.get_mut(run) {
+                            lane_run.prepared = None;
+                            lane_run.receipt = None;
+                        }
+                    }
                 }
             }
             Event::ScopedReadbackPosted { readback } => {
@@ -1628,5 +1706,10 @@ fn decide_system(world: &World, ctx: &Ctx<'_>, cmd: SystemCmd) -> Result<Vec<Eve
         SystemCmd::ReceiptReady { run, receipt } => {
             repair::decide_receipt(world, ctx, run, *receipt)
         }
+        SystemCmd::RebindBase {
+            order,
+            base,
+            context,
+        } => lane::decide_rebind(world, order, &base, &context),
     }
 }
