@@ -970,7 +970,10 @@ mod tests {
             .checkout_refusal(root, &c.base)
             .await
             .expect("the checks run");
-        assert!(checks.is_none(), "the checks pass while main sits at the base");
+        assert!(
+            checks.is_none(),
+            "the checks pass while main sits at the base"
+        );
 
         // An outside writer moves main to the parent, an ancestor of the candidate, after the
         // checks and before the move.
