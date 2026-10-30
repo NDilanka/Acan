@@ -13,28 +13,32 @@
 //!   claimed and whose observed change kind equals its `change`. The observed kind comes from
 //!   base and candidate (added, removed or modified), never from the model's prediction. It is
 //!   `obligation_failed` when an acceptance predicate fails, unknown by reason when one cannot be
-//!   answered, `authorized_but_unspecified` when a claimed difference lies on a step no acceptance
-//!   predicate reads, and `obligation_fulfilled` otherwise.
+//!   answered, `authorized_but_unspecified` when a claimed difference is not covered by the step,
+//!   channel, path or requests that an acceptance predicate reads, and `obligation_fulfilled`
+//!   otherwise.
 //! - A difference no rule or item claims is `out_of_scope`: one item per probe, step and path.
 //! - An active ruling whose predicate fails on a probe it reaches is `violates_ruling`: one item
-//!   per failing probe.
+//!   per failing probe. A ruling whose normalization plan no longer matches the corpus, or an exact
+//!   approval whose evidence is not one it accepted, is `stale` and never held.
 //!
 //! A scope item that no probe reaches gets no receipt item, because a receipt item needs the
 //! probe that checked it. Its acceptance obligations are counted as unknown in
-//! [`BehaviorCounts`], so the receipt still refuses to pass.
+//! [`BehaviorCounts`], so the receipt still refuses to pass. A probe whose result is not a pass and
+//! that no scope item reaches gets an item of its own. A result that does not check against its
+//! prepared context is refused, or, when only its contrast or comparison fails to check, gets a
+//! non-pass item.
 
-use std::collections::BTreeSet;
 use std::str::FromStr;
 
 use serde::Serialize;
 use serde_json::json;
 
-use crate::compare::Contrast;
+use crate::compare::{self, CompareError, Contrast};
 use crate::episode::{Contest, DiscrepancyEpisode, EpisodeState, canonical_episode_selector};
-use crate::expr::{Operand, Predicate, ValueRef};
-use crate::gate::PreparedCommit;
+use crate::expr::{EventFilter, Operand, Predicate, ValueRef};
+use crate::gate::{FixtureSetManifest, PreparedCommit, ProbeSetManifest};
 use crate::hash::{CanonicalError, ContentHash, ProbeHash};
-use crate::ledger::{Expectation, ExpectationStatus, FoldedLedger};
+use crate::ledger::{Applicability, Expectation, ExpectationStatus, FoldedLedger};
 use crate::observation::{Mask, ObservedRun, RequestRecord};
 use crate::predicate::{self, RetainedExample, method_admits, principal_admits};
 use crate::probe::{ProbeCorpus, RouteStatus, RunOutcome, RunRole};
@@ -118,30 +122,38 @@ pub struct ReceiptInputs<'a> {
 /// belong together, or a value the receipt names cannot be hashed.
 pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>, ReceiptError> {
     bind(inputs)?;
+    bind_context(inputs)?;
     let hashes = inputs
         .results
         .iter()
         .map(|result| result.contrast.probe.spec.probe_hash().map_err(hashing))
         .collect::<Result<Vec<_>, _>>()?;
-    let claims = claims(inputs);
+    inventory(inputs, &hashes)?;
+    let faults: Vec<Option<Fault>> = inputs.results.iter().map(result_fault).collect();
+    let usable: Vec<bool> = faults.iter().map(Option::is_none).collect();
+    let claims = claims(inputs, &usable);
     let mut owners = vec![Owner::Unclaimed; claims.len()];
     let mut behavior = Behavior::default();
     let mut must_items = Vec::new();
     let mut may_items = Vec::new();
     let mut ruling_items = Vec::new();
     let mut not_reached = Vec::new();
+    let mut reached = vec![false; inputs.results.len()];
 
     for rule in &inputs.scope.body.must_keep {
-        let reaching = reaching_probes(inputs, &rule.selector);
+        let item_id = ItemId::from_str(rule.id.as_str()).map_err(|_| {
+            inconsistent(&format!(
+                "must-keep id {} is not an item id",
+                rule.id.as_str()
+            ))
+        })?;
+        let reaching = reaching_probes(inputs, &usable, &rule.selector);
+        for &index in &reaching {
+            reached[index] = true;
+        }
         let judged = judge_obligations(inputs, rule.obligations.iter(), &reaching);
         if reaching.is_empty() {
-            let item_id = ItemId::from_str(rule.id.as_str()).map_err(|_| {
-                inconsistent(&format!(
-                    "must-keep id {} is not an item id",
-                    rule.id.as_str()
-                ))
-            })?;
-            not_reached.push(unreached(item_id, &rule.selector, &judged));
+            not_reached.push(unreached(item_id.clone(), &rule.selector, &judged));
         }
         let covered: Vec<usize> = (0..claims.len())
             .filter(|&index| claims[index].covered_by(&rule.selector))
@@ -167,12 +179,7 @@ pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>,
         let claimed: Vec<&Claim> = covered.iter().map(|&index| &claims[index]).collect();
         let episode = episode_for(inputs.episodes, &rule.selector, &failing_ids(&judged));
         must_items.push(ReceiptItem {
-            item_id: ItemId::from_str(rule.id.as_str()).map_err(|_| {
-                inconsistent(&format!(
-                    "must-keep id {} is not an item id",
-                    rule.id.as_str()
-                ))
-            })?,
+            item_id,
             class,
             state: state_of(episode),
             machine_id: rule.machine_ids.first().clone(),
@@ -196,7 +203,10 @@ pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>,
     }
 
     for item in &inputs.scope.body.may {
-        let reaching = reaching_probes(inputs, &item.selector);
+        let reaching = reaching_probes(inputs, &usable, &item.selector);
+        for &index in &reaching {
+            reached[index] = true;
+        }
         let judged = judge_obligations(inputs, item.acceptance.iter(), &reaching);
         if reaching.is_empty() {
             not_reached.push(unreached(item.id.clone(), &item.selector, &judged));
@@ -204,7 +214,7 @@ pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>,
         let covered: Vec<usize> = (0..claims.len())
             .filter(|&index| {
                 owners[index] == Owner::Unclaimed
-                    && claims[index].covered_by(&item.selector)
+                    && claims[index].owned_by(&item.selector)
                     && observed_change(&claims[index].difference) == item.change
             })
             .collect();
@@ -217,16 +227,12 @@ pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>,
         if reaching.is_empty() && covered.is_empty() {
             continue;
         }
-        let steps: Vec<StepId> = covered
-            .iter()
-            .map(|&index| claims[index].difference.step_id.clone())
-            .collect();
-        let class = may_class(&judged, &steps, &reads_of(item));
+        let claimed: Vec<&Claim> = covered.iter().map(|&index| &claims[index]).collect();
+        let class = may_class(&judged, &claimed, &reads_of(item));
         let probe = failing_probe(&judged)
             .or_else(|| covered.first().map(|&index| claims[index].probe))
             .or_else(|| reaching.first().copied());
         let Some(probe) = probe else { continue };
-        let claimed: Vec<&Claim> = covered.iter().map(|&index| &claims[index]).collect();
         let episode = episode_for(inputs.episodes, &item.selector, &failing_ids(&judged));
         may_items.push(item_for(
             inputs,
@@ -248,7 +254,14 @@ pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>,
         if expectation.status == ExpectationStatus::Superseded {
             continue;
         }
-        let (status, items) = ruling(inputs, expectation, &claims, &hashes, &mut behavior)?;
+        let (status, items) = ruling(
+            inputs,
+            expectation,
+            &claims,
+            &hashes,
+            &usable,
+            &mut behavior,
+        )?;
         ruling_items.extend(items);
         rulings.push(RulingCheck {
             ruling_id: expectation.ruling_id.clone(),
@@ -281,11 +294,25 @@ pub fn build_receipt(inputs: &ReceiptInputs<'_>) -> Result<CoreDerived<Receipt>,
         oos_items.push(out_of_scope(inputs, claim, &hashes, inputs.episodes)?);
     }
 
+    let mut probe_items = Vec::new();
+    for (index, fault) in faults.iter().enumerate() {
+        let (class, reason) = match fault {
+            Some(fault) => (fault.class, fault.reason.clone()),
+            None if reached[index] => continue,
+            None => match &inputs.results[index].comparison.value().outcome {
+                Outcome::Unknown { reason } => (class_of(reason), reason.clone()),
+                Outcome::Changed { .. } | Outcome::Unchanged {} => continue,
+            },
+        };
+        probe_items.push(probe_item(inputs, index, &hashes, class, &reason)?);
+    }
+
     let mut items = Vec::new();
     items.extend(must_items);
     items.extend(may_items);
     items.extend(ruling_items);
     items.extend(oos_items);
+    items.extend(probe_items);
 
     let receipt = Receipt {
         version: ReceiptV1,
@@ -384,6 +411,174 @@ fn bind(inputs: &ReceiptInputs<'_>) -> Result<(), ReceiptError> {
     Ok(())
 }
 
+/// The runs, ledger, corpus and scope must be the ones the prepared context tested. Base runs
+/// must be at the prepared base, the candidate at the merged commit, and every run on the context's
+/// runtime and runner. A mismatch refuses the receipt: evidence for another commit is never scored.
+fn bind_context(inputs: &ReceiptInputs<'_>) -> Result<(), ReceiptError> {
+    let (prepared, folded) = (inputs.prepared, inputs.ledger.value());
+    let context = &prepared.context;
+    if context.protected_head != prepared.base_commit {
+        return Err(inconsistent("the protected head is not the prepared base"));
+    }
+    if context.scope_hash != inputs.confirmation.scope_hash {
+        return Err(inconsistent("the prepared context names another scope"));
+    }
+    if context.ledger_head != folded.head {
+        return Err(inconsistent(
+            "the prepared context names another ruling log revision",
+        ));
+    }
+    let probe_set = ProbeSetManifest::of(inputs.corpus, &folded.retired_probes)
+        .and_then(|manifest| manifest.probe_set_hash())
+        .map_err(hashing)?;
+    if context.probe_set_hash != probe_set {
+        return Err(inconsistent("the prepared context names another probe set"));
+    }
+    let fixtures = FixtureSetManifest::of(inputs.corpus)
+        .and_then(|manifest| manifest.fixture_set_hash())
+        .map_err(hashing)?;
+    if context.fixture_set_hash != fixtures {
+        return Err(inconsistent(
+            "the prepared context names another fixture set",
+        ));
+    }
+    for result in inputs.results {
+        let expected = [
+            (result.contrast.base_a, &prepared.base_commit),
+            (result.contrast.base_b, &prepared.base_commit),
+            (result.contrast.candidate, &context.merged_commit),
+        ];
+        for (run, commit) in expected {
+            let record = run.run();
+            if record.commit != *commit {
+                return Err(inconsistent(&format!(
+                    "run {} is not at the prepared commit",
+                    record.id
+                )));
+            }
+            if record.env.runtime != context.runtime {
+                return Err(inconsistent(&format!(
+                    "run {} is on another runtime than the prepared context",
+                    record.id
+                )));
+            }
+            if record.runner != context.runner_hash {
+                return Err(inconsistent(&format!(
+                    "run {} is on another runner than the prepared context",
+                    record.id
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The results name distinct probes of the corpus, retired probes excluded, each with the
+/// normalization plan the corpus holds. A duplicate or foreign result is refused, so a missing
+/// result stays not run and no other result can stand in for it.
+fn inventory(inputs: &ReceiptInputs<'_>, hashes: &[ProbeHash]) -> Result<(), ReceiptError> {
+    let retired = &inputs.ledger.value().retired_probes;
+    let mut active = Vec::new();
+    for probe in &inputs.corpus.probes {
+        let hash = probe.spec.probe_hash().map_err(hashing)?;
+        if !retired.contains(&hash) {
+            let plan = probe.normalization.normalization_hash().map_err(hashing)?;
+            active.push((hash, plan));
+        }
+    }
+    for (index, result) in inputs.results.iter().enumerate() {
+        let hash = hashes[index];
+        if hashes[..index].contains(&hash) {
+            return Err(inconsistent(&format!("probe {hash} has two results")));
+        }
+        let plan = result
+            .contrast
+            .probe
+            .normalization
+            .normalization_hash()
+            .map_err(hashing)?;
+        if !active.contains(&(hash, plan)) {
+            return Err(inconsistent(&format!(
+                "probe {hash} is not an active probe of the corpus"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A probe result that does not check: its item's class and the reason its outcome is unknown.
+#[derive(Clone)]
+struct Fault {
+    class: ItemClass,
+    reason: UnknownReason,
+}
+
+/// The fault of one result, if its contrast or comparison does not check. A result that does
+/// not check is never a pass and never contributes a claim.
+fn result_fault(result: &ProbeResult<'_>) -> Option<Fault> {
+    let error = checked(result).err()?;
+    Some(match error {
+        CompareError::Incompatible { detail } => Fault {
+            class: ItemClass::Incomparable,
+            reason: UnknownReason::Incomparable { detail },
+        },
+        other => Fault {
+            class: ItemClass::Error,
+            reason: UnknownReason::Error {
+                detail: other.to_string(),
+            },
+        },
+    })
+}
+
+/// Checks a result's runs against their roles and each other, its masks against the ones its
+/// base runs derive, and its comparison against the one these runs make.
+fn checked(result: &ProbeResult<'_>) -> Result<(), CompareError> {
+    compare::check_contrast(&result.contrast)?;
+    let derived = compare::derive_masks(&result.contrast)?;
+    let supplied: Vec<&Mask> = result.masks.iter().map(CoreDerived::value).collect();
+    if derived.iter().map(CoreDerived::value).ne(supplied) {
+        return Err(CompareError::ForeignComparison {
+            detail: "the masks are not the ones these runs derive".to_owned(),
+        });
+    }
+    compare::verify_comparison(&result.contrast, result.comparison)
+}
+
+/// The receipt item of one probe that no scope item reaches, or that does not check. It names
+/// the probe, carries its unknown outcome and claims nothing.
+fn probe_item(
+    inputs: &ReceiptInputs<'_>,
+    index: usize,
+    hashes: &[ProbeHash],
+    class: ItemClass,
+    reason: &UnknownReason,
+) -> Result<ReceiptItem, ReceiptError> {
+    let result = &inputs.results[index];
+    Ok(ReceiptItem {
+        item_id: minted("probe", &hashes[index])?,
+        class,
+        state: ItemState::Open,
+        machine_id: result.contrast.probe.route_path.machines.first().clone(),
+        selector: None,
+        probe_hash: hashes[index],
+        episode_id: None,
+        ruling_id: None,
+        attempts: 0,
+        budget: budget(inputs),
+        route_path: result.contrast.probe.route_path.clone(),
+        sequence: sequence(result),
+        evidence: Vec::new(),
+        evaluation: Evaluation {
+            authorization: Authorization::None {},
+            outcome: Outcome::Unknown {
+                reason: reason.clone(),
+            },
+            obligations: Vec::new(),
+        },
+    })
+}
+
 /// Who owns a difference. A must-keep rule owns every difference it covers, then a may-change
 /// item owns the rest it covers, and whatever no rule owns is out of scope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -401,19 +596,35 @@ struct Claim {
 }
 
 impl Claim {
+    /// Whether a must-keep rule covers the difference: the field it names, any field above it
+    /// and any field below it, since a replaced ancestor changes what the rule checks.
     fn covered_by(&self, selector: &Selector) -> bool {
+        self.covered_with(selector, compare::overlaps)
+    }
+
+    /// Whether a may-change grant owns the difference. A grant owns the field it names and what
+    /// lies below it. A replacement of an ancestor is not owned by a grant on one field of it.
+    fn owned_by(&self, selector: &Selector) -> bool {
+        self.covered_with(selector, compare::at_or_below)
+    }
+
+    fn covered_with(&self, selector: &Selector, field: impl Fn(&str, &str) -> bool) -> bool {
         covers(
             selector,
             &self.difference.step_id,
             self.request.as_ref(),
             &self.difference.path,
+            field,
         )
     }
 }
 
-fn claims(inputs: &ReceiptInputs<'_>) -> Vec<Claim> {
+fn claims(inputs: &ReceiptInputs<'_>, usable: &[bool]) -> Vec<Claim> {
     let mut claims = Vec::new();
     for (probe, result) in inputs.results.iter().enumerate() {
+        if !usable[probe] {
+            continue;
+        }
         let Outcome::Changed { differences } = &result.comparison.value().outcome else {
             continue;
         };
@@ -444,9 +655,9 @@ fn request_at(run: &ObservedRun, step: &StepId) -> Option<RequestRecord> {
     None
 }
 
-fn reaching_probes(inputs: &ReceiptInputs<'_>, selector: &Selector) -> Vec<usize> {
+fn reaching_probes(inputs: &ReceiptInputs<'_>, usable: &[bool], selector: &Selector) -> Vec<usize> {
     (0..inputs.results.len())
-        .filter(|&index| reaches(selector, &inputs.results[index].contrast))
+        .filter(|&index| usable[index] && reaches(selector, &inputs.results[index].contrast))
         .collect()
 }
 
@@ -482,20 +693,22 @@ fn request_admits(selector: &Selector, request: Option<&RequestRecord>) -> bool 
         && principal_admits(&selector.principal, request.actor.as_ref())
 }
 
-/// Whether a selector covers a difference at `path` of `step`, sent by `request`.
+/// Whether a selector covers a difference at `path` of `step`, sent by `request`. `field` decides
+/// how the selector's field pattern meets the path.
 fn covers(
     selector: &Selector,
     step: &StepId,
     request: Option<&RequestRecord>,
     path: &ObservationPath,
+    field: impl Fn(&str, &str) -> bool,
 ) -> bool {
     step_context_admits(selector, step)
         && request_admits(selector, request)
         && (selector.channel == Channel::Any || selector.channel == path.channel())
         && match &selector.field_path {
             None => true,
-            Some(field) => crate::compare::overlaps(
-                &channel_pattern(selector.channel, field.as_str()),
+            Some(name) => field(
+                &channel_pattern(selector.channel, name.as_str()),
                 path.as_str(),
             ),
         }
@@ -581,10 +794,10 @@ fn wildcard_indices(text: &str) -> String {
     let mut out = String::new();
     let mut rest = text;
     while let Some(open) = rest.find('[') {
-        out.push_str(&rest[..open]);
         let Some(close) = rest[open..].find(']') else {
             break;
         };
+        out.push_str(&rest[..open]);
         out.push_str("[*]");
         rest = &rest[open + close + 1..];
     }
@@ -592,31 +805,105 @@ fn wildcard_indices(text: &str) -> String {
     out
 }
 
-/// What the scope reads, for `authorized_but_unspecified`.
+/// What the acceptance predicates of a scope item read, as domains. A claimed difference that no
+/// domain covers is not checked by any obligation, so it cannot be fulfilled.
 #[derive(Default)]
 struct Reads {
-    steps: BTreeSet<StepId>,
-    every_step: bool,
+    domains: Vec<Domain>,
+}
+
+/// One read: a step or every step, a channel or every channel, a path under a pattern or every
+/// path of the channel, and the requests an event filter admits or every request.
+struct Domain {
+    step: Option<StepId>,
+    channel: Option<Channel>,
+    path: Option<String>,
+    requests: Option<EventFilter>,
+}
+
+impl Domain {
+    fn at(step: &StepId, channel: Channel, path: Option<&str>) -> Self {
+        Self {
+            step: Some(step.clone()),
+            channel: Some(channel),
+            path: path.map(str::to_owned),
+            requests: None,
+        }
+    }
+
+    fn of_channel(channel: Channel, requests: Option<EventFilter>) -> Self {
+        Self {
+            step: None,
+            channel: Some(channel),
+            path: None,
+            requests,
+        }
+    }
+
+    /// Whether the read sees the difference. A read of a path sees the difference on that path
+    /// and on any path above or below it, since a changed ancestor changes what it reads.
+    fn covers(&self, difference: &Difference, request: Option<&RequestRecord>) -> bool {
+        self.step
+            .as_ref()
+            .is_none_or(|step| *step == difference.step_id)
+            && self
+                .channel
+                .is_none_or(|channel| channel == difference.path.channel())
+            && self
+                .path
+                .as_deref()
+                .is_none_or(|pattern| compare::overlaps(pattern, difference.path.as_str()))
+            && self
+                .requests
+                .as_ref()
+                .is_none_or(|filter| request.is_some_and(|request| filter_admits(filter, request)))
+    }
+}
+
+fn filter_admits(filter: &EventFilter, request: &RequestRecord) -> bool {
+    method_admits(filter.method, request.method)
+        && filter
+            .route_template
+            .as_ref()
+            .is_none_or(|route| *route == request.route_template)
+        && principal_admits(&filter.principal, request.actor.as_ref())
+        && filter
+            .client
+            .as_ref()
+            .is_none_or(|client| *client == request.client)
 }
 
 impl Reads {
-    fn includes(&self, step: &StepId) -> bool {
-        self.every_step || self.steps.contains(step)
+    fn covers(&self, claim: &Claim) -> bool {
+        self.domains
+            .iter()
+            .any(|domain| domain.covers(&claim.difference, claim.request.as_ref()))
     }
 
     fn value(&mut self, value: &ValueRef) {
         match value {
-            ValueRef::Field { step_id, .. } => {
-                self.steps.insert(step_id.clone());
+            ValueRef::Field { step_id, path, .. } => {
+                self.domains
+                    .push(Domain::at(step_id, path.channel(), Some(path.as_str())));
             }
-            ValueRef::Capture { .. } | ValueRef::Event { .. } => self.every_step = true,
+            ValueRef::Event { .. } => self
+                .domains
+                .push(Domain::of_channel(Channel::SideEffect, None)),
+            // A capture names its source only through the fixture, which this reads do not have,
+            // so a capture reads nothing and authorizes nothing.
+            ValueRef::Capture { .. } => {}
         }
     }
 
     fn predicate(&mut self, predicate: &Predicate) {
         match predicate {
-            Predicate::EqualsBase { step_id, .. } | Predicate::StatusIn { step_id, .. } => {
-                self.steps.insert(step_id.clone());
+            Predicate::EqualsBase { step_id, path, .. } => {
+                self.domains
+                    .push(Domain::at(step_id, path.channel(), Some(path.as_str())));
+            }
+            Predicate::StatusIn { step_id, .. } => {
+                self.domains
+                    .push(Domain::at(step_id, Channel::Status, None));
             }
             Predicate::Equals { at, .. }
             | Predicate::Present { at }
@@ -630,7 +917,17 @@ impl Reads {
                     self.value(value_ref);
                 }
             }
-            Predicate::Count { .. } | Predicate::Window { .. } => self.every_step = true,
+            // A count reads the statuses of the requests it counts only when it filters on them.
+            Predicate::Count { filter, .. } => {
+                if filter.status_in.is_some() {
+                    self.domains
+                        .push(Domain::of_channel(Channel::Status, Some(filter.clone())));
+                }
+            }
+            Predicate::Window { policy } => self.domains.push(Domain::of_channel(
+                Channel::Status,
+                Some(policy.event_filter.clone()),
+            )),
         }
     }
 }
@@ -780,12 +1077,12 @@ fn is_fail(result: &CheckResult) -> bool {
     matches!(result, CheckResult::Fail { .. })
 }
 
-fn may_class(judged: &[Judged], claimed_steps: &[StepId], reads: &Reads) -> ItemClass {
+fn may_class(judged: &[Judged], claimed: &[&Claim], reads: &Reads) -> ItemClass {
     if judged.iter().any(|judgment| is_fail(&judgment.result)) {
         ItemClass::ObligationFailed
     } else if let Some(reason) = worst_unknown(judged) {
         class_of(reason)
-    } else if claimed_steps.iter().any(|step| !reads.includes(step)) {
+    } else if claimed.iter().any(|claim| !reads.covers(claim)) {
         ItemClass::AuthorizedButUnspecified
     } else {
         ItemClass::ObligationFulfilled
@@ -809,9 +1106,10 @@ fn episode_for<'e>(
     selector: &Selector,
     failing: &[ObligationId],
 ) -> Option<&'e DiscrepancyEpisode> {
+    let canonical = canonical_episode_selector(selector);
     let same: Vec<&DiscrepancyEpisode> = episodes
         .iter()
-        .filter(|episode| episode.selector == *selector)
+        .filter(|episode| episode.selector == canonical)
         .collect();
     same.iter()
         .copied()
@@ -944,25 +1242,63 @@ fn item_for(inputs: &ReceiptInputs<'_>, placement: Placement<'_, '_>) -> Receipt
     }
 }
 
-/// The receipt items of one active ruling, and its status. A failing probe becomes a
-/// `violates_ruling` item, so the violation has a row of its own.
+/// Whether a ruling's approval covers one probe's evidence. The probe's normalization plan must be
+/// the one the ruling was confirmed under. An exact approval also needs the evidence to be one it
+/// accepted; a standing approval runs on whatever evidence arrives.
+fn applies(inputs: &ReceiptInputs<'_>, expectation: &Expectation, index: usize) -> bool {
+    let contrast = &inputs.results[index].contrast;
+    let current = contrast
+        .probe
+        .normalization
+        .normalization_hash()
+        .is_ok_and(|plan| plan == expectation.normalization_hash);
+    if !current {
+        return false;
+    }
+    match expectation.applicability {
+        Applicability::StandingPredicateApproval => true,
+        Applicability::ExactObservationApproval => inputs.anchors.iter().any(|anchor| {
+            expectation.accepts.contains(&anchor.hash())
+                && same_evidence(contrast, anchor.contrast())
+        }),
+    }
+}
+
+/// Whether two contrasts hold the same probe and the same three runs, observation by observation.
+fn same_evidence(left: &Contrast<'_>, right: &Contrast<'_>) -> bool {
+    left.probe.spec == right.probe.spec
+        && left.base_a == right.base_a
+        && left.base_b == right.base_b
+        && left.candidate == right.candidate
+}
+
+/// The status of one ruling, and the receipt items of its failing probes. A failing probe becomes
+/// a `violates_ruling` item, so the violation has a row of its own. A ruling whose approval covers
+/// some reached evidence only, or none, is `stale` and never held.
 fn ruling(
     inputs: &ReceiptInputs<'_>,
     expectation: &Expectation,
     claims: &[Claim],
     hashes: &[ProbeHash],
+    usable: &[bool],
     behavior: &mut Behavior,
 ) -> Result<(RulingStatus, Vec<ReceiptItem>), ReceiptError> {
     if expectation.status == ExpectationStatus::Stale {
         behavior.record(Verdict::Unknown);
         return Ok((RulingStatus::Stale {}, Vec::new()));
     }
-    let reaching = reaching_probes(inputs, &expectation.selector);
+    let reaching = reaching_probes(inputs, usable, &expectation.selector);
     if reaching.is_empty() {
         behavior.record(Verdict::Unknown);
         return Ok((RulingStatus::NotReached {}, Vec::new()));
     }
-    let answers: Vec<(usize, CheckResult)> = reaching
+    let current: Vec<usize> = reaching
+        .iter()
+        .copied()
+        .filter(|&index| applies(inputs, expectation, index))
+        .collect();
+    let stale = current.len() < reaching.len();
+    let answers: Vec<(usize, CheckResult)> = current
         .iter()
         .map(|&index| (index, answer(inputs, &expectation.predicate, index)))
         .collect();
@@ -972,6 +1308,10 @@ fn ruling(
         .map(|(index, _)| *index)
         .collect();
     if failing.is_empty() {
+        if stale {
+            behavior.record(Verdict::Unknown);
+            return Ok((RulingStatus::Stale {}, Vec::new()));
+        }
         return Ok(match aggregate(answers).0 {
             CheckResult::Unknown { reason } => {
                 behavior.record(Verdict::Unknown);
@@ -1307,6 +1647,12 @@ mod tests {
         assert_eq!(wildcard_indices("links[3].code"), "links[*].code");
         assert_eq!(wildcard_indices("[0][12].x"), "[*][*].x");
         assert_eq!(wildcard_indices("plain"), "plain");
+    }
+
+    #[test]
+    fn an_unclosed_bracket_is_copied_once() {
+        assert_eq!(wildcard_indices("links[3"), "links[3");
+        assert_eq!(wildcard_indices("a[0].b[x"), "a[*].b[x");
     }
 
     #[test]

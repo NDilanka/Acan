@@ -11,10 +11,11 @@ use acan_intent::compare::{self, Contrast, RunContext};
 use acan_intent::receipt::{self, ProbeResult, ReceiptInputs};
 use acan_intent::{
     CaptureOutcome, Channels, CheckResult, Comparison, Completeness, ContentHash, CoreDerived,
-    CorpusProbe, Fixture, FoldedLedger, GateState, HttpMethod, IncompleteReason, ItemClass,
-    LedgerEvent, Mask, NonEmpty, Observation, ObservationHash, ObservedRun, Outcome, Predicate,
-    PreparedCommit, ProbeCorpus, ProbeHash, Receipt, RequestRecord, RulingStatus, Run, RunOutcome,
-    RunRole, Scope, ScopeConfirmation, UnknownReason,
+    CorpusProbe, Fixture, FixtureSetManifest, FoldedLedger, GateState, HttpMethod,
+    IncompleteReason, ItemClass, LedgerEvent, Mask, NonEmpty, Observation, ObservationHash,
+    ObservedRun, Outcome, Predicate, PreparedCommit, ProbeCorpus, ProbeHash, ProbeSetManifest,
+    Receipt, RequestRecord, RulingStatus, Run, RunOutcome, RunRole, Scope, ScopeConfirmation,
+    UnknownReason,
 };
 use acan_intent::{admit, fold, predicate};
 use serde::de::DeserializeOwned;
@@ -27,7 +28,10 @@ const SCOPE: &str = include_str!("../fixtures/scope.json");
 const CONFIRMATION: &str = include_str!("../fixtures/scope-confirmation.json");
 const RECEIPT: &str = include_str!("../fixtures/receipt.json");
 const LEDGER_DECISION: &str = include_str!("../fixtures/ledger-decision.json");
-const COMMIT: &str = "a27a5f30da19543ee34362516e29bf7561214156";
+/// The commit the base runs were taken at: the prepared base that scope.json confirms against.
+const BASE: &str = "178c1b07097a9f510882d139061ed50b4b44b1d4";
+/// The commit the candidate was merged to.
+const MERGED: &str = "a27a5f30da19543ee34362516e29bf7561214156";
 const SIX_FAILURES: [u16; 6] = [401; 6];
 const FIVE_THEN_LIMITED: [u16; 6] = [401, 401, 401, 401, 401, 429];
 
@@ -88,10 +92,10 @@ impl Hit {
         }
     }
 
-    fn observation(&self, run_id: &str, probe: ProbeHash) -> Observation {
+    fn observation(&self, run_id: &str, probe: ProbeHash, commit: &str) -> Observation {
         let mut observation: Observation = parse(OBSERVATION);
         observation.run_id = run_id.parse().expect("a run id");
-        observation.commit = COMMIT.parse().expect("a commit");
+        observation.commit = commit.parse().expect("a commit");
         observation.probe = probe;
         observation.step_id = self.step.parse().expect("a step id");
         observation.raw_ref = None;
@@ -166,7 +170,8 @@ fn with_cookie(mut hits: Vec<Hit>, step: &str, value: &str) -> Vec<Hit> {
 }
 
 /// Admits one run of the login probe. The recipe's signup and login come first, and the login
-/// sets the session cookie `token`, which the capture `alice_session` binds.
+/// sets the session cookie `token`, which the capture `alice_session` binds. A base run is taken
+/// at the prepared base and the candidate at the merged commit.
 fn admitted(
     login: &Login,
     id: &str,
@@ -175,6 +180,11 @@ fn admitted(
     hits: Vec<Hit>,
     outcome: RunOutcome,
 ) -> ObservedRun {
+    let commit = if matches!(role, RunRole::Candidate) {
+        MERGED
+    } else {
+        BASE
+    };
     let probe = login.probe.spec.probe_hash().expect("the probe hashes");
     let signup = Hit {
         route: "/api/signup",
@@ -190,7 +200,7 @@ fn admitted(
     let stored: Vec<(ObservationHash, Observation)> = all
         .iter()
         .map(|hit| {
-            let observation = hit.observation(id, probe);
+            let observation = hit.observation(id, probe, commit);
             (
                 observation
                     .observation_hash()
@@ -202,7 +212,7 @@ fn admitted(
     let mut record: Run = parse(RUN);
     record.id = id.parse().expect("a run id");
     record.probe = probe;
-    record.commit = COMMIT.parse().expect("a commit");
+    record.commit = commit.parse().expect("a commit");
     record.role = role;
     record.env.fixture_hash = login.fixture.fixture_hash().expect("the fixture hashes");
     record.outcome = outcome;
@@ -373,6 +383,39 @@ fn receipt_of(scope: &Scope, confirmation: &ScopeConfirmation, trio: &Trio) -> R
     receipt_under(scope, confirmation, trio, &ledger).expect("the receipt builds")
 }
 
+/// The prepared context of the standard runs, for `confirmation` and `ledger`. The binding
+/// hashes are computed from this corpus and this ledger revision, as the gate records them; the
+/// artifact hashes come from the fixture.
+fn prepared_context(
+    confirmation: &ScopeConfirmation,
+    ledger: &CoreDerived<FoldedLedger>,
+) -> PreparedCommit {
+    let corpus: ProbeCorpus = parse(PROBE_CORPUS);
+    let folded = ledger.value();
+    let probe_set = ProbeSetManifest::of(&corpus, &folded.retired_probes)
+        .and_then(|manifest| manifest.probe_set_hash())
+        .expect("the probe set hashes");
+    let fixture_set = FixtureSetManifest::of(&corpus)
+        .and_then(|manifest| manifest.fixture_set_hash())
+        .expect("the fixture set hashes");
+    let run: Value = parse(RUN);
+    let mut value: Value = parse::<Value>(RECEIPT)["prepared"].clone();
+    value["base_commit"] = json!(BASE);
+    value["context"]["protected_head"] = json!(BASE);
+    value["context"]["merged_commit"] = json!(MERGED);
+    value["context"]["ledger_head"] =
+        serde_json::to_value(folded.head).expect("the ledger head serializes");
+    value["context"]["scope_hash"] =
+        serde_json::to_value(confirmation.scope_hash).expect("the scope hash serializes");
+    value["context"]["probe_set_hash"] =
+        serde_json::to_value(probe_set).expect("the probe set hash serializes");
+    value["context"]["fixture_set_hash"] =
+        serde_json::to_value(fixture_set).expect("the fixture set hash serializes");
+    value["context"]["runner_hash"] = run["runner"].clone();
+    value["context"]["runtime"] = run["env"]["runtime"].clone();
+    serde_json::from_value(value).expect("the prepared commit decodes")
+}
+
 /// The receipt of one trio under `scope` and a folded ledger, or the error it refuses with.
 fn receipt_under(
     scope: &Scope,
@@ -381,9 +424,7 @@ fn receipt_under(
     ledger: &CoreDerived<FoldedLedger>,
 ) -> Result<Receipt, receipt::ReceiptError> {
     let corpus: ProbeCorpus = parse(PROBE_CORPUS);
-    let prepared: PreparedCommit =
-        serde_json::from_value(parse::<Value>(RECEIPT)["prepared"].clone())
-            .expect("the prepared commit decodes");
+    let prepared = prepared_context(confirmation, ledger);
     let masks = trio.masks();
     let comparison = trio.comparison();
     let results = [ProbeResult {
@@ -406,8 +447,22 @@ fn receipt_under(
     receipt::build_receipt(&inputs).map(|receipt| receipt.value().clone())
 }
 
+/// The normalization plan hash of the login probe, as JSON.
+fn login_plan() -> Value {
+    let login = Login::load();
+    serde_json::to_value(
+        login
+            .probe
+            .normalization
+            .normalization_hash()
+            .expect("the plan hashes"),
+    )
+    .expect("the plan hash serializes")
+}
+
 /// A ruling on the login route: the sixth login must stay 401. It is the fixture decision with
-/// its selector, predicate and label replaced, so it folds as an active expectation.
+/// its selector, predicate, label and plan replaced, so it folds as an active expectation of the
+/// login probe.
 fn login_ruling() -> LedgerEvent {
     let mut value: Value = parse(LEDGER_DECISION);
     value["ruling_id"] = json!("r-login");
@@ -426,6 +481,7 @@ fn login_ruling() -> LedgerEvent {
     });
     value["label"] = json!("The sixth login stays 401");
     value["machine_ids"] = json!(["auth"]);
+    value["normalization_hash"] = login_plan();
     serde_json::from_value(value).expect("the ruling decodes")
 }
 
