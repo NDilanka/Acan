@@ -7,7 +7,12 @@ use std::fmt;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use acan_core::{ClashState, Locus, Settlement};
+use acan_core::{ClashState, Locus, MAX_PREDICTIONS, Settlement};
+use acan_intent::{
+    CheckResult, ContestKind, ContestResponse, Enforcement, EpisodeId, GetReceiptResponse,
+    GetRulingsResponse, GetScopeResponse, ItemClass, ItemState, NotEnforcedReason, Predicted,
+    Prediction, ProbeHash, Receipt, ReceiptHash, ReceiptItem, RulingSummary, RulingTagState, Scope,
+};
 use acan_llm::{ChatRequest, Message, ModelClient, Role, ToolCall, ToolSpec};
 use anyhow::{Context, bail};
 use schemars::JsonSchema;
@@ -21,6 +26,13 @@ use crate::tools::Worktree;
 const PLAN_PROMPT: &str = "You plan one task for an AI coding worker in a shared repository. Reply with JSON: summary, one or two sentences on the change you will make; files, the existing repository files you will edit, each copied exactly from the repository file list; and new_files, the files you will create, only when they do not exist yet and their directory is already in the repository. Do not invent paths. List every file you will write and no other.";
 
 const EDIT_PROMPT: &str = "You are an AI coding worker. Your task is cleared to build, and you may change only the files you declared. Read a file before you write it. Run the tests when you can. When the change is complete, call commit once with a short message, then stop.";
+
+/// The version every scope-first request carries.
+const MCP_VERSION: &str = "acan-mcp/1";
+
+/// The bounce that makes a difference residue. The third bounce of the same difference stops the
+/// claim, so the worker never starts a fourth build on it.
+const REPEAT_LIMIT: u32 = 3;
 
 /// How a worker is run. The token is never printed, so `Debug` leaves it out.
 #[derive(Clone)]
@@ -36,8 +48,11 @@ pub struct WorkerConfig {
     pub test_command: Option<String>,
     /// The most model calls the edit loop may make before the worker gives up.
     pub max_steps: usize,
-    /// How long one wait may last: for work to appear, a verdict, or build clearance.
+    /// How long one wait may last: for work to appear, or build clearance.
     pub wait: Duration,
+    /// How long the worker waits for the gate's receipt after it reports a build. A receipt that
+    /// does not come in time leaves the build reported, and the step log says so.
+    pub receipt_wait: Duration,
     /// How often the worker renews its lease. Keep it well under the origin's 60 second lease.
     pub heartbeat: Duration,
     /// How often a wait polls the origin.
@@ -53,6 +68,7 @@ impl fmt::Debug for WorkerConfig {
             .field("test_command", &self.test_command)
             .field("max_steps", &self.max_steps)
             .field("wait", &self.wait)
+            .field("receipt_wait", &self.receipt_wait)
             .field("heartbeat", &self.heartbeat)
             .field("poll", &self.poll)
             .finish()
@@ -106,6 +122,15 @@ pub enum Exit {
         /// Why the work cannot go on without the files it gave up.
         reason: String,
     },
+    /// The gate bounced the build, and the repair loop cannot take another round: the same
+    /// difference bounced the third time, or the core stopped the item. The work is residue for a
+    /// human. The worker released the task.
+    Residue {
+        /// The task.
+        task: String,
+        /// The difference the loop stopped on, in the core's words.
+        reason: String,
+    },
     /// A call was refused or a dependency failed.
     Failed {
         /// What failed.
@@ -136,6 +161,7 @@ impl fmt::Display for Exit {
                     "{task} could not carry on after a narrow settlement: {reason}"
                 )
             }
+            Self::Residue { task, reason } => write!(f, "{task} is residue: {reason}"),
             Self::Failed { reason } => write!(f, "failed: {reason}"),
         }
     }
@@ -187,17 +213,26 @@ struct Planned {
 /// A claimed task and the generation the origin granted. `files` is the footprint as declared,
 /// already in the origin's normalized form. `gave_up` is every place a Narrow settlement took from
 /// this claim, in the order taken. No later plan of the claim may declare one of them again.
+/// `repair_rounds` is the confirmed scope's budget: how many bounced builds may be repaired.
+/// `rulings` are the rulings the origin held for the task's machines when the claim was made. They
+/// are text for the build brief, never a verdict on a build.
 #[derive(Debug, Clone)]
 struct Claim {
     task: String,
     generation: u64,
     files: Vec<String>,
     gave_up: Vec<Given>,
+    repair_rounds: u32,
+    rulings: Vec<RulingSummary>,
 }
 
 /// What one attempt at a task produced.
 enum Attempt {
     Claimed(Claim),
+    /// The task cannot be claimed yet, such as before the human confirms its scope. The next
+    /// poll tries it again.
+    Pending(String),
+    /// The task was refused or could not be planned. It is not tried again in this run.
     Skipped(String),
 }
 
@@ -345,7 +380,8 @@ async fn heartbeat(mcp: McpClient, claim: Claim, every: Duration) -> String {
 }
 
 /// Tries open tasks in the origin's order until one is claimed or the wait ends. A task that is
-/// refused or not matched is not tried again in this run.
+/// refused or cannot be planned is not tried again in this run. A task whose scope is not yet
+/// confirmed is tried again on the next poll.
 async fn claim_next<C: ModelClient>(
     config: &WorkerConfig,
     model: &C,
@@ -354,6 +390,7 @@ async fn claim_next<C: ModelClient>(
 ) -> anyhow::Result<Option<Claim>> {
     let deadline = Instant::now() + config.wait;
     let mut skipped = HashSet::new();
+    let mut waiting = HashSet::new();
     loop {
         for row in open_tasks(mcp).await? {
             let task = string_field(&row, "task");
@@ -362,6 +399,11 @@ async fn claim_next<C: ModelClient>(
             }
             match try_claim(config, model, mcp, &row, steps).await? {
                 Attempt::Claimed(claim) => return Ok(Some(claim)),
+                Attempt::Pending(reason) => {
+                    if waiting.insert(task) {
+                        log(steps, format!("waiting on {reason}"));
+                    }
+                }
                 Attempt::Skipped(reason) => {
                     log(steps, format!("skipped {reason}"));
                     skipped.insert(task);
@@ -382,9 +424,37 @@ async fn try_claim<C: ModelClient>(
     row: &Value,
     steps: &mut Vec<String>,
 ) -> anyhow::Result<Attempt> {
-    // Every attempt reads back a fresh plan, so the files the claim declares are the files the
-    // matched readback describes. A readback left from an earlier run is not reused.
+    // The readback is the scope-first lane's: it restates the confirmed scope at the revision and
+    // hash the worker read, with predictions. The origin acknowledges it, and only that
+    // acknowledgement lets the claim go through. Every attempt plans afresh, so the files the claim
+    // declares are the files the readback describes.
     let task = string_field(row, "task");
+    let confirmed = match get_scope(mcp, &task).await? {
+        Ok(confirmed) => confirmed,
+        Err(reason) => {
+            return Ok(Attempt::Pending(format!(
+                "{task}: its scope is not confirmed yet: {reason}"
+            )));
+        }
+    };
+    // The rulings in force on the task's machines are read with the scope, before the plan. A
+    // ruling is text the build brief shows the model; no ruling passes or fails anything here.
+    let rulings = match get_rulings(mcp, &task, row).await? {
+        Ok(rulings) => rulings,
+        Err(reason) => {
+            return Ok(Attempt::Skipped(format!(
+                "{task}: rulings refused: {reason}"
+            )));
+        }
+    };
+    log(
+        steps,
+        format!(
+            "read {} ruling(s) for {task} at ledger event {}",
+            rulings.rulings.len(),
+            rulings.ledger_head.event_seq
+        ),
+    );
     let repo = RepoFiles::load(&config.repo).await?;
     let planned = match plan_work(model, &repo, row, &[], steps).await {
         Ok(planned) => planned,
@@ -397,13 +467,27 @@ async fn try_claim<C: ModelClient>(
     for fix in &planned.fixes {
         log(steps, format!("plan fix on {task}: {fix}"));
     }
+    let repair_rounds = confirmed.budget.repair_rounds.get();
+    let predictions = scope_predictions(&confirmed.scope);
+    let withheld = scope_items(&confirmed.scope) - predictions.len();
+    if withheld > 0 {
+        log(
+            steps,
+            format!(
+                "{task}: {withheld} scope item(s) past the readback's limit of {MAX_PREDICTIONS} predictions"
+            ),
+        );
+    }
     let posted = mcp
         .call(
-            "post_readback",
+            "post_scoped_readback",
             json!({
+                "version": MCP_VERSION,
                 "task": task,
+                "scope_rev": confirmed.scope.rev,
+                "scope_hash": confirmed.scope_hash,
                 "summary": planned.summary,
-                "touches": touches(row),
+                "predictions": predictions,
             }),
         )
         .await?;
@@ -412,11 +496,15 @@ async fn try_claim<C: ModelClient>(
             "{task}: readback refused: {reason}"
         )));
     }
-    log(steps, format!("read back {task}: {}", planned.summary));
-    let status = wait_for_verdict(config, mcp, &task).await?;
-    if status != "match" {
-        return Ok(Attempt::Skipped(format!("{task}: readback is {status}")));
-    }
+    log(
+        steps,
+        format!(
+            "read back {task} at scope rev {} with {} prediction(s): {}",
+            confirmed.scope.rev.0,
+            predictions.len(),
+            planned.summary
+        ),
+    );
     match mcp.call("claim_task", json!({ "task": task })).await? {
         Reply::Refused(reason) => Ok(Attempt::Skipped(format!("{task}: claim refused: {reason}"))),
         Reply::Done(value) => {
@@ -428,28 +516,79 @@ async fn try_claim<C: ModelClient>(
                 generation,
                 files: planned.footprint,
                 gave_up: Vec::new(),
+                repair_rounds,
+                rulings: rulings.rulings,
             }))
         }
     }
 }
 
-/// Polls until the readback has a verdict. Returns `pending` when the wait ends first.
-async fn wait_for_verdict(
-    config: &WorkerConfig,
+/// The confirmed scope of `task`, or the refusal the origin gave. A refusal is an answer the caller
+/// acts on, such as a scope that is not confirmed yet.
+async fn get_scope(
     mcp: &McpClient,
     task: &str,
-) -> anyhow::Result<String> {
-    let deadline = Instant::now() + config.wait;
-    loop {
-        let status = readback_status(&get_task(mcp, task).await?);
-        if status != "pending" {
-            return Ok(status);
-        }
-        if Instant::now() >= deadline {
-            return Ok(status);
-        }
-        tokio::time::sleep(config.poll).await;
+) -> anyhow::Result<Result<GetScopeResponse, String>> {
+    match mcp
+        .call("get_scope", json!({ "version": MCP_VERSION, "task": task }))
+        .await?
+    {
+        Reply::Done(value) => Ok(Ok(serde_json::from_value(value).with_context(|| {
+            format!("get_scope answered a scope the worker does not read for {task}")
+        })?)),
+        Reply::Refused(reason) => Ok(Err(reason)),
     }
+}
+
+/// The rulings the origin holds for the task's scope machines, or the refusal it gave. The
+/// machines are the row's scope list; the origin answers only the rulings that apply to them.
+async fn get_rulings(
+    mcp: &McpClient,
+    task: &str,
+    row: &Value,
+) -> anyhow::Result<Result<GetRulingsResponse, String>> {
+    let machines: Vec<Value> = row["scope"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|machine| machine.is_string())
+        .cloned()
+        .collect();
+    match mcp
+        .call(
+            "get_rulings",
+            json!({ "version": MCP_VERSION, "task": task, "machine_ids": machines }),
+        )
+        .await?
+    {
+        Reply::Done(value) => Ok(Ok(serde_json::from_value(value).with_context(|| {
+            format!("get_rulings answered rulings the worker does not read for {task}")
+        })?)),
+        Reply::Refused(reason) => Ok(Err(reason)),
+    }
+}
+
+/// The predictions a readback posts, one for each scope item. They come from the confirmed scope
+/// alone, never from a model: a may-change item predicts the change the scope declares, and a
+/// must-keep rule predicts no change. The core scores them against what the gate observes. A
+/// prediction is never evidence, and a right one never passes anything.
+fn scope_predictions(scope: &Scope) -> Vec<Prediction> {
+    let may = scope.body.may.iter().map(|item| Prediction {
+        selector: item.selector.clone(),
+        predicted: Predicted::Change {
+            change: item.change,
+        },
+    });
+    let keep = scope.body.must_keep.iter().map(|rule| Prediction {
+        selector: rule.selector.clone(),
+        predicted: Predicted::Unchanged {},
+    });
+    may.chain(keep).take(MAX_PREDICTIONS).collect()
+}
+
+/// How many scope items a readback could carry a prediction for.
+fn scope_items(scope: &Scope) -> usize {
+    scope.body.may.len() + scope.body.must_keep.len()
 }
 
 /// Declares, waits for build clearance, and runs the edit loop. Ends with a commit reported, or
@@ -489,73 +628,524 @@ async fn work<C: ModelClient>(
             claim.task
         ),
     );
+    // One round is a wait for build clearance, one edit, and one report. The gate's receipt decides
+    // whether the round ends the work or starts the next one with the core's reproducer.
+    let mut bounced: Vec<Reproducer> = Vec::new();
+    let mut repeats: BTreeMap<String, u32> = BTreeMap::new();
+    let mut round: u32 = 1;
     loop {
-        match wait_for_build(config, mcp, &claim, steps).await? {
-            Clearance::Cleared => break,
-            Clearance::Waiting(stage) => {
+        if let Err(exit) = clear_to_build(config, model, mcp, &mut claim, steps).await? {
+            return Ok(exit);
+        }
+        let mut tools = match open_worktree(config, mcp, &claim, steps).await? {
+            Ok(tools) => tools,
+            Err(reason) => return Ok(Exit::Failed { reason }),
+        };
+        let brief = build_brief(&claim, round, &bounced);
+        let head = match edit(config, model, mcp, &mut claim, &mut tools, brief, steps).await? {
+            Edit::Committed(head) => head,
+            Edit::Stopped(reason) => {
+                return Ok(Exit::NoCommit {
+                    task: claim.task.clone(),
+                    reason,
+                });
+            }
+            Edit::NotCleared(stage) => {
                 return Ok(Exit::NotCleared {
                     task: claim.task.clone(),
                     stage,
                 });
             }
-            Clearance::Lost(reason) => {
+            Edit::Lost(reason) => {
                 return Ok(Exit::Lost {
                     task: claim.task.clone(),
                     reason,
                 });
             }
-            Clearance::Narrowed(given) => {
-                if let Err(reason) =
-                    redeclare(config, model, mcp, &mut claim, &given, steps).await?
-                {
-                    return Ok(Exit::Narrowed {
+            Edit::Narrowed(reason) => {
+                return Ok(Exit::Narrowed {
+                    task: claim.task.clone(),
+                    reason,
+                });
+            }
+        };
+        // The receipt that was latest before this report is not this build's, so the wait below
+        // takes only a receipt the report produced.
+        let before = latest_receipt(mcp, &claim.task)
+            .await?
+            .map(|found| found.receipt_hash);
+        if let Err(reason) = report_built(mcp, &claim, &head, steps).await? {
+            return Ok(Exit::Failed { reason });
+        }
+        let Some(found) = await_receipt(config, mcp, &claim.task, before.as_ref(), steps).await?
+        else {
+            return Ok(Exit::Built {
+                task: claim.task.clone(),
+                generation: claim.generation,
+                head,
+            });
+        };
+        match repair(&found.receipt, &mut repeats) {
+            Repair::Passed => {
+                return Ok(Exit::Built {
+                    task: claim.task.clone(),
+                    generation: claim.generation,
+                    head,
+                });
+            }
+            Repair::Bounced(next) => {
+                // The confirmed budget counts the repair rounds after the first build. A bounce
+                // after the last allowed round has no round left to repair in.
+                if round > claim.repair_rounds {
+                    let reason = format!(
+                        "build {round} bounced, and the confirmed budget of {} repair round(s) is spent",
+                        claim.repair_rounds
+                    );
+                    log(steps, format!("{} went to residue: {reason}", claim.task));
+                    contest_residue(mcp, &claim, &next, &reason, steps).await;
+                    return Ok(Exit::Residue {
                         task: claim.task.clone(),
                         reason,
                     });
                 }
+                log(
+                    steps,
+                    format!(
+                        "the gate bounced build {round} of {}: {} item(s) to repair; building again",
+                        claim.task,
+                        next.len()
+                    ),
+                );
+                bounced = next;
+                round += 1;
+            }
+            Repair::Residue { reason, given_up } => {
+                log(steps, format!("{} went to residue: {reason}", claim.task));
+                contest_residue(mcp, &claim, &given_up, &reason, steps).await;
+                return Ok(Exit::Residue {
+                    task: claim.task.clone(),
+                    reason,
+                });
             }
         }
     }
-    let path = match mcp
+}
+
+/// Files one contest for each item the worker gave up on that has an episode and a contest kind.
+/// A contest asks the human. It never widens the scope and never passes the item. The residue
+/// stands whatever the contest's fate: a refused contest, one that does not reach the origin, or
+/// one answered in a shape the worker does not read is logged, and the run still ends as residue.
+async fn contest_residue(
+    mcp: &McpClient,
+    claim: &Claim,
+    given_up: &[Reproducer],
+    reason: &str,
+    steps: &mut Vec<String>,
+) {
+    for reproducer in given_up {
+        let (Some(episode), Some(kind)) = (reproducer.episode, contest_kind(reproducer.class))
+        else {
+            continue;
+        };
+        let reply = mcp
+            .call(
+                "file_contest",
+                json!({
+                    "version": MCP_VERSION,
+                    "task": claim.task,
+                    "episode_id": episode,
+                    "kind": kind,
+                    "reproducer": reproducer.probe,
+                    "rationale": reason,
+                }),
+            )
+            .await;
+        match reply {
+            Ok(Reply::Done(value)) => match serde_json::from_value::<ContestResponse>(value) {
+                Ok(filed) => log(
+                    steps,
+                    format!(
+                        "filed contest {} on {} against episode {episode}",
+                        filed.contest_id, claim.task
+                    ),
+                ),
+                Err(err) => log(
+                    steps,
+                    format!(
+                        "contest on {} answered in a shape the worker does not read: {err}",
+                        claim.task
+                    ),
+                ),
+            },
+            Ok(Reply::Refused(refusal)) => log(
+                steps,
+                format!("contest on {} refused: {refusal}", claim.task),
+            ),
+            Err(err) => log(
+                steps,
+                format!(
+                    "contest on {} did not reach the origin: {err:#}",
+                    claim.task
+                ),
+            ),
+        }
+    }
+}
+
+/// The kind of contest an item the worker gave up on files. A ruling the item violates is a spec
+/// conflict. A difference no scope item allows, and an obligation the build could not meet inside
+/// the scope, are blocked work. Other classes are not contested by the worker.
+fn contest_kind(class: ItemClass) -> Option<ContestKind> {
+    match class {
+        ItemClass::ViolatesRuling => Some(ContestKind::SpecConflict),
+        ItemClass::OutOfScope | ItemClass::ObligationFailed => Some(ContestKind::Blocked),
+        ItemClass::Preserved
+        | ItemClass::ObligationFulfilled
+        | ItemClass::AuthorizedButUnspecified
+        | ItemClass::UnstableBase
+        | ItemClass::Incomparable
+        | ItemClass::Error => None,
+    }
+}
+
+/// Waits for build clearance, and re-plans when a Narrow settlement takes places the claim needs.
+/// The error is the exit the work ends with: the claim is not cleared, or it is lost or narrowed
+/// past repair.
+async fn clear_to_build<C: ModelClient>(
+    config: &WorkerConfig,
+    model: &C,
+    mcp: &McpClient,
+    claim: &mut Claim,
+    steps: &mut Vec<String>,
+) -> anyhow::Result<Result<(), Exit>> {
+    loop {
+        match wait_for_build(config, mcp, claim, steps).await? {
+            Clearance::Cleared => return Ok(Ok(())),
+            Clearance::Waiting(stage) => {
+                return Ok(Err(Exit::NotCleared {
+                    task: claim.task.clone(),
+                    stage,
+                }));
+            }
+            Clearance::Lost(reason) => {
+                return Ok(Err(Exit::Lost {
+                    task: claim.task.clone(),
+                    reason,
+                }));
+            }
+            Clearance::Narrowed(given) => {
+                if let Err(reason) = redeclare(config, model, mcp, claim, &given, steps).await? {
+                    return Ok(Err(Exit::Narrowed {
+                        task: claim.task.clone(),
+                        reason,
+                    }));
+                }
+            }
+        }
+    }
+}
+
+/// The tools for one round, from the origin's view of the task's worktree: the worktree, the files
+/// the task declares, and the protected-head snapshot when the view names one.
+async fn open_worktree(
+    config: &WorkerConfig,
+    mcp: &McpClient,
+    claim: &Claim,
+    steps: &mut Vec<String>,
+) -> anyhow::Result<Result<Worktree, String>> {
+    let view = match mcp
         .call("get_worktree", json!({ "task": claim.task }))
         .await?
     {
-        Reply::Done(view) => string_field(&view, "path"),
+        Reply::Done(view) => view,
         Reply::Refused(reason) => {
-            return Ok(Exit::Failed {
-                reason: format!("get_worktree refused on {}: {reason}", claim.task),
-            });
+            return Ok(Err(format!(
+                "get_worktree refused on {}: {reason}",
+                claim.task
+            )));
         }
     };
+    Ok(Ok(tools_for(config, claim, &view, steps)))
+}
+
+/// Builds the tools from a worktree view. The protected-head snapshot is passed on when the view
+/// names one. Without it `run_tests` refuses, so the worker never runs tests against protected
+/// paths it cannot pin.
+fn tools_for(
+    config: &WorkerConfig,
+    claim: &Claim,
+    view: &Value,
+    steps: &mut Vec<String>,
+) -> Worktree {
+    let path = string_field(view, "path");
     log(steps, format!("worktree for {}: {path}", claim.task));
-    let mut tools = Worktree::new(
+    let tools = Worktree::new(
         PathBuf::from(path),
         &claim.files,
         config.test_command.clone(),
     );
-    let brief = format!(
-        "Task {}. Declared files: {}.",
+    match view["snapshot"].as_str() {
+        Some(snapshot) => {
+            log(
+                steps,
+                format!("protected-head snapshot for {}: {snapshot}", claim.task),
+            );
+            tools.with_snapshot(snapshot)
+        }
+        None => {
+            log(
+                steps,
+                format!(
+                    "no protected-head snapshot for {}; run_tests will refuse",
+                    claim.task
+                ),
+            );
+            tools
+        }
+    }
+}
+
+/// The brief for one build round. Round one names the task and its files. A later round names the
+/// bounce it answers and each reproducer the gate gave: the item, its class, the probe that
+/// checked it, and the obligations that failed, all in the core's words.
+fn build_brief(claim: &Claim, round: u32, bounced: &[Reproducer]) -> String {
+    let files = claim.files.join(", ");
+    let rulings = rulings_section(&claim.rulings);
+    if bounced.is_empty() {
+        return format!("Task {}. Declared files: {files}.\n\n{rulings}", claim.task);
+    }
+    let reproducers: Vec<String> = bounced
+        .iter()
+        .map(|reproducer| {
+            format!(
+                "- item {} ({}) on probe {}: {}",
+                reproducer.item,
+                class_name(reproducer.class),
+                reproducer.probe,
+                reproducer.failed.join("; ")
+            )
+        })
+        .collect();
+    format!(
+        "Build {round} of {}. Declared files: {files}.\n\nThe gate bounced build {}. Repair only what it reports, in the files you declared:\n{}\n\n{rulings}",
         claim.task,
-        claim.files.join(", ")
-    );
-    match edit(config, model, mcp, &mut claim, &mut tools, brief, steps).await? {
-        Edit::Committed(head) => report(mcp, &claim, head, steps).await,
-        Edit::Stopped(reason) => Ok(Exit::NoCommit {
-            task: claim.task.clone(),
-            reason,
-        }),
-        Edit::NotCleared(stage) => Ok(Exit::NotCleared {
-            task: claim.task.clone(),
-            stage,
-        }),
-        Edit::Lost(reason) => Ok(Exit::Lost {
-            task: claim.task.clone(),
-            reason,
-        }),
-        Edit::Narrowed(reason) => Ok(Exit::Narrowed {
-            task: claim.task.clone(),
-            reason,
-        }),
+        round - 1,
+        reproducers.join("\n")
+    )
+}
+
+/// The rulings in force, one line each, labelled as the origin's text. Superseded rulings are
+/// left out. A ruling the gate checks is named as such; one it does not is a note. Neither one is
+/// a verdict on this build.
+fn rulings_section(rulings: &[RulingSummary]) -> String {
+    let lines: Vec<String> = rulings
+        .iter()
+        .filter(|ruling| ruling.state == RulingTagState::Active)
+        .map(ruling_line)
+        .collect();
+    if lines.is_empty() {
+        return "No rulings are in force on this task's machines.".to_owned();
+    }
+    format!(
+        "Rulings in force on this task's machines (the origin's text; the gate decides what passes):\n{}",
+        lines.join("\n")
+    )
+}
+
+/// One ruling as a brief line: its label, its lineage, and whether the gate checks it.
+fn ruling_line(ruling: &RulingSummary) -> String {
+    let gate = match &ruling.enforcement {
+        Enforcement::Enforced { .. } => "the gate checks it".to_owned(),
+        Enforcement::NotEnforced { reason, .. } => match reason {
+            NotEnforcedReason::Unexpressible { detail } => {
+                format!("a note the gate does not check: {detail}")
+            }
+            NotEnforcedReason::Deferred {} => {
+                "a note the gate does not check: the decision is deferred".to_owned()
+            }
+        },
+    };
+    format!("- {} ({}): {gate}", ruling.label, ruling.ruling_id)
+}
+
+/// The core's reproducer for one bounced item: what it checks, the probe that showed the
+/// difference, the obligations that failed in the core's words, and the episode the core filed
+/// the difference under, when there is one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Reproducer {
+    /// The receipt item's id.
+    item: String,
+    /// The class the core gave the item.
+    class: ItemClass,
+    /// The probe that checked the item.
+    probe: ProbeHash,
+    /// The episode of the difference, which a contest names.
+    episode: Option<EpisodeId>,
+    /// Each failed obligation, with the core's detail.
+    failed: Vec<String>,
+}
+
+impl Reproducer {
+    fn of(item: &ReceiptItem) -> Self {
+        let failed: Vec<String> = item
+            .evaluation
+            .obligations
+            .iter()
+            .filter_map(|check| match &check.result {
+                CheckResult::Fail { detail } => {
+                    Some(format!("{} failed: {detail}", check.obligation_id))
+                }
+                CheckResult::Pass {} | CheckResult::Unknown { .. } => None,
+            })
+            .collect();
+        Self {
+            item: item.item_id.to_string(),
+            class: item.class,
+            probe: item.probe_hash,
+            episode: item.episode_id,
+            failed: if failed.is_empty() {
+                vec![format!(
+                    "no obligation failed; the core classed the difference as {}",
+                    class_name(item.class)
+                )]
+            } else {
+                failed
+            },
+        }
+    }
+}
+
+/// What a receipt asks of the next round.
+#[derive(Debug, PartialEq, Eq)]
+enum Repair {
+    /// Every item passed or was preserved, so the build stands.
+    Passed,
+    /// Items to repair, each with its reproducer. The next round builds again with them.
+    Bounced(Vec<Reproducer>),
+    /// The loop cannot take another round. `reason` is the difference it stopped on. `given_up`
+    /// holds the items the worker repaired without success, which it contests when they have an
+    /// episode. The core's own stops give up nothing: the core already decided them.
+    Residue {
+        reason: String,
+        given_up: Vec<Reproducer>,
+    },
+}
+
+/// Reads a receipt into the next round. A bounce is a difference the worker can repair. A residue
+/// is one it cannot: a difference the core stopped, one that needs a human ruling, or an item that
+/// could not be run. The same difference bounced `REPEAT_LIMIT` times is residue, so the loop
+/// never runs a fourth build on it.
+fn repair(receipt: &Receipt, repeats: &mut BTreeMap<String, u32>) -> Repair {
+    let mut bounced = Vec::new();
+    for item in &receipt.items {
+        if matches!(item.state, ItemState::Stopped | ItemState::Residue) {
+            return Repair::Residue {
+                reason: format!(
+                    "{} is {:?}: the core stopped it, so a human decides",
+                    item.item_id, item.state
+                ),
+                given_up: Vec::new(),
+            };
+        }
+        match item.class {
+            ItemClass::Preserved | ItemClass::ObligationFulfilled => {}
+            ItemClass::ObligationFailed | ItemClass::OutOfScope | ItemClass::ViolatesRuling => {
+                let key = format!(
+                    "{}/{}/{}",
+                    item.item_id,
+                    class_name(item.class),
+                    item.probe_hash
+                );
+                let seen = repeats.entry(key).or_insert(0);
+                *seen += 1;
+                if *seen >= REPEAT_LIMIT {
+                    return Repair::Residue {
+                        reason: format!(
+                            "{} bounced {} times on the same difference (probe {}), and the third repeat is residue",
+                            item.item_id, *seen, item.probe_hash
+                        ),
+                        given_up: vec![Reproducer::of(item)],
+                    };
+                }
+                bounced.push(Reproducer::of(item));
+            }
+            ItemClass::AuthorizedButUnspecified
+            | ItemClass::UnstableBase
+            | ItemClass::Incomparable
+            | ItemClass::Error => {
+                return Repair::Residue {
+                    reason: format!(
+                        "{} is {}, which no build repairs",
+                        item.item_id,
+                        class_name(item.class)
+                    ),
+                    given_up: Vec::new(),
+                };
+            }
+        }
+    }
+    if bounced.is_empty() {
+        Repair::Passed
+    } else {
+        Repair::Bounced(bounced)
+    }
+}
+
+/// The wire spelling of a receipt class, such as `obligation_failed`.
+fn class_name(class: ItemClass) -> String {
+    serde_json::to_value(class)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| format!("{class:?}"))
+}
+
+/// The latest receipt of the task's gate runs, or `None` when there is none yet.
+async fn latest_receipt(mcp: &McpClient, task: &str) -> anyhow::Result<Option<GetReceiptResponse>> {
+    match mcp
+        .call(
+            "get_receipt",
+            json!({ "version": MCP_VERSION, "task": task }),
+        )
+        .await?
+    {
+        Reply::Done(value) => Ok(Some(serde_json::from_value(value).with_context(|| {
+            format!("get_receipt answered a receipt the worker does not read for {task}")
+        })?)),
+        Reply::Refused(_) => Ok(None),
+    }
+}
+
+/// Polls for a receipt whose hash differs from `before`, the receipt that was latest before the
+/// report. Returns `None` when the wait ends first, which leaves the build reported.
+async fn await_receipt(
+    config: &WorkerConfig,
+    mcp: &McpClient,
+    task: &str,
+    before: Option<&ReceiptHash>,
+    steps: &mut Vec<String>,
+) -> anyhow::Result<Option<GetReceiptResponse>> {
+    let deadline = Instant::now() + config.receipt_wait;
+    loop {
+        if let Some(found) = latest_receipt(mcp, task).await?
+            && Some(&found.receipt_hash) != before
+        {
+            log(
+                steps,
+                format!("the gate answered {task}: receipt {}", found.receipt_hash),
+            );
+            return Ok(Some(found));
+        }
+        if Instant::now() >= deadline {
+            log(
+                steps,
+                format!(
+                    "no receipt for {task} within {:?}; the build stays reported while the gate runs",
+                    config.receipt_wait
+                ),
+            );
+            return Ok(None);
+        }
+        tokio::time::sleep(config.poll).await;
     }
 }
 
@@ -958,12 +1548,13 @@ async fn run_tool(
     }))
 }
 
-async fn report(
+/// Reports the commit as the build. The error is the refusal the origin gave.
+async fn report_built(
     mcp: &McpClient,
     claim: &Claim,
-    head: String,
+    head: &str,
     steps: &mut Vec<String>,
-) -> anyhow::Result<Exit> {
+) -> anyhow::Result<Result<(), String>> {
     let reported = mcp
         .call(
             "report_built",
@@ -977,15 +1568,12 @@ async fn report(
     match reported {
         Reply::Done(_) => {
             log(steps, format!("reported {head} on {}", claim.task));
-            Ok(Exit::Built {
-                task: claim.task.clone(),
-                generation: claim.generation,
-                head,
-            })
+            Ok(Ok(()))
         }
-        Reply::Refused(reason) => Ok(Exit::Failed {
-            reason: format!("report_built refused on {}: {reason}", claim.task),
-        }),
+        Reply::Refused(reason) => Ok(Err(format!(
+            "report_built refused on {}: {reason}",
+            claim.task
+        ))),
     }
 }
 
@@ -1139,17 +1727,6 @@ async fn planning_brief(repo: &RepoFiles, row: &Value, given: &[Given]) -> Strin
     )
 }
 
-/// The machines a task is scoped to, as the loci a readback touches.
-fn touches(row: &Value) -> Value {
-    let loci: Vec<Value> = row["scope"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .map(|machine| json!({ "at": "machine", "machine": machine }))
-        .collect();
-    Value::Array(loci)
-}
-
 async fn open_tasks(mcp: &McpClient) -> anyhow::Result<Vec<Value>> {
     match mcp.call("list_tasks", json!({})).await? {
         Reply::Done(Value::Array(rows)) => Ok(rows
@@ -1166,14 +1743,6 @@ async fn get_task(mcp: &McpClient, task: &str) -> anyhow::Result<Value> {
         Reply::Done(detail) => Ok(detail),
         Reply::Refused(reason) => bail!("get_task on {task} was refused: {reason}"),
     }
-}
-
-/// The status of this agent's latest readback, or `none` when it has not read back.
-fn readback_status(detail: &Value) -> String {
-    detail["your_readback"]["status"]
-        .as_str()
-        .unwrap_or("none")
-        .to_owned()
 }
 
 fn get_task_spec() -> ToolSpec {
@@ -1200,9 +1769,14 @@ fn log(steps: &mut Vec<String>, text: String) {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex as StdMutex};
 
-    use acan_llm::{Reply, Stub};
+    use acan_llm::{ChatResponse, FunctionCall, LlmError, Reply, Stub, ToolKind};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
 
     use super::*;
 
@@ -1297,6 +1871,8 @@ mod tests {
             generation: 3,
             files: vec!["model/store.ts".to_owned()],
             gave_up: Vec::new(),
+            repair_rounds: 2,
+            rulings: Vec::new(),
         }
     }
 
@@ -1486,5 +2062,813 @@ mod tests {
         .expect("an empty re-plan is returned, not refused");
         assert!(planned.footprint.is_empty(), "{:?}", planned.footprint);
         assert_eq!(planned.summary, "the loader needs src/a.ts");
+    }
+
+    /// A real gate answer from the intent fixtures: one bounced item, `i-retry-after`, failing its
+    /// obligation on the probe below.
+    const RECEIPT: &str = include_str!("../../acan-intent/fixtures/mcp-get-receipt-response.json");
+    /// A real scope answer from the intent fixtures, confirmed at revision 2.
+    const SCOPE: &str = include_str!("../../acan-intent/fixtures/mcp-get-scope-response.json");
+    const PROBE: &str = "sha256:762703905cfc5ffa376dfb1b89d53c9ce693dc5f3e1628b39b06935364f62b45";
+    /// The episode `i-retry-after` is filed under in the same fixture.
+    const EPISODE: &str = "sha256:1acc401ccb3ea61be044f545a3612c535b8aebe6d8333b3d55cc56773f59e736";
+    /// The rulings the origin holds for the task, from the intent fixtures: one enforced, one note.
+    const RULINGS: &str = include_str!("../../acan-intent/fixtures/mcp-get-rulings-response.json");
+    const STORE: &str = "model/store.ts";
+
+    /// The gate's answer for build `build`, with only the item `keep` among its items. Each build
+    /// gets its own receipt hash, as each build gets its own run.
+    fn receipt_of(keep: &str, build: u32) -> Value {
+        let mut value: Value = serde_json::from_str(RECEIPT).expect("the receipt fixture is JSON");
+        value["receipt_hash"] = json!(format!("sha256:{build:064x}"));
+        value["receipt"]["items"]
+            .as_array_mut()
+            .expect("the fixture has items")
+            .retain(|item| item["item_id"] == keep);
+        value
+    }
+
+    /// The receipt of build `build` as the worker reads it.
+    fn receipt_items(keep: &str, build: u32) -> Receipt {
+        let response: GetReceiptResponse =
+            serde_json::from_value(receipt_of(keep, build)).expect("the receipt decodes");
+        response.receipt
+    }
+
+    #[test]
+    fn a_bounce_names_its_failing_obligation_and_probe_for_the_next_build() {
+        let mut repeats = BTreeMap::new();
+        let Repair::Bounced(next) = repair(&receipt_items("i-retry-after", 1), &mut repeats) else {
+            panic!("a failing item bounces");
+        };
+        assert_eq!(next.len(), 1, "{next:?}");
+        assert_eq!(next[0].item, "i-retry-after");
+        assert_eq!(next[0].class, ItemClass::ObligationFailed);
+        assert_eq!(next[0].probe.to_string(), PROBE);
+        assert_eq!(
+            next[0]
+                .episode
+                .map(|episode| episode.to_string())
+                .as_deref(),
+            Some(EPISODE)
+        );
+        assert_eq!(
+            next[0].failed,
+            vec!["obl-retry-after failed: header.retry-after is absent at step s6".to_owned()]
+        );
+        let brief = build_brief(&claim(), 2, &next);
+        assert!(
+            brief.starts_with("Build 2 of t-1. Declared files: model/store.ts."),
+            "{brief}"
+        );
+        assert!(brief.contains("The gate bounced build 1."), "{brief}");
+        assert!(
+            brief.contains(&format!(
+                "- item i-retry-after (obligation_failed) on probe {PROBE}: obl-retry-after failed: header.retry-after is absent at step s6"
+            )),
+            "{brief}"
+        );
+    }
+
+    #[test]
+    fn the_third_repeat_of_the_same_difference_is_residue() {
+        let receipt = receipt_items("i-retry-after", 1);
+        let mut repeats = BTreeMap::new();
+        assert!(matches!(repair(&receipt, &mut repeats), Repair::Bounced(_)));
+        assert!(matches!(repair(&receipt, &mut repeats), Repair::Bounced(_)));
+        let Repair::Residue { reason, given_up } = repair(&receipt, &mut repeats) else {
+            panic!("the third repeat is residue");
+        };
+        assert!(reason.contains("third repeat is residue"), "{reason}");
+        // The item the worker gave up on is the one it contests, under its own episode.
+        assert_eq!(given_up.len(), 1, "{given_up:?}");
+        assert_eq!(given_up[0].item, "i-retry-after");
+        assert!(given_up[0].episode.is_some(), "{given_up:?}");
+    }
+
+    #[test]
+    fn a_passing_item_builds_nothing_more_and_a_stopped_or_unspecified_item_is_residue() {
+        assert_eq!(
+            repair(&receipt_items("chk-health", 1), &mut BTreeMap::new()),
+            Repair::Passed
+        );
+        let Repair::Residue {
+            reason: stopped,
+            given_up,
+        } = repair(&receipt_items("d-links-clicks", 1), &mut BTreeMap::new())
+        else {
+            panic!("a stopped item is residue");
+        };
+        assert!(stopped.contains("the core stopped it"), "{stopped}");
+        // The core stopped the item, so the worker has nothing to contest.
+        assert!(given_up.is_empty(), "{given_up:?}");
+        assert!(matches!(
+            repair(
+                &receipt_items("d-login-error-body", 1),
+                &mut BTreeMap::new()
+            ),
+            Repair::Residue { .. }
+        ));
+    }
+
+    #[test]
+    fn only_the_difference_classes_the_worker_repairs_are_contested_and_with_their_kind() {
+        assert_eq!(
+            contest_kind(ItemClass::ViolatesRuling),
+            Some(ContestKind::SpecConflict)
+        );
+        assert_eq!(
+            contest_kind(ItemClass::OutOfScope),
+            Some(ContestKind::Blocked)
+        );
+        assert_eq!(
+            contest_kind(ItemClass::ObligationFailed),
+            Some(ContestKind::Blocked)
+        );
+        assert_eq!(contest_kind(ItemClass::Preserved), None);
+        assert_eq!(contest_kind(ItemClass::AuthorizedButUnspecified), None);
+    }
+
+    #[test]
+    fn the_rulings_in_force_are_briefed_as_the_origins_text_and_superseded_ones_are_left_out() {
+        let response: GetRulingsResponse =
+            serde_json::from_str(RULINGS).expect("the rulings fixture decodes");
+        let section = rulings_section(&response.rulings);
+        assert!(
+            section.starts_with("Rulings in force on this task's machines (the origin's text; the gate decides what passes):"),
+            "{section}"
+        );
+        assert!(
+            section.contains("- Links list stays newest first (r-1): the gate checks it"),
+            "{section}"
+        );
+        assert!(
+            section.contains("- Error pages read as plain sentences (r-2): a note the gate does not check: tone of error text has no predicate"),
+            "{section}"
+        );
+        // A superseded ruling is no longer in force, so the brief does not name it.
+        let mut superseded: Value = serde_json::from_str(RULINGS).expect("JSON");
+        superseded["rulings"][0]["state"] = json!("superseded");
+        let response: GetRulingsResponse =
+            serde_json::from_value(superseded).expect("the edited rulings decode");
+        let section = rulings_section(&response.rulings);
+        assert!(
+            !section.contains("Links list stays newest first"),
+            "{section}"
+        );
+        assert!(
+            section.contains("Error pages read as plain sentences"),
+            "{section}"
+        );
+        assert_eq!(
+            rulings_section(&[]),
+            "No rulings are in force on this task's machines."
+        );
+    }
+
+    /// A repository with `model/store.ts` committed on `main`, and the worker's identity set.
+    fn bounce_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().expect("a repository");
+        let root = dir.path();
+        git_in(root, &["init", "-q", "-b", "main"]);
+        git_in(root, &["config", "user.name", "Test Worker"]);
+        git_in(root, &["config", "user.email", "worker@example.test"]);
+        git_in(root, &["config", "core.autocrlf", "false"]);
+        fs::create_dir_all(root.join("model")).expect("the machine directory");
+        fs::write(root.join(STORE), "export function load() { return 1; }\n").expect("the fixture");
+        git_in(root, &["add", "-A"]);
+        git_in(root, &["commit", "-q", "-m", "initial"]);
+        dir
+    }
+
+    fn git_in(dir: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    /// The tools one round sees, from a view that names a snapshot or does not. A test run needs
+    /// the snapshot, so the view without one is refused and the view with one is not.
+    #[test]
+    fn a_worktree_view_with_a_snapshot_arms_the_tests_and_one_without_refuses_them() {
+        let config = WorkerConfig {
+            server: String::new(),
+            token: String::new(),
+            repo: PathBuf::new(),
+            test_command: Some("cargo test".to_owned()),
+            max_steps: 1,
+            wait: Duration::ZERO,
+            receipt_wait: Duration::ZERO,
+            heartbeat: Duration::from_secs(1),
+            poll: Duration::from_millis(1),
+        };
+        let root = tempfile::tempdir().expect("a worktree");
+        let snapshot = tempfile::tempdir().expect("a snapshot");
+        let mut steps = Vec::new();
+        let armed = tools_for(
+            &config,
+            &claim(),
+            &json!({ "path": root.path().display().to_string(), "snapshot": snapshot.path().display().to_string() }),
+            &mut steps,
+        );
+        let unarmed = tools_for(
+            &config,
+            &claim(),
+            &json!({ "path": root.path().display().to_string() }),
+            &mut steps,
+        );
+        let refused = unarmed
+            .test_container_args("probe")
+            .expect_err("a test run without a snapshot is refused");
+        assert!(
+            refused.contains("no protected-head snapshot is set"),
+            "{refused}"
+        );
+        // The snapshot here is empty, so the policy may refuse for the protected paths it lacks,
+        // but never for want of a snapshot.
+        if let Err(reason) = armed.test_container_args("probe") {
+            assert!(
+                !reason.contains("no protected-head snapshot is set"),
+                "{reason}"
+            );
+        }
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.starts_with("protected-head snapshot for t-1: ")),
+            "{steps:?}"
+        );
+        assert!(
+            steps.iter().any(|step| step
+                .starts_with("no protected-head snapshot for t-1; run_tests will refuse")),
+            "{steps:?}"
+        );
+    }
+
+    /// What the fake origin holds for one open task that its gate answers build by build.
+    #[derive(Default)]
+    struct Origin {
+        /// The stage `get_task` reports. A declared task is cleared to build on the next read.
+        stage: String,
+        /// Builds reported so far. Build `n` is answered by receipt `n`.
+        reports: usize,
+        /// The gate's receipts, in build order.
+        receipts: Vec<Value>,
+        /// The scope `get_scope` answers, with the repair budget the test sets.
+        scope: Value,
+        /// The rulings `get_rulings` answers.
+        rulings: Value,
+        /// The contests the worker filed, as it sent them.
+        contests: Vec<Value>,
+        /// Whether the origin refuses every contest, as a test of the residue that stands anyway.
+        refuse_contests: bool,
+        /// The worktree and its snapshot, as `get_worktree` names them.
+        worktree: String,
+        snapshot: String,
+        /// Every tool the worker called, in order.
+        calls: Vec<String>,
+        /// The tasks the worker released.
+        released: Vec<String>,
+    }
+
+    /// Answers one MCP message for the fake origin. A notification has no answer.
+    fn dispatch(origin: &StdMutex<Origin>, message: &Value) -> Option<Value> {
+        let id = message["id"].clone();
+        match message["method"].as_str()? {
+            "initialize" => Some(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": { "protocolVersion": "2025-06-18" },
+            })),
+            "tools/call" => {
+                let name = message["params"]["name"].as_str().unwrap_or_default();
+                let mut guard = origin.lock().expect("the fake origin is not poisoned");
+                let answer = tool(&mut guard, name, &message["params"]["arguments"]);
+                let result = match answer {
+                    Ok(value) => json!({
+                        "content": [{ "type": "text", "text": value.to_string() }],
+                        "isError": false,
+                    }),
+                    Err(refusal) => json!({
+                        "content": [{ "type": "text", "text": refusal }],
+                        "isError": true,
+                    }),
+                };
+                Some(json!({ "jsonrpc": "2.0", "id": id, "result": result }))
+            }
+            _ => None,
+        }
+    }
+
+    /// One tool call answered as the origin would for a single open task.
+    fn tool(origin: &mut Origin, name: &str, args: &Value) -> Result<Value, String> {
+        origin.calls.push(name.to_owned());
+        match name {
+            "heartbeat_task" | "post_scoped_readback" => Ok(json!({})),
+            "list_tasks" => Ok(json!([{
+                "task": "t-1",
+                "order": "o-1",
+                "state": "open",
+                "title": "Change the loader",
+                "brief": "change the loader",
+                "scope": ["model"],
+            }])),
+            "get_scope" => Ok(origin.scope.clone()),
+            "get_rulings" => Ok(origin.rulings.clone()),
+            "file_contest" => {
+                origin.contests.push(args.clone());
+                if origin.refuse_contests {
+                    return Err("the contest was not recorded".to_owned());
+                }
+                Ok(json!({
+                    "version": "acan-mcp/1",
+                    "contest_id": "k-1",
+                    "target": args["episode_id"],
+                    "status": "open",
+                }))
+            }
+            "claim_task" => Ok(json!({ "task": "t-1", "generation": 1 })),
+            "declare_changes" => Ok(json!({ "clashes_found": [] })),
+            "get_task" => {
+                let shown = origin.stage.clone();
+                if origin.stage == "declared" {
+                    origin.stage = "building".to_owned();
+                }
+                Ok(json!({
+                    "task": "t-1",
+                    "state": "claimed",
+                    "stage": shown,
+                    "you_hold": true,
+                    "generation": 1,
+                    "clashes": [],
+                }))
+            }
+            "get_worktree" => Ok(json!({
+                "task": "t-1",
+                "path": origin.worktree,
+                "branch": "unit/t-1",
+                "snapshot": origin.snapshot,
+            })),
+            "report_built" => {
+                origin.reports += 1;
+                origin.stage = "gating".to_owned();
+                Ok(json!({ "task": "t-1", "run": origin.reports }))
+            }
+            "get_receipt" => {
+                let receipt = origin
+                    .reports
+                    .checked_sub(1)
+                    .and_then(|built| origin.receipts.get(built))
+                    .cloned()
+                    .ok_or_else(|| "no receipt for t-1 yet".to_owned())?;
+                // The gate closes the run, so the task is declared again until it is cleared.
+                origin.stage = "declared".to_owned();
+                Ok(receipt)
+            }
+            "release_task" => {
+                origin.released.push(string_arg(args, "task"));
+                origin.stage = "open".to_owned();
+                Ok(json!({}))
+            }
+            other => Err(format!("the fake origin has no tool named {other}")),
+        }
+    }
+
+    /// Serves the fake origin on a loopback port and returns its base URL. Each connection carries
+    /// one message, which is how the MCP client sends them.
+    async fn serve(origin: Arc<StdMutex<Origin>>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("the fake origin binds");
+        let address = listener
+            .local_addr()
+            .expect("the fake origin has an address");
+        tokio::spawn(async move {
+            loop {
+                let Ok((socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let origin = Arc::clone(&origin);
+                tokio::spawn(async move {
+                    // A connection that fails mid-message only ends that connection.
+                    let _ = answer_http(socket, &origin).await;
+                });
+            }
+        });
+        format!("http://{address}")
+    }
+
+    /// Reads one HTTP request, answers its JSON-RPC message, and closes the connection.
+    async fn answer_http(mut socket: TcpStream, origin: &StdMutex<Origin>) -> std::io::Result<()> {
+        let mut buf = Vec::new();
+        let (body_start, length) = loop {
+            if let Some(end) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+                let length = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                break (end + 4, length);
+            }
+            if read_more(&mut socket, &mut buf).await? == 0 {
+                return Ok(());
+            }
+        };
+        while buf.len() < body_start + length {
+            if read_more(&mut socket, &mut buf).await? == 0 {
+                return Ok(());
+            }
+        }
+        let message: Value = serde_json::from_slice(&buf[body_start..body_start + length])
+            .expect("the worker sends JSON");
+        let (status, body) = match dispatch(origin, &message) {
+            Some(answer) => ("200 OK", answer.to_string()),
+            None => ("202 Accepted", String::new()),
+        };
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        socket.write_all(response.as_bytes()).await?;
+        socket.shutdown().await
+    }
+
+    async fn read_more(socket: &mut TcpStream, buf: &mut Vec<u8>) -> std::io::Result<usize> {
+        let mut chunk = [0u8; 4096];
+        let read = socket.read(&mut chunk).await?;
+        buf.extend_from_slice(&chunk[..read]);
+        Ok(read)
+    }
+
+    /// The model the bounce runs use. It records the brief each edit starts with, and answers from
+    /// a script.
+    struct Recording {
+        script: Stub,
+        briefs: StdMutex<Vec<String>>,
+    }
+
+    impl ModelClient for Recording {
+        async fn chat(&self, role: Role, request: ChatRequest) -> Result<ChatResponse, LlmError> {
+            // An edit's first tool request carries its brief and no tool replies yet.
+            if !request.tools.is_empty()
+                && replies(&request) == 0
+                && let Some(brief) = request.last_user_text()
+            {
+                self.briefs
+                    .lock()
+                    .expect("the brief log is not poisoned")
+                    .push(brief.to_owned());
+            }
+            self.script.chat(role, request).await
+        }
+    }
+
+    /// The build a tool request belongs to: `n` when its brief says `Build n of`, otherwise 1.
+    fn build_of(request: &ChatRequest) -> u32 {
+        let text = request.last_user_text().unwrap_or_default();
+        (2..=9)
+            .find(|build| text.contains(&format!("Build {build} of ")))
+            .unwrap_or(1)
+    }
+
+    /// The tool replies one edit has received, so a request knows which step of the build it is.
+    fn replies(request: &ChatRequest) -> usize {
+        request
+            .messages
+            .iter()
+            .filter(|message| matches!(message, Message::Tool { .. }))
+            .count()
+    }
+
+    fn tool_call(name: &str, arguments: Value) -> ToolCall {
+        ToolCall {
+            id: format!("call-{name}"),
+            kind: ToolKind::Function,
+            function: FunctionCall {
+                name: name.to_owned(),
+                arguments: arguments.to_string(),
+            },
+        }
+    }
+
+    /// The scripted worker. It plans the store file, then in build `n` writes version `n + 1` and
+    /// commits it. It never stops early, so the loop's own stops decide how the run ends.
+    fn bounce_script() -> Stub {
+        let plan = Reply::json(&json!({ "summary": "change the loader", "files": [STORE] }));
+        let mut script =
+            Stub::default().when(Role::Worker, |request| request.tools.is_empty(), plan);
+        for build in 1..=3 {
+            script = script
+                .when(
+                    Role::Worker,
+                    move |request| build_of(request) == build && replies(request) == 0,
+                    Reply {
+                        tool_calls: vec![tool_call(
+                            "write_file",
+                            json!({
+                                "path": STORE,
+                                "content": format!("export function load() {{ return {}; }}\n", build + 1),
+                            }),
+                        )],
+                        ..Reply::default()
+                    },
+                )
+                .when(
+                    Role::Worker,
+                    move |request| build_of(request) == build && replies(request) == 1,
+                    Reply {
+                        tool_calls: vec![tool_call(
+                            "commit",
+                            json!({ "message": format!("build {build}") }),
+                        )],
+                        ..Reply::default()
+                    },
+                );
+        }
+        script.when(
+            Role::Worker,
+            |_| true,
+            Reply::text("the build is committed"),
+        )
+    }
+
+    /// What one bounce run ended with.
+    struct Ran {
+        outcome: Outcome,
+        /// The brief of every edit, in build order.
+        briefs: Vec<String>,
+        /// Builds the worker reported to the origin.
+        reports: usize,
+        /// The tasks the worker released.
+        released: Vec<String>,
+        /// Every tool the worker called.
+        calls: Vec<String>,
+        /// The contests the worker filed.
+        contests: Vec<Value>,
+    }
+
+    /// Runs one worker against the fake origin. The gate answers build `n` with `receipts[n - 1]`,
+    /// and the confirmed scope allows `budget` repair rounds.
+    async fn run_bounces(repo: &Path, budget: u32, receipts: Vec<Value>) -> Ran {
+        run_bounces_as(repo, budget, receipts, false).await
+    }
+
+    /// As [`run_bounces`], and the origin refuses every contest when `refuse_contests` is set.
+    async fn run_bounces_as(
+        repo: &Path,
+        budget: u32,
+        receipts: Vec<Value>,
+        refuse_contests: bool,
+    ) -> Ran {
+        let snapshot = tempfile::tempdir().expect("a protected-head snapshot");
+        let mut scope: Value = serde_json::from_str(SCOPE).expect("the scope fixture is JSON");
+        scope["budget"]["repair_rounds"] = json!(budget);
+        let origin = Arc::new(StdMutex::new(Origin {
+            stage: "declared".to_owned(),
+            receipts,
+            scope,
+            rulings: serde_json::from_str(RULINGS).expect("the rulings fixture is JSON"),
+            refuse_contests,
+            worktree: repo.display().to_string(),
+            snapshot: snapshot.path().display().to_string(),
+            ..Origin::default()
+        }));
+        let server = serve(Arc::clone(&origin)).await;
+        let config = WorkerConfig {
+            server,
+            token: "acan_agent_fake".to_owned(),
+            repo: repo.to_path_buf(),
+            test_command: None,
+            max_steps: 5,
+            wait: Duration::from_secs(10),
+            receipt_wait: Duration::from_secs(10),
+            heartbeat: Duration::from_secs(3600),
+            poll: Duration::from_millis(5),
+        };
+        let model = Recording {
+            script: bounce_script(),
+            briefs: StdMutex::new(Vec::new()),
+        };
+        let outcome = run(&config, &model).await;
+        let briefs = model
+            .briefs
+            .into_inner()
+            .expect("the brief log is not poisoned");
+        let origin = origin.lock().expect("the fake origin is not poisoned");
+        Ran {
+            outcome,
+            briefs,
+            reports: origin.reports,
+            released: origin.released.clone(),
+            calls: origin.calls.clone(),
+            contests: origin.contests.clone(),
+        }
+    }
+
+    /// One build bounces, the second build gets the reproducer, the third repeats the same
+    /// difference and stops. The loop reports three builds, commits three times, and releases the
+    /// claim as residue.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_bounced_build_is_repaired_with_its_reproducer_and_the_third_repeat_is_residue() {
+        let repo = bounce_repo();
+        let ran = run_bounces(
+            repo.path(),
+            2,
+            vec![
+                receipt_of("i-retry-after", 1),
+                receipt_of("i-retry-after", 2),
+                receipt_of("i-retry-after", 3),
+            ],
+        )
+        .await;
+        let Exit::Residue { task, reason } = &ran.outcome.exit else {
+            panic!("the third repeat stops the claim: {}", ran.outcome.exit);
+        };
+        assert_eq!(task, "t-1");
+        assert!(reason.contains("third repeat is residue"), "{reason}");
+        assert_eq!(ran.reports, 3, "{:?}", ran.calls);
+        assert_eq!(
+            git_in(repo.path(), &["rev-list", "--count", "HEAD"]).trim(),
+            "4",
+            "one commit per build, on top of the fixture"
+        );
+        // Build 1 has no reproducer. Builds 2 and 3 each carry the one the gate gave.
+        assert_eq!(ran.briefs.len(), 3, "{:#?}", ran.briefs);
+        assert!(!ran.briefs[0].contains("bounced"), "{}", ran.briefs[0]);
+        for (index, brief) in ran.briefs.iter().enumerate().skip(1) {
+            assert!(
+                brief.starts_with(&format!("Build {} of t-1.", index + 1)),
+                "{brief}"
+            );
+            assert!(
+                brief.contains(&format!("The gate bounced build {index}.")),
+                "{brief}"
+            );
+            assert!(
+                brief.contains(&format!(
+                    "- item i-retry-after (obligation_failed) on probe {PROBE}: obl-retry-after failed: header.retry-after is absent at step s6"
+                )),
+                "{brief}"
+            );
+        }
+        let steps = &ran.outcome.steps;
+        assert!(
+            steps.iter().any(|step| step
+                == "the gate bounced build 1 of t-1: 1 item(s) to repair; building again"),
+            "{steps:#?}"
+        );
+        assert!(
+            steps.iter().any(|step| step
+                == "the gate bounced build 2 of t-1: 1 item(s) to repair; building again"),
+            "{steps:#?}"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.starts_with("t-1 went to residue: ")),
+            "{steps:#?}"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.starts_with("released t-1: t-1 is residue: ")),
+            "{steps:#?}"
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|step| step.starts_with("protected-head snapshot for t-1: ")),
+            "{steps:#?}"
+        );
+        assert_eq!(ran.released, vec!["t-1".to_owned()]);
+        // The rulings are read at claim time and briefed as the origin's text.
+        assert!(
+            ran.calls.iter().any(|call| call == "get_rulings"),
+            "{:?}",
+            ran.calls
+        );
+        assert!(
+            ran.briefs[0].contains("- Links list stays newest first (r-1): the gate checks it"),
+            "{}",
+            ran.briefs[0]
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|step| step == "read 2 ruling(s) for t-1 at ledger event 2"),
+            "{steps:#?}"
+        );
+        // The worker contests the residue under the episode of the item it gave up on. The
+        // contest names the probe and carries the residue's reason as its rationale.
+        assert_eq!(ran.contests.len(), 1, "{:?}", ran.contests);
+        assert_eq!(ran.contests[0]["task"], json!("t-1"));
+        assert_eq!(ran.contests[0]["episode_id"], json!(EPISODE));
+        assert_eq!(ran.contests[0]["kind"], json!("blocked"));
+        assert_eq!(ran.contests[0]["reproducer"], json!(PROBE));
+        assert!(
+            ran.contests[0]["rationale"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("third repeat is residue")),
+            "{}",
+            ran.contests[0]
+        );
+        assert!(
+            steps
+                .iter()
+                .any(|step| step == &format!("filed contest k-1 on t-1 against episode {EPISODE}")),
+            "{steps:#?}"
+        );
+    }
+
+    /// The second build gets the reproducer and passes, so the run is built and nothing bounces
+    /// again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_repaired_build_that_passes_is_built() {
+        let repo = bounce_repo();
+        let ran = run_bounces(
+            repo.path(),
+            2,
+            vec![receipt_of("i-retry-after", 1), receipt_of("chk-health", 2)],
+        )
+        .await;
+        assert!(
+            matches!(&ran.outcome.exit, Exit::Built { task, .. } if task == "t-1"),
+            "{}",
+            ran.outcome.exit
+        );
+        assert_eq!(ran.reports, 2, "{:?}", ran.calls);
+        assert_eq!(ran.briefs.len(), 2, "{:#?}", ran.briefs);
+        assert!(
+            ran.briefs[1].contains("- item i-retry-after (obligation_failed)"),
+            "{}",
+            ran.briefs[1]
+        );
+        assert!(ran.released.is_empty(), "{:?}", ran.released);
+    }
+
+    /// The confirmed scope allows no repair round, so the first bounce is the last word and the
+    /// worker never starts a second build.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_bounce_past_the_confirmed_repair_budget_is_residue_before_the_next_build() {
+        let repo = bounce_repo();
+        let ran = run_bounces(repo.path(), 0, vec![receipt_of("i-retry-after", 1)]).await;
+        let Exit::Residue { reason, .. } = &ran.outcome.exit else {
+            panic!("the bounce is residue: {}", ran.outcome.exit);
+        };
+        assert!(
+            reason.contains("the confirmed budget of 0 repair round(s) is spent"),
+            "{reason}"
+        );
+        assert_eq!(ran.reports, 1, "{:?}", ran.calls);
+        assert_eq!(ran.briefs.len(), 1, "{:#?}", ran.briefs);
+        assert_eq!(ran.released, vec!["t-1".to_owned()]);
+        // The bounced item had no round left, so the worker contests it under its episode.
+        assert_eq!(ran.contests.len(), 1, "{:?}", ran.contests);
+        assert_eq!(ran.contests[0]["episode_id"], json!(EPISODE));
+        assert_eq!(ran.contests[0]["kind"], json!("blocked"));
+    }
+
+    /// The origin refuses the contest. The run still ends as residue, the refusal is in the step
+    /// log, and the claim is released: a contest never changes what the residue is.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refused_contest_leaves_the_residue_standing() {
+        let repo = bounce_repo();
+        let ran = run_bounces_as(
+            repo.path(),
+            2,
+            vec![
+                receipt_of("i-retry-after", 1),
+                receipt_of("i-retry-after", 2),
+                receipt_of("i-retry-after", 3),
+            ],
+            true,
+        )
+        .await;
+        assert!(
+            matches!(&ran.outcome.exit, Exit::Residue { task, .. } if task == "t-1"),
+            "{}",
+            ran.outcome.exit
+        );
+        assert_eq!(ran.contests.len(), 1, "{:?}", ran.contests);
+        assert!(
+            ran.outcome
+                .steps
+                .iter()
+                .any(|step| step.starts_with("contest on t-1 refused: ")
+                    && step.contains("the contest was not recorded")),
+            "{:#?}",
+            ran.outcome.steps
+        );
+        assert_eq!(ran.released, vec!["t-1".to_owned()]);
     }
 }
