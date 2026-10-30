@@ -18,9 +18,10 @@
 //! - Base A and base B must agree on every value outside a mask, and on the type and format of
 //!   every captured identity they both read. A disagreement outside a mask is an unstable base,
 //!   not a difference.
-//! - Candidate against base A, on canonical values. A value under a mask is not compared, but
-//!   its format must still match base A's, so a masked field keeps its format. A captured
-//!   identity keeps its type and format too. Structure, presence and status are never masked.
+//! - Candidate against the bases, on canonical values. A value under a mask is not compared, but
+//!   its format must match the format of base A or base B, so a masked field keeps its format.
+//!   A captured identity keeps its type and alphabet too. Structure, presence and status are
+//!   never masked.
 //!
 //! Canonical values replace a captured identity with `<capture:BINDING>` and a redacted secret
 //! with `<redacted:LENGTH:CLASS:DIGEST>`. Literal text escapes `\` and `<`, so application text
@@ -592,9 +593,7 @@ fn placeholders(text: &str) -> Vec<&str> {
 /// by binding, so two captured tokens of one format compare equal whatever their length.
 fn identity_shape(value: &Value) -> String {
     match value {
-        Value::String(text) => {
-            format!("string:{}", string_format(text).map_or("text", format_name))
-        }
+        Value::String(text) => format!("string:{}", string_shape(text)),
         Value::Number(number) if number.is_i64() || number.is_u64() => "integer".to_owned(),
         Value::Number(_) => "number".to_owned(),
         Value::Bool(_) => "boolean".to_owned(),
@@ -666,12 +665,10 @@ fn redact(value: &Value) -> Result<Value, CompareError> {
         Value::String(text) => text.clone(),
         other => other.to_string(),
     };
-    let class = if text.chars().all(|c| c.is_ascii_hexdigit()) {
-        "hex"
-    } else if text.chars().all(|c| c.is_ascii_alphanumeric()) {
-        "alnum"
-    } else {
-        "other"
+    let class = match alphabet(&text) {
+        Alphabet::Hex => "hex",
+        Alphabet::Base64url => "base64url",
+        Alphabet::Other => "other",
     };
     let digest = ContentHash::of(value)?;
     Ok(Value::String(format!(
@@ -1022,13 +1019,15 @@ fn judge(
         }
     }
     for (step, path) in masked {
-        let (Some(base), Some(candidate)) = (
+        let (Some(base_a), Some(base_b), Some(candidate)) = (
             original_at(contrast.base_a, step, path)?,
+            original_at(contrast.base_b, step, path)?,
             original_at(contrast.candidate, step, path)?,
         ) else {
             continue;
         };
-        if format_of(&base) != format_of(&candidate) {
+        let base_formats = [format_of(&base_a), format_of(&base_b)];
+        if !base_formats.contains(&format_of(&candidate)) {
             differences.add(Difference {
                 probe_hash,
                 step_id: step.clone(),
@@ -1262,14 +1261,20 @@ fn violations(
     })
 }
 
-/// A coarse format class: JSON type, plus the string format where one applies.
+/// A coarse format class: JSON type, plus the string format or token class where one applies.
 #[derive(Debug, PartialEq, Eq)]
 enum Format {
     Null,
     Boolean,
     Integer,
     Number,
+    /// A structured string (uuid, date-time, uri), or other text when `None`.
     Text(Option<StringFormat>),
+    /// A token: text in the hex or base64url alphabet, with the length band it falls in.
+    Token {
+        alphabet: Alphabet,
+        band: u32,
+    },
     Array,
     Object,
 }
@@ -1280,20 +1285,80 @@ fn format_of(value: &Value) -> Format {
         Value::Bool(_) => Format::Boolean,
         Value::Number(number) if number.is_i64() || number.is_u64() => Format::Integer,
         Value::Number(_) => Format::Number,
-        Value::String(text) => Format::Text(string_format(text)),
+        Value::String(text) => match string_format(text) {
+            Some(format) => Format::Text(Some(format)),
+            None => match alphabet(text) {
+                Alphabet::Other => Format::Text(None),
+                token => Format::Token {
+                    alphabet: token,
+                    band: length_band(text),
+                },
+            },
+        },
         Value::Array(_) => Format::Array,
         Value::Object(_) => Format::Object,
     }
 }
 
-/// The most specific format a string has, for display: the first of the formats it matches.
+/// The alphabet a string's characters are drawn from, narrowest first. Alphanumeric text is
+/// base64url text, so a random base64url token does not change class with the characters it
+/// draws. Only a token made entirely of hex digits is hex: for 43 characters that is about one
+/// in 10^20.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Alphabet {
+    Hex,
+    Base64url,
+    Other,
+}
+
+impl Alphabet {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Hex => "hex",
+            Self::Base64url => "base64url",
+            Self::Other => "text",
+        }
+    }
+}
+
+fn alphabet(text: &str) -> Alphabet {
+    if text.is_empty() {
+        Alphabet::Other
+    } else if text
+        .bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        Alphabet::Hex
+    } else if text
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        Alphabet::Base64url
+    } else {
+        Alphabet::Other
+    }
+}
+
+/// The length band of a text: the number of bits its length takes, so every length from
+/// 2^(n-1) to 2^n - 1 falls in band n. Tokens of one generator share a band, and a short value
+/// lands in a band of its own.
+fn length_band(text: &str) -> u32 {
+    usize::BITS - text.len().leading_zeros()
+}
+
+/// The name of a string's format for an identity: its structured format when it has one,
+/// otherwise its alphabet. Length is left out.
+fn string_shape(text: &str) -> &'static str {
+    string_format(text).map_or_else(|| alphabet(text).name(), format_name)
+}
+
+/// The structured format a string has, if any: uuid, date-time or uri. Alphabets are not
+/// formats; see [`alphabet`].
 fn string_format(text: &str) -> Option<StringFormat> {
     [
         StringFormat::Uuid,
         StringFormat::DateTime,
         StringFormat::Uri,
-        StringFormat::Hex,
-        StringFormat::ShortCode,
     ]
     .into_iter()
     .find(|format| text_has_format(text, *format))
@@ -1485,6 +1550,44 @@ pub(crate) mod tests {
             ))
         );
         assert_ne!(format_of(&Value::Null), format_of(&Value::from(0)));
+    }
+
+    #[test]
+    fn a_token_keeps_one_format_whatever_characters_it_draws() {
+        let alphanumeric = format!("{}Z", "Ab".repeat(21));
+        let dashed = format!("{}Z", "Ab-".repeat(14));
+        assert_eq!(alphanumeric.len(), 43);
+        assert_eq!(dashed.len(), 43);
+        let token = Format::Token {
+            alphabet: Alphabet::Base64url,
+            band: 6,
+        };
+        assert_eq!(format_of(&Value::String(alphanumeric.clone())), token);
+        assert_eq!(format_of(&Value::String(dashed.clone())), token);
+        assert_eq!(
+            identity_shape(&Value::String(alphanumeric)),
+            identity_shape(&Value::String(dashed))
+        );
+    }
+
+    #[test]
+    fn a_token_in_another_length_band_or_alphabet_is_another_format() {
+        let token = format!("{}Z", "Ab".repeat(21));
+        assert_ne!(
+            format_of(&Value::String("x".to_owned())),
+            format_of(&Value::String(token.clone()))
+        );
+        let standard = format!("{}+", "Ab".repeat(21));
+        assert_eq!(format_of(&Value::String(standard)), Format::Text(None));
+        assert_eq!(
+            format_of(&Value::String(
+                "3f2b8c1e5d4a4b6c8d9e0f1a2b3c4d5e".to_owned()
+            )),
+            Format::Token {
+                alphabet: Alphabet::Hex,
+                band: 6,
+            }
+        );
     }
 
     #[test]
