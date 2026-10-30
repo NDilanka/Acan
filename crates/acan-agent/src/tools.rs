@@ -388,6 +388,15 @@ impl Worktree {
         args.extend(["--mount".to_owned(), bind(&root, workdir)?]);
 
         let protected = self.protected_paths();
+        // The `.git` guard is mounted from the worktree, so a protected path under `.git` would
+        // be the worktree's copy. While the guard is on, that path is refused instead.
+        if policy.mounts.readonly_git
+            && let Some(path) = protected.iter().find(|path| is_git_dir_or_below(path))
+        {
+            return Err(format!(
+                "{path} is protected and lies under .git, which readonly_git mounts from the worktree; set readonly_git to false to mount it from the snapshot"
+            ));
+        }
         // Hooks written under `.git` would run on the host at the next commit, so the policy
         // keeps it read-only unless `readonly_git` turns that off.
         let guarded = policy
@@ -428,8 +437,12 @@ impl Worktree {
                 }
                 None => match policy.mounts.missing_protected {
                     MissingProtected::Refused => {
+                        let from = match origin {
+                            Origin::Worktree => "the worktree",
+                            Origin::Snapshot => "the protected-head snapshot",
+                        };
                         return Err(format!(
-                            "{relative} is protected and missing from the protected-head snapshot, and the policy refuses a run without it"
+                            "{relative} is protected and missing from {from}, and the policy refuses a run without it"
                         ));
                     }
                     MissingProtected::Masked => {
@@ -838,6 +851,13 @@ fn covers(covering: &str, path: &str) -> bool {
         || path
             .strip_prefix(covering)
             .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Whether `path` is `.git` or lies under it. Case is ignored, because Windows and macOS name one
+/// directory by every case of its name.
+fn is_git_dir_or_below(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower == ".git" || lower.starts_with(".git/")
 }
 
 /// The host path of a `/`-separated path under the worktree.

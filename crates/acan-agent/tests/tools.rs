@@ -1036,6 +1036,36 @@ fn readonly_git_decides_whether_git_is_mounted_read_only() {
     );
 }
 
+#[test]
+fn a_protected_path_under_git_is_refused_while_the_git_guard_is_on() {
+    let dir = repo();
+    let head = head_snapshot();
+    let args_with = |protected: &str, readonly_git: bool| {
+        Worktree::new(dir.path().to_path_buf(), &[], Some("bun test".to_owned()))
+            .with_policy(policy_with(|v| {
+                v["mounts"]["protected"] = json!([".acan", protected]);
+                v["mounts"]["readonly_git"] = json!(readonly_git);
+            }))
+            .with_snapshot(head.path())
+            .test_container_args("acan-test-7")
+    };
+    for protected in [".git", ".git/hooks", ".GIT/config"] {
+        let refused = args_with(protected, true).expect_err("a protected path under .git");
+        assert!(refused.contains("lies under .git"), "{refused}");
+    }
+    // With the guard off, `.git` is not mounted from the worktree at all: the protected path is
+    // covered from the snapshot, which lacks it, so an empty mask stands in for it.
+    let open = args_with(".git/hooks", false).expect("the guard is off");
+    let worktree_git = std::path::absolute(dir.path())
+        .expect("an absolute worktree")
+        .join(".git");
+    let from_worktree = format!("source={},", worktree_git.display());
+    assert!(
+        !open.iter().any(|arg| arg.contains(&from_worktree)),
+        "the worktree's .git was mounted: {open:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_missing_protected_path_is_refused_when_the_policy_says_so() {
     let dir = repo();
