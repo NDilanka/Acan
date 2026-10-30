@@ -21,7 +21,8 @@
 //! - Candidate against the bases, on canonical values. A value under a mask is not compared, but
 //!   its format must match the format of base A or base B, so a masked field keeps its format.
 //!   A captured identity keeps its type and alphabet too. Structure, presence and status are
-//!   never masked.
+//!   never masked, and neither is an opaque body (a response that is not JSON), which compares
+//!   by its content hash.
 //!
 //! Canonical values replace a captured identity with `<capture:BINDING>` and a redacted secret
 //! with `<redacted:LENGTH:CLASS:DIGEST>`. Literal text escapes `\` and `<`, so application text
@@ -37,7 +38,8 @@ use crate::expr::StringFormat;
 use crate::hash::{CanonicalError, ContentHash, ProbeHash};
 use crate::observation::{
     CanonicalObservation, CanonicalRun, Channels, Completeness, IncompleteReason, Mask,
-    MaskSelector, NormalizationPlan, Observation, ObservedRun, ProjectionKind, Relation, StepPath,
+    MaskSelector, NormalizationPlan, OPAQUE_BODY_KEY, Observation, ObservedRun, ProjectionKind,
+    Relation, StepPath,
 };
 use crate::probe::{
     CaptureKind, CaptureOutcome, CaptureSource, CaptureStep, CorpusProbe, Fixture, RunOutcome,
@@ -835,10 +837,14 @@ pub(crate) fn at_or_below(pattern: &str, path: &str) -> bool {
             })
 }
 
+/// Whether the plan allows masking `path`. An opaque body is never masked: its hash is compared
+/// whole, so any difference in it is a difference.
 fn maskable(plan: &NormalizationPlan, path: &str) -> bool {
-    plan.maskable_paths
-        .iter()
-        .any(|maskable: &MaskablePath| matches_pattern(maskable.as_str(), path))
+    !at_or_below(&format!("body.{OPAQUE_BODY_KEY}"), path)
+        && plan
+            .maskable_paths
+            .iter()
+            .any(|maskable: &MaskablePath| matches_pattern(maskable.as_str(), path))
 }
 
 /// Whether both sides of a disagreement are strings or numbers. Booleans carry control flow and

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::hash::{
     CanonicalError, ContentHash, EvidenceHash, NormalizationHash, ObservationHash, ProbeHash,
@@ -29,7 +29,8 @@ use crate::version::ObservationV1;
 pub enum IncompleteReason {
     /// The response exceeded the output bound and was cut.
     OutputTruncated {},
-    /// The response body was not JSON. Its bytes are kept in `raw_ref` only.
+    /// The response claims a JSON body and the body does not parse. A body that is not JSON
+    /// and does not claim to be is kept as an opaque value instead, see [`Channels::set_body_text`].
     BodyNotJson {},
     /// A capture the step needed was missing.
     CaptureMissing {
@@ -95,7 +96,8 @@ pub struct Channels {
     /// Cookies the response set, by name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub cookies: BTreeMap<String, String>,
-    /// The JSON body, absent when the response had none.
+    /// The body: its JSON value, or for a body that is not JSON the opaque value
+    /// [`Channels::set_body_text`] records. Absent when the response had none.
     #[serde(
         default,
         deserialize_with = "crate::types::present_json",
@@ -179,6 +181,57 @@ impl Channels {
         };
         found.map_or(Evidence::Missing {}, |value| Evidence::Present { value })
     }
+
+    /// Keeps a response body in the body channel. Text that parses as JSON is kept as its value,
+    /// unless its top level holds [`OPAQUE_BODY_KEY`]. Any other text is kept opaque: its content
+    /// type as sent, its byte length and its content hash. Two bodies are equal when their
+    /// hashes are, and a difference in an opaque body is never masked.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`IncompleteReason::BodyNotJson`] when the content type claims JSON and the text
+    /// does not parse. The body channel is left as it was.
+    pub fn set_body_text(
+        &mut self,
+        text: &str,
+        content_type: Option<&str>,
+    ) -> Result<(), IncompleteReason> {
+        let body = match serde_json::from_str::<Value>(text) {
+            Ok(value) if value.get(OPAQUE_BODY_KEY).is_none() => value,
+            Ok(_) => opaque_body(text, content_type),
+            Err(_) if claims_json(content_type) => return Err(IncompleteReason::BodyNotJson {}),
+            Err(_) => opaque_body(text, content_type),
+        };
+        self.body = Some(body);
+        Ok(())
+    }
+}
+
+/// The key an opaque body is recorded under, as the only key of its body object. A JSON body
+/// whose top level holds this key is recorded opaquely too, so no JSON body can read as one.
+pub(crate) const OPAQUE_BODY_KEY: &str = "acan_opaque_body";
+
+fn opaque_body(text: &str, content_type: Option<&str>) -> Value {
+    json!({
+        (OPAQUE_BODY_KEY): {
+            "content_type": content_type,
+            "bytes": text.len(),
+            "sha256": ContentHash::of_bytes(text.as_bytes()),
+        }
+    })
+}
+
+/// Whether a content type names JSON: `application/json`, or any `+json` structured suffix.
+fn claims_json(content_type: Option<&str>) -> bool {
+    content_type.is_some_and(|value| {
+        let essence = value
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        essence == "application/json" || essence.ends_with("+json")
+    })
 }
 
 /// What one step of one run produced, as recorded by the runner. Raw storage data: it decodes

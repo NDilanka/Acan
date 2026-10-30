@@ -11,7 +11,7 @@ use acan_intent::compare::{self, Contrast};
 use acan_intent::{
     CaptureOutcome, Channels, Comparison, Completeness, ContentHash, CoreDerived, CorpusProbe,
     Fixture, HttpMethod, Observation, ObservationHash, ObservedRun, Outcome, ProbeCorpus,
-    ProbeHash, RequestRecord, Run, RunOutcome, RunRole, admit,
+    ProbeHash, RequestRecord, Run, RunOutcome, RunRole, UnknownReason, admit,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -76,12 +76,21 @@ impl Login {
     }
 }
 
+/// The body of one response: JSON, or text the runner keeps opaque.
+enum Body {
+    Json(Value),
+    Text {
+        content_type: &'static str,
+        text: &'static str,
+    },
+}
+
 /// One HTTP step as the runner records it.
 struct Hit {
     step: &'static str,
     status: u16,
     sent_at_ms: u64,
-    body: Value,
+    body: Body,
     cookies: Vec<(&'static str, String)>,
 }
 
@@ -109,9 +118,16 @@ impl Hit {
                 .iter()
                 .map(|(name, value)| ((*name).to_owned(), value.clone()))
                 .collect(),
-            body: Some(self.body.clone()),
+            body: None,
             side_effects: BTreeMap::new(),
         };
+        match &self.body {
+            Body::Json(value) => observation.channels.body = Some(value.clone()),
+            Body::Text { content_type, text } => observation
+                .channels
+                .set_body_text(text, Some(content_type))
+                .expect("the body is kept"),
+        }
         observation
     }
 }
@@ -119,6 +135,14 @@ impl Hit {
 /// The login sequence: six failed logins at one-second steps, then a successful login whose
 /// body lists two codes and whose cookie is the session `token`.
 fn sequence(token: &str, codes: &[String; 2]) -> Vec<Hit> {
+    sequence_with(
+        token,
+        Body::Json(json!({ "links": [{ "code": codes[0] }, { "code": codes[1] }] })),
+    )
+}
+
+/// The login sequence with `body` as the successful login's response.
+fn sequence_with(token: &str, body: Body) -> Vec<Hit> {
     let mut hits: Vec<Hit> = ["s1", "s2", "s3", "s4", "s5", "s6"]
         .into_iter()
         .zip([1000, 2000, 3000, 4000, 5000, 6000])
@@ -126,7 +150,7 @@ fn sequence(token: &str, codes: &[String; 2]) -> Vec<Hit> {
             step,
             status: 401,
             sent_at_ms,
-            body: json!({ "error": "invalid credentials" }),
+            body: Body::Json(json!({ "error": "invalid credentials" })),
             cookies: Vec::new(),
         })
         .collect();
@@ -134,7 +158,7 @@ fn sequence(token: &str, codes: &[String; 2]) -> Vec<Hit> {
         step: "s8",
         status: 200,
         sent_at_ms: 61_000,
-        body: json!({ "links": [{ "code": codes[0] }, { "code": codes[1] }] }),
+        body,
         cookies: vec![("session", token.to_owned())],
     });
     hits
@@ -148,14 +172,14 @@ fn admit_run(login: &Login, id: &str, role: RunRole, token: &str, hits: Vec<Hit>
         step: "f1",
         status: 201,
         sent_at_ms: 0,
-        body: json!({ "ok": true }),
+        body: Body::Json(json!({ "ok": true })),
         cookies: Vec::new(),
     };
     let login_hit = Hit {
         step: "f2",
         status: 200,
         sent_at_ms: 0,
-        body: json!({ "ok": true }),
+        body: Body::Json(json!({ "ok": true })),
         cookies: vec![("session", token.to_owned())],
     };
     let mut all = vec![signup, login_hit];
@@ -322,4 +346,150 @@ fn a_one_char_or_wrong_alphabet_candidate_token_is_still_a_difference() {
             comparison.value().outcome
         );
     }
+}
+
+const HTML_TYPE: &str = "text/html; charset=utf-8";
+const PAGE: &str = "<!doctype html><title>Links for alice</title>";
+const PAGE_ONE_BYTE_OFF: &str = "<!doctype html><title>Links for alicf</title>";
+
+/// A login run whose successful response is the HTML `page`, not JSON.
+fn page_run(
+    login: &Login,
+    id: &str,
+    role: RunRole,
+    token: &str,
+    page: &'static str,
+) -> ObservedRun {
+    admit_run(
+        login,
+        id,
+        role,
+        token,
+        sequence_with(
+            token,
+            Body::Text {
+                content_type: HTML_TYPE,
+                text: page,
+            },
+        ),
+    )
+}
+
+#[test]
+fn an_identical_html_body_on_every_run_compares_unchanged() {
+    let login = Login::load();
+    let a = page_run(&login, "run-base-a", RunRole::BaseA, "tok-base-a", PAGE);
+    let b = page_run(&login, "run-base-b", RunRole::BaseB, "tok-base-b", PAGE);
+    let c = page_run(
+        &login,
+        "run-candidate",
+        RunRole::Candidate,
+        "tok-cand",
+        PAGE,
+    );
+    let comparison = compare_runs(&login, &a, &b, &c);
+    assert!(
+        matches!(comparison.value().outcome, Outcome::Unchanged {}),
+        "{:?}",
+        comparison.value().outcome
+    );
+}
+
+#[test]
+fn an_html_body_that_differs_by_one_byte_is_a_difference_at_its_hash() {
+    let login = Login::load();
+    let a = page_run(&login, "run-base-a", RunRole::BaseA, "tok-base-a", PAGE);
+    let b = page_run(&login, "run-base-b", RunRole::BaseB, "tok-base-b", PAGE);
+    let c = page_run(
+        &login,
+        "run-candidate",
+        RunRole::Candidate,
+        "tok-cand",
+        PAGE_ONE_BYTE_OFF,
+    );
+    let comparison = compare_runs(&login, &a, &b, &c);
+    assert!(
+        differences(&comparison)
+            .contains(&("s8".to_owned(), "body.acan_opaque_body.sha256".to_owned())),
+        "{:?}",
+        comparison.value().outcome
+    );
+}
+
+#[test]
+fn html_bodies_that_differ_between_the_bases_are_an_unstable_base() {
+    let login = Login::load();
+    let a = page_run(&login, "run-base-a", RunRole::BaseA, "tok-base-a", PAGE);
+    let b = page_run(
+        &login,
+        "run-base-b",
+        RunRole::BaseB,
+        "tok-base-b",
+        PAGE_ONE_BYTE_OFF,
+    );
+    let c = page_run(
+        &login,
+        "run-candidate",
+        RunRole::Candidate,
+        "tok-cand",
+        PAGE,
+    );
+    assert!(matches!(
+        compare_runs(&login, &a, &b, &c).value().outcome,
+        Outcome::Unknown {
+            reason: UnknownReason::UnstableBase {}
+        }
+    ));
+}
+
+#[test]
+fn an_opaque_body_is_never_masked_even_when_the_plan_lists_it() {
+    let mut login = Login::load();
+    login.probe.normalization.maskable_paths.push(
+        "body.acan_opaque_body.sha256"
+            .parse()
+            .expect("a maskable path"),
+    );
+    let a = page_run(&login, "run-base-a", RunRole::BaseA, "tok-base-a", PAGE);
+    let b = page_run(
+        &login,
+        "run-base-b",
+        RunRole::BaseB,
+        "tok-base-b",
+        PAGE_ONE_BYTE_OFF,
+    );
+    let c = page_run(
+        &login,
+        "run-candidate",
+        RunRole::Candidate,
+        "tok-cand",
+        PAGE,
+    );
+    assert!(matches!(
+        compare_runs(&login, &a, &b, &c).value().outcome,
+        Outcome::Unknown {
+            reason: UnknownReason::UnstableBase {}
+        }
+    ));
+}
+
+#[test]
+fn a_json_body_where_the_base_had_an_html_body_is_a_difference() {
+    let login = Login::load();
+    let a = page_run(&login, "run-base-a", RunRole::BaseA, "tok-base-a", PAGE);
+    let b = page_run(&login, "run-base-b", RunRole::BaseB, "tok-base-b", PAGE);
+    let c = admit_run(
+        &login,
+        "run-candidate",
+        RunRole::Candidate,
+        "tok-cand",
+        sequence(
+            "tok-cand",
+            &["code-one-0001".to_owned(), "code-two-0002".to_owned()],
+        ),
+    );
+    assert!(matches!(
+        compare_runs(&login, &a, &b, &c).value().outcome,
+        Outcome::Changed { .. }
+    ));
 }
