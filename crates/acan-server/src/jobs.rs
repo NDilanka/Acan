@@ -46,8 +46,7 @@ use acan_core::{
 };
 use acan_git::{Preparation, PrepareOutcome, Repo};
 use acan_intent::{
-    AppContract, CommitSha, ContainerPolicy, PreparedCommit, ProbeCorpus, Receipt, Scope,
-    ScopeConfirmation,
+    AppContract, CommitSha, ContainerPolicy, PreparedCommit, ProbeCorpus, Scope, ScopeConfirmation,
 };
 use acan_llm::{CallRecord, LlmError, ModelClient, Role};
 use acan_witness::RunnerConfig;
@@ -56,7 +55,7 @@ use tokio::task::{self, JoinHandle, JoinSet};
 use crate::STATE_DIR;
 use crate::git::{LandFailure, Workspace};
 use crate::host::{self, Host, SubmitError};
-use crate::land::{self, LandError};
+use crate::land::{self, Delivery, LandError};
 use crate::model::{self, ReplyError};
 use crate::observe::{self, ObserveError, Order, Plan};
 
@@ -857,15 +856,6 @@ fn contrast_of(world: &World, run: GateRunId) -> Option<Contrast> {
     })
 }
 
-/// The receipt of a scope-first task waiting in the land queue, with the scope it was judged
-/// against. `None` for a legacy task.
-struct Delivery {
-    run: GateRunId,
-    receipt: Receipt,
-    scope: Scope,
-    confirmation: ScopeConfirmation,
-}
-
 /// How a queued task lands. Only an order with no scope lane takes the legacy merge; a
 /// scope-first order whose evidence is missing is refused, so nothing installs.
 enum Landing {
@@ -884,40 +874,10 @@ fn landing(world: &World, task: TaskId) -> Landing {
     if world.lane(found.order).is_none() {
         return Landing::Legacy;
     }
-    match delivery_of(world, task) {
+    match Delivery::of(world, task) {
         Ok(delivery) => Landing::Gated(Box::new(delivery)),
         Err(reason) => Landing::Refused(reason),
     }
-}
-
-/// The delivery of a queued scope-first task. Each missing piece is named, because a refusal
-/// is the land result the origin records.
-fn delivery_of(world: &World, task: TaskId) -> Result<Delivery, String> {
-    let found = world
-        .task(task)
-        .ok_or_else(|| format!("task {task} is not in the origin"))?;
-    let TaskState::Queued { run, .. } = &found.state else {
-        return Err(format!("task {task} is not queued"));
-    };
-    let lane = world
-        .lane(found.order)
-        .ok_or_else(|| format!("order {} has no scope", found.order))?;
-    let receipt = lane
-        .runs
-        .get(run)
-        .and_then(|record| record.receipt.as_ref())
-        .ok_or_else(|| format!("run {run} has no receipt"))?
-        .receipt
-        .clone();
-    let confirmation = lane.confirmation.clone().ok_or_else(|| {
-        "the scope was revised after the candidate passed, so it must be confirmed again".to_owned()
-    })?;
-    Ok(Delivery {
-        run: *run,
-        receipt,
-        scope: lane.scope.clone(),
-        confirmation,
-    })
 }
 
 /// The files one observe pass works in: the base it starts from, the protected inputs of that
@@ -1082,10 +1042,11 @@ async fn contrast<C: ModelClient>(host: &Host<C>, run: GateRunId) -> Result<(), 
     Ok(())
 }
 
-/// Lands a scope-first task. The final gate reads the receipt its run passed with and the
-/// context computed now, and the tested merged commit is installed only when both clear it.
-/// A refusal is a land result the origin records, so the queue moves on. A git failure is the
-/// job's error and follows the retry path.
+/// Lands a scope-first task. The delivery is checked again under the landing fence before any
+/// git work, so a revision or cancel that landed after the queue was read refuses it. The final
+/// gate then reads the receipt its run passed with and the context computed now, and the tested
+/// merged commit is installed only when both clear it. A refusal is a land result the origin
+/// records, so the queue moves on. A git failure is the job's error and follows the retry path.
 async fn gated_land<C: ModelClient>(
     host: &Host<C>,
     workspace: &Arc<Workspace>,
@@ -1093,10 +1054,15 @@ async fn gated_land<C: ModelClient>(
     head: &CommitId,
 ) -> Result<Result<CommitId, String>, JobError> {
     let repo = workspace.repo();
-    // The writes lock is held from the read of the protected head to the install, so a legacy
-    // land cannot move the branch between the context and the install. Install still compares
-    // the head itself.
+    // The fence holds every command that can change the delivery from the check below through
+    // the install, so the check never passes for a state the install then ignores. The writes
+    // lock keeps a legacy land from moving the branch in between. Install still compares the
+    // head itself.
+    let fence = host.fence_landings().await;
     let writes = workspace.lock_writes().await;
+    if let Err(reason) = host.read(|world| delivery.stands(world)) {
+        return Ok(Err(reason));
+    }
     let pass = Pass::new(host, repo, delivery.run).await?;
     let candidate = prepare_candidate(repo, &pass, head).await?;
     let ledger = host.folded_rulings().map_err(JobError::Rulings)?;
@@ -1114,6 +1080,7 @@ async fn gated_land<C: ModelClient>(
         Err(err) => Err(err),
     };
     drop(writes);
+    drop(fence);
     match installed {
         Ok(commit) => {
             let landed = CommitId::from_str(commit.as_str())

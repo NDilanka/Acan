@@ -10,10 +10,11 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use acan_core::{GateRunId, TaskId, TaskState, World};
 use acan_git::{InstallOutcome, Preparation, Repo};
 use acan_intent::{
     CommitSha, CoreDerived, EpisodeId, FoldedLedger, GateContext, GateState, ItemId, ItemState,
-    LedgerEvent, LedgerHead, Receipt, RulingStatus,
+    LedgerEvent, LedgerHead, Receipt, RulingStatus, Scope, ScopeConfirmation,
 };
 
 use crate::ledger::{self, LedgerError};
@@ -169,6 +170,78 @@ pub(crate) async fn install(repo: &Repo, clearance: Clearance) -> Result<CommitS
     {
         InstallOutcome::Installed { commit } => Ok(commit),
         outcome => Err(LandError::NotInstalled(outcome)),
+    }
+}
+
+/// The receipt of a scope-first task waiting in the land queue, with the scope and confirmation
+/// it was judged against. A delivery is read from the world, so it can be stale by the time it
+/// is used. [`Delivery::stands`] checks it again.
+#[derive(Debug, Clone)]
+pub(crate) struct Delivery {
+    /// The queued task.
+    pub(crate) task: TaskId,
+    /// The gate run that passed.
+    pub(crate) run: GateRunId,
+    /// The receipt the run passed with.
+    pub(crate) receipt: Receipt,
+    /// The scope the receipt was judged against.
+    pub(crate) scope: Scope,
+    /// The confirmation of that scope.
+    pub(crate) confirmation: ScopeConfirmation,
+}
+
+impl Delivery {
+    /// The delivery of a queued scope-first task. Each missing piece is named, because a refusal
+    /// is the land result the origin records.
+    ///
+    /// # Errors
+    ///
+    /// Returns the refusal reason when the task is missing, not queued, has no scope, its run has
+    /// no receipt, or its scope was revised since the candidate passed and was not confirmed.
+    pub(crate) fn of(world: &World, task: TaskId) -> Result<Self, String> {
+        let found = world
+            .task(task)
+            .ok_or_else(|| format!("task {task} is not in the origin"))?;
+        let TaskState::Queued { run, .. } = &found.state else {
+            return Err(format!("task {task} is not queued"));
+        };
+        let lane = world
+            .lane(found.order)
+            .ok_or_else(|| format!("order {} has no scope", found.order))?;
+        let receipt = lane
+            .runs
+            .get(run)
+            .and_then(|record| record.receipt.as_ref())
+            .ok_or_else(|| format!("run {run} has no receipt"))?
+            .receipt
+            .clone();
+        let confirmation = lane.confirmation.clone().ok_or_else(|| {
+            "the scope was revised after the candidate passed, so it must be confirmed again"
+                .to_owned()
+        })?;
+        Ok(Self {
+            task,
+            run: *run,
+            receipt,
+            scope: lane.scope.clone(),
+            confirmation,
+        })
+    }
+
+    /// Whether this delivery still stands in `world`: the task is still queued on the same run,
+    /// and the scope and its confirmation are the ones the run was judged against. A revision, a
+    /// cancel, or a newer run each refuse it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the refusal reason when the delivery no longer stands.
+    pub(crate) fn stands(&self, world: &World) -> Result<(), String> {
+        let now = Self::of(world, self.task)?;
+        if now.run == self.run && now.scope == self.scope && now.confirmation == self.confirmation {
+            Ok(())
+        } else {
+            Err("the queued delivery changed after the candidate passed".to_owned())
+        }
     }
 }
 

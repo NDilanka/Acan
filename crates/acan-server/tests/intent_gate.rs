@@ -1447,3 +1447,58 @@ async fn a_scope_revised_while_queued_never_installs() {
     let _ = jobs.await;
     host.shutdown().await.expect("the writer drains");
 }
+
+/// A land reads the queued delivery, then checks it again under the landing fence. A revision
+/// that lands between the read and the check ends the delivery, so the land refuses it and
+/// installs nothing.
+#[tokio::test]
+async fn a_delivery_read_before_a_revision_does_not_stand() {
+    let demo = Demo::pinned().await;
+    let before = demo.head();
+    let candidate = demo.candidate("stale-revise", touch_notes);
+    let (host, order, task, _run) = passed_candidate(&demo, &candidate).await;
+    let delivery = host
+        .read(|world| land::Delivery::of(world, task))
+        .expect("the queued delivery reads");
+    assert!(
+        host.read(|world| delivery.stands(world)).is_ok(),
+        "a delivery read from the queue stands"
+    );
+
+    owner_says(
+        &host,
+        HumanCmd::ReviseScope {
+            order,
+            scope: Box::new(limit_scope(&order.to_string(), &before, 2)),
+        },
+    )
+    .await;
+
+    assert!(
+        host.read(|world| delivery.stands(world)).is_err(),
+        "a revised scope ends the delivery read before it"
+    );
+    assert_eq!(demo.head(), before, "nothing was installed");
+    host.shutdown().await.expect("the writer drains");
+}
+
+/// The same for a cancel: a delivery read before the order is cancelled does not stand after it.
+#[tokio::test]
+async fn a_delivery_read_before_a_cancel_does_not_stand() {
+    let demo = Demo::pinned().await;
+    let before = demo.head();
+    let candidate = demo.candidate("stale-cancel", touch_notes);
+    let (host, order, task, _run) = passed_candidate(&demo, &candidate).await;
+    let delivery = host
+        .read(|world| land::Delivery::of(world, task))
+        .expect("the queued delivery reads");
+
+    owner_says(&host, HumanCmd::CancelOrder { order }).await;
+
+    assert!(
+        host.read(|world| delivery.stands(world)).is_err(),
+        "a cancelled order ends the delivery read before it"
+    );
+    assert_eq!(demo.head(), before, "nothing was installed");
+    host.shutdown().await.expect("the writer drains");
+}
