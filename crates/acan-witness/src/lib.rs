@@ -6,14 +6,24 @@
 //! connections, sends one request, and compares the status and body against the expectation.
 //! A check that cannot run reports [`WitnessOutcome::Error`], which the gate never counts as
 //! a pass. Details are short, human-readable, and never echo the environment.
+//!
+//! [`run_sequence`] is the Docker runner for Acan contrast runs. It executes one probe
+//! sequence against one commit in a fresh `--network none` container and returns the
+//! observations admitted by `acan_intent::admit::observed_run`.
 
 use std::path::Path;
 use std::time::Duration;
 
 use acan_core::{Check, WitnessOutcome};
 
+mod docker;
+mod driver;
 mod http;
 mod process;
+mod record;
+mod sequence;
+
+pub use sequence::{RunnerConfig, SequenceInput, run_sequence};
 
 /// Bounds and endpoints for witness runs.
 #[derive(Debug, Clone)]
