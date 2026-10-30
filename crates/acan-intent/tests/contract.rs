@@ -17,7 +17,7 @@ use acan_intent::{
     Fixture, GateState, GetReceiptRequest, GetReceiptResponse, GetRulingsRequest,
     GetRulingsResponse, GetScopeRequest, GetScopeResponse, ItemClass, ItemState, LedgerEvent,
     LedgerHash, LedgerHead, MaskablePath, McpError, McpErrorCode, NotReached, Observation,
-    ObservationHash, ObservationPath, ObservedRun, PlantView, PostReadbackRequest,
+    ObservationHash, ObservationPath, ObservedRun, Outcome, PlantView, PostReadbackRequest,
     PostReadbackResponse, ProbeCorpus, Receipt, RepairRound, RouteSource, RulingId, Run,
     RunManifest, RunOutcome, RunRole, Scope, ScopeConfirmation, ScopeDraft, ScopeItem, Selector,
     SlotSpec, Step, StepId, TourView, TwinError, TwinRunRequest, TwinRunResponse, TwinSaveRequest,
@@ -1280,18 +1280,52 @@ fn step(id: &str) -> StepId {
     id.parse().expect("a step id")
 }
 
+/// The shipped example's stored observations, in the order its runs list them. Each record
+/// carries the response body or cookie its capture reads.
+fn stored_example_observations() -> Vec<Observation> {
+    load("contrast-example-observations.json")
+}
+
+/// The stored observations of one run, hashed, in sequence order, as admission takes them.
+fn stored_for(run: &Run) -> Vec<(ObservationHash, Observation)> {
+    stored_example_observations()
+        .into_iter()
+        .filter(|observation| observation.run_id == run.id)
+        .map(|observation| {
+            (
+                observation.observation_hash().expect("hashing"),
+                observation,
+            )
+        })
+        .collect()
+}
+
 #[test]
 fn every_run_of_the_contrast_example_is_admitted_with_its_listed_observations() {
     let example: ContrastExample = load("contrast-example.json");
+    let listed: usize = [&example.base_a, &example.base_b, &example.candidate]
+        .iter()
+        .map(|manifest| manifest.observations.len())
+        .sum();
+    assert_eq!(
+        stored_example_observations().len(),
+        listed,
+        "the store holds an observation no run lists, or misses one a run lists"
+    );
     for (role, manifest) in [
         ("base_a", &example.base_a),
         ("base_b", &example.base_b),
         ("candidate", &example.candidate),
     ] {
-        let stored = observations_for(&example.probe, &example.fixture, &manifest.run, &[]);
+        let stored = stored_for(&manifest.run);
+        let hashes: Vec<ObservationHash> = stored.iter().map(|(hash, _)| *hash).collect();
+        assert_eq!(
+            hashes, manifest.observations,
+            "{role} lists other observations than the store holds, in order"
+        );
         assert_eq!(
             stored.len(),
-            manifest.observations.len(),
+            observations_for(&example.probe, &example.fixture, &manifest.run, &[]).len(),
             "{role} lists another number of observations than its HTTP and sink steps"
         );
         let admitted = admit::observed_run(
@@ -1303,6 +1337,45 @@ fn every_run_of_the_contrast_example_is_admitted_with_its_listed_observations() 
         .unwrap_or_else(|err| panic!("{role} was refused: {err}"));
         assert_eq!(admitted.observations().count(), manifest.observations.len());
     }
+}
+
+#[test]
+fn the_stored_example_observations_round_trip_and_refuse_unknown_fields() {
+    round_trip::<Vec<Observation>>("contrast-example-observations.json");
+    refuses_unknown_fields::<Vec<Observation>>("contrast-example-observations.json");
+}
+
+#[test]
+fn the_shipped_contrast_example_compares_end_to_end() {
+    let example: ContrastExample = load("contrast-example.json");
+    let runs = [&example.base_a, &example.base_b, &example.candidate].map(|manifest| {
+        admit::observed_run(
+            &example.probe,
+            &example.fixture,
+            manifest.run.clone(),
+            stored_for(&manifest.run),
+        )
+        .unwrap_or_else(|err| panic!("{} was refused: {err}", manifest.run.id))
+    });
+    let contrast = contrast_over(&example, &runs);
+    compare::check_contrast(&contrast).expect("the three runs are comparable");
+    let masks = compare::derive_masks(&contrast).expect("the bases derive their masks");
+    assert!(masks.is_empty(), "the bases agree outside the captures");
+    let comparison = compare::compare(&contrast, &masks).expect("the contrast compares");
+    compare::verify_comparison(&contrast, &comparison).expect("the comparison is recomputed");
+    let Outcome::Changed { differences } = &comparison.value().outcome else {
+        panic!(
+            "the candidate drops a field: {:?}",
+            comparison.value().outcome
+        );
+    };
+    let found: Vec<(&str, &str)> = differences
+        .iter()
+        .map(|difference| (difference.step_id.as_str(), difference.path.as_str()))
+        .collect();
+    assert_eq!(found, [("s4", "body.links[0].clicks")]);
+    admit::retained_example(&example, contrast, &comparison)
+        .expect("the example is admitted from its own runs and comparison");
 }
 
 /// The example's probe with a clock step and a store read appended, and a base run of it.

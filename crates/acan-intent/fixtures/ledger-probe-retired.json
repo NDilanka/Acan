@@ -2,7 +2,7 @@
   "event": "probe_retired",
   "schema_version": "acan-ledger/1",
   "event_seq": 5,
-  "prev_hash": "sha256:19baf3dd73285b1d7f288895f59154742f728595663f326df5a6073a1e04ad35",
+  "prev_hash": "sha256:58825f441212fd305b9fde02c3b846d46c0bcde47a931754f627a0a6d17fc7f5",
   "actor": "owner",
   "at": 1793260300000,
   "probe_hash": "sha256:5a25bf2555ec516527d34e258ceeecee7f138eb7d66853755cd533b6aed25207",

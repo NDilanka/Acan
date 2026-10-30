@@ -1,6 +1,6 @@
 {
   "version": "acan-mcp/1",
-  "receipt_hash": "sha256:2dbaa008714ca2cafc1bfb439e0b3d11d8469bb45e3c21ebbd275705377f53e0",
+  "receipt_hash": "sha256:c61697acfbf70c8878a004d8cfc111f9a01735c3602a3d2a105b66ddfa9fe3c6",
   "receipt": {
     "version": "acan-receipt/1",
     "order": "o-3",
@@ -16,7 +16,7 @@
         },
         "ledger_head": {
           "event_seq": 3,
-          "hash": "sha256:db7bad5a7303627af459a4fa06184897f81d7cfb0f67bc3b7fd81346780e52bb"
+          "hash": "sha256:9f625efcb35f0da551bb4bcf00d038001e8d597d0ec671677736a41d021908ab"
         },
         "scope_hash": "sha256:ed58ef8d58d4e29959f80110656bbaeb9d82ad3e12eb5baa5f80ac6bf5ce2d3e",
         "probe_set_hash": "sha256:08cbc55fe91e0a7d35d66a97b619a7931d518dccb0a3268d75ab7b9eac74af03",
@@ -632,7 +632,7 @@
               "value": 0
             },
             "provenance": "observed",
-            "observation_hash": "sha256:589829241e2fabd7153e5b9abe873679710093b90c91eaf246f8b2fe81f6f22d"
+            "observation_hash": "sha256:f9f82156bead5da4cab94a71f9d61bb8bdce1486bde10e487d66d82123224d52"
           },
           {
             "slot": "base_b",
@@ -645,7 +645,7 @@
               "value": 0
             },
             "provenance": "observed",
-            "observation_hash": "sha256:be2a9972672d72d869c76bc50a5d91b4fe05a2c8d66a3c340c1c0a1c31d3aa37"
+            "observation_hash": "sha256:05743d0e18a73cf004f23bfdb11ff0de18798395a4e57075e9fbb5283cd21749"
           },
           {
             "slot": "candidate",
@@ -657,7 +657,7 @@
               "state": "missing"
             },
             "provenance": "observed",
-            "observation_hash": "sha256:954da543343a343b8917a3d370510b4f2476109fe4919534834ab74b9e303295"
+            "observation_hash": "sha256:c6fbaf3983bd31bf4cd5c03981c44688dfa2b36344d8b89b7ea9b1e79a0814ea"
           }
         ],
         "evaluation": {
@@ -752,7 +752,7 @@
               "value": "b2"
             },
             "provenance": "observed",
-            "observation_hash": "sha256:589829241e2fabd7153e5b9abe873679710093b90c91eaf246f8b2fe81f6f22d"
+            "observation_hash": "sha256:f9f82156bead5da4cab94a71f9d61bb8bdce1486bde10e487d66d82123224d52"
           },
           {
             "slot": "base_b",
@@ -765,7 +765,7 @@
               "value": "b2"
             },
             "provenance": "observed",
-            "observation_hash": "sha256:be2a9972672d72d869c76bc50a5d91b4fe05a2c8d66a3c340c1c0a1c31d3aa37"
+            "observation_hash": "sha256:05743d0e18a73cf004f23bfdb11ff0de18798395a4e57075e9fbb5283cd21749"
           },
           {
             "slot": "candidate",
@@ -778,7 +778,7 @@
               "value": "a1"
             },
             "provenance": "observed",
-            "observation_hash": "sha256:954da543343a343b8917a3d370510b4f2476109fe4919534834ab74b9e303295"
+            "observation_hash": "sha256:c6fbaf3983bd31bf4cd5c03981c44688dfa2b36344d8b89b7ea9b1e79a0814ea"
           }
         ],
         "evaluation": {
