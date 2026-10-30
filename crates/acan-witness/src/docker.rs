@@ -102,7 +102,9 @@ pub(crate) fn create_args(
     policy: &ContainerPolicy,
     mounts: &[String],
 ) -> Result<Vec<String>, String> {
-    policy.check_environment()?;
+    policy
+        .check_environment()
+        .map_err(|err| format!("the container policy is refused: {err}"))?;
     let Some(digest) = policy.image.digest.as_ref() else {
         return Err("the image must be pinned by digest".to_owned());
     };

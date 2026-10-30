@@ -355,7 +355,9 @@ impl Worktree {
     /// worktree. `.git` is mounted read-only from the worktree only when `readonly_git` says so.
     fn container_plan(&self, name: &str, command: &str) -> Result<Plan, String> {
         let policy = &self.policy;
-        policy.check_environment()?;
+        policy
+            .check_environment()
+            .map_err(|err| format!("the container policy is refused: {err}"))?;
         let root = std::path::absolute(&self.root)
             .map_err(|err| format!("the worktree cannot be resolved: {err}"))?;
         let snapshot = self.snapshot_root()?;

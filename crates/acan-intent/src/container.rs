@@ -234,25 +234,31 @@ fn environment_names<'de, D: Deserializer<'de>>(
 }
 
 /// Refuses a variable whose name is not `A-Z 0-9 _` from an uppercase letter, whose name could
-/// carry a credential, or whose value is not short printable text.
-fn check_variable(name: &str, value: &str) -> Result<(), String> {
+/// carry a credential, or whose value is not short printable text. The refusal names the
+/// variable and never its value.
+fn check_variable(name: &str, value: &str) -> Result<(), InvalidValue> {
     let well_formed = name.len() <= ENVIRONMENT_NAME_MAX
         && name.starts_with(|c: char| c.is_ascii_uppercase())
         && name
             .chars()
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_');
     if !well_formed {
-        return Err(format!("{name:?} is not an environment variable name"));
+        return Err(InvalidValue::Malformed {
+            what: "environment variable name",
+            raw: name.to_owned(),
+        });
     }
     if CREDENTIAL_NAME_PARTS.iter().any(|part| name.contains(part)) {
-        return Err(format!(
-            "{name} may carry a credential, so no container may receive it"
-        ));
+        return Err(InvalidValue::Malformed {
+            what: "credential-named environment variable, which no container may receive",
+            raw: name.to_owned(),
+        });
     }
     if value.len() > ENVIRONMENT_VALUE_MAX || value.chars().any(char::is_control) {
-        return Err(format!(
-            "the value of {name} is not printable text of at most {ENVIRONMENT_VALUE_MAX} bytes"
-        ));
+        return Err(InvalidValue::Malformed {
+            what: "environment variable value, which must be printable text",
+            raw: name.to_owned(),
+        });
     }
     Ok(())
 }
@@ -343,8 +349,8 @@ impl ContainerPolicy {
     ///
     /// # Errors
     ///
-    /// Returns the reason for the first variable that fails.
-    pub fn check_environment(&self) -> Result<(), String> {
+    /// Returns [`InvalidValue`] naming the first variable that fails.
+    pub fn check_environment(&self) -> Result<(), InvalidValue> {
         self.environment
             .iter()
             .try_for_each(|(name, value)| check_variable(name, value))
