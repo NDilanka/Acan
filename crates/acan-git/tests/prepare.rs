@@ -228,6 +228,84 @@ async fn a_candidate_on_top_of_the_head_is_prepared_as_itself() {
     assert_eq!(preparation.overlay(), &plant_overlay());
 }
 
+/// Lets the clock pass a second. Git records commit times to the second, so two commits made
+/// within one second can be identical even when their times were meant to differ.
+fn wait_for_the_clock() {
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+}
+
+/// The author and committer names, emails and dates of `commit`, as git reports them.
+fn identity(t: &TestRepo, commit: &CommitSha) -> String {
+    git(
+        &t.root,
+        &[
+            "log",
+            "-1",
+            "--date=raw",
+            "--format=%an|%ae|%ad|%cn|%ce|%cd",
+            commit.as_str(),
+        ],
+    )
+}
+
+/// A merge commit depends only on its inputs. Preparing the same non-fast-forward candidate
+/// again, a second later, names the same merged commit. The merge takes its names and dates
+/// from the candidate. Before, it took fresh dates from the clock, so each prepare was a new
+/// commit.
+#[tokio::test]
+async fn preparing_the_same_candidate_twice_gives_the_same_merged_commit() {
+    let t = plant().await;
+    let c = candidate(&t, "t-1", |dir| write(dir, "src/app.ts", "app v2\n")).await;
+    commit_files(&t.root, &[("docs.txt", "landed meanwhile\n")], "meanwhile");
+
+    let first = prepare(&t, &c).await;
+    wait_for_the_clock();
+    let second = prepare(&t, &c).await;
+
+    assert_eq!(
+        second.merged_commit(),
+        first.merged_commit(),
+        "the same inputs give the same merged commit"
+    );
+    assert_eq!(second.overlay_hash(), first.overlay_hash());
+    assert_eq!(
+        identity(&t, first.merged_commit()),
+        identity(&t, &c),
+        "the merge carries the candidate's names and dates"
+    );
+}
+
+/// A restart between the preparation and the receipt prepares the candidate again in a new
+/// process. The origin recorded the first commit, and the run is refused unless the new one is
+/// the same commit id.
+#[tokio::test]
+async fn a_restart_between_prepare_and_receipt_keeps_the_merged_commit() {
+    let t = plant().await;
+    let c = candidate(&t, "t-1", |dir| write(dir, "src/app.ts", "app v2\n")).await;
+    commit_files(&t.root, &[("docs.txt", "landed meanwhile\n")], "meanwhile");
+    let recorded = prepare(&t, &c).await;
+    wait_for_the_clock();
+
+    let restarted = acan_git::Repo::open(&t.root)
+        .await
+        .expect("the repository reopens");
+    let again = match restarted
+        .prepare(&c, &protected())
+        .await
+        .expect("prepare after the restart")
+    {
+        PrepareOutcome::Prepared(preparation) => preparation,
+        other => panic!("expected Prepared, got {other:?}"),
+    };
+
+    assert_eq!(
+        again.merged_commit(),
+        recorded.merged_commit(),
+        "the restarted preparation names the recorded commit"
+    );
+    assert_eq!(again.protected_head(), recorded.protected_head());
+}
+
 #[tokio::test]
 async fn prepare_refuses_a_candidate_that_is_not_a_commit() {
     let t = plant().await;
