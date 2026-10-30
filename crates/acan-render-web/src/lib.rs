@@ -11,6 +11,7 @@ pub mod marks;
 pub mod mirror;
 pub mod plan;
 pub mod plant;
+pub mod pov;
 pub mod scenario;
 pub mod scene;
 pub mod stand;

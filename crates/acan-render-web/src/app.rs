@@ -20,6 +20,7 @@ use crate::marks::{self, AgentSlots, Marks, Motion, Stand};
 use crate::mirror::{Mirror, View};
 use crate::plan::Plan;
 use crate::plant::{Plant, PlantMachine, from_scan_json, rest_labels, stress};
+use crate::pov::{self, Ride};
 use crate::scene;
 use crate::stand;
 
@@ -70,6 +71,14 @@ pub struct App {
     /// An agent to close up on, and the zoom as a share of the fit zoom. It applies once the view
     /// places the agent's drone, then clears.
     focus: Option<(String, f32)>,
+    /// The ride, while the page shows one agent's drone from inside.
+    ride: Option<Ride>,
+    /// Whether the fit runs once the ride has eased back, as the `0` key asks.
+    fit_after_leave: bool,
+    /// Whether a ride's camera bobs, as the page's reduced-motion setting allows.
+    bob_enabled: bool,
+    /// Where the bob is, in milliseconds through its period.
+    bob_ms: f32,
     view_json: String,
     view_version: u32,
     dirty: bool,
@@ -104,6 +113,9 @@ struct Loaded {
     plan_instance: Vec<usize>,
     /// For each plan machine, its model's top and the free spots on its plinth top.
     stands: Vec<Stand>,
+    /// Each machine's model box, which a ride sizes its distance from, in the layout's machine
+    /// order. See `scene::machine_model_boxes`.
+    machine_bounds: Vec<Aabb>,
 }
 
 #[wasm_bindgen]
@@ -160,6 +172,10 @@ impl App {
             still: false,
             card_clash: None,
             focus: None,
+            ride: None,
+            fit_after_leave: false,
+            bob_enabled: true,
+            bob_ms: 0.0,
             view_json: String::new(),
             view_version: 0,
             dirty: false,
@@ -269,7 +285,11 @@ impl App {
             (css_width * self.dpr).round().max(1.0) as u32,
             (css_height * self.dpr).round().max(1.0) as u32,
         ];
-        self.camera.set_viewport([size[0] as f32, size[1] as f32]);
+        let viewport = [size[0] as f32, size[1] as f32];
+        match self.ride.as_mut() {
+            Some(ride) => ride.resize(viewport, &mut self.camera),
+            None => self.camera.set_viewport(viewport),
+        }
         self.renderer.resize(size);
         // The screen-size floors of the marks are in device px, so a new ratio moves them.
         self.sync_scene();
@@ -279,6 +299,9 @@ impl App {
     /// Called with the previous and the current pointer position, the ground point stays under
     /// the pointer in either projection.
     pub fn drag(&mut self, x0: f32, y0: f32, x1: f32, y1: f32) {
+        if self.ride.is_some() {
+            return;
+        }
         self.camera.drag_ground(
             [x0 * self.dpr, y0 * self.dpr],
             [x1 * self.dpr, y1 * self.dpr],
@@ -288,6 +311,9 @@ impl App {
     /// Moves the scene by `(dx, dy)` CSS pixels as if dragged from the screen centre. The arrow
     /// keys and the benchmark use it.
     pub fn pan(&mut self, dx: f32, dy: f32) {
+        if self.ride.is_some() {
+            return;
+        }
         let [vw, vh] = self.camera.viewport();
         let from = [vw * 0.5, vh * 0.5];
         self.camera
@@ -297,6 +323,9 @@ impl App {
     /// Switches between the perspective and orthographic projections. The fit depends on the
     /// projection, so the plant is framed again at the same angles.
     pub fn toggle_projection(&mut self) {
+        if self.ride.is_some() {
+            return;
+        }
         self.camera.toggle_projection();
         if let Some(loaded) = &self.plant {
             self.camera
@@ -307,6 +336,9 @@ impl App {
     /// Turns the view by `(dx, dy)` CSS pixels of drag: horizontal orbits, vertical tilts. This
     /// cancels a turn in progress, so the drag always wins.
     pub fn orbit(&mut self, dx: f32, dy: f32) {
+        if self.ride.is_some() {
+            return;
+        }
         self.turn = None;
         self.camera
             .orbit(dx * ORBIT_DEG_PER_PX, -dy * TILT_DEG_PER_PX);
@@ -314,6 +346,9 @@ impl App {
 
     /// Starts an ease of `degrees` of azimuth. Repeated calls add up.
     pub fn turn(&mut self, degrees: f32) {
+        if self.ride.is_some() {
+            return;
+        }
         let (from, to) = match self.turn.take() {
             Some(turn) => (self.camera.azimuth(), turn.to + degrees),
             None => (self.camera.azimuth(), self.camera.azimuth() + degrees),
@@ -335,7 +370,44 @@ impl App {
             self.sync_scene();
         }
         self.moving = moving;
-        turning || moving
+        let riding = self.advance_ride(dt_ms);
+        turning || moving || riding
+    }
+
+    /// Follows the ride's drone, moves the ride's ease on, and leaves the ride once its drone has
+    /// faded out. Returns true while the ride or the bob needs another frame.
+    fn advance_ride(&mut self, dt_ms: f32) -> bool {
+        let Some(agent) = self.ride.as_ref().map(|ride| ride.agent().to_owned()) else {
+            return false;
+        };
+        let riding_before = self.riding_agent().is_some();
+        let gone = self.motion.body_at(&agent).is_none() && !self.motion.is_leaving(&agent);
+        let snapshot = self.snapshot_of(&agent);
+        let Some(ride) = self.ride.as_mut() else {
+            return false;
+        };
+        if let Some(snapshot) = snapshot.filter(|_| !ride.is_leaving()) {
+            ride.follow(snapshot, self.camera);
+        }
+        if gone {
+            ride.leave(self.camera);
+        }
+        let moving = ride.advance(dt_ms, &mut self.camera);
+        if self.ride.as_ref().is_some_and(Ride::finished) {
+            self.ride = None;
+            if self.fit_after_leave {
+                self.fit_after_leave = false;
+                self.fit_view();
+            }
+        }
+        if riding_before != self.riding_agent().is_some() {
+            self.sync_scene();
+        }
+        let bobbing = self.bobbing();
+        if bobbing {
+            self.bob_ms = (self.bob_ms + dt_ms.max(0.0)) % pov::BOB_PERIOD_MS;
+        }
+        moving || bobbing
     }
 
     fn advance_turn(&mut self, dt_ms: f32) -> bool {
@@ -357,6 +429,9 @@ impl App {
 
     /// Zooms by `factor` around the CSS point `(x, y)`, which stays under the pointer.
     pub fn zoom_at(&mut self, x: f32, y: f32, factor: f32) {
+        if self.ride.is_some() {
+            return;
+        }
         self.camera.zoom_at([x * self.dpr, y * self.dpr], factor);
     }
 
@@ -370,14 +445,158 @@ impl App {
         }
     }
 
-    /// Returns to the default angles and fits the plant.
+    /// Returns to the default angles and fits the plant. While riding, the ride eases back first
+    /// and the fit runs once it has landed.
     pub fn fit(&mut self) {
+        if self.ride.is_some() {
+            self.leave();
+            self.fit_after_leave = true;
+            return;
+        }
+        self.fit_view();
+    }
+
+    /// Rides the drone of agent `agent` from inside. A ride already on switches to it, and a
+    /// ride already on that agent does nothing. Returns false when the view has no drone of that
+    /// name.
+    pub fn ride(&mut self, agent: &str) -> bool {
+        if self.riding_agent() == Some(agent) {
+            return true;
+        }
+        let Some(snapshot) = self.snapshot_of(agent) else {
+            return false;
+        };
+        self.turn = None;
+        self.fit_after_leave = false;
+        if let Some(ride) = self.ride.as_mut().filter(|ride| ride.is_leaving()) {
+            ride.resume(snapshot, self.camera);
+        } else if let Some(ride) = self.ride.as_mut() {
+            ride.switch(snapshot, self.camera);
+        } else {
+            self.ride = Some(Ride::enter(self.camera, snapshot));
+        }
+        self.sync_scene();
+        true
+    }
+
+    /// Rides the drone whose disc centre is nearest the CSS point `(css_x, css_y)`. While riding,
+    /// the rider is left out, so the nearest other drone is ridden. Returns false when no other
+    /// drone is in the view.
+    pub fn ride_nearest(&mut self, css_x: f32, css_y: f32) -> bool {
+        let rider = self.riding_agent().map(str::to_owned);
+        let nearest = self
+            .marks
+            .bodies
+            .iter()
+            .filter(|body| rider.as_deref() != Some(body.agent.as_str()))
+            .map(|body| {
+                let at = self.motion.body_at(&body.agent).unwrap_or(body.at);
+                let ([x, y], _) = marks::drone_disc(at, |p| self.screen(p));
+                (body.agent.as_str(), (x - css_x).hypot(y - css_y))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(agent, _)| agent.to_owned());
+        nearest.is_some_and(|agent| self.ride(&agent))
+    }
+
+    /// Rides the next drone in the order the agents' names sort to, or the previous one when
+    /// `direction` is -1. The order wraps at both ends. Returns false when no drone is in the view.
+    pub fn ride_step(&mut self, direction: i32) -> bool {
+        let current = self.riding_agent().map(str::to_owned);
+        let order = pov::ride_order(self.marks.bodies.iter().map(|body| body.agent.as_str()));
+        let next = pov::next_in_order(&order, current.as_deref(), direction).map(str::to_owned);
+        next.is_some_and(|agent| self.ride(&agent))
+    }
+
+    /// Eases the camera back to the view the ride started from. Does nothing without a ride.
+    pub fn leave(&mut self) {
+        if let Some(ride) = self.ride.as_mut() {
+            ride.leave(self.camera);
+            self.sync_scene();
+        }
+    }
+
+    /// The agent the page rides, or an empty string. It is empty once the ride is easing back.
+    pub fn riding(&self) -> String {
+        self.riding_agent().map_or_else(String::new, str::to_owned)
+    }
+
+    /// The rider's words and where its target is on screen, as JSON, or `null` when the page
+    /// does not ride. See `pov::Info` for the fields.
+    pub fn pov_json(&self) -> String {
+        match self.ride.as_ref().filter(|ride| !ride.is_leaving()) {
+            Some(ride) => ride.json(pov::target_on_screen(
+                &self.drawn_camera(),
+                ride.target(),
+                self.dpr,
+            )),
+            None => "null".to_owned(),
+        }
+    }
+
+    /// Scales the ride's distance by `factor` at once, within its range. Does nothing without a
+    /// ride.
+    pub fn pov_scale(&mut self, factor: f32) {
+        if let Some(ride) = self.ride.as_mut() {
+            ride.zoom(factor, &mut self.camera);
+        }
+    }
+
+    /// Turns the hover bob on or off. The page turns it off under reduced motion.
+    pub fn set_bob(&mut self, enabled: bool) {
+        self.bob_enabled = enabled;
+    }
+
+    /// Returns to the default angles and fits the plant.
+    fn fit_view(&mut self) {
         self.turn = None;
         if let Some(loaded) = &self.plant {
             self.camera.set_angles(DEFAULT_AZIMUTH, DEFAULT_ELEVATION);
             self.camera
                 .fit_boxes_room(&loaded.framing, FIT_MARGIN_CSS * self.dpr, self.fit_room());
         }
+    }
+
+    /// The agent the page rides, or none while there is no ride or it is easing back.
+    fn riding_agent(&self) -> Option<&str> {
+        self.ride
+            .as_ref()
+            .filter(|ride| !ride.is_leaving())
+            .map(Ride::agent)
+    }
+
+    /// Whether the hover bob runs now: the page rides, the bob is on, and the page is not still.
+    fn bobbing(&self) -> bool {
+        self.riding_agent().is_some() && self.bob_enabled && !self.still
+    }
+
+    /// The camera a frame draws: the stored camera, lifted by the hover bob while riding.
+    fn drawn_camera(&self) -> Camera {
+        if self.riding_agent().is_none() {
+            return self.camera;
+        }
+        let offset = pov::bob_offset(
+            self.bob_enabled,
+            self.still,
+            self.bob_ms,
+            self.camera.zoom(),
+            self.dpr,
+        );
+        pov::bobbed(&self.camera, offset)
+    }
+
+    /// The drone of agent `agent` as the marks show it now, or None when the view has no drone
+    /// of that name.
+    fn snapshot_of(&self, agent: &str) -> Option<pov::Snapshot> {
+        let loaded = self.plant.as_ref()?;
+        let view = self.view.as_ref()?;
+        let plan = self.plan.as_ref()?;
+        let body = self.marks.bodies.iter().find(|body| body.agent == agent)?;
+        let at = self.motion.body_at(agent).unwrap_or(body.at);
+        let heading = self.motion.heading_of(agent).unwrap_or(0.0);
+        let instance = *loaded.plan_instance.get(body.machine)?;
+        let machine = *loaded.machine_bounds.get(instance)?;
+        Some(pov::snapshot(view, plan, body, at, heading, machine))
     }
 
     /// Centres machine `index` and sets the zoom to `ratio` times the fit zoom.
@@ -432,9 +651,8 @@ impl App {
         if self.dirty {
             self.rebuild_view()?;
         }
-        self.renderer
-            .render(&self.camera, self.lod())
-            .map_err(js_err)
+        let camera = self.drawn_camera();
+        self.renderer.render(&camera, self.lod()).map_err(js_err)
     }
 
     /// Label candidates as flat `[machine index, css x, css y, opacity]` quads, most important
@@ -482,7 +700,7 @@ impl App {
             occluders: &loaded.occluders,
             half_widths: &half_widths,
         };
-        let spots: Vec<LabelSpot> = labels::place(&self.camera, &machines, &named, &rules);
+        let spots: Vec<LabelSpot> = labels::place(&self.drawn_camera(), &machines, &named, &rules);
         spots
             .iter()
             .flat_map(|spot| {
@@ -592,7 +810,7 @@ impl App {
     /// CSS-pixel position of a plan point on the ground, relative to the canvas. The page pins
     /// its panels to the plant with it.
     pub fn world_to_screen(&self, x: f32, y: f32) -> Vec<f32> {
-        let [px, py] = self.camera.world_to_screen([x, y, 0.0]);
+        let [px, py] = self.drawn_camera().world_to_screen([x, y, 0.0]);
         vec![px / self.dpr, py / self.dpr]
     }
 
@@ -677,11 +895,15 @@ impl App {
         self.marks = Marks::default();
         self.motion = Motion::new(self.still);
         self.card_clash = None;
+        self.ride = None;
+        self.fit_after_leave = false;
         self.dirty = true;
         let belts = scene::belt_lines(&laid.belts);
         let drone_reach = stand::reach(&self.models[usize::from(scene::mark_kinds().body)]);
         let framing = scene::fit_boxes(&laid, &self.models, &self.kind_spots, drone_reach);
+        let machine_bounds = scene::machine_model_boxes(&laid, &self.models);
         self.plant = Some(Loaded {
+            machine_bounds,
             repo: plant.repo,
             rest: {
                 let mut named = vec![false; plant.machines.len()];
@@ -746,12 +968,14 @@ impl App {
             .map(|&(plan_index, tint)| (loaded.plan_instance[plan_index], tint))
             .collect();
         scene.hue_lines = scene::hue_lines(&loaded.belts, &hues);
-        scene.beams = marks::beams(&self.motion, &self.marks, self.dpr);
+        let riding = self.riding_agent();
+        scene.beams = marks::beams(&self.motion, &self.marks, self.dpr, riding);
         scene.instances.extend(marks::mark_instances(
             &self.motion,
             &self.marks,
             scene::mark_kinds(),
             self.dpr,
+            riding,
         ));
         self.renderer.set_scene(&scene);
         self.renderer.set_tints(&self.marks.tint_table());
@@ -759,7 +983,7 @@ impl App {
 
     /// A world point on screen, in CSS px.
     fn screen(&self, point: [f32; 3]) -> [f32; 2] {
-        let [x, y] = self.camera.world_to_screen(point);
+        let [x, y] = self.drawn_camera().world_to_screen(point);
         [x / self.dpr, y / self.dpr]
     }
 

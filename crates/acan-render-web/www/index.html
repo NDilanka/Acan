@@ -16,6 +16,9 @@
     --amber: #d99a1e;
     --mono: "IBM Plex Mono", Consolas, monospace;
     --sans: "IBM Plex Sans", system-ui, sans-serif;
+    /* --pov is the riding agent's hue, set from main.js on each ride. */
+    --pov-fade: 200ms;
+    --pov-ease: cubic-bezier(0.22, 1, 0.36, 1);
   }
   [hidden] { display: none !important; }
   html, body { margin: 0; height: 100%; background: var(--page); color: var(--ink); font: 13px/1.35 var(--sans); overflow: hidden; }
@@ -106,6 +109,25 @@
   td { color: #3c3c3a; }
   th.num, td.num { text-align: right; padding-right: 0; padding-left: 16px; font-variant-numeric: tabular-nums; }
   #notice { top: 50%; left: 50%; transform: translate(-50%, -50%); color: #57575a; }
+  /* The point of view. Riding shows these, and the order island fades out with them; each fades
+     over --pov-fade. */
+  #order, #pov-vignette, #pov-frame, #pov-reticle, #pov-chip { opacity: 0; transition: opacity var(--pov-fade) var(--pov-ease); }
+  #order.on, #pov-vignette.on, #pov-frame.on, #pov-reticle.on, #pov-chip.on { opacity: 1; }
+  #pov-vignette { position: fixed; inset: 0; pointer-events: none;
+    background: radial-gradient(ellipse 75% 75% at 50% 50%, rgba(31, 31, 29, 0) 60%, rgba(31, 31, 29, 0.07) 100%); }
+  #pov-frame { position: fixed; inset: 8px; box-sizing: border-box; border: 2px solid var(--pov); border-radius: 14px; pointer-events: none; }
+  #pov-reticle { position: fixed; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
+  #pov-bracket { fill: none; stroke: var(--pov); stroke-width: 1.5; stroke-linecap: round; }
+  #pov-chip { top: 52px; left: 50%; transform: translateX(-50%); padding: 6px 12px; display: flex; flex-wrap: wrap;
+    gap: 8px; align-items: center; white-space: nowrap; pointer-events: none; }
+  #pov-chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--pov); flex: none; }
+  #pov-chip .dot.wait { background: var(--amber); }
+  #pov-chip .inside { font: 12px var(--sans); color: var(--muted); }
+  #pov-chip b { font: 600 13px var(--mono); color: var(--ink); }
+  #pov-chip .line { font: 13px var(--mono); color: var(--ink); }
+  #pov-chip kbd { margin-left: 4px; }
+  #pov-chip .alt { flex-basis: 100%; max-width: 56vw; overflow: hidden; text-overflow: ellipsis;
+    font: 11px var(--mono); color: var(--muted); }
 </style>
 </head>
 <body>
@@ -113,6 +135,10 @@
 <div id="labels" aria-hidden="true"></div>
 <svg id="leaders" aria-hidden="true"></svg>
 <div id="flags" aria-live="polite"></div>
+<div id="pov-vignette" hidden></div>
+<div id="pov-frame" hidden></div>
+<svg id="pov-reticle" hidden aria-hidden="true"><path id="pov-bracket" d=""></path></svg>
+<div class="island" id="pov-chip" hidden><span class="dot" id="pov-dot"></span><span class="inside">inside</span><b id="pov-agent"></b><span class="line" id="pov-line"></span><kbd>Esc</kbd><span class="alt" id="pov-alt" hidden></span></div>
 <div class="island" id="shell"><span class="brand">Acan</span><span class="repo" id="repo"></span><span id="link" class="muted">starting</span></div>
 <div class="island" id="order" hidden><span id="order-line" class="muted"></span></div>
 <div class="island" id="hint"><kbd>Alt</kbd> words&nbsp;&nbsp;<kbd>Q</kbd><kbd>E</kbd> turn&nbsp;&nbsp;<kbd>0</kbd> fit&nbsp;&nbsp;<kbd>5</kbd> ortho&nbsp;&nbsp;<kbd>C</kbd> card&nbsp;&nbsp;<kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> settle</div>

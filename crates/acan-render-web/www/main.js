@@ -25,8 +25,18 @@ const FLAG_ROW_GAP_PX = 4;
 const FADE_HOLD_MS = 1500;
 const FADE_MS = 400;
 const SVG_NS = "http://www.w3.org/2000/svg";
+// The point of view. The reticle is a square POV_SQUARE_PX across, with arms POV_ARM_PX long. A
+// click counts as on a drone within DRONE_PICK_PX of its disc's edge. The chip and the frame fade
+// over POV_FADE_MS, the time the CSS gives --pov-fade.
+const POV_FADE_MS = 200;
+const POV_SQUARE_PX = 40;
+const POV_ARM_PX = 8;
+const DRONE_PICK_PX = 6;
+const RIDE_HINT = "<kbd>Esc</kbd> leave&nbsp;&nbsp;<kbd>Tab</kbd> next&nbsp;&nbsp;<kbd>Shift</kbd><kbd>Tab</kbd> back&nbsp;&nbsp;<kbd>Alt</kbd> words&nbsp;&nbsp;wheel closer";
 
 const params = new URLSearchParams(location.search);
+// `?pov=agent-a` rides that agent once the view places its drone, for screenshots.
+let povWanted = params.get("pov");
 // `?freeze=1` holds the plant still for screenshots. The page loads the log and folds only the
 // events of its own settles, so the server's later events, such as a lease ending, do not move
 // the marks.
@@ -48,6 +58,16 @@ const usagePanel = $("usage");
 const usageBody = $("usage-body");
 const repoEl = $("repo");
 const noticeEl = $("notice");
+const hintEl = $("hint");
+const hintRest = hintEl.innerHTML;
+const povEls = ["pov-vignette", "pov-frame", "pov-reticle", "pov-chip"].map((id) => $(id));
+const povChip = $("pov-chip");
+const povDot = $("pov-dot");
+const povAgent = $("pov-agent");
+const povLine = $("pov-line");
+const povAlt = $("pov-alt");
+const povBracket = $("pov-bracket");
+const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 const timing = { started: performance.now() };
 let app = null;
@@ -67,6 +87,10 @@ let lastFrame = null;
 let drag = null;
 let press = null;
 let altDown = false;
+// The agent the page rides, or "" when it does not ride.
+let ridden = "";
+// Whether the view holds an order to show in the order island.
+let hasOrder = false;
 let labelGeneration = 0;
 const labels = new Map();
 
@@ -89,6 +113,7 @@ function drawFrame(now = performance.now()) {
     if (!app.render()) requestRender();
     if (timing.firstFrame === undefined) timing.firstFrame = performance.now();
     syncView();
+    paintRide();
     placeLabels();
     if (turning) {
       requestRender();
@@ -108,9 +133,101 @@ function syncView() {
   renderedVersion = version;
   view = JSON.parse(app.view_json());
   paint();
+  if (povWanted !== null && app.ride(povWanted)) povWanted = null;
   // The marks ease in from where they start, so the next frame must advance them.
   requestRender();
   if (socket) setLink(`live · seq ${app.next_seq()}`);
+}
+
+// The ride as the wasm side has it now: the chip's words, the reticle on the beam's target, and
+// the frame, vignette and chip shown or hidden as the ride starts or ends.
+function paintRide() {
+  const ride = JSON.parse(app.pov_json());
+  const agent = ride === null ? "" : ride.agent;
+  if ((agent === "") !== (ridden === "")) rideToggled(agent !== "");
+  ridden = agent;
+  if (ride === null) return;
+  document.documentElement.style.setProperty("--pov", ride.hue);
+  paintChip(ride);
+  paintReticle(ride.target_css);
+}
+
+function rideToggled(riding) {
+  for (const el of povEls) {
+    if (riding) showPov(el);
+    else hidePov(el);
+  }
+  // The order island fades out with the point of view, and comes back when the ride ends.
+  if (riding && !orderEl.hidden) hidePov(orderEl);
+  if (!riding && hasOrder) showPov(orderEl);
+  hintEl.innerHTML = riding ? RIDE_HINT : hintRest;
+}
+
+// Showing removes `hidden`, then adds `on` once the element has a style to fade from. Hiding
+// removes `on` and sets `hidden` after the fade.
+const povTimers = new WeakMap();
+// The svg reticle has no `hidden` property (only HTML elements do), so the attribute is set and
+// removed directly. Setting the property would leave the svg at display none.
+function setHidden(el, hidden) {
+  el.toggleAttribute("hidden", hidden);
+}
+
+function showPov(el) {
+  clearTimeout(povTimers.get(el));
+  setHidden(el, false);
+  void el.getBoundingClientRect();
+  requestAnimationFrame(() => el.classList.add("on"));
+}
+
+function hidePov(el) {
+  el.classList.remove("on");
+  povTimers.set(el, setTimeout(() => {
+    setHidden(el, true);
+  }, POV_FADE_MS));
+}
+
+function setText(el, text) {
+  if (el.textContent !== text) el.textContent = text;
+}
+
+// The chip's words are the machine and the activity word its flag shows. Alt adds a row with the
+// task and the file, and the row lines up under the agent's name.
+function paintChip(ride) {
+  povDot.classList.toggle("wait", ride.waiting);
+  setText(povAgent, ride.agent);
+  setText(povLine, `${ride.machine} \u00B7 ${ride.activity}`);
+  povAlt.hidden = !altDown;
+  if (!altDown) return;
+  setText(povAlt, [ride.task, ride.file].filter((part) => part).join(" \u00B7 "));
+  const pad = parseFloat(getComputedStyle(povChip).paddingLeft);
+  povAlt.style.marginLeft = `${povAgent.offsetLeft - pad}px`;
+}
+
+// The reticle's four brackets sit on the target, a square POV_SQUARE_PX across. Off screen or
+// behind the camera it is hidden at once, without a fade.
+function paintReticle(target) {
+  if (target === null) {
+    povBracket.style.visibility = "hidden";
+    return;
+  }
+  const [x, y] = target;
+  const half = POV_SQUARE_PX / 2;
+  const [x0, x1] = [x - half, x + half];
+  const [y0, y1] = [y - half, y + half];
+  const arm = POV_ARM_PX;
+  povBracket.setAttribute("d", [
+    `M${x0 + arm} ${y0}H${x0}V${y0 + arm}`,
+    `M${x1 - arm} ${y0}H${x1}V${y0 + arm}`,
+    `M${x0 + arm} ${y1}H${x0}V${y1 - arm}`,
+    `M${x1 - arm} ${y1}H${x1}V${y1 - arm}`,
+  ].join(""));
+  povBracket.style.visibility = "visible";
+}
+
+// The riding agent's own flag is hidden: the chip replaces it.
+function isRiderFlag(flag) {
+  return ridden !== "" && flag !== undefined && flag.kind === "agent"
+    && flag.text.startsWith(`${ridden} \u00B7 `);
 }
 
 // Labels come in priority order, larger and nearer first. A label that would overlap one
@@ -282,13 +399,18 @@ function paint() {
 function paintOrderLine() {
   const order = view.orders.find((item) => item.phase !== "cancelled" && item.phase !== "landed")
     ?? view.orders.at(-1);
-  if (!order) {
-    orderEl.hidden = true;
-    orderLine.textContent = "";
-    return;
-  }
-  orderEl.hidden = false;
-  orderLine.textContent = `${label("order", order.id)} · ${order.machine} · ${order.phase.replace("_", " ")} · ${order.sentence}`;
+  hasOrder = order !== undefined;
+  orderLine.textContent = hasOrder
+    ? `${label("order", order.id)} · ${order.machine} · ${order.phase.replace("_", " ")} · ${order.sentence}`
+    : "";
+  paintOrderShown();
+}
+
+// A ride holds the island: it fades with the point of view, so rideToggled shows and hides it.
+function paintOrderShown() {
+  if (ridden !== "") return;
+  orderEl.hidden = !hasOrder;
+  orderEl.classList.toggle("on", hasOrder);
 }
 
 // The marks come from the wasm side: each agent with its activity, the active order, each open
@@ -370,6 +492,8 @@ function placeFlags(placedBoxes) {
   for (let k = 0; k < quads.length; k += 4) {
     const el = flagEls[quads[k]];
     if (el === undefined) continue;
+    el.hidden = isRiderFlag(markState.flags[quads[k]]);
+    if (el.hidden) continue;
     const machine = quads[k + 1];
     const x = quads[k + 2];
     const y = quads[k + 3];
@@ -698,6 +822,15 @@ function turn(degrees) {
   requestRender();
 }
 
+// Whether a drone's disc lies under the CSS point, within its radius plus DRONE_PICK_PX.
+function droneAt(x, y) {
+  const discs = app.drone_layout();
+  for (let k = 0; k < discs.length; k += 3) {
+    if (Math.hypot(discs[k] - x, discs[k + 1] - y) <= discs[k + 2] + DRONE_PICK_PX) return true;
+  }
+  return false;
+}
+
 // Left drag moves the ground under the pointer, so the point you grab stays under the cursor.
 // Right drag, or Alt with left drag, orbits and tilts about the ground point under the screen
 // centre.
@@ -736,6 +869,8 @@ function bindCanvas() {
 
   // A press that did not move is a click. A click near a clash pin's tip opens its card; the
   // camera stays where it is.
+  // A click on a clash pin opens its card. A click on a drone rides it, or switches the ride to
+  // the drone nearest the click.
   const endDrag = (event) => {
     const pressed = press;
     press = null;
@@ -744,8 +879,15 @@ function bindCanvas() {
     if (event.type !== "pointerup" || pressed === null) return;
     if (Math.hypot(event.clientX - pressed.x, event.clientY - pressed.y) >= CLICK_PX) return;
     const rect = canvas.getBoundingClientRect();
-    const clash = pinAt(event.clientX - rect.left, event.clientY - rect.top);
-    if (clash !== null) openCard(clash);
+    const x = event.clientX - rect.left;
+    const y = event.clientY - rect.top;
+    const clash = pinAt(x, y);
+    if (clash !== null) {
+      openCard(clash);
+    } else if (droneAt(x, y)) {
+      app.ride_nearest(x, y);
+      requestRender();
+    }
   };
   canvas.addEventListener("pointerup", endDrag);
   canvas.addEventListener("pointercancel", endDrag);
@@ -758,7 +900,9 @@ function bindCanvas() {
       const rect = canvas.getBoundingClientRect();
       const lines = event.deltaMode === 1 ? 16 : 1;
       const factor = Math.exp(-event.deltaY * lines * WHEEL_RATE);
-      app.zoom_at(event.clientX - rect.left, event.clientY - rect.top, factor);
+      // Wheel up brings the drone closer: the distance scale shrinks as the wheel turns up.
+      if (ridden !== "") app.pov_scale(1 / factor);
+      else app.zoom_at(event.clientX - rect.left, event.clientY - rect.top, factor);
       requestRender();
     },
     { passive: false },
@@ -822,9 +966,27 @@ function bindKeys() {
         zoomAtCentre(1 / ZOOM_KEY);
         break;
       case "0":
-      case "f":
         app.fit();
         requestRender();
+        break;
+      case "f":
+      case "F":
+        if (!event.repeat) {
+          const rect = canvas.getBoundingClientRect();
+          app.ride_nearest(rect.width / 2, rect.height / 2);
+          requestRender();
+        }
+        break;
+      case "Tab":
+        event.preventDefault();
+        app.ride_step(event.shiftKey ? -1 : 1);
+        requestRender();
+        break;
+      case "Escape":
+        if (ridden !== "") {
+          app.leave();
+          requestRender();
+        }
         break;
       case "q":
       case "Q":
@@ -911,6 +1073,11 @@ async function loadPlant() {
   repoEl.textContent = app.repo_name();
 }
 
+function followReducedMotion() {
+  app.set_bob(!reducedMotion.matches);
+  requestRender();
+}
+
 async function boot() {
   const started = performance.now();
   await init();
@@ -924,6 +1091,9 @@ async function boot() {
   bindKeys();
   window.addEventListener("resize", sizeCanvas);
   app.set_still(freeze);
+  // Reduced motion turns the hover bob off, and the page follows the setting as it changes.
+  followReducedMotion();
+  reducedMotion.addEventListener("change", followReducedMotion);
   await loadPlant();
   // `?view=azimuth,elevation` turns to a camera angle in degrees, such as a low tilt.
   if (params.has("view")) {

@@ -531,6 +531,18 @@ struct Leave {
     elapsed: f32,
 }
 
+impl Leave {
+    /// Where the body stands now: it has sunk part way into its plinth.
+    fn now(&self) -> Leaving {
+        let t = ease(self.elapsed / LEAVE_MS);
+        Leaving {
+            at: [self.at[0], self.at[1], self.at[2] - RISE * t],
+            slot: self.slot,
+            heading: self.heading,
+        }
+    }
+}
+
 /// A machine's landed dot: how many of its tasks have landed, and for how long the dot has held
 /// its word.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -852,17 +864,13 @@ impl Motion {
     /// The bodies that are leaving now. Each sinks into its plinth over [`LEAVE_MS`].
     #[must_use]
     pub fn leaving_now(&self) -> Vec<Leaving> {
-        self.leaving
-            .values()
-            .map(|leave| {
-                let t = ease(leave.elapsed / LEAVE_MS);
-                Leaving {
-                    at: [leave.at[0], leave.at[1], leave.at[2] - RISE * t],
-                    slot: leave.slot,
-                    heading: leave.heading,
-                }
-            })
-            .collect()
+        self.leaving.values().map(Leave::now).collect()
+    }
+
+    /// Whether an agent's drone is still easing off its machine after it left the view.
+    #[must_use]
+    pub fn is_leaving(&self, agent: &str) -> bool {
+        self.leaving.contains_key(agent)
     }
 
     /// Where an agent's body stands now.
@@ -952,9 +960,16 @@ fn drone_grow(dpr: f32) -> [f32; 2] {
 /// The instances of the marks now. They are every drone, the ring round each waiting drone, each drone that
 /// is leaving, each drone's beacon at its target, and each pin's stalk and diamond. A drone, its
 /// ring, a beacon and a diamond grow to their screen floor, which `dpr` turns from CSS px into
-/// device px. A stalk keeps its plan size. A working agent's beacon swells with its pulse.
+/// device px. A stalk keeps its plan size. A working agent's beacon swells with its pulse. The
+/// riding agent's drone has no shell, accent or shadow, but its ring and beacon still draw.
 #[must_use]
-pub fn mark_instances(motion: &Motion, marks: &Marks, kinds: MarkKinds, dpr: f32) -> Vec<Instance> {
+pub fn mark_instances(
+    motion: &Motion,
+    marks: &Marks,
+    kinds: MarkKinds,
+    dpr: f32,
+    riding: Option<&str>,
+) -> Vec<Instance> {
     let bot = drone_grow(dpr);
     let diamond = [PIN_MIN_PX * dpr, PIN_HEIGHT];
     let mut out = Vec::new();
@@ -963,7 +978,9 @@ pub fn mark_instances(motion: &Motion, marks: &Marks, kinds: MarkKinds, dpr: f32
             continue;
         };
         let turn = motion.heading_of(&body.agent).unwrap_or(0.0);
-        out.extend(drone(kinds, at, body.slot, turn, bot));
+        if riding != Some(body.agent.as_str()) {
+            out.extend(drone(kinds, at, body.slot, turn, bot));
+        }
         if body.waiting {
             out.push(Instance {
                 offset: [at[0], at[1], PLINTH_TOP],
@@ -986,7 +1003,11 @@ pub fn mark_instances(motion: &Motion, marks: &Marks, kinds: MarkKinds, dpr: f32
             turn: 0.0,
         });
     }
-    for leaving in motion.leaving_now() {
+    for (agent, leave) in &motion.leaving {
+        if riding == Some(agent.as_str()) {
+            continue;
+        }
+        let leaving = leave.now();
         out.extend(drone(kinds, leaving.at, leaving.slot, leaving.heading, bot));
     }
     for (foot, head) in motion.pins_now() {
@@ -1010,12 +1031,13 @@ pub fn mark_instances(motion: &Motion, marks: &Marks, kinds: MarkKinds, dpr: f32
 
 /// The beams now run from each drone's eye to its target. The eye is on the nose, in the drone's
 /// own frame, so the beam turns and grows with the drone and starts on the eye at any size. A drone
-/// that is leaving has none.
+/// that is leaving has none, and neither has the riding agent's drone.
 #[must_use]
-pub fn beams(motion: &Motion, marks: &Marks, dpr: f32) -> Vec<Beam> {
+pub fn beams(motion: &Motion, marks: &Marks, dpr: f32, riding: Option<&str>) -> Vec<Beam> {
     marks
         .bodies
         .iter()
+        .filter(|body| riding != Some(body.agent.as_str()))
         .filter_map(|body| {
             let at = motion.body_at(&body.agent)?;
             let facing = motion.heading_of(&body.agent)?;
@@ -1390,7 +1412,7 @@ fn nearest(plan: &Plan, at: [f32; 2]) -> Option<usize> {
     (0..plan.machines.len()).min_by(|&a, &b| distance(a).total_cmp(&distance(b)))
 }
 
-fn short_name(name: &str) -> &str {
+pub fn short_name(name: &str) -> &str {
     name.rsplit('/').next().unwrap_or(name)
 }
 
@@ -1719,7 +1741,7 @@ mod tests {
             beacon: 46,
         };
         for dpr in [1.0_f32, 2.0] {
-            let bot = mark_instances(&motion, &marks, kinds, dpr)
+            let bot = mark_instances(&motion, &marks, kinds, dpr, None)
                 .into_iter()
                 .find(|instance| instance.kind == kinds.body)
                 .expect("a bot is drawn");
@@ -1971,7 +1993,7 @@ mod tests {
             stalk: 45,
             beacon: 46,
         };
-        let instances = mark_instances(&motion, &marks, kinds, 1.0);
+        let instances = mark_instances(&motion, &marks, kinds, 1.0, None);
         let count = |kind: u16| instances.iter().filter(|i| i.kind == kind).count();
         assert_eq!(count(kinds.body), 2, "each drone has a shell");
         assert_eq!(count(kinds.accent), 2, "each drone has an accent");
@@ -2203,7 +2225,7 @@ mod tests {
         let marks = marks_of(vec![drone("a", at, target, "building")]);
         let mut motion = Motion::new(true);
         motion.sync(&marks);
-        let beams = beams(&motion, &marks, 2.0);
+        let beams = beams(&motion, &marks, 2.0, None);
         assert_eq!(beams.len(), 1, "one beam per drone");
         let beam = &beams[0];
         assert_eq!(beam.to, target, "the beam ends on the target");
@@ -2236,7 +2258,7 @@ mod tests {
         let mut motion = Motion::default();
         motion.sync(&marks);
         motion.advance(PULSE_MS / 4.0);
-        let beacons: Vec<f32> = mark_instances(&motion, &marks, KINDS, 1.0)
+        let beacons: Vec<f32> = mark_instances(&motion, &marks, KINDS, 1.0, None)
             .into_iter()
             .filter(|instance| instance.kind == KINDS.beacon)
             .map(|instance| instance.grow[0])
@@ -2257,10 +2279,31 @@ mod tests {
         let marks = marks_of(vec![drone("busy", at, target, "building")]);
         let mut motion = Motion::new(true);
         motion.sync(&marks);
-        let before = mark_instances(&motion, &marks, KINDS, 1.0);
-        let beams_before = beams(&motion, &marks, 1.0);
+        let before = mark_instances(&motion, &marks, KINDS, 1.0, None);
+        let beams_before = beams(&motion, &marks, 1.0, None);
         assert!(!motion.advance(PULSE_MS / 3.0), "nothing moves while still");
-        assert_eq!(mark_instances(&motion, &marks, KINDS, 1.0), before);
-        assert_eq!(beams(&motion, &marks, 1.0), beams_before);
+        assert_eq!(mark_instances(&motion, &marks, KINDS, 1.0, None), before);
+        assert_eq!(beams(&motion, &marks, 1.0, None), beams_before);
+    }
+
+    #[test]
+    fn a_riding_drone_keeps_its_beacon_and_loses_its_body_shadow_and_beam() {
+        let at = [2.0, 3.0, 40.0];
+        let target = [5.0, 3.0, 9.0];
+        let marks = marks_of(vec![
+            drone("a", at, target, "building"),
+            drone("b", [9.0, 3.0, 40.0], target, "idle"),
+        ]);
+        let mut motion = Motion::new(true);
+        motion.sync(&marks);
+        let instances = mark_instances(&motion, &marks, KINDS, 1.0, Some("a"));
+        let count = |kind: u16| instances.iter().filter(|i| i.kind == kind).count();
+        assert_eq!(count(KINDS.body), 1, "only the other drone has a shell");
+        assert_eq!(count(KINDS.accent), 1, "only the other drone has an accent");
+        assert_eq!(count(KINDS.shadow), 1, "only the other drone has a shadow");
+        assert_eq!(count(KINDS.beacon), 2, "both beacons stay");
+        let ridden = beams(&motion, &marks, 1.0, Some("a"));
+        assert_eq!(ridden.len(), 1, "the riding drone has no beam");
+        assert_eq!(ridden[0].origin, [9.0, 3.0, 40.0]);
     }
 }
