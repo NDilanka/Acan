@@ -239,18 +239,31 @@ impl Repo {
 
     /// Move the protected branch through the checkout that has it checked out.
     ///
-    /// The checkout's own `merge --ff-only` moves the branch and its files in one
-    /// step. The flags name the merge this crate means, so a configured `mergeOptions`
-    /// cannot turn it into a squash that exits 0 with the branch unmoved, and hooks
-    /// cannot run. A checkout that is no longer on the protected branch, or whose head
-    /// moved, is reported before the merge. A refusal to overwrite local files is a
-    /// land failure, not a git error.
+    /// The checks come first: a dirty checkout, a checkout that left the protected branch,
+    /// and a protected head that is not `expected_head` are refused. The move follows and
+    /// names both heads in its ref update, so a head that moved after the checks is refused,
+    /// never overwritten. A refusal to overwrite local files is a land failure, not a git
+    /// error.
     async fn advance_checkout(
         &self,
         checkout: &Path,
         commit: &CommitId,
         expected_head: &CommitId,
     ) -> Result<Advance, Error> {
+        match self.checkout_refusal(checkout, expected_head).await? {
+            Some(refusal) => Ok(refusal),
+            None => self.move_checkout(checkout, commit, expected_head).await,
+        }
+    }
+
+    /// Why the checkout cannot take the move now, when it cannot: its tracked files are
+    /// dirty, it no longer has the protected branch checked out, or the protected head is
+    /// not `expected_head`.
+    async fn checkout_refusal(
+        &self,
+        checkout: &Path,
+        expected_head: &CommitId,
+    ) -> Result<Option<Advance>, Error> {
         let dirty = git::ok(
             checkout,
             &["status", "--porcelain", "--untracked-files=no"],
@@ -258,61 +271,135 @@ impl Repo {
         )
         .await?;
         if !dirty.trim().is_empty() {
-            return Ok(Advance::CheckoutDirty {
+            return Ok(Some(Advance::CheckoutDirty {
                 path: checkout.to_path_buf(),
-            });
+            }));
         }
-        // Re-checked immediately before the merge: the branch can switch, or its head
-        // move, between the decision above and here.
         match self.checkout_branch(checkout).await? {
             Some(branch) if branch == self.protected => {}
             _ => {
-                return Ok(Advance::CheckoutMoved {
+                return Ok(Some(Advance::CheckoutMoved {
                     path: checkout.to_path_buf(),
-                });
+                }));
             }
         }
         let current = self.protected_head().await?;
         if current != *expected_head {
-            return Ok(Advance::HeadMoved { current });
+            return Ok(Some(Advance::HeadMoved { current }));
+        }
+        Ok(None)
+    }
+
+    /// Whether the checkout already holds a local file, ignored or not, at a path that `commit`
+    /// adds over `expected_head`. Such a file is one the land would overwrite.
+    async fn holds_added_path(
+        &self,
+        checkout: &Path,
+        commit: &CommitId,
+        expected_head: &CommitId,
+    ) -> Result<bool, Error> {
+        let args = [
+            "diff",
+            "--name-only",
+            "-z",
+            "--no-renames",
+            "--diff-filter=A",
+            expected_head.as_str(),
+            commit.as_str(),
+        ];
+        let added = git::ok(&self.root, &args, &[]).await?;
+        Ok(added
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(Path::new)
+            .any(|path| {
+                checkout.join(path).symlink_metadata().is_ok()
+                    || path
+                        .ancestors()
+                        .skip(1)
+                        .any(|ancestor| checkout.join(ancestor).is_file())
+            }))
+    }
+
+    /// Points the protected ref from `expected_head` to `commit`, then brings the checkout's
+    /// files onto `commit`.
+    ///
+    /// A local file at a path the commit adds is refused first, before the ref moves: the
+    /// two-tree read below overwrites ignored local files without asking. The ref update names
+    /// both values, so git refuses it when the branch is no longer at `expected_head`, whatever
+    /// the checks saw. The checkout's files then follow with a two-tree read, where hooks cannot
+    /// run. A local file the read still refuses sends the ref back to `expected_head`, so the
+    /// branch never names a commit its checkout does not hold.
+    async fn move_checkout(
+        &self,
+        checkout: &Path,
+        commit: &CommitId,
+        expected_head: &CommitId,
+    ) -> Result<Advance, Error> {
+        if self
+            .holds_added_path(checkout, commit, expected_head)
+            .await?
+        {
+            return Ok(Advance::CheckoutBlocked {
+                path: checkout.to_path_buf(),
+            });
+        }
+        let protected_ref = format!("refs/heads/{}", self.protected);
+        let ref_args = [
+            "update-ref",
+            protected_ref.as_str(),
+            commit.as_str(),
+            expected_head.as_str(),
+        ];
+        let out = git::run(&self.root, &ref_args, &[]).await?;
+        if !out.status.success() {
+            let current = self.protected_head().await?;
+            if current != *expected_head {
+                return Ok(Advance::HeadMoved { current });
+            }
+            return Err(git::ensure_ok(out, &ref_args).expect_err("status was not success"));
         }
         let hooks = self.empty_hooks_dir().await?;
         let hooks_arg = format!("core.hooksPath={hooks}");
-        let args = [
+        let tree_args = [
             "-c",
             hooks_arg.as_str(),
-            "merge",
-            "--ff-only",
-            "--no-squash",
-            "--no-autostash",
-            "--no-overwrite-ignore",
-            "--quiet",
+            "read-tree",
+            "-m",
+            "-u",
+            expected_head.as_str(),
             commit.as_str(),
         ];
-        let out = git::run(checkout, &args, &[]).await?;
+        let out = git::run(checkout, &tree_args, &[]).await?;
         if out.status.success() {
-            // A configured merge option can make git exit 0 without moving the branch.
-            // Only the postcondition says the land happened.
+            // Only the postcondition says the land happened: the ref names `commit`.
             if self.protected_head().await? == *commit {
                 return Ok(Advance::Landed {
                     commit: commit.clone(),
                 });
             }
             return Err(Error::BadOutput {
-                args: "merge --ff-only".to_owned(),
-                detail: format!("merge exited 0 but the protected branch is not at {commit}"),
+                args: "read-tree".to_owned(),
+                detail: format!("the protected branch is not at {commit}"),
             });
+        }
+        // The checkout did not move, so the branch goes back to the head it had.
+        let revert_args = [
+            "update-ref",
+            protected_ref.as_str(),
+            expected_head.as_str(),
+            commit.as_str(),
+        ];
+        let revert = git::run(&self.root, &revert_args, &[]).await?;
+        if !revert.status.success() {
+            return Err(git::ensure_ok(revert, &revert_args).expect_err("status was not success"));
         }
         if out.stderr.contains("would be overwritten by merge") {
             return Ok(Advance::CheckoutBlocked {
                 path: checkout.to_path_buf(),
             });
         }
-        let current = self.protected_head().await?;
-        if current != *expected_head {
-            return Ok(Advance::HeadMoved { current });
-        }
-        Err(git::ensure_ok(out, &args).expect_err("status was not success"))
+        Err(git::ensure_ok(out, &tree_args).expect_err("status was not success"))
     }
 
     /// The branch `checkout` has checked out, or `None` when its head is detached.
@@ -806,3 +893,160 @@ const _: () = {
     const fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<Repo>();
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Runs git in `dir`, failing the test on a non-zero exit.
+    fn run_git(dir: &Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .expect("git runs");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    /// Writes `file` with `content`, commits it on the current branch, and returns the head.
+    fn commit_file(root: &Path, file: &str, content: &str, message: &str) -> CommitId {
+        std::fs::write(root.join(file), content).expect("write file");
+        run_git(root, &["add", "-A"]);
+        run_git(root, &["commit", "-q", "-m", message]);
+        run_git(root, &["rev-parse", "HEAD"])
+            .parse()
+            .expect("the head is a commit")
+    }
+
+    /// The repository the tests move. `main` holds `parent` and then `base`, the protected
+    /// head. `candidate` is a commit on `base` on another branch. `main` is checked out and
+    /// clean.
+    struct Chain {
+        dir: tempfile::TempDir,
+        repo: Repo,
+        parent: CommitId,
+        base: CommitId,
+        candidate: CommitId,
+    }
+
+    async fn chain() -> Chain {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().to_path_buf();
+        run_git(&root, &["init", "-q", "-b", "main"]);
+        run_git(&root, &["config", "user.name", "Tester"]);
+        run_git(&root, &["config", "user.email", "tester@example.com"]);
+        let parent = commit_file(&root, "shared.txt", "parent\n", "parent");
+        let base = commit_file(&root, "base.txt", "base\n", "base");
+        run_git(&root, &["checkout", "-q", "-b", "cand"]);
+        let candidate = commit_file(&root, "candidate.txt", "candidate\n", "candidate");
+        run_git(&root, &["checkout", "-q", "main"]);
+        let repo = Repo::open(&root).await.expect("open repo");
+        Chain {
+            dir,
+            repo,
+            parent,
+            base,
+            candidate,
+        }
+    }
+
+    /// A head that moves to an ancestor of the candidate after the checks is refused. The
+    /// protected branch keeps the outside writer's commit, and the candidate's files never
+    /// reach the checkout. Before the fix, `merge --ff-only` fast-forwarded the branch onto the
+    /// candidate from the ancestor.
+    #[tokio::test]
+    async fn a_head_moved_to_an_ancestor_after_the_checks_installs_nothing() {
+        let c = chain().await;
+        let root = c.dir.path();
+        let checks = c
+            .repo
+            .checkout_refusal(root, &c.base)
+            .await
+            .expect("the checks run");
+        assert!(checks.is_none(), "the checks pass while main sits at the base");
+
+        // An outside writer moves main to the parent, an ancestor of the candidate, after the
+        // checks and before the move.
+        run_git(root, &["reset", "--quiet", "--hard", c.parent.as_str()]);
+        let outcome = c
+            .repo
+            .move_checkout(root, &c.candidate, &c.base)
+            .await
+            .expect("the move runs");
+        assert!(
+            matches!(&outcome, Advance::HeadMoved { current } if *current == c.parent),
+            "the move names the head it found, got another outcome"
+        );
+        assert_eq!(
+            c.repo.protected_head().await.expect("protected head"),
+            c.parent,
+            "the outside writer's commit stays on the protected branch"
+        );
+        assert!(
+            !root.join("candidate.txt").exists(),
+            "the candidate's files never reach the checkout"
+        );
+    }
+
+    /// A local file where the candidate adds one blocks the checkout's update. The branch goes
+    /// back to the base, so it never names a commit its checkout does not hold.
+    #[tokio::test]
+    async fn a_checkout_blocked_by_a_local_file_puts_the_branch_back() {
+        let c = chain().await;
+        let root = c.dir.path();
+        std::fs::write(root.join("candidate.txt"), "local\n").expect("write local file");
+
+        let outcome = c
+            .repo
+            .move_checkout(root, &c.candidate, &c.base)
+            .await
+            .expect("the move runs");
+        assert!(
+            matches!(outcome, Advance::CheckoutBlocked { .. }),
+            "the local file blocks the checkout"
+        );
+        assert_eq!(
+            c.repo.protected_head().await.expect("protected head"),
+            c.base,
+            "the protected branch is back on the base"
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("candidate.txt")).expect("local file"),
+            "local\n",
+            "the local file is untouched"
+        );
+    }
+
+    /// From the expected head, the move lands the commit and brings its files onto the
+    /// checkout, which stays clean.
+    #[tokio::test]
+    async fn a_move_from_the_expected_head_lands_the_commit_and_its_files() {
+        let c = chain().await;
+        let root = c.dir.path();
+
+        let outcome = c
+            .repo
+            .move_checkout(root, &c.candidate, &c.base)
+            .await
+            .expect("the move runs");
+        assert!(
+            matches!(&outcome, Advance::Landed { commit } if *commit == c.candidate),
+            "the move lands the candidate"
+        );
+        assert_eq!(
+            c.repo.protected_head().await.expect("protected head"),
+            c.candidate
+        );
+        // A checkout with `core.autocrlf` writes CRLF, so the text is compared with LF endings.
+        let landed = std::fs::read_to_string(root.join("candidate.txt")).expect("landed file");
+        assert_eq!(landed.replace("\r\n", "\n"), "candidate\n");
+        assert_eq!(run_git(root, &["status", "--porcelain"]), "");
+    }
+}
