@@ -1,0 +1,397 @@
+[
+  {
+    "version": "acan-observation/1",
+    "run_id": "run-basea-links",
+    "probe": "sha256:df9a3ba0fdfbb74fd01b2fdab14f4ab0df0824efbe6bf228f0c0eb65f78ec89c",
+    "step_id": "f1",
+    "completeness": {
+      "state": "complete"
+    },
+    "request": {
+      "method": "POST",
+      "route_template": "/api/signup",
+      "client": "client-a",
+      "sent_at_ms": 0
+    },
+    "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+    "channels": {
+      "status": 201,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": {
+        "email": "alice@example.test"
+      }
+    }
+  },
+  {
+    "version": "acan-observation/1",
+    "run_id": "run-basea-links",
+    "probe": "sha256:df9a3ba0fdfbb74fd01b2fdab14f4ab0df0824efbe6bf228f0c0eb65f78ec89c",
+    "step_id": "f2",
+    "completeness": {
+      "state": "complete"
+    },
+    "request": {
+      "method": "POST",
+      "route_template": "/api/login",
+      "client": "client-a",
+      "sent_at_ms": 40
+    },
+    "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+    "channels": {
+      "status": 200,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "cookies": {
+        "session": "tok-base-a-0001"
+      },
+      "body": {
+        "ok": true
+      }
+    }
+  },
+  {
+    "version": "acan-observation/1",
+    "run_id": "run-basea-links",
+    "probe": "sha256:df9a3ba0fdfbb74fd01b2fdab14f4ab0df0824efbe6bf228f0c0eb65f78ec89c",
+    "step_id": "s1",
+    "completeness": {
+      "state": "complete"
+    },
+    "request": {
+      "method": "POST",
+      "route_template": "/api/links",
+      "actor": "alice",
+      "client": "client-a",
+      "sent_at_ms": 80
+    },
+    "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+    "channels": {
+      "status": 201,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": {
+        "code": "b2",
+        "url": "https://example.test/a"
+      }
+    }
+  },
+  {
+    "version": "acan-observation/1",
+    "run_id": "run-basea-links",
+    "probe": "sha256:df9a3ba0fdfbb74fd01b2fdab14f4ab0df0824efbe6bf228f0c0eb65f78ec89c",
+    "step_id": "s3",
+    "completeness": {
+      "state": "complete"
+    },
+    "request": {
+      "method": "DELETE",
+      "route_template": "/api/links/:code",
+      "actor": "alice",
+      "client": "client-a",
+      "sent_at_ms": 120
+    },
+    "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+    "channels": {
+      "status": 204
+    }
+  },
+  {
+    "version": "acan-observation/1",
+    "run_id": "run-basea-links",
+    "probe": "sha256:df9a3ba0fdfbb74fd01b2fdab14f4ab0df0824efbe6bf228f0c0eb65f78ec89c",
+    "step_id": "s4",
+    "completeness": {
+      "state": "complete"
+    },
+    "request": {
+      "method": "GET",
+      "route_template": "/api/links",
+      "actor": "alice",
+      "client": "client-a",
+      "sent_at_ms": 160
+    },
+    "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+    "channels": {
+      "status": 200,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": {
+        "links": [
+          {
+            "code": "b2",
+            "url": "https://example.test/a",
+            "clicks": 0
+          }
+        ]
+      }
+    }
+  },
+  {
+    "version": "acan-observation/1",
+    "run_id": "run-baseb-links",
+    "probe": "sha256:df9a3ba0fdfbb74fd01b2fdab14f4ab0df0824efbe6bf228f0c0eb65f78ec89c",
+    "step_id": "f1",
+    "completeness": {
+      "state": "complete"
+    },
+    "request": {
+      "method": "POST",
+      "route_template": "/api/signup",
+      "client": "client-a",
+      "sent_at_ms": 0
+    },
+    "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+    "channels": {
+      "status": 201,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": {
+        "email": "alice@example.test"
+      }
+    }
+  },
+  {
+    "version": "acan-observation/1",
+    "run_id": "run-baseb-links",
+    "probe": "sha256:df9a3ba0fdfbb74fd01b2fdab14f4ab0df0824efbe6bf228f0c0eb65f78ec89c",
+    "step_id": "f2",
+    "completeness": {
+      "state": "complete"
+    },
+    "request": {
+      "method": "POST",
+      "route_template": "/api/login",
+      "client": "client-a",
+      "sent_at_ms": 40
+    },
+    "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+    "channels": {
+      "status": 200,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "cookies": {
+        "session": "tok-base-b-0002"
+      },
+      "body": {
+        "ok": true
+      }
+    }
+  },
+  {
+    "version": "acan-observation/1",
+    "run_id": "run-baseb-links",
+    "probe": "sha256:df9a3ba0fdfbb74fd01b2fdab14f4ab0df0824efbe6bf228f0c0eb65f78ec89c",
+    "step_id": "s1",
+    "completeness": {
+      "state": "complete"
+    },
+    "request": {
+      "method": "POST",
+      "route_template": "/api/links",
+      "actor": "alice",
+      "client": "client-a",
+      "sent_at_ms": 80
+    },
+    "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+    "channels": {
+      "status": 201,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": {
+        "code": "b2",
+        "url": "https://example.test/a"
+      }
+    }
+  },
+  {
+    "version": "acan-observation/1",
+    "run_id": "run-baseb-links",
+    "probe": "sha256:df9a3ba0fdfbb74fd01b2fdab14f4ab0df0824efbe6bf228f0c0eb65f78ec89c",
+    "step_id": "s3",
+    "completeness": {
+      "state": "complete"
+    },
+    "request": {
+      "method": "DELETE",
+      "route_template": "/api/links/:code",
+      "actor": "alice",
+      "client": "client-a",
+      "sent_at_ms": 120
+    },
+    "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+    "channels": {
+      "status": 204
+    }
+  },
+  {
+    "version": "acan-observation/1",
+    "run_id": "run-baseb-links",
+    "probe": "sha256:df9a3ba0fdfbb74fd01b2fdab14f4ab0df0824efbe6bf228f0c0eb65f78ec89c",
+    "step_id": "s4",
+    "completeness": {
+      "state": "complete"
+    },
+    "request": {
+      "method": "GET",
+      "route_template": "/api/links",
+      "actor": "alice",
+      "client": "client-a",
+      "sent_at_ms": 160
+    },
+    "commit": "178c1b07097a9f510882d139061ed50b4b44b1d4",
+    "channels": {
+      "status": 200,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": {
+        "links": [
+          {
+            "code": "b2",
+            "url": "https://example.test/a",
+            "clicks": 0
+          }
+        ]
+      }
+    }
+  },
+  {
+    "version": "acan-observation/1",
+    "run_id": "run-candidate-links",
+    "probe": "sha256:df9a3ba0fdfbb74fd01b2fdab14f4ab0df0824efbe6bf228f0c0eb65f78ec89c",
+    "step_id": "f1",
+    "completeness": {
+      "state": "complete"
+    },
+    "request": {
+      "method": "POST",
+      "route_template": "/api/signup",
+      "client": "client-a",
+      "sent_at_ms": 0
+    },
+    "commit": "6f1c2a9e4b7d3058c1e2f9a0b4d6c8e1f3a5b7c9",
+    "channels": {
+      "status": 201,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": {
+        "email": "alice@example.test"
+      }
+    }
+  },
+  {
+    "version": "acan-observation/1",
+    "run_id": "run-candidate-links",
+    "probe": "sha256:df9a3ba0fdfbb74fd01b2fdab14f4ab0df0824efbe6bf228f0c0eb65f78ec89c",
+    "step_id": "f2",
+    "completeness": {
+      "state": "complete"
+    },
+    "request": {
+      "method": "POST",
+      "route_template": "/api/login",
+      "client": "client-a",
+      "sent_at_ms": 40
+    },
+    "commit": "6f1c2a9e4b7d3058c1e2f9a0b4d6c8e1f3a5b7c9",
+    "channels": {
+      "status": 200,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "cookies": {
+        "session": "tok-cand-0003"
+      },
+      "body": {
+        "ok": true
+      }
+    }
+  },
+  {
+    "version": "acan-observation/1",
+    "run_id": "run-candidate-links",
+    "probe": "sha256:df9a3ba0fdfbb74fd01b2fdab14f4ab0df0824efbe6bf228f0c0eb65f78ec89c",
+    "step_id": "s1",
+    "completeness": {
+      "state": "complete"
+    },
+    "request": {
+      "method": "POST",
+      "route_template": "/api/links",
+      "actor": "alice",
+      "client": "client-a",
+      "sent_at_ms": 80
+    },
+    "commit": "6f1c2a9e4b7d3058c1e2f9a0b4d6c8e1f3a5b7c9",
+    "channels": {
+      "status": 201,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": {
+        "code": "a1",
+        "url": "https://example.test/a"
+      }
+    }
+  },
+  {
+    "version": "acan-observation/1",
+    "run_id": "run-candidate-links",
+    "probe": "sha256:df9a3ba0fdfbb74fd01b2fdab14f4ab0df0824efbe6bf228f0c0eb65f78ec89c",
+    "step_id": "s3",
+    "completeness": {
+      "state": "complete"
+    },
+    "request": {
+      "method": "DELETE",
+      "route_template": "/api/links/:code",
+      "actor": "alice",
+      "client": "client-a",
+      "sent_at_ms": 120
+    },
+    "commit": "6f1c2a9e4b7d3058c1e2f9a0b4d6c8e1f3a5b7c9",
+    "channels": {
+      "status": 204
+    }
+  },
+  {
+    "version": "acan-observation/1",
+    "run_id": "run-candidate-links",
+    "probe": "sha256:df9a3ba0fdfbb74fd01b2fdab14f4ab0df0824efbe6bf228f0c0eb65f78ec89c",
+    "step_id": "s4",
+    "completeness": {
+      "state": "complete"
+    },
+    "request": {
+      "method": "GET",
+      "route_template": "/api/links",
+      "actor": "alice",
+      "client": "client-a",
+      "sent_at_ms": 160
+    },
+    "commit": "6f1c2a9e4b7d3058c1e2f9a0b4d6c8e1f3a5b7c9",
+    "channels": {
+      "status": 200,
+      "headers": {
+        "content-type": "application/json"
+      },
+      "body": {
+        "links": [
+          {
+            "code": "a1",
+            "url": "https://example.test/a"
+          }
+        ]
+      }
+    }
+  }
+]
