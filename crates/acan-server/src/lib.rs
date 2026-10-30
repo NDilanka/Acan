@@ -92,9 +92,9 @@ const STREAM_DRAIN: Duration = Duration::from_secs(2);
 /// or an HTTP check, so the default keeps a laptop responsive while a few tasks gate together.
 pub const DEFAULT_WITNESS_CONCURRENCY: usize = 2;
 
-/// How many probes of one contrast run at once. Each probe starts three containers, and those
-/// share the witness pool, so the default bounds the probes in flight without changing how many
-/// containers the host runs. Measured values are recorded in the commit that sets this.
+/// How many probes of one contrast run at once. Every container run also takes a permit from the
+/// witness pool, so the pool, not this value, bounds how many containers run at once. Three passed
+/// the intent gate suite three times in a row.
 pub const DEFAULT_PROBE_CONCURRENCY: usize = 3;
 
 /// What to serve, and where.
