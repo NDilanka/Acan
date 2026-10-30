@@ -6,10 +6,15 @@
 //! and never reaches the origin. A command the origin refuses is 409, with the `Rejection` as the
 //! body.
 
+use std::str::FromStr;
 use std::sync::Arc;
 
 use acan_core::{
     AgentId, Command, Generation, HumanCmd, MemberId, Rejection, Seq, Stamped, TaskId, TaskState,
+};
+use acan_intent::{
+    GetReceiptRequest, GetReceiptResponse, GetRulingsRequest, GetRulingsResponse, GetScopeRequest,
+    GetScopeResponse, MachineId, McpError, McpErrorCode, McpV1, TaskRef,
 };
 use acan_llm::{ModelClient, UsageTotals};
 use acan_scan::Plant;
@@ -24,6 +29,7 @@ use serde_json::json;
 
 use crate::auth::Principal;
 use crate::host::{Host, SubmitError};
+use crate::intent_api::{self, IntentError};
 use crate::mcp;
 use crate::public::{self, PublicRoot};
 use crate::stream;
@@ -39,7 +45,10 @@ pub(crate) fn router<C: ModelClient + 'static>(host: Host<C>, web: Option<Public
         .route("/api/scan", post(post_scan::<C>))
         .route("/api/usage", get(get_usage::<C>))
         .route("/api/stream", get(stream::upgrade::<C>))
-        .route("/api/tasks/{task}/worktree", get(get_worktree::<C>));
+        .route("/api/tasks/{task}/worktree", get(get_worktree::<C>))
+        .route("/api/tasks/{task}/scope", get(get_scope::<C>))
+        .route("/api/tasks/{task}/rulings", get(get_rulings::<C>))
+        .route("/api/tasks/{task}/receipt", get(get_receipt::<C>));
     let router = match web {
         Some(root) => {
             let root = Arc::new(root);
@@ -61,6 +70,8 @@ pub enum ApiError {
     NotFound(&'static str),
     /// The origin refused the command. The body is the [`Rejection`].
     Rejected(Rejection),
+    /// The scope-first lane refused the call with a closed code. The body is the [`McpError`].
+    Refused(McpError),
     /// Something on the server failed. The detail goes to the log, not the response.
     Internal(anyhow::Error),
 }
@@ -84,6 +95,7 @@ impl IntoResponse for ApiError {
             )
                 .into_response(),
             Self::Rejected(rejection) => (StatusCode::CONFLICT, Json(rejection)).into_response(),
+            Self::Refused(err) => (refusal_status(&err.error), Json(err)).into_response(),
             Self::Internal(err) => {
                 tracing::error!(error = ?err, "request failed");
                 (
@@ -108,6 +120,31 @@ impl From<SubmitError> for ApiError {
 impl From<anyhow::Error> for ApiError {
     fn from(err: anyhow::Error) -> Self {
         Self::Internal(err)
+    }
+}
+
+impl From<IntentError> for ApiError {
+    fn from(err: IntentError) -> Self {
+        match err {
+            IntentError::Refused(err) => Self::Refused(err),
+            IntentError::Internal(err) => Self::Internal(err),
+        }
+    }
+}
+
+/// The HTTP status of a scope-first refusal. A scope or evidence that moved is a conflict with
+/// what the caller read. A malformed request is 400, and a missing task or receipt is 404.
+fn refusal_status(code: &McpErrorCode) -> StatusCode {
+    match code {
+        McpErrorCode::Unauthorized {} => StatusCode::UNAUTHORIZED,
+        McpErrorCode::Forbidden { .. } => StatusCode::FORBIDDEN,
+        McpErrorCode::NotFound { .. } => StatusCode::NOT_FOUND,
+        McpErrorCode::InvalidRequest { .. } => StatusCode::BAD_REQUEST,
+        McpErrorCode::Unsupported { .. } => StatusCode::NOT_IMPLEMENTED,
+        McpErrorCode::ScopeNotConfirmed { .. }
+        | McpErrorCode::StaleScope { .. }
+        | McpErrorCode::StaleEvidence { .. }
+        | McpErrorCode::BudgetExhausted { .. } => StatusCode::CONFLICT,
     }
 }
 
@@ -142,6 +179,9 @@ async fn health() -> &'static str {
     "ok"
 }
 
+/// Every human command. The scope-first human commands arrive here too, as bodies: ReviseScope,
+/// ConfirmScope, ResolveContest and RecordRuling. Only a member reaches the origin, and the origin
+/// checks that the member is the order's poster or an owner. An agent token gets 403 here.
 async fn post_command<C: ModelClient + 'static>(
     State(host): State<Host<C>>,
     headers: HeaderMap,
@@ -265,4 +305,79 @@ fn held_generation(
         },
         None => Err(ApiError::NotFound("task")),
     }
+}
+
+/// The query of `GET /api/tasks/{task}/rulings`.
+#[derive(Deserialize)]
+struct RulingsQuery {
+    /// Comma-separated machine ids. Absent or empty means every machine.
+    #[serde(default)]
+    machines: String,
+}
+
+/// The confirmed scope of a task's order. Any authenticated principal may read it, as with the
+/// other reads, because an agent reads the same scope over MCP before it reads back.
+async fn get_scope<C: ModelClient + 'static>(
+    State(host): State<Host<C>>,
+    headers: HeaderMap,
+    Path(task): Path<String>,
+) -> Result<Json<GetScopeResponse>, ApiError> {
+    authenticate(&host, bearer(&headers))?;
+    let request = GetScopeRequest {
+        version: McpV1,
+        task: task_ref(&task)?,
+    };
+    Ok(Json(intent_api::get_scope(&host, &request)?))
+}
+
+/// The rulings in force on the named machines, or on every machine.
+async fn get_rulings<C: ModelClient + 'static>(
+    State(host): State<Host<C>>,
+    headers: HeaderMap,
+    Path(task): Path<String>,
+    Query(query): Query<RulingsQuery>,
+) -> Result<Json<GetRulingsResponse>, ApiError> {
+    authenticate(&host, bearer(&headers))?;
+    let machine_ids = query
+        .machines
+        .split(',')
+        .filter(|id| !id.is_empty())
+        .map(MachineId::from_str)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| invalid_request("machines must be comma-separated machine ids"))?;
+    let request = GetRulingsRequest {
+        version: McpV1,
+        task: task_ref(&task)?,
+        machine_ids,
+    };
+    Ok(Json(intent_api::get_rulings(&host, &request)?))
+}
+
+/// The latest receipt of a task's gate runs.
+async fn get_receipt<C: ModelClient + 'static>(
+    State(host): State<Host<C>>,
+    headers: HeaderMap,
+    Path(task): Path<String>,
+) -> Result<Json<GetReceiptResponse>, ApiError> {
+    authenticate(&host, bearer(&headers))?;
+    let request = GetReceiptRequest {
+        version: McpV1,
+        task: task_ref(&task)?,
+    };
+    Ok(Json(intent_api::get_receipt(&host, &request)?))
+}
+
+/// A task id from a path. One that has no contract spelling names no task.
+fn task_ref(raw: &str) -> Result<TaskRef, ApiError> {
+    TaskRef::from_str(raw).map_err(|_| ApiError::NotFound("task"))
+}
+
+/// A request the scope-first lane refuses before it reaches the origin.
+fn invalid_request(detail: &str) -> ApiError {
+    ApiError::Refused(McpError::new(
+        McpErrorCode::InvalidRequest {
+            detail: detail.to_owned(),
+        },
+        detail,
+    ))
 }

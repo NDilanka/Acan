@@ -12,18 +12,23 @@ use acan_core::{
     AgentCmd, AgentId, Claim, Clash, Command, CommitId, DeclarationInput, Event, Fence, FilePath,
     Generation, Locus, Order, Readback, Stage, Stamped, SymbolRef, Task, TaskId, TaskState, World,
 };
+use acan_intent::{
+    ContestRequest, GetReceiptRequest, GetRulingsRequest, GetScopeRequest, McpError, McpErrorCode,
+    PostReadbackRequest,
+};
 use acan_llm::ModelClient;
 use axum::Json;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::auth::Principal;
 use crate::host::{Host, SubmitError};
 use crate::http::{ApiError, authenticate, bearer, worktree_of};
+use crate::intent_api::{self, IntentResult};
 
 /// The revision the endpoint answers with when a client asks for one it does not list.
 const PROTOCOL_VERSION: &str = "2025-06-18";
@@ -36,7 +41,10 @@ const INVALID_REQUEST: i64 = -32600;
 const METHOD_NOT_FOUND: i64 = -32601;
 const INVALID_PARAMS: i64 = -32602;
 
-const TOOLS: [&str; 9] = [
+/// Every tool the endpoint serves. The scope-first human commands (revise, confirm, resolve and
+/// rule) are not here: an agent that names one gets an unknown tool, and the human route refuses
+/// agent tokens. Agents confirm nothing.
+const TOOLS: [&str; 14] = [
     "list_tasks",
     "get_task",
     "post_readback",
@@ -46,6 +54,11 @@ const TOOLS: [&str; 9] = [
     "declare_changes",
     "report_built",
     "get_worktree",
+    "get_scope",
+    "get_rulings",
+    "get_receipt",
+    "post_scoped_readback",
+    "file_contest",
 ];
 
 /// One JSON-RPC message, checked against the 2.0 envelope before any method runs.
@@ -223,8 +236,49 @@ async fn dispatch<C: ModelClient>(
         "declare_changes" => declare_changes(host, agent, args).await,
         "report_built" => report_built(host, agent, args).await,
         "get_worktree" => get_worktree(host, agent, args).await,
+        "get_scope" => {
+            let request: GetScopeRequest = intent_args(args)?;
+            intent_answer(intent_api::get_scope(host, &request))
+        }
+        "get_rulings" => {
+            let request: GetRulingsRequest = intent_args(args)?;
+            intent_answer(intent_api::get_rulings(host, &request))
+        }
+        "get_receipt" => {
+            let request: GetReceiptRequest = intent_args(args)?;
+            intent_answer(intent_api::get_receipt(host, &request))
+        }
+        "post_scoped_readback" => {
+            let request: PostReadbackRequest = intent_args(args)?;
+            intent_answer(intent_api::post_scoped_readback(host, agent, &request).await)
+        }
+        "file_contest" => {
+            let request: ContestRequest = intent_args(args)?;
+            intent_answer(intent_api::file_contest(host, agent, &request).await)
+        }
         other => Err(format!("unknown tool {other}")),
     }
+}
+
+/// Decodes a scope-first tool's arguments. A request that does not decode gets the same typed
+/// envelope as every other scope-first refusal.
+fn intent_args<T: DeserializeOwned>(args: Value) -> Result<T, String> {
+    serde_json::from_value(args).map_err(|err| {
+        let detail = err.to_string();
+        api_message(ApiError::Refused(McpError::new(
+            McpErrorCode::InvalidRequest {
+                detail: detail.clone(),
+            },
+            format!("invalid arguments: {detail}"),
+        )))
+    })
+}
+
+/// The answer of one scope-first call as the tool result. A refusal is its typed envelope, so the
+/// agent can branch on the closed code.
+fn intent_answer<T: Serialize>(result: IntentResult<T>) -> Result<Value, String> {
+    let answer = result.map_err(|err| api_message(ApiError::from(err)))?;
+    serde_json::to_value(answer).map_err(|err| api_message(ApiError::Internal(err.into())))
 }
 
 #[derive(Deserialize)]
@@ -590,6 +644,8 @@ fn api_message(err: ApiError) -> String {
         ApiError::Forbidden(why) => why.to_owned(),
         ApiError::NotFound(what) => format!("no such {what}"),
         ApiError::Rejected(rejection) => rejection.to_string(),
+        ApiError::Refused(err) => serde_json::to_string(&err)
+            .unwrap_or_else(|_| "the refusal did not serialize".to_owned()),
         ApiError::Internal(err) => {
             tracing::error!(error = ?err, "an MCP tool failed");
             "internal error".to_owned()
@@ -598,6 +654,16 @@ fn api_message(err: ApiError) -> String {
 }
 
 fn tool_list() -> Vec<Value> {
+    let version = json!({
+        "type": "string",
+        "enum": ["acan-mcp/1"],
+        "description": "Always acan-mcp/1.",
+    });
+    let machine_ids = json!({
+        "type": "array",
+        "items": { "type": "string" },
+        "description": "The machines to read rulings for. Empty or absent means every machine.",
+    });
     let task = json!({ "type": "string", "description": "The task id, such as t-1." });
     let generation = json!({
         "type": "integer",
@@ -709,7 +775,104 @@ fn tool_list() -> Vec<Value> {
                 "required": ["task"],
             }),
         ),
+        tool(
+            "get_scope",
+            "The confirmed scope of your task's order, with the hash a readback must echo. Refused until a human confirms the scope.",
+            intent_schema(&version, &[("task", task.clone())], &[]),
+        ),
+        tool(
+            "get_rulings",
+            "The rulings in force on the named machines, or on every machine when none is named. Read them before you build.",
+            intent_schema(
+                &version,
+                &[("task", task.clone()), ("machine_ids", machine_ids)],
+                &[],
+            ),
+        ),
+        tool(
+            "get_receipt",
+            "The latest receipt of your task, with its hash. Refused until a gate run of the task has one.",
+            intent_schema(&version, &[("task", task.clone())], &[]),
+        ),
+        tool(
+            "post_scoped_readback",
+            "Read back a scope-first task at the confirmed revision and hash. Refused while the scope is unconfirmed or has moved. The acknowledgement authorizes only the claim the confirmed scope already allows.",
+            intent_schema(
+                &version,
+                &[
+                    ("task", task.clone()),
+                    (
+                        "scope_rev",
+                        json!({ "type": "integer", "description": "The scope revision get_scope returned." }),
+                    ),
+                    (
+                        "scope_hash",
+                        json!({ "type": "string", "description": "The scope hash get_scope returned." }),
+                    ),
+                    (
+                        "summary",
+                        json!({ "type": "string", "description": "Your plan, in your words." }),
+                    ),
+                    (
+                        "predictions",
+                        json!({
+                            "type": "array",
+                            "description": "What your change will do: each item is a selector and a predicted value. Scored against the receipt, never evidence.",
+                            "items": { "type": "object" },
+                        }),
+                    ),
+                ],
+                &["scope_rev", "scope_hash", "summary", "predictions"],
+            ),
+        ),
+        tool(
+            "file_contest",
+            "Object to one discrepancy episode of your task's order, with a reproducer. The contest asks the human and never changes the scope. Only the agent holding the task may file.",
+            intent_schema(
+                &version,
+                &[
+                    ("task", task.clone()),
+                    (
+                        "episode_id",
+                        json!({ "type": "string", "description": "The episode id, such as sha256:..." }),
+                    ),
+                    (
+                        "kind",
+                        json!({
+                            "type": "string",
+                            "enum": ["blocked", "spec_conflict", "proposed_change"],
+                        }),
+                    ),
+                    (
+                        "reproducer",
+                        json!({ "type": "string", "description": "The probe hash that shows the problem." }),
+                    ),
+                    (
+                        "rationale",
+                        json!({ "type": "string", "description": "Why, in your words." }),
+                    ),
+                ],
+                &["episode_id", "kind", "reproducer", "rationale"],
+            ),
+        ),
     ]
+}
+
+/// The input schema of a scope-first tool: the contract version, then `properties`. `task` is
+/// always required; `required` names the rest.
+fn intent_schema(version: &Value, properties: &[(&str, Value)], required: &[&str]) -> Value {
+    let mut map = serde_json::Map::new();
+    map.insert("version".to_owned(), version.clone());
+    for (name, schema) in properties {
+        map.insert((*name).to_owned(), schema.clone());
+    }
+    let mut needed = vec!["version", "task"];
+    needed.extend_from_slice(required);
+    json!({
+        "type": "object",
+        "properties": map,
+        "required": needed,
+    })
 }
 
 fn tool(name: &str, description: &str, input_schema: Value) -> Value {
