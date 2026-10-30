@@ -1,90 +1,155 @@
 //! The final gate and installation of the tested merged commit.
 //!
-//! Only the prepared merged commit a receipt was built for may land, and only while every field
-//! of its gate context still matches. A moved protected head, a newer ruling log or any other
-//! changed input forces a new preparation and a new run. An error never enqueues an install.
-//!
-//! Every function here returns [`Unsupported`] until its owner implements it.
+//! The gate passes only when the receipt passes on its own terms and was built for exactly the
+//! context the gate computes now. Installation moves the protected branch to the prepared merged
+//! commit by compare-and-swap, so a protected branch that moved since the run is refused, never
+//! installed over. Every error leaves the protected branch where it was.
 
-use acan_intent::{CommitSha, GateContext, Receipt, Unsupported};
+use acan_git::{InstallOutcome, Preparation, Repo};
+use acan_intent::{CommitSha, GateContext, GateState, ItemId, Receipt, RulingStatus};
+
+/// One reason a receipt does not pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Blocker {
+    /// The item that does not pass, when one does.
+    pub(crate) item: Option<ItemId>,
+    /// What does not pass.
+    pub(crate) reason: String,
+}
 
 /// Why a candidate may not land.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
 pub(crate) enum LandError {
-    /// Not implemented in this build.
+    /// The receipt does not pass. Each blocker names what failed.
+    #[error("the receipt blocks the candidate: {} reason(s)", .0.len())]
+    Blocked(Vec<Blocker>),
+    /// The receipt was built for another context than the gate computes now.
+    #[error("the receipt was built for another context than the gate sees now")]
+    ContextChanged,
+    /// The protected branch did not move to the prepared commit.
+    #[error("the protected branch did not move: {0:?}")]
+    NotInstalled(InstallOutcome),
+    /// Git failed.
     #[error(transparent)]
-    Unsupported(#[from] Unsupported),
+    Git(#[from] acan_git::Error),
 }
 
 /// Proof that the final gate passed for one merged commit on one protected head. Only
-/// [`final_gate`] makes one, so [`install`] cannot be reached without it.
+/// [`final_gate`] makes one, so [`install`] cannot run without it.
 #[derive(Debug)]
 pub(crate) struct Clearance {
-    merged_commit: CommitSha,
-    protected_head: CommitSha,
+    preparation: Preparation,
+    tested: GateContext,
 }
 
-/// Checks that `receipt` passes and was built for exactly `current`.
-///
-/// # Errors
-///
-/// Returns [`LandError`] when the receipt does not pass or any context field differs.
-pub(crate) fn final_gate(
-    _receipt: &Receipt,
-    _current: &GateContext,
-) -> Result<Clearance, LandError> {
-    Err(Unsupported("I01: final_gate").into())
-}
-
-/// Fast-forwards the protected branch from the cleared head to the cleared merged commit.
-///
-/// # Errors
-///
-/// Returns [`LandError`] when the protected head has moved or the update fails.
-pub(crate) async fn install(
-    _repo: &acan_git::Repo,
-    _clearance: Clearance,
-) -> Result<CommitSha, LandError> {
-    Err(Unsupported("I01: install").into())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::process::Command;
-
-    use super::*;
-
-    fn assert_unsupported<T: std::fmt::Debug>(result: Result<T, LandError>, operation: &str) {
-        match result {
-            Err(LandError::Unsupported(Unsupported(name))) => assert_eq!(name, operation),
-            other => panic!("{operation} must fail closed, got {other:?}"),
+/// Every reason `receipt` does not pass. An empty list is a pass: at least one item was checked,
+/// every item is preserved or has its obligations fulfilled, every obligation was checked and
+/// held, no scope item went unreached, and no required ruling failed.
+pub(crate) fn blockers(receipt: &Receipt) -> Vec<Blocker> {
+    let mut found = Vec::new();
+    if matches!(
+        receipt.gate_state,
+        GateState::Blocked | GateState::Stopped | GateState::Landed
+    ) {
+        found.push(Blocker {
+            item: None,
+            reason: format!("the gate is {:?}", receipt.gate_state),
+        });
+    }
+    if receipt.items.is_empty() {
+        found.push(Blocker {
+            item: None,
+            reason: "no item was checked".to_owned(),
+        });
+    }
+    for item in &receipt.items {
+        if !item.class.counts_toward_pass() {
+            found.push(Blocker {
+                item: Some(item.item_id.clone()),
+                reason: format!("classified {:?}", item.class),
+            });
         }
     }
+    for missing in &receipt.not_reached {
+        found.push(Blocker {
+            item: Some(missing.item_id.clone()),
+            reason: "no probe reached it".to_owned(),
+        });
+    }
+    let behavior = receipt.behavior;
+    if behavior.obligations_total == 0
+        || behavior.failed != 0
+        || behavior.unknown != 0
+        || behavior.passed != behavior.obligations_total
+    {
+        found.push(Blocker {
+            item: None,
+            reason: format!(
+                "{} of {} obligations passed, {} failed, {} unknown",
+                behavior.passed, behavior.obligations_total, behavior.failed, behavior.unknown
+            ),
+        });
+    }
+    if receipt.check_counts().is_err() {
+        found.push(Blocker {
+            item: None,
+            reason: "the class counts do not match the items".to_owned(),
+        });
+    }
+    for check in &receipt.rulings {
+        if !matches!(
+            check.status,
+            RulingStatus::Held {} | RulingStatus::NotEnforced { .. }
+        ) {
+            found.push(Blocker {
+                item: None,
+                reason: format!("ruling {:?} is {:?}", check.ruling_id, check.status),
+            });
+        }
+    }
+    found
+}
 
-    #[tokio::test]
-    async fn the_final_gate_and_install_fail_closed() {
-        let receipt: Receipt =
-            serde_json::from_str(include_str!("../../acan-intent/fixtures/receipt.json"))
-                .expect("the receipt fixture decodes");
-        let context = &receipt.prepared.context;
-        assert_unsupported(final_gate(&receipt, context), "I01: final_gate");
+/// Clears the candidate when `receipt` passes and was built for exactly `current`, the context
+/// the gate computes now for `preparation`.
+///
+/// # Errors
+///
+/// Returns [`LandError::Blocked`] when the receipt does not pass, and
+/// [`LandError::ContextChanged`] when its context differs from `current`, or `current` does not
+/// name `preparation`.
+pub(crate) fn final_gate(
+    receipt: &Receipt,
+    current: &GateContext,
+    preparation: &Preparation,
+) -> Result<Clearance, LandError> {
+    let blockers = blockers(receipt);
+    if !blockers.is_empty() {
+        return Err(LandError::Blocked(blockers));
+    }
+    if receipt.prepared.context != *current || preparation.bind(current.clone()) != *current {
+        return Err(LandError::ContextChanged);
+    }
+    Ok(Clearance {
+        preparation: preparation.clone(),
+        tested: current.clone(),
+    })
+}
 
-        let dir = tempfile::tempdir().expect("temporary repository");
-        let status = Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["init", "-q", "-b", "main"])
-            .status()
-            .expect("git runs");
-        assert!(status.success(), "git init succeeds");
-        let repo = acan_git::Repo::open(dir.path())
-            .await
-            .expect("the repository opens");
-        let clearance = Clearance {
-            merged_commit: context.merged_commit.clone(),
-            protected_head: context.protected_head.clone(),
-        };
-        assert_unsupported(install(&repo, clearance).await, "I01: install");
+/// Moves the protected branch to the cleared merged commit, if it still sits at the head the
+/// commit was prepared on.
+///
+/// # Errors
+///
+/// Returns [`LandError::NotInstalled`] with git's outcome when the branch did not move, and
+/// [`LandError::Git`] when git fails.
+pub(crate) async fn install(repo: &Repo, clearance: Clearance) -> Result<CommitSha, LandError> {
+    match repo
+        .install(&clearance.preparation, &clearance.tested)
+        .await?
+    {
+        InstallOutcome::Installed { commit } => Ok(commit),
+        outcome => Err(LandError::NotInstalled(outcome)),
     }
 }
