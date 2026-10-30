@@ -1063,6 +1063,27 @@ async fn gated_land<C: ModelClient>(
     if let Err(reason) = host.read(|world| delivery.stands(world)) {
         return Ok(Err(reason));
     }
+    // The receipt names the merged commit the land installs. It was persisted before any install,
+    // so it is the install intent. When the branch already holds that commit, an earlier install
+    // ran and a crash kept its result from being recorded. That install is this land, so it is
+    // reported as landed, and nothing is prepared again.
+    let tested = &delivery.receipt.prepared.context.merged_commit;
+    if protected_sha(repo).await? == *tested {
+        let blockers = land::blockers(&delivery.receipt);
+        if !blockers.is_empty() {
+            return Ok(Err(refusal(&LandError::Blocked(blockers))));
+        }
+        drop(writes);
+        drop(fence);
+        tracing::info!(
+            task = %delivery.task,
+            commit = tested.as_str(),
+            "the protected branch holds the tested commit; the install is recorded as landed"
+        );
+        let landed = landed_commit(tested)?;
+        catch_up(host, workspace, &landed).await;
+        return Ok(Ok(landed));
+    }
     let pass = Pass::new(host, repo, delivery.run).await?;
     let candidate = prepare_candidate(repo, &pass, head).await?;
     let ledger = host.folded_rulings().map_err(JobError::Rulings)?;
@@ -1083,8 +1104,7 @@ async fn gated_land<C: ModelClient>(
     drop(fence);
     match installed {
         Ok(commit) => {
-            let landed = CommitId::from_str(commit.as_str())
-                .map_err(|err| JobError::Unavailable(format!("the installed commit: {err}")))?;
+            let landed = landed_commit(&commit)?;
             catch_up(host, workspace, &landed).await;
             Ok(Ok(landed))
         }
@@ -1118,6 +1138,12 @@ async fn protected_sha(repo: &Repo) -> Result<CommitSha, JobError> {
     let head = repo.protected_head().await?;
     CommitSha::from_str(&head.to_string())
         .map_err(|err| JobError::Unavailable(format!("the protected head: {err}")))
+}
+
+/// The commit a land records as landed, from the commit it installed.
+fn landed_commit(commit: &CommitSha) -> Result<CommitId, JobError> {
+    CommitId::from_str(commit.as_str())
+        .map_err(|err| JobError::Unavailable(format!("the installed commit: {err}")))
 }
 
 /// Why a land was refused, one reason per line, in the words the origin records.

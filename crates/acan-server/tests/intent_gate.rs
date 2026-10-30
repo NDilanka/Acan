@@ -1482,6 +1482,53 @@ async fn a_delivery_read_before_a_revision_does_not_stand() {
     host.shutdown().await.expect("the writer drains");
 }
 
+/// The crash window after an install: the branch moved to the tested commit, then the process
+/// stopped before the land result was recorded. After a restart the queued delivery finds the
+/// branch on the tested commit and records the land as landed, instead of preparing the
+/// candidate again on a head it no longer matches and reopening installed work.
+#[tokio::test]
+async fn a_land_installed_before_its_result_was_recorded_is_recorded_as_landed() {
+    let demo = Demo::pinned().await;
+    let candidate = demo.candidate("crash-window", touch_notes);
+    let (host, _order, task, _run) = passed_candidate(&demo, &candidate).await;
+    host.shutdown().await.expect("the writer drains");
+
+    // The crash: the install moved the protected branch to the tested commit and nothing recorded
+    // its result.
+    git(
+        &demo.root,
+        &["merge", "--ff-only", "--quiet", candidate.as_str()],
+    );
+    assert_eq!(demo.head(), candidate, "the install moved the branch");
+
+    let host = host_over(&demo.root, foreman()).await;
+    let jobs = spawn_jobs(host.clone());
+    host.wake_jobs();
+    until("the queued land to be decided", || {
+        host.read(|world| {
+            matches!(
+                world.task(task).map(|found| &found.state),
+                Some(TaskState::Open | TaskState::Landed { .. })
+            )
+            .then_some(())
+        })
+    })
+    .await;
+
+    assert!(
+        host.read(|world| landed(world, task)),
+        "the installed commit is recorded as the land"
+    );
+    assert_eq!(
+        demo.head(),
+        candidate,
+        "the branch still holds the tested commit"
+    );
+    jobs.abort();
+    let _ = jobs.await;
+    host.shutdown().await.expect("the writer drains");
+}
+
 /// The same for a cancel: a delivery read before the order is cancelled does not stand after it.
 #[tokio::test]
 async fn a_delivery_read_before_a_cancel_does_not_stand() {
