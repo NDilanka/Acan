@@ -53,7 +53,7 @@ pub use error::Unsupported;
 pub use expr::{
     AllowedCount, BaseAnchor, Boundary, CompareOp, EventFilter, GroupBy, Operand, Predicate,
     PredicateProposal, QuotaCounting, RejectedAttempts, RunSelector, SchemaType, StringFormat,
-    ValueRef, ValueSchema, WindowAnchor, WindowMs, WindowPolicy,
+    ValueRef, ValueSchema, WindowAnchor, WindowMs, WindowObligation, WindowPolicy,
 };
 pub use gate::{
     EnvManifest, FixtureSetManifest, GateContext, LedgerHead, OverlayManifest, PreparedCommit,
