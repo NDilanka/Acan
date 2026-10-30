@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::str::FromStr;
 
-use acan_git::{Preparation, PrepareOutcome, ProtectedPaths, Repo};
+use acan_git::{InstallOutcome, Preparation, PrepareOutcome, ProtectedPaths, Repo};
 use acan_intent::{
     AppContract, CommitSha, ContainerPolicy, CoreDerived, FoldedLedger, ItemClass, Outcome,
     ProbeCorpus, Scope, ScopeConfirmation, fold,
@@ -58,6 +58,8 @@ const PROTECTED_BRANCH: &str = "main";
 const APP_PORT: u16 = 3000;
 /// The order the scope confirms.
 const ORDER: &str = "o-demo-signup";
+/// The protected probe corpus, which every candidate is judged by and no candidate may change.
+const PROTECTED_CORPUS: &str = ".acan/probes/core.json";
 /// The must-keep rule that keeps the signup answer as it is.
 const SIGNUP_RULE: &str = "k-signup-body";
 /// The signup handler's answer, as the pinned demo has it.
@@ -128,6 +130,18 @@ impl Demo {
             .expect("the candidate is a commit");
         git(&self.root, &["checkout", "--quiet", PROTECTED_BRANCH]);
         commit
+    }
+
+    /// Commits `edit` on the protected branch itself, which moves its head, and returns the new
+    /// head. The checkout must be on the protected branch, as [`Demo::candidate`] leaves it.
+    fn advance(&self, edit: impl FnOnce(&Path)) -> CommitSha {
+        edit(&self.root);
+        git(&self.root, &["add", "-A"]);
+        git(
+            &self.root,
+            &["commit", "--quiet", "-m", "advance the protected head"],
+        );
+        self.head()
     }
 }
 
@@ -439,4 +453,143 @@ async fn a_runtime_that_cannot_isolate_a_run_never_installs() {
         "the gate refuses an unisolated candidate"
     );
     assert_eq!(demo.head(), before, "nothing was installed");
+}
+
+#[tokio::test]
+async fn a_candidate_cannot_change_the_protected_inputs() {
+    let demo = Demo::pinned().await;
+    let candidate = demo.candidate("edit-corpus", |root| {
+        let file = root.join(PROTECTED_CORPUS);
+        let text = fs::read_to_string(&file).expect("the corpus is read");
+        fs::write(&file, format!("{text}\n")).expect("the edit is written");
+    });
+
+    let prepared = prepare(&demo.repo, &candidate).await;
+    let discarded: Vec<&str> = prepared
+        .discarded()
+        .iter()
+        .map(|path| path.as_str())
+        .collect();
+    assert!(
+        discarded.contains(&PROTECTED_CORPUS),
+        "the edit to the corpus is discarded: {discarded:?}"
+    );
+    let head_corpus = git(
+        &demo.root,
+        &["show", &format!("{}:{PROTECTED_CORPUS}", demo.head())],
+    );
+    let merged_corpus = git(
+        &demo.root,
+        &[
+            "show",
+            &format!("{}:{PROTECTED_CORPUS}", prepared.merged_commit()),
+        ],
+    );
+    assert_eq!(
+        merged_corpus, head_corpus,
+        "the merged commit holds the protected head's corpus"
+    );
+}
+
+#[tokio::test]
+async fn a_head_move_forces_a_fresh_preparation_and_run() {
+    let _docker = DOCKER.lock().await;
+    let demo = Demo::pinned().await;
+    let candidate = demo.candidate("moved-head", touch_notes);
+    let gate = Gate::new(&demo, &candidate, runner()).await;
+    let judged = observe::judge(&gate.plan(&demo.repo), &gate.order())
+        .await
+        .expect("the candidate is judged");
+    assert!(
+        land::blockers(&judged.receipt).is_empty(),
+        "the candidate passes before the head moves: {:?}",
+        land::blockers(&judged.receipt)
+    );
+    let current = observe::current(&gate.plan(&demo.repo), &gate.order())
+        .await
+        .expect("the current context computes");
+    let stale = land::final_gate(&judged.receipt, &current, &gate.candidate)
+        .expect("the gate clears the candidate before the head moves");
+
+    let moved = demo.advance(|root| {
+        fs::write(root.join("MOVED.md"), "The protected head moved.\n")
+            .expect("the note is written");
+    });
+    let refused = land::install(&demo.repo, stale)
+        .await
+        .expect_err("a clearance for the old head does not install over the new one");
+    assert!(
+        matches!(
+            &refused,
+            land::LandError::NotInstalled(InstallOutcome::HeadMoved { current: head })
+                if *head == moved
+        ),
+        "the protected branch moved, so nothing installs: {refused:?}"
+    );
+    assert_eq!(demo.head(), moved, "the moved head is untouched");
+
+    let fresh = Gate::new(&demo, &candidate, runner()).await;
+    let fresh_current = observe::current(&fresh.plan(&demo.repo), &fresh.order())
+        .await
+        .expect("the fresh context computes");
+    let not_cleared = land::final_gate(&judged.receipt, &fresh_current, &fresh.candidate)
+        .expect_err("the run against the old head does not clear the new head");
+    assert!(
+        matches!(not_cleared, land::LandError::ContextChanged),
+        "the old receipt names the old head: {not_cleared:?}"
+    );
+
+    let rerun = observe::judge(&fresh.plan(&demo.repo), &fresh.order())
+        .await
+        .expect("the candidate is run again on the moved head");
+    assert_eq!(
+        rerun.context.protected_head, moved,
+        "the new run is tested on the moved head"
+    );
+    assert!(
+        land::blockers(&rerun.receipt).is_empty(),
+        "the fresh run passes: {:?}",
+        land::blockers(&rerun.receipt)
+    );
+    let cleared = land::final_gate(&rerun.receipt, &fresh_current, &fresh.candidate)
+        .expect("the fresh run clears the gate");
+    let landed = land::install(&demo.repo, cleared)
+        .await
+        .expect("the fresh candidate installs");
+    assert_eq!(
+        landed,
+        *fresh.candidate.merged_commit(),
+        "the tested merged commit is what lands"
+    );
+    assert_eq!(demo.head(), landed, "the protected branch holds it");
+}
+
+#[tokio::test]
+async fn a_missing_protected_path_is_masked_and_the_run_is_judged() {
+    let _docker = DOCKER.lock().await;
+    let demo = Demo::pinned().await;
+    demo.advance(|root| {
+        fs::remove_dir_all(root.join("test")).expect("the protected test directory is removed");
+    });
+    let candidate = demo.candidate("no-protected-test", touch_notes);
+    let gate = Gate::new(&demo, &candidate, runner()).await;
+    let judged = observe::judge(&gate.plan(&demo.repo), &gate.order())
+        .await
+        .expect("the candidate is judged");
+    assert!(
+        land::blockers(&judged.receipt).is_empty(),
+        "a missing protected path is masked by an empty mount, so the run is judged on its behavior: {:?}",
+        land::blockers(&judged.receipt)
+    );
+    let item = judged
+        .receipt
+        .items
+        .iter()
+        .find(|item| item.item_id.as_str() == SIGNUP_RULE)
+        .expect("the receipt names the signup rule");
+    assert!(
+        item.sequence.iter().all(|step| step.status.is_some()),
+        "every role answered, so no run failed to start: {:?}",
+        item.sequence
+    );
 }
