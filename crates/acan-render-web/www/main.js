@@ -161,17 +161,23 @@ function rideToggled(riding) {
 // Showing removes `hidden`, then adds `on` once the element has a style to fade from. Hiding
 // removes `on` and sets `hidden` after the fade.
 const povTimers = new WeakMap();
+// The svg reticle has no `hidden` property (only HTML elements do), so the attribute is set and
+// removed directly. Setting the property would leave the svg at display none.
+function setHidden(el, hidden) {
+  el.toggleAttribute("hidden", hidden);
+}
+
 function showPov(el) {
   clearTimeout(povTimers.get(el));
-  el.hidden = false;
-  void el.offsetWidth;
+  setHidden(el, false);
+  void el.getBoundingClientRect();
   requestAnimationFrame(() => el.classList.add("on"));
 }
 
 function hidePov(el) {
   el.classList.remove("on");
   povTimers.set(el, setTimeout(() => {
-    el.hidden = true;
+    setHidden(el, true);
   }, POV_FADE_MS));
 }
 
