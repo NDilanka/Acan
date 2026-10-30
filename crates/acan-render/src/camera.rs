@@ -27,6 +27,9 @@ pub const NEAR_FRACTION: f32 = 0.01;
 /// The orthographic far plane, as a multiple of the eye distance. Every visible ground point at
 /// the lowest orthographic elevation lies inside it. The perspective far plane is at infinity.
 pub const ORTHO_FAR: f32 = 4.0;
+/// The elevation range of a point of view that looks over a drone's shoulder, in degrees.
+pub const POV_MIN_ELEVATION: f32 = 15.0;
+pub const POV_MAX_ELEVATION: f32 = 40.0;
 
 /// The screen axes and the direction toward the viewer, in world space.
 ///
@@ -99,6 +102,9 @@ pub struct Camera {
     projection: Projection,
     /// The box the fog keeps clear. Empty until a scene is set.
     fog_bounds: Aabb,
+    /// The fog's start and end in plan units, when a view holds them rather than computing them
+    /// from the eye. See [`Camera::hold_fog`].
+    fog_hold: Option<(f32, f32)>,
 }
 
 impl Camera {
@@ -113,6 +119,7 @@ impl Camera {
             viewport,
             projection: Projection::Perspective,
             fog_bounds: Aabb::EMPTY,
+            fog_hold: None,
         }
     }
 
@@ -135,6 +142,33 @@ impl Camera {
         let t = -p[2] / toward[2];
         self.pivot = [p[0] + t * toward[0], p[1] + t * toward[1]];
         self.height = p[2];
+    }
+
+    /// Puts the perspective eye at `eye`, looking at `target`. The angles come from the direction
+    /// between them, clamped to the point-of-view elevation range, and the zoom sets the eye
+    /// distance to the length between them. The target lands on the screen centre.
+    pub fn look_at(&mut self, eye: [f32; 3], target: [f32; 3]) {
+        let rel = sub(eye, target);
+        let length = dot(rel, rel).sqrt();
+        if length <= 0.0 {
+            return;
+        }
+        let dir = [rel[0] / length, rel[1] / length, rel[2] / length];
+        self.projection = Projection::Perspective;
+        self.azimuth = dir[1].atan2(dir[0]).to_degrees().rem_euclid(360.0);
+        self.elevation = dir[2]
+            .clamp(-1.0, 1.0)
+            .asin()
+            .to_degrees()
+            .clamp(POV_MIN_ELEVATION, POV_MAX_ELEVATION);
+        self.centre_on(target);
+        self.zoom = self.viewport[1] * 0.5 / (length * half_fov_tan());
+    }
+
+    /// Holds the fog's start and end at `range`, in plan units from the eye, instead of computing
+    /// them from the eye and the scene. `None` returns to the computed range.
+    pub fn hold_fog(&mut self, range: Option<(f32, f32)>) {
+        self.fog_hold = range;
     }
 
     pub fn azimuth(&self) -> f32 {
@@ -517,8 +551,12 @@ impl Camera {
         self.fog_bounds = bounds;
     }
 
-    /// Where the fog starts and ends, in plan units from the eye. See `theme::FOG_NEAR`.
+    /// Where the fog starts and ends, in plan units from the eye. See `theme::FOG_NEAR`. A held
+    /// range (see [`Camera::hold_fog`]) is returned as it is.
     pub fn fog_range(&self) -> (f32, f32) {
+        if let Some(range) = self.fog_hold {
+            return range;
+        }
         let eye = self.eye();
         let b = self.fog_bounds;
         let far_corner = if b.min[0] <= b.max[0] {
@@ -588,6 +626,37 @@ impl Projector {
     /// See `Camera::in_front`.
     pub fn in_front(&self, p: [f32; 3]) -> bool {
         -dot(sub(p, self.eye), self.basis.toward) > self.near
+    }
+}
+
+/// The camera `t` of the way from `a` to `b`. The pivot, height and elevation are linear, the
+/// azimuth turns the shorter way round, and the zoom is geometric. The viewport, projection, fog
+/// bounds and held fog come from `b`. The ends are exact: `t <= 0` gives `a`'s view and `t >= 1`
+/// gives `b`.
+pub fn lerp(a: &Camera, b: &Camera, t: f32) -> Camera {
+    if t <= 0.0 {
+        return Camera {
+            viewport: b.viewport,
+            projection: b.projection,
+            fog_bounds: b.fog_bounds,
+            fog_hold: b.fog_hold,
+            ..*a
+        };
+    }
+    if t >= 1.0 {
+        return *b;
+    }
+    let turn = (b.azimuth - a.azimuth + 540.0).rem_euclid(360.0) - 180.0;
+    Camera {
+        pivot: std::array::from_fn(|axis| a.pivot[axis] + (b.pivot[axis] - a.pivot[axis]) * t),
+        height: a.height + (b.height - a.height) * t,
+        azimuth: (a.azimuth + turn * t).rem_euclid(360.0),
+        elevation: a.elevation + (b.elevation - a.elevation) * t,
+        zoom: a.zoom.powf(1.0 - t) * b.zoom.powf(t),
+        viewport: b.viewport,
+        projection: b.projection,
+        fog_bounds: b.fog_bounds,
+        fog_hold: b.fog_hold,
     }
 }
 
@@ -1166,5 +1235,43 @@ mod tests {
             behind(&low),
             behind(&high)
         );
+    }
+
+    #[test]
+    fn look_at_puts_the_eye_where_it_is_asked_and_the_target_on_the_axis() {
+        let mut cam = Camera::new([1440.0, 900.0]);
+        let target = [30.0, -12.0, 4.0];
+        let eye = [target[0] - 160.0, target[1] + 40.0, target[2] + 60.0];
+        cam.look_at(eye, target);
+        let got = cam.eye();
+        for axis in 0..3 {
+            assert!(
+                (got[axis] - eye[axis]).abs() < 1e-3,
+                "axis {axis}: {got:?} vs {eye:?}"
+            );
+        }
+        let s = cam.world_to_screen(target);
+        assert!((s[0] - 720.0).abs() < 1e-2, "target x {}", s[0]);
+        assert!((s[1] - cam.axis_y()).abs() < 1e-2, "target y {}", s[1]);
+    }
+
+    #[test]
+    fn lerp_keeps_both_ends_exact_and_turns_the_short_way_through_north() {
+        let mut a = Camera::new([1440.0, 900.0]);
+        a.set_angles(350.0, 20.0);
+        a.set_zoom(2.0);
+        let mut b = a;
+        b.set_angles(10.0, 30.0);
+        b.set_zoom(8.0);
+        b.set_pivot([40.0, -6.0]);
+        assert_eq!(lerp(&a, &b, 0.0), a);
+        assert_eq!(lerp(&a, &b, 1.0), b);
+        let mid = lerp(&a, &b, 0.5);
+        assert!(
+            (mid.azimuth() - 0.0).abs() < 1e-3,
+            "azimuth {}",
+            mid.azimuth()
+        );
+        assert!((mid.zoom() - 4.0).abs() < 1e-3, "zoom {}", mid.zoom());
     }
 }

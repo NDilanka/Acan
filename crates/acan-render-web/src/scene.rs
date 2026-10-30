@@ -6,7 +6,7 @@ use acan_render::{Aabb, HueLine, Instance, Model, Ribbon, Scene};
 
 use crate::bends;
 use crate::kind::{self, ALL, PlanFootprint};
-use crate::layout::{Belt, Layout};
+use crate::layout::{Belt, Layout, Placed};
 use crate::marks::{FLAG_ROOM, MarkKinds, hover_height};
 
 /// The gap between a belt's end and the plinth it meets, in plan units.
@@ -114,14 +114,7 @@ pub fn fit_boxes(
         let model = &models[index].bounds;
         let offset = [placed.x + w / 2.0, placed.y + d / 2.0];
         let hover = hover_height(model.max[2]);
-        boxes.push(Aabb {
-            min: [offset[0] + model.min[0], offset[1] + model.min[1], 0.0],
-            max: [
-                offset[0] + model.max[0],
-                offset[1] + model.max[1],
-                hover + BODY_RADIUS + FLAG_ROOM,
-            ],
-        });
+        boxes.push(machine_box(placed, models));
         for spot in spots[index].iter().take(SEATS) {
             let at = [offset[0] + spot[0], offset[1] + spot[1]];
             boxes.push(Aabb {
@@ -134,6 +127,33 @@ pub fn fit_boxes(
         boxes.push(nonempty(Aabb::EMPTY));
     }
     boxes
+}
+
+/// The box of one machine that the camera frames: its model's footprint from the plinth up to the
+/// top of its flag room. `fit_boxes` frames it, and a ride measures its distance from it.
+pub fn machine_box(placed: &Placed, models: &[Model]) -> Aabb {
+    let (w, d) = placed.kind.footprint();
+    let index = kind::index(placed.kind);
+    let model = &models[index].bounds;
+    let offset = [placed.x + w / 2.0, placed.y + d / 2.0];
+    let hover = hover_height(model.max[2]);
+    Aabb {
+        min: [offset[0] + model.min[0], offset[1] + model.min[1], 0.0],
+        max: [
+            offset[0] + model.max[0],
+            offset[1] + model.max[1],
+            hover + BODY_RADIUS + FLAG_ROOM,
+        ],
+    }
+}
+
+/// The machine boxes of a layout, in the layout's machine order.
+pub fn machine_boxes(layout: &Layout, models: &[Model]) -> Vec<Aabb> {
+    layout
+        .machines
+        .iter()
+        .map(|placed| machine_box(placed, models))
+        .collect()
 }
 
 /// The box itself when it holds anything, or a unit box for a plant with nothing to draw.
