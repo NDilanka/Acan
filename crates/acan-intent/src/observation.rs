@@ -198,9 +198,8 @@ impl Channels {
     ) -> Result<(), IncompleteReason> {
         let body = match serde_json::from_str::<Value>(text) {
             Ok(value) if value.get(OPAQUE_BODY_KEY).is_none() => value,
-            Ok(_) => opaque_body(text, content_type),
             Err(_) if claims_json(content_type) => return Err(IncompleteReason::BodyNotJson {}),
-            Err(_) => opaque_body(text, content_type),
+            _ => opaque_body(text, content_type),
         };
         self.body = Some(body);
         Ok(())

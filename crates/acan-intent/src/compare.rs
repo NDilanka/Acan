@@ -1293,7 +1293,7 @@ fn format_of(value: &Value) -> Format {
         Value::Number(_) => Format::Number,
         Value::String(text) => match string_format(text) {
             Some(format) => Format::Text(Some(format)),
-            None => match alphabet(text) {
+            None => match token_alphabet(text) {
                 Alphabet::Other => Format::Text(None),
                 token => Format::Token {
                     alphabet: token,
@@ -1309,7 +1309,7 @@ fn format_of(value: &Value) -> Format {
 /// The alphabet a string's characters are drawn from, narrowest first. Alphanumeric text is
 /// base64url text, so a random base64url token does not change class with the characters it
 /// draws. Only a token made entirely of hex digits is hex: for 43 characters that is about one
-/// in 10^20.
+/// in 10^26.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Alphabet {
     Hex,
@@ -1342,6 +1342,20 @@ fn alphabet(text: &str) -> Alphabet {
         Alphabet::Base64url
     } else {
         Alphabet::Other
+    }
+}
+
+/// The shortest text that a masked token is classed as hex. A shorter base64url token is all hex
+/// digits by chance too often: a 7-character code from the demo's base62 alphabet is, about one
+/// time in 13,000. Identity shapes take any hex text as hex, whatever its length.
+const HEX_MIN_LENGTH: usize = 16;
+
+/// The alphabet a masked token's format is judged by: [`alphabet`], except that text under
+/// [`HEX_MIN_LENGTH`] characters is never hex.
+fn token_alphabet(text: &str) -> Alphabet {
+    match alphabet(text) {
+        Alphabet::Hex if text.len() < HEX_MIN_LENGTH => Alphabet::Base64url,
+        other => other,
     }
 }
 
@@ -1592,6 +1606,17 @@ pub(crate) mod tests {
             Format::Token {
                 alphabet: Alphabet::Hex,
                 band: 6,
+            }
+        );
+    }
+
+    #[test]
+    fn a_short_text_of_hex_digits_keeps_the_base64url_format() {
+        assert_eq!(
+            format_of(&Value::String("3f2b8c1".to_owned())),
+            Format::Token {
+                alphabet: Alphabet::Base64url,
+                band: 3,
             }
         );
     }

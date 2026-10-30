@@ -29,7 +29,7 @@ fn parse<T: DeserializeOwned>(text: &str) -> T {
     serde_json::from_str(text).expect("a fixture decodes")
 }
 
-/// SplitMix64, a small generator, so the tests need no random-number dependency.
+/// `SplitMix64`, a small generator, so the tests need no random-number dependency.
 struct SplitMix64(u64);
 
 impl SplitMix64 {
@@ -492,4 +492,47 @@ fn a_json_body_where_the_base_had_an_html_body_is_a_difference() {
         compare_runs(&login, &a, &b, &c).value().outcome,
         Outcome::Changed { .. }
     ));
+}
+
+/// The demo's link codes are 7 characters from a base62 alphabet, and about one in 13,000 of
+/// them is all hex digits. Such a code, in one run only, must not change the run's class.
+#[test]
+fn a_short_code_that_is_all_hex_digits_by_chance_is_not_a_difference() {
+    let login = Login::load();
+    let hex = || ["3f2b8c1".to_owned(), "9d4e0a7".to_owned()];
+    let first = || ["Qk7mZ2x".to_owned(), "Rz4Tn8w".to_owned()];
+    let second = || ["Lp3vB8q".to_owned(), "Hw6sD1e".to_owned()];
+    for (codes_a, codes_b, codes_c) in [
+        (hex(), first(), second()),
+        (first(), second(), hex()),
+        (first(), hex(), second()),
+    ] {
+        let a = admit_run(
+            &login,
+            "run-base-a",
+            RunRole::BaseA,
+            "tok-base-a",
+            sequence("tok-base-a", &codes_a),
+        );
+        let b = admit_run(
+            &login,
+            "run-base-b",
+            RunRole::BaseB,
+            "tok-base-b",
+            sequence("tok-base-b", &codes_b),
+        );
+        let c = admit_run(
+            &login,
+            "run-candidate",
+            RunRole::Candidate,
+            "tok-cand",
+            sequence("tok-cand", &codes_c),
+        );
+        let comparison = compare_runs(&login, &a, &b, &c);
+        assert!(
+            matches!(comparison.value().outcome, Outcome::Unchanged {}),
+            "{:?}",
+            comparison.value().outcome
+        );
+    }
 }
