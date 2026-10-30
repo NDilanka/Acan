@@ -1,27 +1,31 @@
 {
   "image": {
-    "name": "oven/bun:1",
-    "digest": "sha256:3e8a6f2c1d9b4a7e5f0c8d2b6a1e9f4c7d3b8a5e2f6c0d9b4a7e1f8c5d2b6a3e"
+    "name": "oven/bun:1.4.4",
+    "digest": "sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d"
   },
   "user": "1000:1000",
   "cpus_milli": 2000,
   "memory_bytes": 1073741824,
   "pids": 256,
-  "timeout_ms": 120000,
+  "timeout_ms": 30000,
+  "role_timeout_ms": 3600000,
   "tmp_bytes": 268435456,
+  "environment": {
+    "HOME": "/tmp",
+    "PORT": "3000"
+  },
   "network": {
-    "kind": "loopback_published",
-    "port": 3000
+    "kind": "none"
   },
   "root": "read_only",
   "privileges": "dropped",
   "mounts": {
     "workdir": "/work",
     "protected": [
-      ".acan",
-      "test"
+      ".acan"
     ],
     "missing_protected": "masked",
-    "readonly_git": true
+    "readonly_git": true,
+    "harness": "/harness"
   }
 }

@@ -327,6 +327,16 @@ impl<'a> Sequence<'a> {
                 "the app's port variable is not a valid environment name",
             ));
         }
+        // The policy may name the port variable. It must name the port the app is served on,
+        // because the driver sets that value and the policy's would otherwise be a lie.
+        if let Some(value) = input.policy.environment.get(&input.app.port_env)
+            && *value != input.config.port.to_string()
+        {
+            return Err(setup_failed(format!(
+                "the policy sets {} to {value}, but the app is served on port {}",
+                input.app.port_env, input.config.port
+            )));
+        }
         for step in &self.steps {
             if let Step::Http(http) = step
                 && !input.config.clients.contains_key(&http.client)
@@ -407,6 +417,7 @@ impl<'a> Sequence<'a> {
         let op = Op::Start {
             argv: input.app.boot.as_slice(),
             cwd: input.policy.mounts.workdir.as_str(),
+            environment: &input.policy.environment,
             port_env: &input.app.port_env,
             port: input.config.port,
             max_output_bytes: input.app.limits.max_output_bytes,

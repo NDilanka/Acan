@@ -92,6 +92,14 @@ fn grown(origin: vec3<f32>, grow: vec2<f32>) -> f32 {
     return max(1.0, grow.x / (grow.y * px_per_unit(origin)));
 }
 
+// A point turned `turn` radians anticlockwise about the z axis, through the origin. A model turns
+// as one piece. Its positions and its normals both pass through here. At zero it is the identity.
+fn turned(p: vec3<f32>, turn: f32) -> vec3<f32> {
+    let c = cos(turn);
+    let s = sin(turn);
+    return vec3<f32>(c * p.x - s * p.y, s * p.x + c * p.y, p.z);
+}
+
 // Fog from the eye: nothing fades nearer than the fog start, and the far end is page white.
 // Mirrors `Camera::fog_at`.
 fn fog_at(p: vec3<f32>) -> f32 {
@@ -122,6 +130,7 @@ struct MeshIn {
     @location(3) offset: vec3<f32>,
     @location(4) tint: u32,
     @location(5) grow: vec2<f32>,
+    @location(6) turn: f32,
 }
 
 struct MeshOut {
@@ -135,9 +144,9 @@ struct MeshOut {
 @vertex
 fn vs_mesh(v: MeshIn) -> MeshOut {
     var out: MeshOut;
-    let p = v.position * grown(v.offset, v.grow) + v.offset;
+    let p = turned(v.position, v.turn) * grown(v.offset, v.grow) + v.offset;
     out.clip = to_clip(p);
-    out.normal = v.normal;
+    out.normal = turned(v.normal, v.turn);
     out.code = v.code;
     out.tint = v.tint;
     out.world = p;
@@ -378,6 +387,7 @@ struct EdgeIn {
     @location(5) crease: u32,
     @location(6) offset: vec3<f32>,
     @location(7) grow: vec2<f32>,
+    @location(8) turn: f32,
 }
 
 struct LineIn {
@@ -387,6 +397,8 @@ struct LineIn {
     @location(3) width: f32,
     @location(4) tone: u32,
     @location(5) offset: vec3<f32>,
+    @location(6) grow: vec2<f32>,
+    @location(7) turn: f32,
 }
 
 struct StrokeOut {
@@ -500,16 +512,18 @@ fn stroke(
 @vertex
 fn vs_edge(v: EdgeIn) -> StrokeOut {
     let k = grown(v.offset, v.grow);
-    let a = v.a * k + v.offset;
-    let b = v.b * k + v.offset;
+    let a = turned(v.a, v.turn) * k + v.offset;
+    let b = turned(v.b, v.turn) * k + v.offset;
+    let normal_a = turned(v.normal_a, v.turn);
+    let normal_b = turned(v.normal_b, v.turn);
     let mid = 0.5 * (a + b);
-    let front_a = faces_eye(v.normal_a, mid);
-    let front_b = faces_eye(v.normal_b, mid);
+    let front_a = faces_eye(normal_a, mid);
+    let front_b = faces_eye(normal_b, mid);
     if (!edge_shows(front_a, front_b, v.crease != 0u)) {
         return no_stroke();
     }
     // An open boundary has one face, so both its normals are the same.
-    let outer = front_a != front_b || all(v.normal_a == v.normal_b);
+    let outer = front_a != front_b || all(normal_a == normal_b);
     let far = select(CREASE_FAR_ALPHA, CONTOUR_FAR_ALPHA, outer);
     var ink = theme.palette[SLOT_LINE];
     ink.a = ink.a * mix(far, 1.0, line_strength(v.offset));
@@ -522,7 +536,7 @@ fn vs_edge(v: EdgeIn) -> StrokeOut {
     // of the surface across the edge.
     var outside = vec2<f32>(0.0);
     if (front_a != front_b) {
-        let n = v.normal_a + v.normal_b;
+        let n = normal_a + normal_b;
         let s = to_screen(to_clip(mid + n)) - to_screen(to_clip(mid));
         if (length(s) > 1e-6) {
             outside = normalize(s);
@@ -542,7 +556,10 @@ fn vs_line(v: LineIn) -> StrokeOut {
     var ink = theme.palette[v.tone];
     ink.a = ink.a * min(v.width / min_px, 1.0) * shown;
     let half_px = 0.5 * max(v.width, min_px);
-    return stroke(v.a + v.offset, v.b + v.offset, half_px, ink, v.corner, vec2<f32>(0.0));
+    let k = grown(v.offset, v.grow);
+    let a = turned(v.a, v.turn) * k + v.offset;
+    let b = turned(v.b, v.turn) * k + v.offset;
+    return stroke(a, b, half_px, ink, v.corner, vec2<f32>(0.0));
 }
 
 const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
@@ -613,15 +630,21 @@ struct HueIn {
     @location(3) width: f32,
     @location(4) alpha: f32,
     @location(5) tint: u32,
+    @location(6) origin: vec3<f32>,
+    @location(7) grow: vec2<f32>,
+    @location(8) turn: f32,
 }
 
+// A stroke's start is measured from its origin, turned and grown as a model is. A belt has no
+// origin, so its start is the world point. A beam from a drone's eye starts on the eye at any size.
 @vertex
 fn vs_hue(v: HueIn) -> StrokeOut {
     let min_px = camera.view.w;
     var ink = theme.tints[v.tint];
     ink.a = v.alpha;
     let half_px = 0.5 * max(v.width, min_px);
-    return stroke(v.a, v.b, half_px, ink, v.corner, vec2<f32>(0.0));
+    let start = v.origin + turned(v.a, v.turn) * grown(v.origin, v.grow);
+    return stroke(start, v.b, half_px, ink, v.corner, vec2<f32>(0.0));
 }
 
 @fragment
@@ -638,6 +661,8 @@ struct DotIn {
     @location(3) corner: vec2<f32>,
     @location(4) tone: u32,
     @location(5) offset: vec3<f32>,
+    @location(6) grow: vec2<f32>,
+    @location(7) turn: f32,
 }
 
 struct DotOut {
@@ -649,7 +674,10 @@ struct DotOut {
 
 @vertex
 fn vs_dot(v: DotIn) -> DotOut {
-    let p = v.centre + v.offset + camera.toward.xyz * LIFT + v.tangent * v.corner.x + v.bitangent * v.corner.y;
+    let k = grown(v.offset, v.grow);
+    let p = turned(v.centre, v.turn) * k + v.offset + camera.toward.xyz * LIFT
+        + turned(v.tangent, v.turn) * (k * v.corner.x)
+        + turned(v.bitangent, v.turn) * (k * v.corner.y);
     var out: DotOut;
     out.clip = to_clip(p);
     out.uv = v.corner;
@@ -666,10 +694,12 @@ fn fs_dot(v: DotOut) -> @location(0) vec4<f32> {
     if (coverage <= 0.0) {
         discard;
     }
+    // A shadow fades to its rim, so it reads as light on the ground and not as a disc.
+    let falloff = select(1.0, 1.0 - smoothstep(0.0, 1.0, r), v.tone == SLOT_SHADOW);
     let ink = theme.palette[v.tone];
     let page = theme.palette[SLOT_PAGE].rgb;
     let fog = fog_at(v.world);
-    return vec4<f32>(mix(ink.rgb, page, fog), ink.a * coverage);
+    return vec4<f32>(mix(ink.rgb, page, fog), ink.a * coverage * falloff);
 }
 
 // Ink pass: a full-screen triangle that lays the resolved line ink on the frame. Its blend

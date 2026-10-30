@@ -1,18 +1,15 @@
 //! The `docker create` argument list and the mounts of one probe sequence container.
 //!
 //! Each field of the [`ContainerPolicy`] is applied here or the run is refused: a runner that
-//! cannot apply a field never runs with less isolation. The list sets one environment variable,
-//! `HOME`. The app's port reaches the app through the driver, and nothing is mounted but the
-//! worktree, the protected paths from the snapshot, the harness and `.git` when the policy keeps
-//! it read-only.
+//! cannot apply a field never runs with less isolation. The list passes exactly the variables
+//! the policy's `environment` names. The app's port reaches the app through the driver, and
+//! nothing is mounted but the worktree, the protected paths from the snapshot, the harness at
+//! the policy's `mounts.harness`, and `.git` when the policy keeps it read-only.
 
 use std::num::NonZeroU32;
 use std::path::Path;
 
 use acan_intent::{ContainerNetwork, ContainerPolicy, MissingProtected};
-
-/// Where the harness directory is mounted in the container. Always read-only.
-pub(crate) const HARNESS_TARGET: &str = "/harness";
 
 /// The label key every container this runner starts carries. The value is the run id, so
 /// cleanup and tests can find the containers of one run.
@@ -24,7 +21,7 @@ pub(crate) struct MountSources<'a> {
     pub worktree: &'a Path,
     /// The protected-head snapshot the protected paths are mounted from, read-only.
     pub snapshot: &'a Path,
-    /// The directory holding the harness, mounted read-only at [`HARNESS_TARGET`].
+    /// The directory holding the harness, mounted read-only at the policy's harness path.
     pub harness: &'a Path,
     /// An empty directory, mounted over a missing protected path when the policy masks it.
     pub empty: &'a Path,
@@ -63,7 +60,7 @@ pub(crate) fn mount_values(
             }
         }
     }
-    mounts.push(bind(sources.harness, HARNESS_TARGET, true)?);
+    mounts.push(bind(sources.harness, policy.mounts.harness.as_str(), true)?);
     Ok(mounts)
 }
 
@@ -91,24 +88,23 @@ fn bind(source: &Path, target: &str, readonly: bool) -> Result<String, String> {
 /// The `docker create` arguments of one probe sequence container.
 ///
 /// The container is created first and started separately, so its id is known before it runs and
-/// it can always be removed by id. Once started it runs `bun /harness/driver.ts` with stdin open:
-/// the host writes one JSON line per operation. `--rm` removes the container when it exits.
+/// it can always be removed by id. Once started it runs `bun <harness>/driver.ts` with stdin
+/// open, where `<harness>` is the policy's harness path: the host writes one JSON line per
+/// operation. `--rm` removes the container when it exits.
 ///
 /// # Errors
 ///
-/// Returns the refusal reason when the policy asks for something this runner does not apply:
-/// a network other than `none`, or an image that is not pinned by digest.
+/// Returns the refusal reason when the policy names a variable a container must not get, or an
+/// image that is not pinned by digest.
 pub(crate) fn create_args(
     name: &str,
     run_id: &str,
     policy: &ContainerPolicy,
     mounts: &[String],
 ) -> Result<Vec<String>, String> {
-    if !matches!(policy.network, ContainerNetwork::None {}) {
-        return Err(
-            "the container network must be none; loopback publishing is not applied".to_owned(),
-        );
-    }
+    policy
+        .check_environment()
+        .map_err(|err| format!("the container policy is refused: {err}"))?;
     let Some(digest) = policy.image.digest.as_ref() else {
         return Err("the image must be pinned by digest".to_owned());
     };
@@ -130,10 +126,9 @@ pub(crate) fn create_args(
     args.push(name.to_owned());
     args.push("--label".to_owned());
     args.push(format!("{LABEL_KEY}={run_id}"));
+    args.extend(network_args(policy.network));
     args.extend(
         [
-            "--network",
-            "none",
             "--read-only",
             "--cap-drop",
             "ALL",
@@ -152,7 +147,9 @@ pub(crate) fn create_args(
         "--tmpfs".to_owned(),
         format!("/tmp:rw,nosuid,nodev,size={}", policy.tmp_bytes),
     ]);
-    args.extend(["--env".to_owned(), "HOME=/tmp".to_owned()]);
+    for (key, value) in &policy.environment {
+        args.extend(["--env".to_owned(), format!("{key}={value}")]);
+    }
     args.extend([
         "--workdir".to_owned(),
         policy.mounts.workdir.as_str().to_owned(),
@@ -163,8 +160,16 @@ pub(crate) fn create_args(
     }
     args.extend(["--entrypoint", "bun"].map(str::to_owned));
     args.push(image);
-    args.push(format!("{HARNESS_TARGET}/driver.ts"));
+    args.push(format!("{}/driver.ts", policy.mounts.harness.as_str()));
     Ok(args)
+}
+
+/// The `--network` arguments of the policy. The policy can name no other network: a container
+/// that publishes no port has no route to the host or to the rest of the network.
+fn network_args(network: ContainerNetwork) -> Vec<String> {
+    match network {
+        ContainerNetwork::None {} => vec!["--network".to_owned(), "none".to_owned()],
+    }
 }
 
 /// The `--cpus` value for a cap in thousandths of a core.
@@ -177,27 +182,10 @@ mod tests {
     use super::*;
 
     fn pinned_policy(missing: &str) -> ContainerPolicy {
-        serde_json::from_value(serde_json::json!({
-            "image": {
-                "name": "oven/bun:1.4.4",
-                "digest": "sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d"
-            },
-            "user": "1000:1000",
-            "cpus_milli": 2000,
-            "memory_bytes": 1073741824u64,
-            "pids": 256,
-            "timeout_ms": 60000,
-            "tmp_bytes": 268435456u64,
-            "network": { "kind": "none" },
-            "root": "read_only",
-            "privileges": "dropped",
-            "mounts": {
-                "workdir": "/work",
-                "protected": [".acan"],
-                "missing_protected": missing
-            }
-        }))
-        .expect("the test policy decodes")
+        let mut policy = ContainerPolicy::default_run();
+        policy.mounts.missing_protected =
+            serde_json::from_value(serde_json::json!(missing)).expect("a missing-protected rule");
+        policy
     }
 
     #[test]
@@ -241,6 +229,8 @@ mod tests {
             "/tmp:rw,nosuid,nodev,size=268435456",
             "--env",
             "HOME=/tmp",
+            "--env",
+            "PORT=3000",
             "--workdir",
             "/work",
             "--mount",
@@ -260,8 +250,9 @@ mod tests {
     }
 
     #[test]
-    fn only_home_is_set_in_the_environment() {
-        let policy = pinned_policy("refused");
+    fn only_the_variables_the_policy_names_reach_the_container() {
+        let mut policy = pinned_policy("refused");
+        policy.environment.remove("PORT");
         let args = create_args("n", "r", &policy, &[]).expect("args build");
         let env_values: Vec<&String> = args
             .windows(2)
@@ -272,19 +263,44 @@ mod tests {
         assert!(
             !args
                 .iter()
-                .any(|arg| arg.contains(".env") || arg.contains("KEY")),
-            "no env file or key may enter the argument list: {args:?}"
+                .any(|arg| arg.contains(".env") || arg.contains("KEY") || arg.contains("PORT")),
+            "no env file, key or unlisted variable may enter the argument list: {args:?}"
         );
     }
 
     #[test]
-    fn loopback_publishing_is_refused() {
+    fn a_credential_variable_in_code_is_refused_before_create() {
         let mut policy = pinned_policy("refused");
-        policy.network = ContainerNetwork::LoopbackPublished {
-            port: std::num::NonZeroU16::new(3000).expect("nonzero"),
+        policy
+            .environment
+            .insert("OPENAI_API_KEY".to_owned(), "sk-test".to_owned());
+        let refusal = create_args("n", "r", &policy, &[]).expect_err("a key is refused");
+        assert!(refusal.contains("credential"), "{refusal}");
+    }
+
+    #[test]
+    fn the_harness_is_mounted_and_run_where_the_policy_says() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let mut policy = pinned_policy("masked");
+        policy.mounts.harness = "/probe".parse().expect("a container path");
+        let sources = MountSources {
+            worktree: dir.path(),
+            snapshot: dir.path(),
+            harness: dir.path(),
+            empty: dir.path(),
         };
-        let refusal = create_args("n", "r", &policy, &[]).expect_err("publishing is refused");
-        assert!(refusal.contains("network must be none"), "{refusal}");
+        let mounts = mount_values(&policy, &sources).expect("the mounts build");
+        let harness = format!(
+            "type=bind,source={},target=/probe,readonly",
+            dir.path().display()
+        );
+        assert!(mounts.contains(&harness), "{mounts:?}");
+        let args = create_args("n", "r", &policy, &mounts).expect("args build");
+        assert_eq!(args.last().map(String::as_str), Some("/probe/driver.ts"));
+        assert!(
+            !mounts.iter().any(|mount| mount.contains("target=/harness")),
+            "the default harness path is not mounted: {mounts:?}"
+        );
     }
 
     #[test]

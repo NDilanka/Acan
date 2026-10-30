@@ -9,7 +9,7 @@ use std::process::Command as Process;
 use std::time::{Duration, Instant};
 
 use acan_agent::{Worktree, normalize_path};
-use acan_intent::{ContainerPolicy, ImageName, RepoPath};
+use acan_intent::{ContainerPolicy, RepoPath};
 use serde_json::{Value, json};
 
 const DECLARED: &str = "model/store.ts";
@@ -17,6 +17,9 @@ const APP: &str = ".acan/app.json";
 const APP_TEXT: &str = "{}\n";
 const PROTECTED_TEST: &str = "tests/protected.test.ts";
 const PROTECTED_TEST_TEXT: &str = "test('kept', () => {});\n";
+/// The image the contract pins: `oven/bun:1.4.4` at the digest the H01 spike ran.
+const PINNED_IMAGE: &str =
+    "oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d";
 
 fn repo() -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("temporary repository");
@@ -61,12 +64,19 @@ fn repo_paths(paths: &[&str]) -> Vec<RepoPath> {
         .collect()
 }
 
-fn image(name: &str) -> ImageName {
-    name.parse().expect("an image name")
-}
-
 fn worktree(root: &Path) -> Worktree {
     Worktree::new(root.to_path_buf(), &[DECLARED.to_owned()], None)
+}
+
+/// The protected-head snapshot a test command's container mounts protected paths from. It holds
+/// the protected paths as `repo()` committed them, so it matches the base commit.
+fn head_snapshot() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("a protected-head snapshot");
+    fs::create_dir_all(dir.path().join(".acan")).expect("snapshot directory");
+    fs::write(dir.path().join(APP), APP_TEXT).expect("snapshot fixture");
+    fs::create_dir_all(dir.path().join("tests")).expect("snapshot directory");
+    fs::write(dir.path().join(PROTECTED_TEST), PROTECTED_TEST_TEXT).expect("snapshot fixture");
+    dir
 }
 
 #[test]
@@ -405,7 +415,9 @@ async fn run_tests_without_docker_is_isolation_unavailable_and_never_runs_on_the
     let dir = repo();
     let root = dir.path();
     let elsewhere = tempfile::tempdir().expect("a directory without docker");
+    let head = head_snapshot();
     let tools = Worktree::new(root.to_path_buf(), &[], Some(WRITING_COMMAND.to_owned()))
+        .with_snapshot(head.path())
         .with_docker(elsewhere.path().join("no-such-docker"));
     let refused = tools
         .run_tests()
@@ -421,7 +433,9 @@ async fn run_tests_with_the_docker_daemon_down_is_isolation_unavailable() {
     let root = dir.path();
     let bin = tempfile::tempdir().expect("a directory for the fake docker");
     let (docker, ran) = fake_docker(bin.path(), 1, 0);
+    let head = head_snapshot();
     let tools = Worktree::new(root.to_path_buf(), &[], Some(WRITING_COMMAND.to_owned()))
+        .with_snapshot(head.path())
         .with_docker(docker);
     let refused = tools
         .run_tests()
@@ -439,6 +453,7 @@ async fn run_tests_with_the_docker_daemon_down_is_isolation_unavailable() {
 async fn run_tests_reports_the_container_exit_as_pass_fail_or_unavailable() {
     let dir = repo();
     let root = dir.path();
+    let head = head_snapshot();
     for (run_exit, expected) in [
         (0, Ok("pass")),
         (3, Ok("fail: exit code 3")),
@@ -447,6 +462,7 @@ async fn run_tests_reports_the_container_exit_as_pass_fail_or_unavailable() {
         let bin = tempfile::tempdir().expect("a directory for the fake docker");
         let (docker, ran) = fake_docker(bin.path(), 0, run_exit);
         let tools = Worktree::new(root.to_path_buf(), &[], Some(WRITING_COMMAND.to_owned()))
+            .with_snapshot(head.path())
             .with_docker(docker);
         let outcome = tools.run_tests().await;
         assert!(
@@ -467,17 +483,20 @@ async fn run_tests_reports_the_container_exit_as_pass_fail_or_unavailable() {
 fn the_test_container_is_locked_down_with_protected_paths_read_only() {
     let dir = repo();
     let root = dir.path();
+    let head = head_snapshot();
     let tools = Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned()))
         .with_protected(&repo_paths(&[PROTECTED_TEST, "probes"]))
-        .with_image(image("oven/bun:1.2"));
+        .with_snapshot(head.path());
     let host = std::path::absolute(root).expect("an absolute worktree");
+    let snapshot = std::path::absolute(head.path()).expect("an absolute snapshot");
     let read_only = |source: PathBuf, target: &str| {
         format!(
             "type=bind,source={},target={target},readonly",
             source.display()
         )
     };
-    // The missing `probes` is masked: an empty read-only directory from the mask source.
+    // `.acan` and the protected test come from the snapshot, never the worktree. The missing
+    // `probes` is masked: an empty read-only directory from the mask source.
     let mask = std::env::temp_dir().join("acan-test-1-mask");
     let expected: Vec<String> = [
         "run",
@@ -505,24 +524,26 @@ fn the_test_container_is_locked_down_with_protected_paths_read_only() {
         "/tmp:rw,nosuid,nodev,size=268435456",
         "--env",
         "HOME=/tmp",
+        "--env",
+        "PORT=3000",
         "--mount",
         &format!("type=bind,source={},target=/work", host.display()),
         "--mount",
         &read_only(host.join(".git"), "/work/.git"),
         "--mount",
-        &read_only(host.join(".acan"), "/work/.acan"),
+        &read_only(snapshot.join(".acan"), "/work/.acan"),
         "--mount",
         &read_only(mask, "/work/probes"),
         "--mount",
         &read_only(
-            host.join("tests").join("protected.test.ts"),
+            snapshot.join("tests").join("protected.test.ts"),
             "/work/tests/protected.test.ts",
         ),
         "--workdir",
         "/work",
         "--entrypoint",
         "sh",
-        "oven/bun:1.2",
+        PINNED_IMAGE,
         "-c",
         "bun test",
     ]
@@ -543,8 +564,10 @@ fn the_test_container_refuses_to_mount_a_protected_link() {
     let root = dir.path();
     let outside = tempfile::tempdir().expect("a directory outside the worktree");
     link(outside.path(), &root.join("probes"), true);
+    let head = head_snapshot();
     let tools = Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned()))
-        .with_protected(&repo_paths(&["probes"]));
+        .with_protected(&repo_paths(&["probes"]))
+        .with_snapshot(head.path());
     let refused = tools
         .test_container_args("acan-test-1")
         .expect_err("a protected link is not mounted");
@@ -832,20 +855,13 @@ async fn restore_leaves_a_protected_path_alone() {
 
 const DIGEST: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-/// The contract's container policy fixture, with the test command's network closed, no digest
-/// pin, and `.acan/` as the only path the policy protects, then `edit` applied. The result is
-/// decoded by the contract's own decoder, so an invalid value is refused here too.
+/// The contract's container policy fixture with `edit` applied. The result is decoded by the
+/// contract's own decoder, so an invalid value is refused here too.
 fn policy_with(edit: impl FnOnce(&mut Value)) -> ContainerPolicy {
     let mut value: Value = serde_json::from_str(include_str!(
         "../../acan-intent/fixtures/container-policy.json"
     ))
     .expect("the contract policy fixture");
-    value["network"] = json!({ "kind": "none" });
-    value["image"]
-        .as_object_mut()
-        .expect("an image object")
-        .remove("digest");
-    value["mounts"]["protected"] = json!([".acan"]);
     edit(&mut value);
     serde_json::from_value(value).expect("a container policy")
 }
@@ -871,13 +887,41 @@ fn no_mask_left_behind() -> bool {
 }
 
 #[test]
-fn the_default_policy_is_the_contract_policy_without_network_or_digest() {
+fn the_default_policy_is_the_contract_fixture_and_pins_the_image() {
     let dir = repo();
     let tools = worktree(dir.path());
     assert_eq!(
         *tools.container_policy(),
         policy_with(|_| {}),
-        "every limit and mount rule is the contract's; the test command has no network and no digest pin"
+        "every limit, mount and variable is the contract's"
+    );
+    assert_eq!(
+        *tools.container_policy(),
+        ContainerPolicy::default_run(),
+        "the runtime default is the fixture"
+    );
+    let image = tools.container_policy().image.clone();
+    assert_eq!(
+        image.digest.as_ref().map(ToString::to_string).as_deref(),
+        PINNED_IMAGE.split('@').nth(1),
+        "the default run pins the digest the spike ran"
+    );
+}
+
+#[test]
+fn the_policy_cannot_name_a_published_port() {
+    let refused = serde_json::from_value::<ContainerPolicy>({
+        let mut value: Value = serde_json::from_str(include_str!(
+            "../../acan-intent/fixtures/container-policy.json"
+        ))
+        .expect("the contract policy fixture");
+        value["network"] = json!({ "kind": "loopback_published", "port": 3000 });
+        value
+    })
+    .expect_err("a published port does not decode");
+    assert!(
+        refused.to_string().contains("loopback_published"),
+        "{refused}"
     );
 }
 
@@ -897,9 +941,12 @@ fn a_non_default_policy_renders_its_own_limits_into_the_arguments() {
         v["mounts"]["workdir"] = json!("/app");
         v["mounts"]["protected"] = json!([".acan", "src/limits.ts"]);
     });
-    let tools =
-        Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned())).with_policy(policy);
+    let head = head_snapshot();
+    let tools = Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned()))
+        .with_policy(policy)
+        .with_snapshot(head.path());
     let host = std::path::absolute(root).expect("an absolute worktree");
+    let snapshot = std::path::absolute(head.path()).expect("an absolute snapshot");
     let mask = std::env::temp_dir().join("acan-test-2-mask");
     let expected: Vec<String> = [
         "run",
@@ -927,12 +974,14 @@ fn a_non_default_policy_renders_its_own_limits_into_the_arguments() {
         "/tmp:rw,nosuid,nodev,size=67108864",
         "--env",
         "HOME=/tmp",
+        "--env",
+        "PORT=3000",
         "--mount",
         &format!("type=bind,source={},target=/app", host.display()),
         "--mount",
         &ro_mount(&host.join(".git"), "/app/.git"),
         "--mount",
-        &ro_mount(&host.join(".acan"), "/app/.acan"),
+        &ro_mount(&snapshot.join(".acan"), "/app/.acan"),
         "--mount",
         &ro_mount(&mask, "/app/src/limits.ts"),
         "--workdir",
@@ -960,11 +1009,13 @@ fn readonly_git_decides_whether_git_is_mounted_read_only() {
     let root = dir.path();
     let host = std::path::absolute(root).expect("an absolute worktree");
     let git_mount = ro_mount(&host.join(".git"), "/work/.git");
+    let head = head_snapshot();
     let args_with = |readonly_git: bool| {
         Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned()))
             .with_policy(policy_with(|v| {
                 v["mounts"]["readonly_git"] = json!(readonly_git);
             }))
+            .with_snapshot(head.path())
             .test_container_args("acan-test-6")
             .expect("the container arguments")
     };
@@ -978,9 +1029,40 @@ fn readonly_git_decides_whether_git_is_mounted_read_only() {
         !open.contains(&git_mount),
         "readonly_git false still mounted .git read-only: {open:?}"
     );
+    let snapshot = std::path::absolute(head.path()).expect("an absolute snapshot");
     assert!(
-        open.contains(&ro_mount(&host.join(".acan"), "/work/.acan")),
+        open.contains(&ro_mount(&snapshot.join(".acan"), "/work/.acan")),
         "readonly_git false dropped the protected .acan mount: {open:?}"
+    );
+}
+
+#[test]
+fn a_protected_path_under_git_is_refused_while_the_git_guard_is_on() {
+    let dir = repo();
+    let head = head_snapshot();
+    let args_with = |protected: &str, readonly_git: bool| {
+        Worktree::new(dir.path().to_path_buf(), &[], Some("bun test".to_owned()))
+            .with_policy(policy_with(|v| {
+                v["mounts"]["protected"] = json!([".acan", protected]);
+                v["mounts"]["readonly_git"] = json!(readonly_git);
+            }))
+            .with_snapshot(head.path())
+            .test_container_args("acan-test-7")
+    };
+    for protected in [".git", ".git/hooks", ".GIT/config"] {
+        let refused = args_with(protected, true).expect_err("a protected path under .git");
+        assert!(refused.contains("lies under .git"), "{refused}");
+    }
+    // With the guard off, `.git` is not mounted from the worktree at all: the protected path is
+    // covered from the snapshot, which lacks it, so an empty mask stands in for it.
+    let open = args_with(".git/hooks", false).expect("the guard is off");
+    let worktree_git = std::path::absolute(dir.path())
+        .expect("an absolute worktree")
+        .join(".git");
+    let from_worktree = format!("source={},", worktree_git.display());
+    assert!(
+        !open.iter().any(|arg| arg.contains(&from_worktree)),
+        "the worktree's .git was mounted: {open:?}"
     );
 }
 
@@ -990,11 +1072,13 @@ async fn a_missing_protected_path_is_refused_when_the_policy_says_so() {
     let root = dir.path();
     let bin = tempfile::tempdir().expect("a directory for the fake docker");
     let (docker, ran) = fake_docker(bin.path(), 0, 0);
+    let head = head_snapshot();
     let tools = Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned()))
         .with_protected(&repo_paths(&["probes"]))
         .with_policy(policy_with(|v| {
             v["mounts"]["missing_protected"] = json!("refused");
         }))
+        .with_snapshot(head.path())
         .with_docker(docker);
     let refused = tools
         .test_container_args("acan-test-3")
@@ -1013,22 +1097,22 @@ async fn a_missing_protected_path_is_refused_when_the_policy_says_so() {
 }
 
 #[tokio::test]
-async fn a_network_this_runner_cannot_apply_is_refused_before_any_container_starts() {
+async fn a_run_without_a_snapshot_never_starts_a_container() {
     let dir = repo();
     let root = dir.path();
     let bin = tempfile::tempdir().expect("a directory for the fake docker");
     let (docker, ran) = fake_docker(bin.path(), 0, 0);
-    let tools = Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned()))
-        .with_policy(policy_with(|v| {
-            v["network"] = json!({ "kind": "loopback_published", "port": 3000 });
-        }))
+    let tools = Worktree::new(root.to_path_buf(), &[], Some(WRITING_COMMAND.to_owned()))
         .with_docker(docker);
     let refused = tools
         .test_container_args("acan-test-4")
-        .expect_err("a published port is refused");
-    assert!(refused.contains("loopback_published"), "{refused}");
+        .expect_err("no snapshot means no container arguments");
+    assert!(refused.contains("snapshot"), "{refused}");
     let refused = tools.run_tests().await.expect_err("the run is refused");
-    assert!(refused.starts_with("isolation unavailable"), "{refused}");
+    assert!(
+        refused.starts_with("isolation unavailable") && refused.contains("snapshot"),
+        "{refused}"
+    );
     assert!(!ran.exists(), "no container was started");
     assert_never_ran_on_the_host(root);
 }
@@ -1039,8 +1123,10 @@ async fn the_policy_timeout_cuts_a_test_run_that_outlives_it() {
     let root = dir.path();
     let bin = tempfile::tempdir().expect("a directory for the fake docker");
     let (docker, _ran) = fake_docker_with(bin.path(), 0, 0, "sleep 5", "ping -n 6 127.0.0.1 > nul");
+    let head = head_snapshot();
     let tools = Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned()))
         .with_policy(policy_with(|v| v["timeout_ms"] = json!(500)))
+        .with_snapshot(head.path())
         .with_docker(docker);
     let started = Instant::now();
     let timed_out = tools
@@ -1078,8 +1164,10 @@ async fn a_masked_path_leaves_no_empty_host_directory_and_keeps_what_the_run_wro
             candidate.display()
         ),
     );
+    let head = head_snapshot();
     let tools = Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned()))
         .with_protected(&repo_paths(&["src/limits.ts"]))
+        .with_snapshot(head.path())
         .with_docker(docker);
     let outcome = tools.run_tests().await.expect("the run completes");
     assert_eq!(outcome, "pass");
@@ -1094,8 +1182,10 @@ fn a_masked_path_under_a_link_is_refused() {
     let root = dir.path();
     let outside = tempfile::tempdir().expect("a directory outside the worktree");
     link(outside.path(), &root.join("linkdir"), true);
+    let head = head_snapshot();
     let tools = Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned()))
-        .with_protected(&repo_paths(&["linkdir/new.txt"]));
+        .with_protected(&repo_paths(&["linkdir/new.txt"]))
+        .with_snapshot(head.path());
     let refused = tools
         .test_container_args("acan-test-5")
         .expect_err("a masked path under a link is refused");
@@ -1116,4 +1206,162 @@ fn a_path_the_policy_protects_is_refused_even_when_declared() {
         fs::read_to_string(root.join(DECLARED)).expect("the file"),
         "original\n"
     );
+}
+
+/// The arguments of `--env` in `args`, in order.
+fn env_values(args: &[String]) -> Vec<String> {
+    args.windows(2)
+        .filter(|pair| pair[0] == "--env")
+        .map(|pair| pair[1].clone())
+        .collect()
+}
+
+#[test]
+fn a_protected_file_edited_in_the_worktree_is_not_what_the_container_sees() {
+    let dir = repo();
+    let root = dir.path();
+    fs::write(root.join(APP), "{\"pwned\": true}\n").expect("an edit in the worktree");
+    let head = head_snapshot();
+    let tools = Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned()))
+        .with_snapshot(head.path());
+    let args = tools
+        .test_container_args("acan-test-7")
+        .expect("the container arguments");
+    let host = std::path::absolute(root).expect("an absolute worktree");
+    let snapshot = std::path::absolute(head.path()).expect("an absolute snapshot");
+    assert!(
+        args.contains(&ro_mount(&snapshot.join(".acan"), "/work/.acan")),
+        "the protected directory is mounted from the snapshot: {args:?}"
+    );
+    let worktree_copy = host.join(".acan").display().to_string();
+    assert!(
+        !args.iter().any(|arg| arg.contains(&worktree_copy)),
+        "no argument names the worktree's copy of .acan: {args:?}"
+    );
+    assert_eq!(
+        fs::read_to_string(snapshot.join(APP)).expect("the snapshot copy"),
+        APP_TEXT,
+        "the snapshot holds the base version the container reads"
+    );
+}
+
+#[test]
+fn a_protected_path_the_snapshot_lacks_is_masked_not_read_from_the_worktree() {
+    let dir = repo();
+    let root = dir.path();
+    let added = "tests/added.test.ts";
+    fs::write(root.join(added), "test('mine', () => {});\n")
+        .expect("a protected test the task added");
+    let head = head_snapshot();
+    let tools = Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned()))
+        .with_protected(&repo_paths(&[added]))
+        .with_snapshot(head.path());
+    let args = tools
+        .test_container_args("acan-test-8")
+        .expect("the container arguments");
+    let host = std::path::absolute(root).expect("an absolute worktree");
+    let mask = std::env::temp_dir().join("acan-test-8-mask");
+    assert!(
+        args.contains(&ro_mount(&mask, "/work/tests/added.test.ts")),
+        "the copy the task added is masked: {args:?}"
+    );
+    let worktree_copy = host
+        .join("tests")
+        .join("added.test.ts")
+        .display()
+        .to_string();
+    assert!(
+        !args.iter().any(|arg| arg.contains(&worktree_copy)),
+        "the worktree's copy is never mounted: {args:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_snapshot_file_the_worktree_lacks_leaves_no_empty_file_behind() {
+    let dir = repo();
+    let root = dir.path();
+    let bin = tempfile::tempdir().expect("a directory for the fake docker");
+    let head = head_snapshot();
+    fs::write(
+        head.path().join("tests").join("gone.test.ts"),
+        "test('gone', () => {});\n",
+    )
+    .expect("a snapshot file the worktree lacks");
+    let gone = root.join("tests").join("gone.test.ts");
+    // The fake stands in for docker, which makes the mount point of a file it mounts.
+    let (docker, _ran) = fake_docker_with(
+        bin.path(),
+        0,
+        0,
+        &format!("touch '{}'", gone.display()),
+        &format!("type nul > \"{}\"", gone.display()),
+    );
+    let tools = Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned()))
+        .with_protected(&repo_paths(&["tests/gone.test.ts"]))
+        .with_snapshot(head.path())
+        .with_docker(docker);
+    let outcome = tools.run_tests().await.expect("the run completes");
+    assert_eq!(outcome, "pass");
+    assert!(
+        !gone.exists(),
+        "the empty mount point docker made is removed"
+    );
+}
+
+#[test]
+fn the_environment_is_exactly_what_the_policy_names() {
+    let dir = repo();
+    let root = dir.path();
+    let head = head_snapshot();
+    let tools = Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned()))
+        .with_snapshot(head.path());
+    assert_eq!(
+        env_values(
+            &tools
+                .test_container_args("acan-test-9")
+                .expect("the arguments")
+        ),
+        ["HOME=/tmp", "PORT=3000"],
+        "the default run passes exactly the variables the fixture names"
+    );
+    let only_home = Worktree::new(root.to_path_buf(), &[], Some("bun test".to_owned()))
+        .with_policy(policy_with(|v| {
+            v["environment"] = json!({ "HOME": "/tmp" })
+        }))
+        .with_snapshot(head.path());
+    let args = only_home
+        .test_container_args("acan-test-9")
+        .expect("the arguments");
+    assert_eq!(env_values(&args), ["HOME=/tmp"]);
+    assert!(
+        !args.iter().any(|arg| arg.contains("PORT=")),
+        "a variable outside the policy's list never reaches the arguments: {args:?}"
+    );
+}
+
+#[test]
+fn a_credential_variable_is_refused_by_the_decoder_and_before_any_container_starts() {
+    let mut value: Value = serde_json::from_str(include_str!(
+        "../../acan-intent/fixtures/container-policy.json"
+    ))
+    .expect("the contract policy fixture");
+    value["environment"] = json!({ "OPENAI_API_KEY": "sk-test" });
+    let decoded =
+        serde_json::from_value::<ContainerPolicy>(value).expect_err("decoding refuses it");
+    assert!(decoded.to_string().contains("credential"), "{decoded}");
+
+    // A policy built in code skips the decoder, so the runner checks the names again.
+    let dir = repo();
+    let head = head_snapshot();
+    let mut policy = policy_with(|_| {});
+    policy
+        .environment
+        .insert("OPENAI_API_KEY".to_owned(), "sk-test".to_owned());
+    let tools = Worktree::new(dir.path().to_path_buf(), &[], Some("bun test".to_owned()))
+        .with_policy(policy)
+        .with_snapshot(head.path());
+    let refused = tools
+        .test_container_args("acan-test-10")
+        .expect_err("a credential name is refused");
+    assert!(refused.contains("credential"), "{refused}");
 }

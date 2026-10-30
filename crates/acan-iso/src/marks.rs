@@ -1,34 +1,23 @@
-//! The marks drawn on the plant: an agent's bot, the ring round a waiting agent, the clash pin's
-//! diamond, and the stalk that holds the diamond above the machines. They are models like the
-//! machines, so the renderer outlines them with the same line art. Each model's origin is on the
-//! ground under it. The renderer picks the colour, from its tint slots and palette, so no model
-//! names a hue.
+//! The marks drawn on the plant: the ring round a waiting agent, the clash pin's diamond, and the
+//! stalk that holds the diamond above the machines. They are models like the machines, so the
+//! renderer outlines them with the same line art. Each model's origin is on the ground under it.
+//! The renderer picks the colour, from its tint slots and palette, so no model names a hue. The
+//! agents' drones are in [`crate::drone`].
 
-use std::f32::consts::{FRAC_PI_2, TAU};
+use std::f32::consts::TAU;
 
+use crate::drone::{BODY_RADIUS, SHADOW_RADIUS};
 use crate::model::{Aabb, Ink, Mesh, Model, Surface};
 use crate::parts::PLINTH;
 
-/// The height of the plinth top. Agent bots stand on it, and the ring lies on it.
+/// The height of the plinth top. A drone's shadow lies on it, and the ring lies on it.
 pub const PLINTH_TOP: f32 = PLINTH;
-
-/// An agent's bot, foot to crown, in plan units: 0.6 of the plinth. The renderer grows a bot
-/// that would be too small to read on screen.
-pub const BOT_HEIGHT: f32 = 0.6 * PLINTH;
-/// The bot's body: a capsule of this radius whose crown sits at `BODY_TOP`.
-const BODY_RADIUS: f32 = 0.42;
-const BODY_TOP: f32 = 1.22;
-/// The bot's head: a ball of this radius on top of the body. It sits flush with the crown.
-const HEAD_RADIUS: f32 = 0.32;
-const HEAD_CENTRE: f32 = BOT_HEIGHT - HEAD_RADIUS;
-const BOT_STEPS: usize = 4;
-const BOT_SEGMENTS: usize = 14;
-/// The amber ring round a waiting agent's bot: its inner and outer radius, in plan units. It is
-/// grown with the bot, so it keeps clear of the body it surrounds.
-const RING_INNER: f32 = 0.7;
-const RING_OUTER: f32 = 0.95;
-// The ring clears the body it surrounds.
-const _: () = assert!(RING_INNER > BODY_RADIUS);
+/// The amber ring on the plinth top round a waiting agent's drone's shadow, with its inner and outer
+/// radius in plan units. The renderer grows it with the drone, so the two keep their proportions.
+const RING_INNER: f32 = 1.15 * BODY_RADIUS;
+const RING_OUTER: f32 = 1.3 * BODY_RADIUS;
+// The ring clears the shadow it surrounds.
+const _: () = assert!(RING_INNER > SHADOW_RADIUS);
 const RING_SEGMENTS: usize = 32;
 /// The ring sits this far above the plinth top, so it never z-fights the plinth.
 const RING_LIFT: f32 = 0.05;
@@ -41,31 +30,7 @@ pub const STALK_HEIGHT: f32 = 20.0;
 /// Half the width of the stalk's square section.
 const STALK_HALF: f32 = 0.3;
 
-/// An agent's bot: a capsule body with a ball for a head, shaded as paper so its tint carries
-/// the agent's hue.
-#[must_use]
-pub fn agent_body() -> Model {
-    let mut mesh = Mesh::default();
-    capsule(
-        &mut mesh,
-        BODY_RADIUS,
-        BODY_RADIUS,
-        BODY_TOP - BODY_RADIUS,
-        BOT_STEPS,
-        BOT_SEGMENTS,
-    );
-    capsule(
-        &mut mesh,
-        HEAD_RADIUS,
-        HEAD_CENTRE,
-        HEAD_CENTRE,
-        BOT_STEPS,
-        BOT_SEGMENTS,
-    );
-    model_of(mesh)
-}
-
-/// A flat amber ring lying on the plinth top round an agent's bot.
+/// A flat amber ring lying on the plinth top round an agent's drone.
 #[must_use]
 pub fn waiting_ring() -> Model {
     let mut mesh = Mesh::default();
@@ -119,32 +84,6 @@ pub fn clash_stalk() -> Model {
         Surface::Ink(Ink::Red),
     );
     model_of(mesh)
-}
-
-/// A capsule on the axis z, with its round ends centred at `z_lo` and `z_hi`. A sphere is a
-/// capsule with equal ends.
-fn capsule(mesh: &mut Mesh, radius: f32, z_lo: f32, z_hi: f32, steps: usize, segments: usize) {
-    let start = mesh.positions.len();
-    let lower = (0..=steps).map(|i| {
-        let phi = -FRAC_PI_2 + FRAC_PI_2 * i as f32 / steps as f32;
-        (z_lo + radius * phi.sin(), phi)
-    });
-    let upper = (0..=steps).map(|i| {
-        let phi = FRAC_PI_2 * i as f32 / steps as f32;
-        (z_hi + radius * phi.sin(), phi)
-    });
-    let rings: Vec<(f32, f32)> = lower.chain(upper).collect();
-    for &(z, phi) in &rings {
-        let (ring_radius, lift) = (radius * phi.cos(), phi.sin());
-        push_ring(
-            mesh,
-            ring_radius,
-            z,
-            |theta| [phi.cos() * theta.cos(), phi.cos() * theta.sin(), lift],
-            segments,
-        );
-    }
-    band(mesh, start, rings.len(), segments);
 }
 
 /// An axis-aligned box from `lo` to `hi`, with flat faces.
@@ -253,36 +192,26 @@ fn model_of(mesh: Mesh) -> Model {
     }
 }
 
+/// Whether the faces wind outward. The signed volume of a closed mesh is positive when its
+/// normals point out, and it holds for a model whose parts overlap, where a per-face test
+/// against the bounds centre would fail.
+#[cfg(test)]
+pub(crate) fn winds_outward(model: &Model) -> bool {
+    let mesh = &model.meshes[0];
+    let volume: f32 = mesh
+        .indices
+        .chunks(3)
+        .map(|tri| {
+            let [a, b, c] = [tri[0], tri[1], tri[2]].map(|i| mesh.positions[i as usize]);
+            dot(a, cross(b, c)) / 6.0
+        })
+        .sum();
+    volume > 0.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Whether the faces wind outward. The signed volume of a closed mesh is positive when its
-    /// normals point out, and it holds for a bot whose head sits over its body, where a per-face
-    /// test against the bounds centre would fail.
-    fn winds_outward(model: &Model) -> bool {
-        let mesh = &model.meshes[0];
-        let volume: f32 = mesh
-            .indices
-            .chunks(3)
-            .map(|tri| {
-                let [a, b, c] = [tri[0], tri[1], tri[2]].map(|i| mesh.positions[i as usize]);
-                dot(a, cross(b, c)) / 6.0
-            })
-            .sum();
-        volume > 0.0
-    }
-
-    #[test]
-    fn the_bot_stands_on_its_foot_and_is_a_solid() {
-        let bot = agent_body();
-        assert!(
-            bot.bounds.min[2].abs() < 1e-4,
-            "the foot sits on the ground"
-        );
-        assert!((bot.bounds.max[2] - BOT_HEIGHT).abs() < 1e-3);
-        assert!(winds_outward(&bot), "the bot faces outward");
-    }
 
     #[test]
     fn the_pin_stands_on_its_foot_and_faces_outward() {
@@ -299,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn the_ring_lies_flat_on_the_plinth_top_round_the_bot() {
+    fn the_ring_lies_flat_on_the_plinth_top_round_the_drone() {
         let ring = waiting_ring();
         assert!(ring.meshes[0].positions.iter().all(|p| p[2] == RING_LIFT));
         assert!(ring.bounds.max[0] <= RING_OUTER + 1e-4);

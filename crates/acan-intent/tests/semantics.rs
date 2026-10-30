@@ -15,7 +15,7 @@ use acan_intent::{
     IncompleteReason, ItemClass, LedgerEvent, Mask, NonEmpty, Observation, ObservationHash,
     ObservedRun, Outcome, Predicate, PreparedCommit, ProbeCorpus, ProbeHash, ProbeSetManifest,
     Receipt, RequestRecord, RulingStatus, Run, RunOutcome, RunRole, Scope, ScopeConfirmation,
-    UnknownReason,
+    UnknownReason, WindowObligation,
 };
 use acan_intent::{admit, fold, predicate};
 use serde::de::DeserializeOwned;
@@ -70,6 +70,7 @@ struct Hit {
     step: &'static str,
     route: &'static str,
     client: &'static str,
+    actor: Option<&'static str>,
     sent_at_ms: u64,
     status: u16,
     body: Value,
@@ -78,12 +79,13 @@ struct Hit {
 }
 
 impl Hit {
-    /// A login from client-a to the login route, answered `status`.
+    /// A login from client-a to the login route, answered `status`, by no signed-in user.
     fn at(step: &'static str, status: u16, sent_at_ms: u64) -> Self {
         Self {
             step,
             route: "/api/login",
             client: "client-a",
+            actor: None,
             sent_at_ms,
             status,
             body: body_for(status),
@@ -102,7 +104,7 @@ impl Hit {
         observation.request = Some(RequestRecord {
             method: HttpMethod::Post,
             route_template: self.route.parse().expect("a route template"),
-            actor: None,
+            actor: self.actor.map(|name| name.parse().expect("an actor name")),
             client: self.client.parse().expect("a client"),
             sent_at_ms: self.sent_at_ms,
         });
@@ -969,9 +971,222 @@ fn after_n_within_is_unknown_because_the_contract_names_no_filter_for_it() {
     assert!(matches!(
         trio.verdict(&after),
         CheckResult::Unknown {
-            reason: UnknownReason::Error { .. }
+            reason: UnknownReason::Error { detail }
+        } if detail.contains("unsupported")
+    ));
+}
+
+// Window obligations: the first N are allowed, a second user keeps its own count, and a
+// window's end is followed by an allowed request.
+
+/// The scope's rate window with the obligations `names` listed in its policy.
+fn with_obligations(names: &[&str]) -> Predicate {
+    window(|value| {
+        policy(value)["obligations"] = names.iter().map(|name| json!({ "kind": name })).collect();
+    })
+}
+
+const FIRST_ALLOWED: &[&str] = &["first_allowed"];
+const RECOVERS: &[&str] = &["recovers"];
+const BOTH: &[&str] = &["first_allowed", "recovers"];
+
+/// The scope's rate window, counting the correct login at 61 s as well, anchored at the first
+/// failure so the recipe's own login is not in it, and exclusive at its end so that login opens
+/// the next window. `names` are the obligations listed in its policy.
+fn recovering_window(names: &[&str]) -> Predicate {
+    window(|value| {
+        policy(value)["event_filter"]["status_in"] = json!([401, 429, 200]);
+        policy(value)["anchor"] = json!({ "kind": "step", "step_id": "s1" });
+        policy(value)["boundary"] = json!("exclusive");
+        policy(value)["obligations"] = names.iter().map(|name| json!({ "kind": name })).collect();
+    })
+}
+
+/// The six failures, the first five sent by alice and the sixth by bob.
+fn split_users() -> Vec<Hit> {
+    let mut hits = sequence(SIX_FAILURES);
+    for hit in &mut hits[..5] {
+        hit.actor = Some("alice");
+    }
+    hits[5].actor = Some("bob");
+    hits
+}
+
+#[test]
+fn the_nth_attempt_is_allowed_when_the_first_n_are_required() {
+    let trio = Trio::new(
+        sequence(SIX_FAILURES),
+        sequence(SIX_FAILURES),
+        sequence(FIVE_THEN_LIMITED),
+    );
+    assert_eq!(
+        trio.verdict(&with_obligations(FIRST_ALLOWED)),
+        CheckResult::Pass {}
+    );
+}
+
+#[test]
+fn a_premature_rejection_at_the_nth_attempt_fails_when_the_first_n_are_required() {
+    // Four allowed, then 429 at the fifth and sixth. The upper bound alone holds: the fifth
+    // rejection uses up the quota and the sixth is rejected. Only the obligation sees that the
+    // fifth attempt, one of the first five, was turned away.
+    let candidate = sequence([401, 401, 401, 401, 429, 429]);
+    let trio = Trio::new(sequence(SIX_FAILURES), sequence(SIX_FAILURES), candidate);
+    assert_eq!(
+        trio.verdict(&accepted(&scope(), 0, 0)),
+        CheckResult::Pass {}
+    );
+    assert!(matches!(
+        trio.verdict(&with_obligations(FIRST_ALLOWED)),
+        CheckResult::Fail { detail } if detail.contains("within the first 5")
+    ));
+}
+
+#[test]
+fn a_window_that_rejects_every_attempt_fails_when_the_first_n_are_required() {
+    let trio = Trio::new(
+        sequence(SIX_FAILURES),
+        sequence(SIX_FAILURES),
+        sequence([429; 6]),
+    );
+    assert!(matches!(
+        trio.verdict(&accepted(&scope(), 0, 0)),
+        CheckResult::Unknown {
+            reason: UnknownReason::Incomparable { .. }
         }
     ));
+    assert!(matches!(
+        trio.verdict(&with_obligations(FIRST_ALLOWED)),
+        CheckResult::Fail { .. }
+    ));
+    assert!(matches!(
+        trio.verdict(&with_obligations(BOTH)),
+        CheckResult::Fail { .. }
+    ));
+}
+
+#[test]
+fn a_second_user_keeps_a_separate_count() {
+    // Alice sends five failures and bob the sixth, at quota for her and within it for him.
+    let trio = Trio::new(
+        sequence(SIX_FAILURES),
+        sequence(SIX_FAILURES),
+        split_users(),
+    );
+    let by_principal = window(|value| {
+        policy(value)["event_filter"]["principal"] = json!({ "kind": "any" });
+        policy(value)["group_by"] = json!("principal");
+    });
+    assert_eq!(trio.verdict(&by_principal), CheckResult::Pass {});
+    let ungrouped = window(|value| {
+        policy(value)["event_filter"]["principal"] = json!({ "kind": "any" });
+        policy(value)["group_by"] = json!("none");
+    });
+    assert!(matches!(trio.verdict(&ungrouped), CheckResult::Fail { .. }));
+}
+
+#[test]
+fn recovery_is_shown_by_an_allowed_request_after_the_window() {
+    let trio = Trio::new(
+        sequence(SIX_FAILURES),
+        sequence(SIX_FAILURES),
+        sequence(FIVE_THEN_LIMITED),
+    );
+    assert_eq!(
+        trio.verdict(&recovering_window(RECOVERS)),
+        CheckResult::Pass {}
+    );
+    assert_eq!(trio.verdict(&recovering_window(BOTH)), CheckResult::Pass {});
+}
+
+#[test]
+fn a_rejected_request_after_the_window_fails_recovery() {
+    let mut candidate = sequence(FIVE_THEN_LIMITED);
+    hit_mut(&mut candidate, "s8").status = 429;
+    hit_mut(&mut candidate, "s8").body = body_for(429);
+    let trio = Trio::new(sequence(SIX_FAILURES), sequence(SIX_FAILURES), candidate);
+    assert!(matches!(
+        trio.verdict(&recovering_window(RECOVERS)),
+        CheckResult::Fail { detail } if detail.contains("opens the next window")
+    ));
+}
+
+#[test]
+fn recovery_without_a_request_after_the_window_is_unknown() {
+    // The shipped filter does not count the correct login, so nothing after the window is
+    // counted and recovery is not shown.
+    let trio = Trio::new(
+        sequence(SIX_FAILURES),
+        sequence(SIX_FAILURES),
+        sequence(FIVE_THEN_LIMITED),
+    );
+    assert!(matches!(
+        trio.verdict(&with_obligations(RECOVERS)),
+        CheckResult::Unknown {
+            reason: UnknownReason::Incomparable { .. }
+        }
+    ));
+}
+
+#[test]
+fn recovery_is_not_shown_by_a_window_that_never_rejected_anything() {
+    let roomy = |names: &[&str]| {
+        window(|value| {
+            policy(value)["allowed_count"] = json!(10);
+            policy(value)["obligations"] =
+                names.iter().map(|name| json!({ "kind": name })).collect();
+        })
+    };
+    let trio = Trio::new(
+        sequence(SIX_FAILURES),
+        sequence(SIX_FAILURES),
+        sequence(SIX_FAILURES),
+    );
+    assert_eq!(trio.verdict(&roomy(&[])), CheckResult::Pass {});
+    assert!(matches!(
+        trio.verdict(&roomy(RECOVERS)),
+        CheckResult::Unknown {
+            reason: UnknownReason::Incomparable { .. }
+        }
+    ));
+}
+
+#[test]
+fn a_window_anchored_after_every_matching_request_is_unknown() {
+    let trio = Trio::new(
+        sequence(SIX_FAILURES),
+        sequence(SIX_FAILURES),
+        sequence(FIVE_THEN_LIMITED),
+    );
+    let anchored = window(|value| {
+        policy(value)["anchor"] = json!({ "kind": "step", "step_id": "s8" });
+        policy(value)["obligations"] = json!([{ "kind": "first_allowed" }, { "kind": "recovers" }]);
+    });
+    assert!(matches!(
+        trio.verdict(&anchored),
+        CheckResult::Unknown {
+            reason: UnknownReason::Incomparable { .. }
+        }
+    ));
+}
+
+#[test]
+fn the_upper_bound_form_serializes_without_obligations_and_they_round_trip() {
+    let plain = accepted(&scope(), 0, 0);
+    let value = serde_json::to_value(&plain).expect("the predicate serializes");
+    assert!(
+        value["policy"].get("obligations").is_none(),
+        "the upper-bound form serializes as before the field existed"
+    );
+    let with = with_obligations(BOTH);
+    let encoded = serde_json::to_value(&with).expect("the predicate serializes");
+    let decoded: Predicate = serde_json::from_value(encoded).expect("the predicate decodes");
+    assert_eq!(decoded, with);
+    assert_ne!(
+        with.predicate_hash().expect("the predicate hashes"),
+        plain.predicate_hash().expect("the predicate hashes")
+    );
+    assert!(serde_json::from_value::<WindowObligation>(json!({ "kind": "always" })).is_err());
 }
 
 // Receipts.

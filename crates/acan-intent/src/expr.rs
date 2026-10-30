@@ -5,6 +5,8 @@
 //! literals. A behavior that no predicate can express is not enforced, and an unexpressible
 //! required behavior blocks automatic land.
 
+use std::collections::BTreeSet;
+
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -243,6 +245,22 @@ pub struct RejectedAttempts {
     pub counted: QuotaCounting,
 }
 
+/// A requirement a window shows beyond its upper bound.
+///
+/// Each one is listed once in [`WindowPolicy::obligations`]. Without any, a window proves only
+/// that no attempt beyond its allowance was allowed.
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum WindowObligation {
+    /// The first `allowed_count` matching events of every window are not rejected.
+    FirstAllowed {},
+    /// After a window rejects an attempt, the next matching event of its group opens a new
+    /// window and is not rejected.
+    Recovers {},
+}
+
 /// A bounded rate window: at most `allowed_count` matching events per group within
 /// `duration_ms`, and every attempt beyond it rejected as `rejected_attempts` says.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize, Deserialize, JsonSchema)]
@@ -262,6 +280,10 @@ pub struct WindowPolicy {
     pub boundary: Boundary,
     /// How excess attempts must be answered.
     pub rejected_attempts: RejectedAttempts,
+    /// What the window must show beyond its upper bound. Empty for the upper-bound form, which
+    /// is then serialized exactly as before this field existed.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub obligations: BTreeSet<WindowObligation>,
 }
 
 /// Which base an `equals_base` compares the candidate with.
@@ -327,6 +349,10 @@ pub enum Predicate {
         schema: ValueSchema,
     },
     /// After the first `n` matching requests within `window_ms`, `then` holds.
+    ///
+    /// Unsupported: the contract names no event filter, anchor or boundary for it, so it is
+    /// never evaluated and always counts as unknown. Use [`Predicate::Window`] with its
+    /// obligations instead.
     AfterNWithin {
         /// How many requests come first.
         n: AllowedCount,

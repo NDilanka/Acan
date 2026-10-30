@@ -1,6 +1,6 @@
 # Acan receipt for order `o-3`
 
-- Receipt: `sha256:2dbaa008714ca2cafc1bfb439e0b3d11d8469bb45e3c21ebbd275705377f53e0`
+- Receipt: `sha256:dcd24a773280538b33214f5808daa50a811f2bfb65604ab35738788af3c135f8`
 - Version: `acan-receipt/1`
 - Scope: revision 2, hash `sha256:ed58ef8d58d4e29959f80110656bbaeb9d82ad3e12eb5baa5f80ac6bf5ce2d3e`
 - Gate state: `blocked`
@@ -237,9 +237,9 @@ Items: 9. Bounce attempts read as attempts used of the repair budget.
 
 | Slot | Step | Field | Value | Provenance | Run | Commit | Observation |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `base_a` | `s4` | `body.links[0].clicks` | `0` | `observed` | `run-basea-links` | `178c1b07097a9f510882d139061ed50b4b44b1d4` | `sha256:589829241e2fabd7153e5b9abe873679710093b90c91eaf246f8b2fe81f6f22d` |
-| `base_b` | `s4` | `body.links[0].clicks` | `0` | `observed` | `run-baseb-links` | `178c1b07097a9f510882d139061ed50b4b44b1d4` | `sha256:be2a9972672d72d869c76bc50a5d91b4fe05a2c8d66a3c340c1c0a1c31d3aa37` |
-| `candidate` | `s4` | `body.links[0].clicks` | missing | `observed` | `run-candidate-links` | `a27a5f30da19543ee34362516e29bf7561214156` | `sha256:954da543343a343b8917a3d370510b4f2476109fe4919534834ab74b9e303295` |
+| `base_a` | `s4` | `body.links[0].clicks` | `0` | `observed` | `run-basea-links` | `178c1b07097a9f510882d139061ed50b4b44b1d4` | `sha256:f9f82156bead5da4cab94a71f9d61bb8bdce1486bde10e487d66d82123224d52` |
+| `base_b` | `s4` | `body.links[0].clicks` | `0` | `observed` | `run-baseb-links` | `178c1b07097a9f510882d139061ed50b4b44b1d4` | `sha256:05743d0e18a73cf004f23bfdb11ff0de18798395a4e57075e9fbb5283cd21749` |
+| `candidate` | `s4` | `body.links[0].clicks` | missing | `observed` | `run-candidate-links` | `a27a5f30da19543ee34362516e29bf7561214156` | `sha256:c6fbaf3983bd31bf4cd5c03981c44688dfa2b36344d8b89b7ea9b1e79a0814ea` |
 
 **Sequence**
 
@@ -267,9 +267,9 @@ Items: 9. Bounce attempts read as attempts used of the repair budget.
 
 | Slot | Step | Field | Value | Provenance | Run | Commit | Observation |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `base_a` | `s4` | `body.links[0].code` | `"b2"` | `observed` | `run-basea-links` | `178c1b07097a9f510882d139061ed50b4b44b1d4` | `sha256:589829241e2fabd7153e5b9abe873679710093b90c91eaf246f8b2fe81f6f22d` |
-| `base_b` | `s4` | `body.links[0].code` | `"b2"` | `observed` | `run-baseb-links` | `178c1b07097a9f510882d139061ed50b4b44b1d4` | `sha256:be2a9972672d72d869c76bc50a5d91b4fe05a2c8d66a3c340c1c0a1c31d3aa37` |
-| `candidate` | `s4` | `body.links[0].code` | `"a1"` | `observed` | `run-candidate-links` | `a27a5f30da19543ee34362516e29bf7561214156` | `sha256:954da543343a343b8917a3d370510b4f2476109fe4919534834ab74b9e303295` |
+| `base_a` | `s4` | `body.links[0].code` | `"b2"` | `observed` | `run-basea-links` | `178c1b07097a9f510882d139061ed50b4b44b1d4` | `sha256:f9f82156bead5da4cab94a71f9d61bb8bdce1486bde10e487d66d82123224d52` |
+| `base_b` | `s4` | `body.links[0].code` | `"b2"` | `observed` | `run-baseb-links` | `178c1b07097a9f510882d139061ed50b4b44b1d4` | `sha256:05743d0e18a73cf004f23bfdb11ff0de18798395a4e57075e9fbb5283cd21749` |
+| `candidate` | `s4` | `body.links[0].code` | `"a1"` | `observed` | `run-candidate-links` | `a27a5f30da19543ee34362516e29bf7561214156` | `sha256:c6fbaf3983bd31bf4cd5c03981c44688dfa2b36344d8b89b7ea9b1e79a0814ea` |
 
 **Sequence**
 
@@ -370,12 +370,12 @@ Contests: 1. A contest asks the human; it never widens the scope. The rationale 
 The gate compares every field below. Land is refused when any of them moved.
 
 - Overlay: `sha256:c27af44102a1dd3819def6db27bb5e79c2ff5023379faf9e8feddba8a780fd64`
-- Ledger head: event 3 at hash `sha256:db7bad5a7303627af459a4fa06184897f81d7cfb0f67bc3b7fd81346780e52bb`
+- Ledger head: event 3 at hash `sha256:ac4533416a1cf7e85f3b4c9dc45bfe90f2159132f241ab5772839195f94be7d3`
 - Probe set: `sha256:08cbc55fe91e0a7d35d66a97b619a7931d518dccb0a3268d75ab7b9eac74af03`
 - Fixture set: `sha256:29007a22a25a34d8c43c2e3aba058bc33e54d60e6db3aae1c2ae84eb5459cf94`
 - Runner: `sha256:02b428f772fbef62ede2b5c9d022c4e49f7e17dbed2e7a396f402aad28a24b47`
 - Evaluator: `acan-intent/0.1.0`
 - Runtime: `bun-1.4.4`
 - Controlled environment: `sha256:96f3b648e7620cf579630eeb0f7234347766890e6ea45f8d4fe429c791493989`
-- Container policy: `sha256:cfb49e83d5d93287bae5444e4c4f20e4a44fb65bc82d845fc008c5a05e6394ac`
+- Container policy: `sha256:7e6e773e14a0d8f78f181356e5097fa59cd92791d95eca91851525c00f6fda2f`
 - Artifact `bun.lock`: `sha256:5dd3909fd7cc889f9d3635f02a8b1eb462eaf95a85f550fad2aae6ef409f7b54`

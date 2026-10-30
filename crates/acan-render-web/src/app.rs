@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 
 use acan_core::Stamped;
-use acan_render::camera::{DEFAULT_AZIMUTH, DEFAULT_ELEVATION};
+use acan_render::camera::{DEFAULT_AZIMUTH, DEFAULT_ELEVATION, FitRoom};
 use acan_render::{Aabb, Camera, Lod, Model, Renderer, Scene, wgpu};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
@@ -25,6 +25,17 @@ use crate::stand;
 
 /// Space around the plant at fit, in CSS pixels.
 const FIT_MARGIN_CSS: f32 = 24.0;
+/// Extra room the fit leaves under the plant, in CSS pixels. The machines' names are HTML hung
+/// under the plates, so the framing boxes cannot size them. Larger than a name's height, so the
+/// bottom margin matches the room the flag stack takes at the top; see `FIT_FLAG_TOP_CSS`.
+const FIT_LABEL_CSS: f32 = 65.0;
+/// Extra room the fit leaves at the right edge for the flag chips, in CSS pixels. A chip
+/// extends right of its anchor above a drone, and the framing boxes cannot size it.
+const FIT_FLAG_RIGHT_CSS: f32 = 60.0;
+/// Extra room the fit leaves above the plant for the flag stack, in CSS pixels. A chip row is
+/// about 30 pixels, and four rows stack above a machine in a clash. Measured against the shots:
+/// three rows leave about 70 pixels of margin, four about 40.
+const FIT_FLAG_TOP_CSS: f32 = 100.0;
 /// Degrees of orbit per CSS pixel of drag.
 const ORBIT_DEG_PER_PX: f32 = 0.4;
 /// Degrees of tilt per CSS pixel of drag.
@@ -56,6 +67,9 @@ pub struct App {
     still: bool,
     /// The index of the clash whose card is open, if any.
     card_clash: Option<usize>,
+    /// An agent to close up on, and the zoom as a share of the fit zoom. It applies once the view
+    /// places the agent's drone, then clears.
+    focus: Option<(String, f32)>,
     view_json: String,
     view_version: u32,
     dirty: bool,
@@ -73,8 +87,9 @@ struct Loaded {
     repo: String,
     machines: Vec<PlantMachine>,
     layout: Layout,
-    /// Bounds of everything drawn, in plan units and height.
-    bounds: Aabb,
+    /// The boxes the camera frames: the machines and their drone seats, without belts. See
+    /// `scene::fit_boxes`.
+    framing: Vec<Aabb>,
     /// The solid box of every machine, each with its machine index, for label occlusion.
     occluders: Vec<(usize, Aabb)>,
     /// Each machine's label half width in CSS pixels, estimated from its name.
@@ -117,15 +132,14 @@ impl App {
             .map_err(js_err)?;
         let models = scene::models();
         renderer.set_models(&models);
-        // The default view looks at the plant from the front corner. A bot stands on the side
-        // nearest that corner first.
-        let facing = DEFAULT_AZIMUTH.to_radians();
-        let front = [facing.cos(), facing.sin()];
+        // A drone hovers beside each machine, behind it on either side of the default view, so its
+        // eye turns toward the camera. See `stand::beside`.
+        let drone = &models[usize::from(scene::mark_kinds().body)];
         let kind_spots = ALL
             .iter()
             .map(|&kind| {
                 let (w, d) = kind.footprint();
-                stand::spots(&models[kind::index(kind)], [w / 2.0, d / 2.0], front)
+                stand::beside(&models[kind::index(kind)], [w / 2.0, d / 2.0], drone)
             })
             .collect();
         Ok(App {
@@ -145,6 +159,7 @@ impl App {
             moving: false,
             still: false,
             card_clash: None,
+            focus: None,
             view_json: String::new(),
             view_version: 0,
             dirty: false,
@@ -279,9 +294,14 @@ impl App {
             .drag_ground(from, [from[0] + dx * self.dpr, from[1] + dy * self.dpr]);
     }
 
-    /// Switches between the perspective and orthographic projections, keeping the framing.
+    /// Switches between the perspective and orthographic projections. The fit depends on the
+    /// projection, so the plant is framed again at the same angles.
     pub fn toggle_projection(&mut self) {
         self.camera.toggle_projection();
+        if let Some(loaded) = &self.plant {
+            self.camera
+                .fit_boxes_room(&loaded.framing, FIT_MARGIN_CSS * self.dpr, self.fit_room());
+        }
     }
 
     /// Turns the view by `(dx, dy)` CSS pixels of drag: horizontal orbits, vertical tilts. This
@@ -345,8 +365,8 @@ impl App {
         self.turn = None;
         self.camera.set_angles(azimuth, elevation);
         if let Some(loaded) = &self.plant {
-            let bounds = loaded.bounds;
-            self.camera.fit(&bounds, FIT_MARGIN_CSS * self.dpr);
+            self.camera
+                .fit_boxes_room(&loaded.framing, FIT_MARGIN_CSS * self.dpr, self.fit_room());
         }
     }
 
@@ -354,8 +374,9 @@ impl App {
     pub fn fit(&mut self) {
         self.turn = None;
         if let Some(loaded) = &self.plant {
-            let bounds = loaded.bounds;
-            self.camera.reset_view(&bounds, FIT_MARGIN_CSS * self.dpr);
+            self.camera.set_angles(DEFAULT_AZIMUTH, DEFAULT_ELEVATION);
+            self.camera
+                .fit_boxes_room(&loaded.framing, FIT_MARGIN_CSS * self.dpr, self.fit_room());
         }
     }
 
@@ -371,6 +392,29 @@ impl App {
         self.camera
             .set_pivot([placed.x + w / 2.0, placed.y + d / 2.0]);
         self.camera.set_zoom(ratio * self.fit_zoom());
+    }
+
+    /// Closes up on agent `name`'s drone: the drone sits at the screen centre, and the zoom is
+    /// `ratio` times the fit zoom. The page asks for it with `?focus=`. It waits until the view
+    /// places the drone, so it may be called before the log loads.
+    pub fn focus_agent(&mut self, name: &str, ratio: f32) {
+        self.focus = Some((name.to_owned(), ratio));
+        self.apply_focus();
+    }
+
+    /// Applies a pending focus once the agent's drone is placed, then clears it.
+    fn apply_focus(&mut self) {
+        let Some((name, ratio)) = self.focus.as_ref() else {
+            return;
+        };
+        let Some(body) = self.marks.bodies.iter().find(|body| &body.agent == name) else {
+            return;
+        };
+        let at = self.motion.body_at(&body.agent).unwrap_or(body.at);
+        let zoom = ratio * self.fit_zoom();
+        self.camera.centre_on(at);
+        self.camera.set_zoom(zoom);
+        self.focus = None;
     }
 
     /// Level of detail now: 0 far, 1 near, 2 close.
@@ -505,6 +549,20 @@ impl App {
             .collect()
     }
 
+    /// Each drone's disc on screen, as flat `[css x, css y, css radius]` triples, in the order the
+    /// marks list the drones. The page keeps flags and names clear of them.
+    pub fn drone_layout(&self) -> Vec<f32> {
+        self.marks
+            .bodies
+            .iter()
+            .flat_map(|body| {
+                let at = self.motion.body_at(&body.agent).unwrap_or(body.at);
+                let ([x, y], radius) = marks::drone_disc(at, |p| self.screen(p));
+                [x, y, radius]
+            })
+            .collect()
+    }
+
     /// Opens the card of the clash at `index` in the view. The camera does not move.
     pub fn open_card(&mut self, index: u32) {
         let index = index as usize;
@@ -621,6 +679,8 @@ impl App {
         self.card_clash = None;
         self.dirty = true;
         let belts = scene::belt_lines(&laid.belts);
+        let drone_reach = stand::reach(&self.models[usize::from(scene::mark_kinds().body)]);
+        let framing = scene::fit_boxes(&laid, &self.models, &self.kind_spots, drone_reach);
         self.plant = Some(Loaded {
             repo: plant.repo,
             rest: {
@@ -637,7 +697,7 @@ impl App {
                 .collect(),
             machines: plant.machines,
             layout: laid,
-            bounds: scene.bounds,
+            framing,
             occluders,
             base: scene,
             belts,
@@ -664,6 +724,7 @@ impl App {
         self.motion.sync(&marks);
         self.marks = marks;
         self.view = Some(view);
+        self.apply_focus();
         self.sync_scene();
         Ok(())
     }
@@ -685,6 +746,7 @@ impl App {
             .map(|&(plan_index, tint)| (loaded.plan_instance[plan_index], tint))
             .collect();
         scene.hue_lines = scene::hue_lines(&loaded.belts, &hues);
+        scene.beams = marks::beams(&self.motion, &self.marks, self.dpr);
         scene.instances.extend(marks::mark_instances(
             &self.motion,
             &self.marks,
@@ -701,6 +763,20 @@ impl App {
         [x / self.dpr, y / self.dpr]
     }
 
+    /// The extra room the fit keeps for the page's overlays: flag chips above the plant and
+    /// at its right edge, machine names at the bottom, and the usage panel's corner at the
+    /// bottom-left. The panel's room is always kept, so the frame never moves when the panel
+    /// first shows.
+    fn fit_room(&self) -> FitRoom {
+        let [_, vh] = self.camera.viewport();
+        FitRoom {
+            top: FIT_FLAG_TOP_CSS * self.dpr,
+            right: FIT_FLAG_RIGHT_CSS * self.dpr,
+            bottom: FIT_LABEL_CSS * self.dpr,
+            avoid: labels::panel_avoid(vh, self.dpr),
+        }
+    }
+
     /// The zoom at which the plant fills the view at the default angles, in the current
     /// projection. Level of detail is measured against this, so orbiting never changes the
     /// detail.
@@ -709,7 +785,7 @@ impl App {
             Some(loaded) => {
                 let mut probe = self.camera;
                 probe.set_angles(DEFAULT_AZIMUTH, DEFAULT_ELEVATION);
-                probe.fit(&loaded.bounds, FIT_MARGIN_CSS * self.dpr);
+                probe.fit_boxes_room(&loaded.framing, FIT_MARGIN_CSS * self.dpr, self.fit_room());
                 probe.zoom()
             }
             None => 1.0,
