@@ -20,12 +20,12 @@ mod intent_api;
 mod jobs;
 #[allow(
     dead_code,
-    reason = "the scope-first lane is disabled: no route or job reaches it yet"
+    reason = "the ruling answer path and its folds have no route yet; intent_api owns the route"
 )]
 mod land;
 #[allow(
     dead_code,
-    reason = "the scope-first lane is disabled: no route or job reaches it yet"
+    reason = "the ruling answer path and its folds have no route yet; intent_api owns the route"
 )]
 mod ledger;
 mod mcp;
@@ -33,13 +33,9 @@ pub mod model;
 mod models;
 #[allow(
     dead_code,
-    reason = "the scope-first lane is disabled: no route or job reaches it yet"
+    reason = "reading stored observations back has no caller in the server yet; only the store writes them"
 )]
 mod observations;
-#[allow(
-    dead_code,
-    reason = "the scope-first lane is disabled: no route or job reaches it yet"
-)]
 mod observe;
 mod offline;
 mod public;
@@ -80,6 +76,9 @@ use tokio::task::{JoinHandle, JoinSet};
 pub use auth::{Principal, Token, Tokens};
 pub use host::{Host, HostParts, LIVE_BUFFER, SubmitError};
 pub use index::{IndexError, Scan, code_index, scan};
+/// Starts the job loop for a host built by hand. [`start`] does this for the server; a caller
+/// that builds its own [`Host`] runs the same loop with this.
+pub use jobs::spawn as spawn_jobs;
 pub use models::Models;
 pub use store::EventStore;
 
@@ -252,6 +251,11 @@ pub async fn start<C: ModelClient + 'static>(
         witness_http_base_url: config.witness_http_base_url.clone(),
         witness_concurrency: config.witness_concurrency,
     });
+    // Before any append: the ruling log's directory exists and its stored log verifies.
+    if let Err(err) = host.open_rulings() {
+        let _ = host.shutdown().await;
+        return Err(err).context("opening the ruling log");
+    }
     if let Err(err) = host.submit(Command::System(SystemCmd::IndexUpdated)).await {
         let _ = host.shutdown().await;
         return Err(err).context("recording the initial code index");

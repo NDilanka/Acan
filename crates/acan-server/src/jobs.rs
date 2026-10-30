@@ -21,10 +21,20 @@
 //!
 //! A `Barrier` job sleeps until its order's declare barrier is due and then sends a `Tick`,
 //! the same command the lease expiry runs on.
+//!
+//! A scope-first run is not a job: the core derives no key for it. The loop reads
+//! `World::pending_contrasts` instead. Each pending run is prepared once (`CandidatePrepared`),
+//! observed and judged (`ReceiptReady`). A run already running is never started again. The
+//! state lives in the origin, so a restart reads the same pending runs and continues each from
+//! the recorded step: a run with a recorded preparation is judged, never prepared again. A
+//! scope-first land runs the final gate and installs the tested merged commit only when the gate
+//! passes. Every other land keeps the legacy path.
 
 use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::time::Instant;
 
@@ -33,12 +43,21 @@ use acan_core::{
     Rejection, Stage, Step, SystemCmd, TaskId, TaskState, Timestamp, WitnessId, WitnessKind,
     WitnessOutcome, World,
 };
+use acan_git::{Preparation, PrepareOutcome, Repo};
+use acan_intent::{
+    AppContract, CommitSha, ContainerPolicy, PreparedCommit, ProbeCorpus, Receipt, Scope,
+    ScopeConfirmation,
+};
 use acan_llm::{CallRecord, LlmError, ModelClient, Role};
+use acan_witness::RunnerConfig;
 use tokio::task::{self, JoinHandle, JoinSet};
 
+use crate::STATE_DIR;
 use crate::git::{LandFailure, Workspace};
 use crate::host::{self, Host, SubmitError};
+use crate::land::{self, LandError};
 use crate::model::{self, ReplyError};
+use crate::observe::{self, ObserveError, Order, Plan};
 
 /// Total attempts one job key gets before the loop stops retrying it. Chosen so a broken model
 /// shows up in seconds during a demo while a live provider is called at most this many times
@@ -47,6 +66,18 @@ const MAX_JOB_ATTEMPTS: u32 = 5;
 
 /// The delay before the first retry of a failed job. Each later retry waits twice as long.
 const RETRY_BACKOFF: Duration = Duration::from_millis(20);
+
+/// The program the containers run under.
+const RUNNER_PROGRAM: &str = "docker";
+
+/// The port the app listens on inside its container.
+const APP_PORT: u16 = 3000;
+
+/// The state directory's folder that holds one directory per observe pass.
+const CONTRAST_DIR: &str = "contrasts";
+
+/// The state directory's folder that holds the stored observations, by hash.
+const OBSERVATIONS_DIR: &str = "observations";
 
 /// Starts the job loop for `host`.
 pub fn spawn<C: ModelClient + 'static>(host: Host<C>) -> JoinHandle<()> {
@@ -65,6 +96,12 @@ enum JobError {
     Rejected(#[source] Rejection),
     #[error("recording the result failed: {0}")]
     Store(#[source] anyhow::Error),
+    #[error("the ruling log could not be read: {0}")]
+    Rulings(#[source] anyhow::Error),
+    #[error(transparent)]
+    Observe(#[from] ObserveError),
+    #[error("{0}")]
+    Unavailable(String),
 }
 
 impl From<SubmitError> for JobError {
@@ -109,6 +146,7 @@ async fn run<C: ModelClient + 'static>(host: Host<C>) {
     let mut tasks: JoinSet<(Job, Result<(), JobError>)> = JoinSet::new();
     let mut in_flight: HashMap<task::Id, Job> = HashMap::new();
     let mut retries: HashMap<Job, Retry> = HashMap::new();
+    let mut contrasts = Contrasts::default();
     let mut worktrees = WorktreeSync::default();
     if let Some(workspace) = host.workspace() {
         // Worktrees left by an earlier run belong to tasks that may no longer hold a claim.
@@ -130,17 +168,18 @@ async fn run<C: ModelClient + 'static>(host: Host<C>) {
         }
     }
     loop {
-        let next_retry = retries
-            .iter()
-            .filter(|(job, retry)| {
-                retry.attempts < MAX_JOB_ATTEMPTS
-                    && !in_flight.values().any(|running| running == *job)
-            })
-            .map(|(_, retry)| retry.not_before)
-            .min();
+        let next_retry = next_retry(&retries, |job| {
+            in_flight.values().any(|running| running == job)
+        })
+        .into_iter()
+        .chain(next_retry(&contrasts.retries, |run| {
+            contrasts.running.values().any(|running| running == run)
+        }))
+        .min();
         tokio::select! {
             () = host.jobs_woken() => {
                 start_derived(&host, &mut tasks, &mut in_flight, &mut retries);
+                start_contrasts(&host, &mut contrasts);
                 reconcile(&host, &mut worktrees);
             }
             Some(finished) = tasks.join_next() => match finished {
@@ -155,6 +194,23 @@ async fn run<C: ModelClient + 'static>(host: Host<C>) {
                 Err(err) => {
                     tracing::error!(error = %err, "a job task failed");
                     in_flight.remove(&err.id());
+                }
+            },
+            Some(finished) = contrasts.tasks.join_next() => match finished {
+                Ok((run, Ok(()))) => {
+                    contrasts.running.retain(|_, running| *running != run);
+                    contrasts.retries.remove(&run);
+                    start_contrasts(&host, &mut contrasts);
+                }
+                Ok((run, Err(err))) => {
+                    contrasts.running.retain(|_, running| *running != run);
+                    record_failure(&mut contrasts.retries, run, &err);
+                }
+                // The run is not recorded as done. The next wake starts it again from the
+                // origin's state.
+                Err(err) => {
+                    tracing::error!(error = %err, "a scope-first run task failed");
+                    contrasts.running.remove(&err.id());
                 }
             },
             Some(finished) = worktrees.ops.join_next() => match finished {
@@ -194,8 +250,70 @@ async fn run<C: ModelClient + 'static>(host: Host<C>) {
             },
             () = wait_until(next_retry) => {
                 start_derived(&host, &mut tasks, &mut in_flight, &mut retries);
+                start_contrasts(&host, &mut contrasts);
             }
         }
+    }
+}
+
+/// The scope-first runs in progress and the ones waiting to run again.
+#[derive(Default)]
+struct Contrasts {
+    tasks: JoinSet<(GateRunId, Result<(), JobError>)>,
+    /// The run each started task works on, by task id.
+    running: HashMap<task::Id, GateRunId>,
+    retries: HashMap<GateRunId, Retry>,
+}
+
+/// The earliest time a failed key may run again. A key still running, or one that used up its
+/// attempts, has none.
+fn next_retry<K: Eq + std::hash::Hash>(
+    retries: &HashMap<K, Retry>,
+    is_running: impl Fn(&K) -> bool,
+) -> Option<Instant> {
+    retries
+        .iter()
+        .filter(|(key, retry)| retry.attempts < MAX_JOB_ATTEMPTS && !is_running(key))
+        .map(|(_, retry)| retry.not_before)
+        .min()
+}
+
+/// Starts one task for each pending scope-first run that is not already running and is due.
+fn start_contrasts<C: ModelClient + 'static>(host: &Host<C>, contrasts: &mut Contrasts) {
+    let pending: Vec<GateRunId> = host.read(|world| {
+        world
+            .pending_contrasts()
+            .iter()
+            .map(|contrast| contrast.run)
+            .collect()
+    });
+    contrasts.retries.retain(|run, _| pending.contains(run));
+    if !pending.is_empty() {
+        tracing::debug!(
+            pending = pending.len(),
+            running = contrasts.running.len(),
+            "scope-first runs are pending"
+        );
+    }
+    let now = Instant::now();
+    for run in pending {
+        if contrasts.running.values().any(|running| *running == run) {
+            continue;
+        }
+        match contrasts.retries.get(&run) {
+            Some(retry) if retry.attempts >= MAX_JOB_ATTEMPTS => continue,
+            Some(retry) if retry.not_before > now => continue,
+            _ => {}
+        }
+        let host = host.clone();
+        let id = contrasts
+            .tasks
+            .spawn(async move {
+                let result = contrast(&host, run).await;
+                (run, result)
+            })
+            .id();
+        contrasts.running.insert(id, run);
     }
 }
 
@@ -207,7 +325,11 @@ async fn wait_until(next_retry: Option<Instant>) {
     }
 }
 
-fn record_failure(retries: &mut HashMap<Job, Retry>, job: Job, err: &JobError) {
+fn record_failure<K: Eq + std::hash::Hash + std::fmt::Debug>(
+    retries: &mut HashMap<K, Retry>,
+    job: K,
+    err: &JobError,
+) {
     if matches!(err, JobError::Rejected(_)) {
         // Running the job again would repeat the same decision. A witness run is too costly to
         // repeat for nothing, so the key waits until the world moves it out of the derived set.
@@ -620,27 +742,46 @@ fn current_witness(
 
 /// Merges the gated commit at the front of the land queue into the protected branch. The core
 /// derives a `Land` only for that front, so merges happen one at a time, in queue order.
+///
+/// A scope-first task lands through the final gate instead: see [`gated_land`].
 async fn land<C: ModelClient>(
     host: &Host<C>,
     task: TaskId,
     head: &CommitId,
 ) -> Result<Option<SystemCmd>, JobError> {
     let result = match host.workspace() {
-        Some(workspace) => match workspace.land(task, head).await {
-            Ok(commit) => {
-                catch_up(host, &workspace, &commit).await;
-                Ok(commit)
-            }
-            Err(LandFailure::Refused(reason)) => Err(reason),
-            Err(LandFailure::Git(err)) => return Err(JobError::Git(err)),
+        Some(workspace) => match host.read(|world| delivery_of(world, task)) {
+            Some(delivery) => gated_land(host, &workspace, &delivery, head).await?,
+            None => legacy_land(host, &workspace, task, head).await?,
         },
         None => Err("this server has no git repository to land in".to_owned()),
     };
+    if let Err(reason) = &result {
+        tracing::warn!(%task, %head, %reason, "the land was refused");
+    }
     Ok(Some(SystemCmd::LandResult {
         task,
         head: head.clone(),
         result,
     }))
+}
+
+/// The legacy land: merges the worker's head as it is. `Err` is a refusal the origin records;
+/// the outer error is a git failure the job retries.
+async fn legacy_land<C: ModelClient>(
+    host: &Host<C>,
+    workspace: &Arc<Workspace>,
+    task: TaskId,
+    head: &CommitId,
+) -> Result<Result<CommitId, String>, JobError> {
+    match workspace.land(task, head).await {
+        Ok(commit) => {
+            catch_up(host, workspace, &commit).await;
+            Ok(Ok(commit))
+        }
+        Err(LandFailure::Refused(reason)) => Ok(Err(reason)),
+        Err(LandFailure::Git(err)) => Err(JobError::Git(err)),
+    }
 }
 
 /// Moves the worktree of every task not yet cleared to write onto the commit that just landed.
@@ -689,6 +830,307 @@ fn not_yet_building(world: &World) -> HashMap<TaskId, Generation> {
             _ => None,
         })
         .collect()
+}
+
+/// One scope-first run, copied out of the world so no lock is held while it runs.
+struct Contrast {
+    head: CommitId,
+    prepared: Option<PreparedCommit>,
+    scope: Scope,
+    confirmation: ScopeConfirmation,
+}
+
+/// The pending run `run`, when it still is pending and its order is confirmed.
+fn contrast_of(world: &World, run: GateRunId) -> Option<Contrast> {
+    let pending = world
+        .pending_contrasts()
+        .into_iter()
+        .find(|pending| pending.run == run)?;
+    let lane = world.lane(pending.order)?;
+    Some(Contrast {
+        head: pending.head.clone(),
+        prepared: pending.prepared.cloned(),
+        scope: lane.scope.clone(),
+        confirmation: lane.confirmation.clone()?,
+    })
+}
+
+/// The receipt of a scope-first task waiting in the land queue, with the scope it was judged
+/// against. `None` for a legacy task.
+struct Delivery {
+    run: GateRunId,
+    receipt: Receipt,
+    scope: Scope,
+    confirmation: ScopeConfirmation,
+}
+
+fn delivery_of(world: &World, task: TaskId) -> Option<Delivery> {
+    let found = world.task(task)?;
+    let TaskState::Queued { run, .. } = &found.state else {
+        return None;
+    };
+    let lane = world.lane(found.order)?;
+    let receipt = lane.runs.get(run)?.receipt.as_ref()?.receipt.clone();
+    Some(Delivery {
+        run: *run,
+        receipt,
+        scope: lane.scope.clone(),
+        confirmation: lane.confirmation.clone()?,
+    })
+}
+
+/// The files one observe pass works in: the base it starts from, the protected inputs of that
+/// base, and directories no other pass uses.
+struct Pass {
+    base: Preparation,
+    snapshot: PathBuf,
+    app: AppContract,
+    corpus: ProbeCorpus,
+    policy: ContainerPolicy,
+    runner: RunnerConfig,
+    scratch: PathBuf,
+    observations: PathBuf,
+}
+
+impl Pass {
+    /// Starts a pass for `run` on the protected head as it is now.
+    async fn new<C: ModelClient>(
+        host: &Host<C>,
+        repo: &Repo,
+        run: GateRunId,
+    ) -> Result<Self, JobError> {
+        let policy = observe::runner_policy();
+        let head = protected_sha(repo).await?;
+        let PrepareOutcome::Prepared(base) = repo
+            .prepare(&head, &observe::protected_paths(&policy))
+            .await?
+        else {
+            return Err(JobError::Unavailable(
+                "the protected head does not prepare onto itself".to_owned(),
+            ));
+        };
+        let state = host.repo().join(STATE_DIR);
+        let dir = state
+            .join(CONTRAST_DIR)
+            .join(format!("{run}-{}", unique_suffix()));
+        let snapshot = dir.join("snapshot");
+        observe::snapshot(repo, &base, &snapshot).await?;
+        let (app, corpus) = observe::read_protected(&snapshot)?;
+        Ok(Self {
+            base,
+            snapshot,
+            app,
+            corpus,
+            policy,
+            runner: RunnerConfig::new(RUNNER_PROGRAM, APP_PORT),
+            scratch: dir.join("scratch"),
+            observations: state.join(OBSERVATIONS_DIR),
+        })
+    }
+
+    /// The plan that observes `candidate` on this pass's base, writing into `scratch`.
+    fn plan<'a>(
+        &'a self,
+        repo: &'a Repo,
+        candidate: &'a Preparation,
+        scratch: &'a Path,
+    ) -> Plan<'a> {
+        Plan {
+            repo,
+            base: &self.base,
+            candidate,
+            snapshot: &self.snapshot,
+            scratch,
+            observations: &self.observations,
+            app: &self.app,
+            corpus: &self.corpus,
+            policy: &self.policy,
+            runner: &self.runner,
+        }
+    }
+}
+
+/// Runs one pending scope-first run as far as the origin's state allows.
+///
+/// A run without a recorded preparation is prepared and its context recorded. A run with one
+/// keeps that preparation: the commit it recorded must still be the one git prepares, or the run
+/// fails rather than judging a different commit. Then the candidate is observed and judged, and
+/// the receipt is recorded. The context must still match the recorded one, or the origin would
+/// refuse the receipt.
+async fn contrast<C: ModelClient>(host: &Host<C>, run: GateRunId) -> Result<(), JobError> {
+    let Some(workspace) = host.workspace() else {
+        return Err(JobError::Unavailable(
+            "this server has no git repository to gate candidates in".to_owned(),
+        ));
+    };
+    let Some(contrast) = host.read(|world| contrast_of(world, run)) else {
+        tracing::info!(%run, "a scope-first run is no longer pending");
+        return Ok(());
+    };
+    tracing::debug!(%run, prepared = contrast.prepared.is_some(), "a scope-first run starts");
+    let repo = workspace.repo();
+    let pass = Pass::new(host, repo, run).await?;
+    let candidate = prepare_candidate(repo, &pass, &contrast.head).await?;
+    tracing::debug!(%run, "the candidate is prepared on the protected head");
+    let ledger = host.folded_rulings().map_err(JobError::Rulings)?;
+    let order = Order {
+        scope: &contrast.scope,
+        confirmation: &contrast.confirmation,
+        ledger: &ledger,
+        episodes: &[],
+    };
+    let recorded = match contrast.prepared {
+        Some(prepared) => {
+            if candidate.merged_commit() != &prepared.context.merged_commit
+                || pass.base.protected_head() != &prepared.base_commit
+            {
+                return Err(JobError::Unavailable(format!(
+                    "run {run} was prepared on another commit or base than git prepares now"
+                )));
+            }
+            prepared
+        }
+        None => {
+            let scratch = pass.scratch.join("context");
+            let plan = pass.plan(repo, &candidate, &scratch);
+            let context = observe::current(&plan, &order).await?;
+            let prepared = PreparedCommit {
+                base_commit: pass.base.protected_head().clone(),
+                context,
+            };
+            host.submit(Command::System(SystemCmd::CandidatePrepared {
+                run,
+                prepared: Box::new(prepared.clone()),
+            }))
+            .await?;
+            prepared
+        }
+    };
+    let scratch = pass.scratch.join("judge");
+    let plan = pass.plan(repo, &candidate, &scratch);
+    tracing::debug!(%run, "the candidate is observed and judged");
+    // The judge's future is large, so it is boxed where it is awaited.
+    let judged = Box::pin(observe::judge(&plan, &order)).await?;
+    tracing::info!(%run, items = judged.receipt.items.len(), "the receipt is built");
+    if judged.context != recorded.context {
+        return Err(JobError::Unavailable(format!(
+            "the context of run {run} moved while the candidate was judged"
+        )));
+    }
+    // An item with no selector cannot name an episode, and the origin refuses a failing item
+    // without one. That item is an unknown probe outcome, not a verdict, so the run is judged
+    // again instead of recording a receipt the origin would refuse.
+    let unnamed: Vec<String> = judged
+        .receipt
+        .items
+        .iter()
+        .filter(|item| !item.class.counts_toward_pass() && item.episode_id.is_none())
+        .map(|item| format!("{} ({:?})", item.item_id, item.class))
+        .collect();
+    if !unnamed.is_empty() {
+        return Err(JobError::Unavailable(format!(
+            "run {run} has failing items that name no episode: {}",
+            unnamed.join(", ")
+        )));
+    }
+    host.submit(Command::System(SystemCmd::ReceiptReady {
+        run,
+        receipt: Box::new(judged.receipt),
+    }))
+    .await?;
+    Ok(())
+}
+
+/// Lands a scope-first task. The final gate reads the receipt its run passed with and the
+/// context computed now, and the tested merged commit is installed only when both clear it.
+/// A refusal is a land result the origin records, so the queue moves on. A git failure is the
+/// job's error and follows the retry path.
+async fn gated_land<C: ModelClient>(
+    host: &Host<C>,
+    workspace: &Arc<Workspace>,
+    delivery: &Delivery,
+    head: &CommitId,
+) -> Result<Result<CommitId, String>, JobError> {
+    let repo = workspace.repo();
+    let pass = Pass::new(host, repo, delivery.run).await?;
+    let candidate = prepare_candidate(repo, &pass, head).await?;
+    let ledger = host.folded_rulings().map_err(JobError::Rulings)?;
+    let order = Order {
+        scope: &delivery.scope,
+        confirmation: &delivery.confirmation,
+        ledger: &ledger,
+        episodes: &[],
+    };
+    // The writes lock keeps a legacy land from moving the protected branch between the context
+    // and the install. Install still compares the head itself.
+    let writes = workspace.lock_writes().await;
+    let scratch = pass.scratch.join("land");
+    let plan = pass.plan(repo, &candidate, &scratch);
+    let current = observe::current(&plan, &order).await?;
+    let installed = match land::final_gate(&delivery.receipt, &current, &candidate) {
+        Ok(clearance) => land::install(repo, clearance).await,
+        Err(err) => Err(err),
+    };
+    drop(writes);
+    match installed {
+        Ok(commit) => {
+            let landed = CommitId::from_str(commit.as_str())
+                .map_err(|err| JobError::Unavailable(format!("the installed commit: {err}")))?;
+            catch_up(host, workspace, &landed).await;
+            Ok(Ok(landed))
+        }
+        Err(LandError::Git(err)) => Err(JobError::Git(err)),
+        Err(err) => Ok(Err(refusal(&err))),
+    }
+}
+
+/// Prepares `head` on the pass's protected head. A conflict is an error: the candidate has no
+/// merged commit to test.
+async fn prepare_candidate(
+    repo: &Repo,
+    pass: &Pass,
+    head: &CommitId,
+) -> Result<Preparation, JobError> {
+    let commit = CommitSha::from_str(&head.to_string())
+        .map_err(|err| JobError::Unavailable(format!("the candidate is not a commit: {err}")))?;
+    match repo
+        .prepare(&commit, &observe::protected_paths(&pass.policy))
+        .await?
+    {
+        PrepareOutcome::Prepared(candidate) => Ok(candidate),
+        _ => Err(JobError::Unavailable(format!(
+            "candidate {head} conflicts with the protected head"
+        ))),
+    }
+}
+
+/// The protected head as a commit sha.
+async fn protected_sha(repo: &Repo) -> Result<CommitSha, JobError> {
+    let head = repo.protected_head().await?;
+    CommitSha::from_str(&head.to_string())
+        .map_err(|err| JobError::Unavailable(format!("the protected head: {err}")))
+}
+
+/// Why a land was refused, one reason per line, in the words the origin records.
+fn refusal(err: &LandError) -> String {
+    match err {
+        LandError::Blocked(blockers) => blockers
+            .iter()
+            .map(|blocker| match &blocker.item {
+                Some(item) => format!("{item}: {}", blocker.reason),
+                None => blocker.reason.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join("; "),
+        other => other.to_string(),
+    }
+}
+
+/// A suffix no earlier pass directory has, so a pass never reuses another pass's worktrees.
+fn unique_suffix() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos())
 }
 
 async fn record_usage<C: ModelClient>(host: &Host<C>, job: &Job, call: &CallRecord, step: Step) {

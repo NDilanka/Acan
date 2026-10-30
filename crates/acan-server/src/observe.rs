@@ -26,12 +26,13 @@ use acan_intent::admit::AdmitError;
 use acan_intent::compare::{self, CompareError, Contrast};
 use acan_intent::receipt::{self, ProbeResult, ReceiptError, ReceiptInputs};
 use acan_intent::{
-    AppContract, ArtifactHash, CanonicalError, Comparison, ContainerPolicy, ContentHash,
-    CoreDerived, CorpusProbe, DiscrepancyEpisode, EnvHash, EnvManifest, EvaluatorVersion, Fixture,
-    FixtureId, FixtureSetHash, FixtureSetManifest, FoldedLedger, GateContext, GateState,
-    InvalidValue, Mask, ObservationHash, ObservedRun, PreparedCommit, ProbeCorpus, ProbeHash,
-    ProbeSetHash, ProbeSetManifest, Receipt, RepoPath, RunRole, RunnerBuild, RunnerHash,
-    RunnerManifest, RuntimeId, SandboxPolicyHash, Scope, ScopeConfirmation, UnixMillis,
+    AppContract, ArtifactHash, CanonicalError, CheckResult, Comparison, ContainerPolicy,
+    ContentHash, CoreDerived, CorpusProbe, DiscrepancyEpisode, EnvHash, EnvManifest, EpisodeKey,
+    EpisodeState, EpisodeV1, EvaluatorVersion, Fixture, FixtureId, FixtureSetHash,
+    FixtureSetManifest, FoldedLedger, GateContext, GateState, InvalidValue, Mask, ObservationHash,
+    ObservedRun, PreparedCommit, ProbeCorpus, ProbeHash, ProbeSetHash, ProbeSetManifest, Receipt,
+    RepoPath, RunRole, RunnerBuild, RunnerHash, RunnerManifest, RuntimeId, SandboxPolicyHash,
+    Scope, ScopeConfirmation, ScopeRevision, UnixMillis,
 };
 use acan_witness::{RunnerConfig, SequenceInput, run_sequence};
 use serde::de::DeserializeOwned;
@@ -123,7 +124,12 @@ pub(crate) enum ObserveError {
 pub(crate) struct RecordedRun {
     /// The admitted run, with its observations.
     pub(crate) observed: ObservedRun,
-    /// The stored observations' hashes, in the run's step order.
+    /// The stored observations' hashes, in the run's step order. The receipt reads the runs, not
+    /// these hashes, so nothing reads them yet.
+    #[allow(
+        dead_code,
+        reason = "kept with the run so a later receipt can name the stored observations it read"
+    )]
     pub(crate) observations: Vec<ObservationHash>,
 }
 
@@ -422,11 +428,97 @@ pub(crate) async fn judge(plan: &Plan<'_>, order: &Order<'_>) -> Result<Judged, 
     let judgements = compare_runs(&runs, plan.corpus)?;
     let results = results(&judgements);
     let context = order.context(&facts, plan.candidate);
-    let mut receipt = build(order, plan, &results, &context, GateState::Prepared)?;
+    let mut episodes = order.episodes.to_vec();
+    let first = build(
+        order,
+        plan,
+        &results,
+        &context,
+        &episodes,
+        GateState::Prepared,
+    )?;
+    let opened = open_episodes(&first)?;
+    let mut receipt = if opened.is_empty() {
+        first
+    } else {
+        // The failing items the order holds no episode for name the ones opened here, so the
+        // receipt can be recorded: the origin refuses a failing item that names no episode.
+        episodes.extend(opened);
+        build(
+            order,
+            plan,
+            &results,
+            &context,
+            &episodes,
+            GateState::Prepared,
+        )?
+    };
     if !land::blockers(&receipt).is_empty() {
-        receipt = build(order, plan, &results, &context, GateState::Blocked)?;
+        receipt = build(
+            order,
+            plan,
+            &results,
+            &context,
+            &episodes,
+            GateState::Blocked,
+        )?;
     }
     Ok(Judged { context, receipt })
+}
+
+/// The open episodes the failing scope items of `receipt` need. The receipt builder attaches an
+/// episode only when the order already holds one for the item's selector, so a first failure
+/// names none. Each failing item with a selector and no episode gets one, keyed by that selector
+/// and its first failing obligation. The key is the episode's identity, so the same failure gets
+/// the same episode on every pass. An item with no selector cannot be keyed, so it gets none and
+/// stays unnamed.
+///
+/// # Errors
+///
+/// Returns [`ObserveError::Hash`] when a key does not serialize.
+fn open_episodes(receipt: &Receipt) -> Result<Vec<DiscrepancyEpisode>, ObserveError> {
+    let mut opened: Vec<DiscrepancyEpisode> = Vec::new();
+    for item in &receipt.items {
+        if item.class.counts_toward_pass() || item.episode_id.is_some() {
+            continue;
+        }
+        let (Some(selector), Some(step)) = (item.selector.clone(), item.sequence.first()) else {
+            continue;
+        };
+        let obligation_id = item
+            .evaluation
+            .obligations
+            .iter()
+            .find(|check| !matches!(check.result, CheckResult::Pass {}))
+            .map(|check| check.obligation_id.clone());
+        let id = EpisodeKey {
+            order: receipt.order.clone(),
+            selector: selector.clone(),
+            obligation_id: obligation_id.clone(),
+        }
+        .episode_id()?;
+        if opened.iter().any(|episode| episode.id == id) {
+            continue;
+        }
+        opened.push(DiscrepancyEpisode {
+            version: EpisodeV1,
+            id,
+            order: receipt.order.clone(),
+            scope_lineage: vec![ScopeRevision {
+                rev: receipt.scope_rev,
+                scope_hash: receipt.scope_hash,
+            }],
+            probe_hash: item.probe_hash,
+            step_id: step.step_id.clone(),
+            selector,
+            obligation_id,
+            evidence_revisions: Vec::new(),
+            candidate_attempts: Vec::new(),
+            bounce_count: 0,
+            state: EpisodeState::Open,
+        });
+    }
+    Ok(opened)
 }
 
 /// The context the candidate would be tested under right now, from the current ruling log and the
@@ -449,6 +541,7 @@ fn build(
     plan: &Plan<'_>,
     results: &[ProbeResult<'_>],
     context: &GateContext,
+    episodes: &[DiscrepancyEpisode],
     state: GateState,
 ) -> Result<Receipt, ObserveError> {
     let prepared = PreparedCommit {
@@ -463,7 +556,7 @@ fn build(
         corpus: plan.corpus,
         results,
         anchors: &[],
-        episodes: order.episodes,
+        episodes,
         contests: &[],
         gate_state: state,
     };

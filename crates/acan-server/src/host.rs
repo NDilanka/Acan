@@ -7,14 +7,17 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use acan_core::{Command, Origin, Rejection, Stamped, Timestamp, World};
+use acan_intent::{CoreDerived, FoldedLedger};
 use acan_llm::{ModelClient, UsageLedger};
 use anyhow::Context as _;
 use tokio::sync::{Notify, Semaphore, broadcast, watch};
 use tokio::task::JoinSet;
 
+use crate::STATE_DIR;
 use crate::auth::Tokens;
 use crate::git::Workspace;
 use crate::index::Scan;
+use crate::land::{RulingError, RulingLog};
 use crate::store::EventStore;
 use crate::writer::{Snapshot, Writer};
 
@@ -76,6 +79,9 @@ struct Inner<C> {
     wake: Arc<Notify>,
     ledger: UsageLedger,
     client: C,
+    /// The ruling log in the state directory. Only the host appends to it, and only after
+    /// [`Host::open_rulings`] has created its directory.
+    rulings: RulingLog,
     repo: PathBuf,
     shutdown: watch::Receiver<bool>,
     streams: Arc<Mutex<JoinSet<()>>>,
@@ -116,6 +122,7 @@ impl<C: ModelClient> Host<C> {
             Arc::clone(&wake),
             publish,
         );
+        let rulings = RulingLog::at(&parts.repo.join(STATE_DIR));
         Self {
             inner: Arc::new(Inner {
                 writer,
@@ -126,6 +133,7 @@ impl<C: ModelClient> Host<C> {
                 wake,
                 ledger: parts.ledger,
                 client: parts.client,
+                rulings,
                 repo: parts.repo,
                 shutdown: parts.shutdown,
                 streams: Arc::new(Mutex::new(JoinSet::new())),
@@ -139,6 +147,26 @@ impl<C: ModelClient> Host<C> {
     /// The git workspace, or `None` when the served directory is not a usable repository.
     pub(crate) fn workspace(&self) -> Option<Arc<Workspace>> {
         self.inner.workspace.clone()
+    }
+
+    /// Creates the ruling log's state directory and verifies the log. The server calls this at
+    /// startup, before anything is appended.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RulingError`] when the directory cannot be created or the log does not verify.
+    pub(crate) fn open_rulings(&self) -> Result<(), RulingError> {
+        self.inner.rulings.open()
+    }
+
+    /// The ruling state folded from the log on disk, as the host reads it now. A host rebuilt
+    /// over the same state directory reads the same state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the log does not verify or fold.
+    pub fn folded_rulings(&self) -> anyhow::Result<CoreDerived<FoldedLedger>> {
+        Ok(self.inner.rulings.folded()?)
     }
 
     /// The limits every witness run uses. Only the HTTP base URL comes from configuration.

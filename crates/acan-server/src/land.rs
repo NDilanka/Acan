@@ -197,21 +197,30 @@ pub(crate) struct RulingLog {
 }
 
 impl RulingLog {
-    /// Opens the ruling log in `state_dir`. The directory is created first, so the first append
-    /// always has a place to write. An absent log is empty.
+    /// The ruling log in `state_dir`, named without touching the disk. An absent log is empty.
+    /// Call [`RulingLog::open`] before the first append.
+    pub(crate) fn at(state_dir: &Path) -> Self {
+        Self {
+            log: state_dir.join(ledger::RULINGS_LOG),
+        }
+    }
+
+    /// Creates the state directory and verifies the log, so a start fails on a broken log
+    /// before anything is appended. The directory is created first, so the first append always
+    /// has a place to write.
     ///
     /// # Errors
     ///
     /// Returns [`RulingError::StateDir`] when the directory cannot be created, and
     /// [`RulingError::Ledger`] when the log does not verify or fold.
-    pub(crate) fn open(state_dir: &Path) -> Result<Self, RulingError> {
+    pub(crate) fn open(&self) -> Result<(), RulingError> {
+        let state_dir = self.log.parent().unwrap_or(Path::new("."));
         fs::create_dir_all(state_dir).map_err(|source| RulingError::StateDir {
             path: state_dir.to_path_buf(),
             source,
         })?;
-        let log = state_dir.join(ledger::RULINGS_LOG);
-        ledger::load(&log)?;
-        Ok(Self { log })
+        ledger::load(&self.log)?;
+        Ok(())
     }
 
     /// The folded ruling state, read from disk.

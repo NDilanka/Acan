@@ -3,8 +3,14 @@
 //! A candidate that changes nothing a probe reads lands on the protected branch. A candidate that
 //! seeds a regression in the signup response is blocked, and its receipt names the must-keep rule
 //! it breaks. A runtime that cannot isolate a run never installs anything. A ruling that is
-//! waiting for a human survives a restart of the ruling log, and land refuses it until its answer
-//! is in the log. The gate only reads the repository, so nothing here writes to `ACAN_DEMO_DIR`.
+//! waiting for a human survives a restart of the host, and land refuses it until its answer is in
+//! the log.
+//!
+//! The live tests drive a host built over a clone of the demo with core commands only: the owner
+//! posts the order and confirms the scope, the worker reads back, claims, declares and reports the
+//! built commit. The job loop does the rest: it prepares the candidate, observes and judges it,
+//! records the receipt, and lands it through the final gate. The clone is the only thing written,
+//! and `ACAN_DEMO_DIR` is only read.
 
 #[path = "../src/ledger.rs"]
 #[allow(
@@ -36,19 +42,28 @@ mod land;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::Command as Process;
 use std::str::FromStr;
+use std::time::Duration;
 
+use acan_core::{
+    AgentCmd, AgentId, Command, CommitId, Event, Fence, GateRunId, HumanCmd, LaneVerdict,
+    MachineKey, MemberId, OrderId, Origin, Seq, TaskId, TaskState, Timestamp, World, WorldId,
+    WorldRef,
+};
 use acan_git::{InstallOutcome, Preparation, PrepareOutcome, ProtectedPaths, Repo};
 use acan_intent::{
     AppContract, CommitSha, ContainerPolicy, CoreDerived, DiscrepancyEpisode, EpisodeId,
-    EpisodeKey, FoldedLedger, ItemClass, ItemState, LedgerEvent, Outcome, ProbeCorpus, Scope,
-    ScopeConfirmation, canonical_episode_selector, fold,
+    EpisodeKey, FoldedLedger, ItemClass, ItemState, LedgerEvent, Outcome, ProbeCorpus, Receipt,
+    Scope, ScopeConfirmation, canonical_episode_selector, fold,
 };
+use acan_llm::{Reply, Role, Stub, UsageLedger};
+use acan_server::{EventStore, Host, HostParts, Tokens, scan, spawn_jobs};
 use acan_witness::RunnerConfig;
 use serde_json::{Value, json};
 use tempfile::TempDir;
 use tokio::sync::Mutex;
+use tokio::task::JoinHandle;
 
 /// The environment variable that names the acan-demo checkout. The tests only read it.
 const DEMO_DIR_VAR: &str = "ACAN_DEMO_DIR";
@@ -260,9 +275,14 @@ fn runner() -> RunnerConfig {
 /// The scope the demo order confirms: one must-keep rule over the signup answer's body. The rule
 /// reaches the signup probes at their first step and holds when the answer matches base.
 fn scope(base: &CommitSha) -> Scope {
+    scope_of(ORDER, base)
+}
+
+/// The scope of `order`, with the signup rule on `base`.
+fn scope_of(order: &str, base: &CommitSha) -> Scope {
     serde_json::from_value(json!({
         "version": "acan-scope/1",
-        "order": ORDER,
+        "order": order,
         "rev": 1,
         "base_commit": base,
         "body": {
@@ -304,9 +324,10 @@ fn confirmation(scope: &Scope) -> ScopeConfirmation {
         .iter()
         .map(|rule| json!(rule.selector.selector_hash().expect("the selector hashes")))
         .collect();
+    let order = serde_json::to_value(scope).expect("the scope serializes")["order"].clone();
     serde_json::from_value(json!({
         "version": "acan-scope-confirmation/1",
-        "order": ORDER,
+        "order": order,
         "scope_rev": scope.rev,
         "scope_hash": scope.scope_hash().expect("the scope hashes"),
         "semantic_scope_hash": scope.semantic_scope_hash().expect("the scope hashes"),
@@ -329,7 +350,7 @@ fn confirmation(scope: &Scope) -> ScopeConfirmation {
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = Process::new("git")
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -712,7 +733,7 @@ async fn a_pending_ruling_survives_a_restart_and_is_answered_in_the_log() {
     // The state dir does not exist yet. An append into it is refused, so the first open has to
     // create the directory before the first append can land.
     let state = tempfile::tempdir().expect("a temporary state root");
-    let state_dir = state.path().join("state");
+    let state_dir = state.path().join(".acan");
     let log = state_dir.join(ledger::RULINGS_LOG);
     let answer_event = answer(&episode.id);
     assert!(
@@ -728,17 +749,33 @@ async fn a_pending_ruling_survives_a_restart_and_is_answered_in_the_log() {
     );
     assert!(!state_dir.exists(), "a refused append creates nothing");
 
-    // The first start creates the state dir and reads the log, then the host stops.
-    let first = land::RulingLog::open(&state_dir).expect("the first start creates the state dir");
+    // The first start creates the state dir and verifies the log. The host it builds reads the
+    // empty log, then the host is dropped.
+    let first = land::RulingLog::at(&state_dir);
+    first.open().expect("the first start creates the state dir");
     assert!(state_dir.is_dir(), "the state dir exists before any append");
     assert!(
         first.answered().expect("the log reads").is_empty(),
         "nothing is answered yet"
     );
     drop(first);
+    let host = host_over(state.path(), Stub::default()).await;
+    assert_eq!(
+        host.folded_rulings()
+            .expect("the host folds the empty log")
+            .value()
+            .head
+            .event_seq,
+        0,
+        "the first host reads the genesis head"
+    );
+    host.shutdown().await.expect("the first host drains");
+    drop(host);
 
-    // A restart rebuilds the host from the same state dir. Nothing from the first start is kept.
-    let restarted = land::RulingLog::open(&state_dir).expect("the restart opens the same log");
+    // A restart rebuilds the log and the host from the same state dir. Nothing from the first
+    // start is kept.
+    let restarted = land::RulingLog::at(&state_dir);
+    restarted.open().expect("the restart opens the same log");
     let answered = restarted.answered().expect("the log reads back");
     assert_eq!(
         land::pending(&judged.receipt, &answered),
@@ -772,10 +809,15 @@ async fn a_pending_ruling_survives_a_restart_and_is_answered_in_the_log() {
     );
     drop(restarted);
 
-    // A second restart folds the answer, and nothing is pending.
-    let again = land::RulingLog::open(&state_dir)
-        .expect("the second restart opens the log with the answer");
-    let answered = again.answered().expect("the log reads back");
+    // A second restart folds the answer, and nothing is pending. The host is rebuilt over the
+    // same state dir and reads the answer from it.
+    let rebuilt = host_over(state.path(), Stub::default()).await;
+    let folded = rebuilt
+        .folded_rulings()
+        .expect("the rebuilt host folds the log");
+    let answered = land::RulingLog::at(&state_dir)
+        .answered()
+        .expect("the log reads back");
     assert!(
         answered.contains(&episode.id),
         "the answer names the episode"
@@ -784,7 +826,6 @@ async fn a_pending_ruling_survives_a_restart_and_is_answered_in_the_log() {
         land::pending(&judged.receipt, &answered).is_empty(),
         "no ruling is pending after the answer"
     );
-    let folded = again.folded().expect("the log folds");
     assert_eq!(
         folded.value().head,
         answered_head,
@@ -808,4 +849,378 @@ async fn a_pending_ruling_survives_a_restart_and_is_answered_in_the_log() {
         "the old receipt is for another ledger head: {stale:?}"
     );
     assert_eq!(demo.head(), before, "nothing was installed");
+}
+
+/// The owner, who registers the worker, posts the order and confirms the scope.
+fn owner() -> MemberId {
+    MemberId::from_str("owner").expect("valid member id")
+}
+
+/// The worker the live tests drive. It only reads back, claims, declares and reports.
+fn worker() -> AgentId {
+    AgentId::from_str(WORKER).expect("valid agent id")
+}
+
+/// The worker's agent id as the origin stores it.
+const WORKER: &str = "worker-a";
+/// The machine the demo order is posted on.
+const MACHINE: &str = "auth";
+/// The file the worker declares it will change. The signup answer lives here in the pinned demo.
+const SIGNUP_FILE: &str = "src/auth.ts";
+/// The one task the foreman splits the demo order into.
+const SPLIT: &str =
+    r#"{"tasks":[{"title":"signup","brief":"keep the signup answer as it is","scope":["auth"]}]}"#;
+/// How long one live step may take before the test gives up on it. A judged candidate runs
+/// every probe three times in Docker, so this covers a slow machine.
+const LIVE_WAIT: Duration = Duration::from_secs(900);
+
+/// A model that splits the demo order as `SPLIT` asks and answers nothing else.
+fn foreman() -> Stub {
+    Stub::default().when(Role::Foreman, |_| true, Reply::text(SPLIT))
+}
+
+/// A host built over `root`, the way the server builds one: its own store and state directory
+/// under `root/.acan`, the protected branch when `root` is a git checkout, and nothing running.
+/// Like the server, it writes the state directory's `.gitignore` only when there is none: the
+/// demo tracks its own, and overwriting that file would dirty the protected checkout.
+async fn host_over(root: &Path, client: Stub) -> Host<Stub> {
+    let state = root.join(".acan");
+    fs::create_dir_all(&state).expect("the state dir");
+    let ignore = state.join(".gitignore");
+    if !ignore.exists() {
+        fs::write(&ignore, "*\n").expect("the state dir's ignore file");
+    }
+    let store = EventStore::open(&state.join("world.db"))
+        .await
+        .expect("the event store opens");
+    let log = store
+        .load_from(Seq::new(0))
+        .await
+        .expect("the stored log reads");
+    let origin = if log.is_empty() {
+        let (origin, opened) = Origin::open(
+            WorldRef {
+                id: WorldId::from_str("demo-signup").expect("valid world id"),
+                repo: root.display().to_string(),
+            },
+            owner(),
+            Timestamp::from_millis(1),
+        );
+        store
+            .append(&[opened])
+            .await
+            .expect("the open event stores");
+        origin
+    } else {
+        Origin::replay(log).expect("the stored log replays")
+    };
+    let (tokens, _) = Tokens::load_or_create(&state, &owner()).expect("the tokens load");
+    let (_shutdown, shutdown) = tokio::sync::watch::channel(false);
+    let git = Repo::open_with_protected(root, PROTECTED_BRANCH).await.ok();
+    Host::new(HostParts {
+        origin,
+        store,
+        tokens,
+        scan: scan(root).expect("the scan succeeds"),
+        ledger: UsageLedger::default(),
+        client,
+        repo: root.to_path_buf(),
+        shutdown,
+        git,
+        witness_http_base_url: None,
+        witness_concurrency: 2,
+    })
+}
+
+/// Routes the server's log lines to the test output, so a live step that stalls shows the job
+/// that failed and why. Only the first call installs the subscriber.
+fn trace_server() {
+    let _ = tracing_subscriber::fmt()
+        .with_test_writer()
+        .with_max_level(tracing::Level::INFO)
+        .try_init();
+}
+
+/// A live host with its job loop running.
+struct Live {
+    host: Host<Stub>,
+    jobs: JoinHandle<()>,
+}
+
+impl Live {
+    async fn start(root: &Path) -> Self {
+        trace_server();
+        let host = host_over(root, foreman()).await;
+        let jobs = spawn_jobs(host.clone());
+        host.wake_jobs();
+        Self { host, jobs }
+    }
+
+    /// Stops the job loop, then drains the writer. Nothing can write after this returns.
+    async fn stop(self) {
+        self.jobs.abort();
+        let _ = self.jobs.await;
+        self.host.shutdown().await.expect("the writer drains");
+    }
+}
+
+/// Sends `cmd` as the owner.
+async fn owner_says(host: &Host<Stub>, cmd: HumanCmd) {
+    host.submit(Command::Human {
+        member: owner(),
+        cmd,
+    })
+    .await
+    .expect("the owner's command is accepted");
+}
+
+/// Sends `cmd` as the worker.
+async fn worker_says(host: &Host<Stub>, cmd: AgentCmd) {
+    host.submit(Command::Agent {
+        agent: worker(),
+        cmd,
+    })
+    .await
+    .expect("the worker's command is accepted");
+}
+
+/// Polls `check` until it yields a value. The test fails when `LIVE_WAIT` passes first.
+async fn until<T>(what: &str, mut check: impl FnMut() -> Option<T>) -> T {
+    let deadline = tokio::time::Instant::now() + LIVE_WAIT;
+    loop {
+        if let Some(found) = check() {
+            return found;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The footprint the worker declares: the file the signup answer lives in.
+fn footprint() -> acan_core::DeclarationInput {
+    serde_json::from_value(json!({
+        "files": [SIGNUP_FILE],
+        "symbols": [],
+        "interfaces": [],
+        "inserts": []
+    }))
+    .expect("the footprint decodes")
+}
+
+/// The task's claim generation, once the task is claimed.
+fn claimed_generation(world: &World, task: TaskId) -> Option<acan_core::Generation> {
+    match &world.task(task)?.state {
+        TaskState::Claimed { claim, .. } => Some(claim.lease.generation),
+        _ => None,
+    }
+}
+
+/// Drives the world to a built candidate with core commands only. The owner registers the
+/// worker, posts the order, and confirms the scope once the job loop has split it. The worker
+/// reads back, claims, declares, and reports `candidate`. Returns the order and its one task.
+async fn report_built(live: &Live, demo: &Demo, candidate: &CommitSha) -> (OrderId, TaskId) {
+    let host = &live.host;
+    owner_says(host, HumanCmd::RegisterAgent { agent: worker() }).await;
+    owner_says(
+        host,
+        HumanCmd::PostOrder {
+            machine: MachineKey::from_str(MACHINE).expect("valid machine key"),
+            sentence: "keep the signup answer as it is".to_owned(),
+            witnesses: Vec::new(),
+        },
+    )
+    .await;
+    let order = until("the order", || {
+        host.read(|world| world.orders().next().map(|order| order.id))
+    })
+    .await;
+    let task = until("the split task", || {
+        host.read(|world| world.tasks_of(order).next().map(|task| task.id))
+    })
+    .await;
+
+    let scope = scope_of(&order.to_string(), &demo.head());
+    owner_says(
+        host,
+        HumanCmd::ReviseScope {
+            order,
+            scope: Box::new(scope.clone()),
+        },
+    )
+    .await;
+    owner_says(
+        host,
+        HumanCmd::ConfirmScope {
+            order,
+            confirmation: Box::new(confirmation(&scope)),
+        },
+    )
+    .await;
+    worker_says(
+        host,
+        AgentCmd::PostScopedReadback {
+            task,
+            scope_rev: scope.rev,
+            scope_hash: scope.scope_hash().expect("the scope hashes"),
+            summary: "keep the signup answer, add nothing".to_owned(),
+            predictions: Vec::new(),
+        },
+    )
+    .await;
+    worker_says(host, AgentCmd::Claim { task }).await;
+    let generation = host
+        .read(|world| claimed_generation(world, task))
+        .expect("the claim is granted");
+    let fence = Fence { task, generation };
+    worker_says(
+        host,
+        AgentCmd::Declare {
+            fence,
+            footprint: footprint(),
+        },
+    )
+    .await;
+    worker_says(
+        host,
+        AgentCmd::ReportBuilt {
+            fence,
+            head: CommitId::from_str(candidate.as_str()).expect("the candidate is a commit id"),
+        },
+    )
+    .await;
+    (order, task)
+}
+
+/// The run that is prepared and still waits for its receipt, when there is one.
+fn prepared_run(world: &World, order: OrderId) -> Option<GateRunId> {
+    let lane = world.lane(order)?;
+    lane.runs
+        .iter()
+        .find(|(_, run)| run.prepared.is_some() && run.receipt.is_none())
+        .map(|(run, _)| *run)
+}
+
+/// Whether `task` has landed on the protected branch.
+fn landed(world: &World, task: TaskId) -> bool {
+    matches!(
+        world.task(task).map(|task| &task.state),
+        Some(TaskState::Landed { .. })
+    )
+}
+
+#[tokio::test]
+async fn a_live_order_lands_through_the_job_loop() {
+    let _docker = DOCKER.lock().await;
+    let demo = Demo::pinned().await;
+    let before = demo.head();
+    let candidate = demo.candidate("live-pass", touch_notes);
+    let live = Live::start(&demo.root).await;
+
+    let (order, task) = report_built(&live, &demo, &candidate).await;
+    until("the candidate to land", || {
+        live.host.read(|world| landed(world, task).then_some(()))
+    })
+    .await;
+
+    assert_eq!(
+        demo.head(),
+        candidate,
+        "the tested merged commit is what the protected branch holds"
+    );
+    assert_ne!(before, candidate, "the protected branch moved");
+    let passed = live.host.read(|world| {
+        world
+            .lane(order)
+            .and_then(|lane| lane.latest_receipt())
+            .is_some_and(|record| matches!(record.verdict, LaneVerdict::Passed))
+    });
+    assert!(passed, "the receipt that landed the candidate passed");
+    live.stop().await;
+}
+
+#[tokio::test]
+async fn a_live_seeded_regression_is_blocked_and_its_receipt_names_the_rule() {
+    let _docker = DOCKER.lock().await;
+    let demo = Demo::pinned().await;
+    let before = demo.head();
+    let candidate = demo.candidate("live-regress", seed_regression);
+    let live = Live::start(&demo.root).await;
+
+    let (order, task) = report_built(&live, &demo, &candidate).await;
+    let receipt: Receipt = until("the regression's receipt", || {
+        live.host.read(|world| {
+            world
+                .lane(order)
+                .and_then(|lane| lane.latest_receipt())
+                .map(|record| record.receipt.clone())
+        })
+    })
+    .await;
+    let item = receipt
+        .items
+        .iter()
+        .find(|item| item.item_id.as_str() == SIGNUP_RULE)
+        .expect("the receipt names the signup rule");
+    assert_eq!(item.class, ItemClass::ObligationFailed);
+    assert!(
+        live.host.read(|world| world
+            .lane(order)
+            .and_then(|lane| lane.latest_receipt())
+            .is_some_and(|record| matches!(record.verdict, LaneVerdict::Blocked { .. }))),
+        "the regressed candidate is blocked"
+    );
+    assert_eq!(demo.head(), before, "nothing was installed");
+    assert!(
+        live.host.read(|world| !landed(world, task)),
+        "the task did not land"
+    );
+    live.stop().await;
+}
+
+#[tokio::test]
+async fn a_restart_between_the_prepared_run_and_its_receipt_neither_repeats_nor_skips_it() {
+    let _docker = DOCKER.lock().await;
+    let demo = Demo::pinned().await;
+    let candidate = demo.candidate("live-restart", touch_notes);
+    let live = Live::start(&demo.root).await;
+
+    let (order, task) = report_built(&live, &demo, &candidate).await;
+    let run = until("the candidate to be prepared", || {
+        live.host.read(|world| prepared_run(world, order))
+    })
+    .await;
+    // The host stops while the run is being observed: its preparation is recorded, its receipt is not.
+    live.stop().await;
+
+    let live = Live::start(&demo.root).await;
+    until("the candidate to land after the restart", || {
+        live.host.read(|world| landed(world, task).then_some(()))
+    })
+    .await;
+    assert_eq!(
+        demo.head(),
+        candidate,
+        "the restarted run lands the candidate"
+    );
+
+    let log = live
+        .host
+        .store()
+        .load_from(Seq::new(0))
+        .await
+        .expect("the log reads");
+    let prepared = log
+        .iter()
+        .filter(|stamped| matches!(&stamped.event, Event::CandidatePrepared { run: found, .. } if *found == run))
+        .count();
+    let receipts = log
+        .iter()
+        .filter(|stamped| matches!(&stamped.event, Event::ReceiptRecorded { run: found, .. } if *found == run))
+        .count();
+    assert_eq!(prepared, 1, "the run was prepared once");
+    assert_eq!(receipts, 1, "the run has exactly one receipt");
+    live.stop().await;
 }
