@@ -404,13 +404,13 @@ fn prepared_context(
     value["context"]["protected_head"] = json!(BASE);
     value["context"]["merged_commit"] = json!(MERGED);
     value["context"]["ledger_head"] =
-        serde_json::to_value(&folded.head).expect("the ledger head serializes");
+        serde_json::to_value(folded.head).expect("the ledger head serializes");
     value["context"]["scope_hash"] =
-        serde_json::to_value(&confirmation.scope_hash).expect("the scope hash serializes");
+        serde_json::to_value(confirmation.scope_hash).expect("the scope hash serializes");
     value["context"]["probe_set_hash"] =
-        serde_json::to_value(&probe_set).expect("the probe set hash serializes");
+        serde_json::to_value(probe_set).expect("the probe set hash serializes");
     value["context"]["fixture_set_hash"] =
-        serde_json::to_value(&fixture_set).expect("the fixture set hash serializes");
+        serde_json::to_value(fixture_set).expect("the fixture set hash serializes");
     value["context"]["runner_hash"] = run["runner"].clone();
     value["context"]["runtime"] = run["env"]["runtime"].clone();
     serde_json::from_value(value).expect("the prepared commit decodes")
