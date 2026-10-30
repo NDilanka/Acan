@@ -12,13 +12,6 @@
 //! records the receipt, and lands it through the final gate. The clone is the only thing written,
 //! and `ACAN_DEMO_DIR` is only read.
 
-#[path = "../src/ledger.rs"]
-#[allow(
-    dead_code,
-    reason = "the gate reads and appends the ruling log through the ledger module, and this test reaches only some of its functions"
-)]
-mod ledger;
-
 #[path = "../src/observations.rs"]
 #[allow(
     dead_code,
@@ -40,6 +33,7 @@ mod observe;
 )]
 mod land;
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as Process;
@@ -664,10 +658,10 @@ fn residue_episode(scope: &Scope) -> DiscrepancyEpisode {
     .expect("the residue episode decodes")
 }
 
-/// The human's answer to `episode`: a note that records the ruling without enforcing it. A note
-/// is never counted as a check, so the item stays a blocker until a run on the answered head
-/// carries it.
-fn answer(episode: &EpisodeId) -> LedgerEvent {
+/// The human's answer to `episode` on `order`: a note that records the ruling without enforcing
+/// it. A note is never counted as a check, so the item stays a blocker until a run on the
+/// answered head carries it.
+fn answer(episode: &EpisodeId, order: OrderId) -> LedgerEvent {
     serde_json::from_value(json!({
         "event": "note_recorded",
         "schema_version": "acan-ledger/1",
@@ -675,7 +669,7 @@ fn answer(episode: &EpisodeId) -> LedgerEvent {
         "actor": "owner",
         "at": 1_700_000_100_000_u64,
         "ruling_id": RULING,
-        "order": ORDER,
+        "order": order.to_string(),
         "episode_id": episode,
         "text": "The signup answer changes on purpose; a later decision will settle it",
         "reason": {
@@ -729,59 +723,51 @@ async fn a_pending_ruling_survives_a_restart_and_is_answered_in_the_log() {
     );
     let waiting = item.item_id.clone();
 
-    // The state dir does not exist yet. An append into it is refused, so the first open has to
-    // create the directory before the first append can land.
+    // The owner posts the order the residue belongs to, so a ruling on it has an order to name.
+    // Nothing is ruled yet: the core ledger is empty and the residue is pending.
     let state = tempfile::tempdir().expect("a temporary state root");
-    let state_dir = state.path().join(".acan");
-    let log = state_dir.join(ledger::RULINGS_LOG);
-    let answer_event = answer(&episode.id);
-    assert!(
-        !state_dir.exists(),
-        "the state dir is absent before the first open"
-    );
-    let empty = ledger::head(&log).expect("an absent log reads as empty");
-    let refused = ledger::append(&log, &empty, &answer_event)
-        .expect_err("an append into an absent state dir is refused");
-    assert!(
-        matches!(refused, ledger::LedgerError::Io { .. }),
-        "the refusal is the missing directory: {refused:?}"
-    );
-    assert!(!state_dir.exists(), "a refused append creates nothing");
-
-    // The first start creates the state dir and verifies the log. The host it builds reads the
-    // empty log, then the host is dropped.
-    let first = land::RulingLog::at(&state_dir);
-    first.open().expect("the first start creates the state dir");
-    assert!(state_dir.is_dir(), "the state dir exists before any append");
-    assert!(
-        first.answered().expect("the log reads").is_empty(),
-        "nothing is answered yet"
-    );
-    drop(first);
-    let host = host_over(state.path(), Stub::default()).await;
+    let first = host_over(state.path(), Stub::default()).await;
+    owner_says(
+        &first,
+        HumanCmd::PostOrder {
+            machine: MachineKey::from_str(MACHINE).expect("valid machine key"),
+            sentence: "keep the signup answer as it is".to_owned(),
+            witnesses: Vec::new(),
+        },
+    )
+    .await;
+    let order = first
+        .read(|world| world.orders().next().map(|order| order.id))
+        .expect("the order is posted");
+    let answer_event = answer(&episode.id, order);
     assert_eq!(
-        host.folded_rulings()
-            .expect("the host folds the empty log")
+        first
+            .folded_rulings()
+            .expect("the empty ledger folds")
             .value()
             .head
             .event_seq,
         0,
-        "the first host reads the genesis head"
+        "the first host folds the genesis head"
     );
-    host.shutdown().await.expect("the first host drains");
-    drop(host);
-
-    // A restart rebuilds the log and the host from the same state dir. Nothing from the first
-    // start is kept.
-    let restarted = land::RulingLog::at(&state_dir);
-    restarted.open().expect("the restart opens the same log");
-    let answered = restarted.answered().expect("the log reads back");
+    assert!(answered_in(&first).is_empty(), "nothing is answered yet");
     assert_eq!(
-        land::pending(&judged.receipt, &answered),
+        land::pending(&judged.receipt, &answered_in(&first)),
+        vec![waiting.clone()],
+        "the ruling is pending before any answer"
+    );
+    first.shutdown().await.expect("the first host drains");
+    drop(first);
+
+    // A restart rebuilds the host from the same store, and nothing from the first start is kept.
+    // The ruling is still pending: the answer state comes from the stored events alone.
+    let restarted = host_over(state.path(), Stub::default()).await;
+    assert_eq!(
+        land::pending(&judged.receipt, &answered_in(&restarted)),
         vec![waiting.clone()],
         "the ruling is still pending after the restart"
     );
-    let folded = restarted.folded().expect("the log folds");
+    let folded = restarted.folded_rulings().expect("the ledger folds");
     let current = observe::current(&gate.plan(&demo.repo), &order_on(&gate, &folded))
         .await
         .expect("the current context computes");
@@ -798,42 +784,55 @@ async fn a_pending_ruling_survives_a_restart_and_is_answered_in_the_log() {
     );
     assert_eq!(demo.head(), before, "nothing was installed");
 
-    // The answer is appended after the open that created its directory.
-    let answered_head = restarted
-        .answer(&answer_event)
-        .expect("the answer appends after the head it read");
-    assert_eq!(
-        answered_head.event_seq, 1,
-        "the answer is the log's first event"
-    );
-    drop(restarted);
-
-    // A second restart folds the answer, and nothing is pending. The host is rebuilt over the
-    // same state dir and reads the answer from it.
-    let rebuilt = host_over(state.path(), Stub::default()).await;
-    let folded = rebuilt
+    // The owner answers through RecordRuling, the core command. The origin appends it after the
+    // ledger head it holds, and the gate folds it from then on.
+    owner_says(
+        &restarted,
+        HumanCmd::RecordRuling {
+            event: Box::new(answer_event),
+        },
+    )
+    .await;
+    let answered = restarted
         .folded_rulings()
-        .expect("the rebuilt host folds the log");
-    let answered = land::RulingLog::at(&state_dir)
-        .answered()
-        .expect("the log reads back");
+        .expect("the answered ledger folds");
+    assert_eq!(
+        answered.value().head.event_seq,
+        1,
+        "the answer is the ledger's first event"
+    );
     assert!(
-        answered.contains(&episode.id),
+        answered_in(&restarted).contains(&episode.id),
         "the answer names the episode"
     );
     assert!(
-        land::pending(&judged.receipt, &answered).is_empty(),
+        land::pending(&judged.receipt, &answered_in(&restarted)).is_empty(),
         "no ruling is pending after the answer"
     );
+    restarted
+        .shutdown()
+        .await
+        .expect("the restarted host drains");
+    drop(restarted);
+
+    // A second restart folds the same answer from the stored events, and nothing is pending.
+    let rebuilt = host_over(state.path(), Stub::default()).await;
+    let folded = rebuilt
+        .folded_rulings()
+        .expect("the rebuilt host folds the ledger");
     assert_eq!(
-        folded.value().head,
-        answered_head,
+        folded.value().head.event_seq,
+        1,
         "the folded head is the answer"
     );
     assert_eq!(
         folded.value().notes.len(),
         1,
         "the answer folds as one note"
+    );
+    assert!(
+        land::pending(&judged.receipt, &answered_in(&rebuilt)).is_empty(),
+        "no ruling is pending after the second restart"
     );
 
     // The answer moved the ledger head, so the receipt from before it names another context.
@@ -848,6 +847,12 @@ async fn a_pending_ruling_survives_a_restart_and_is_answered_in_the_log() {
         "the old receipt is for another ledger head: {stale:?}"
     );
     assert_eq!(demo.head(), before, "nothing was installed");
+    rebuilt.shutdown().await.expect("the rebuilt host drains");
+}
+
+/// The episodes the host's core ledger answers, read the way the gate reads them.
+fn answered_in(host: &Host<Stub>) -> BTreeSet<EpisodeId> {
+    host.read(|world| land::answered(world.ledger().events()))
 }
 
 /// The owner, who registers the worker, posts the order and confirms the scope.

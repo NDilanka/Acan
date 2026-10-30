@@ -6,18 +6,13 @@
 //! installed over. Every error leaves the protected branch where it was.
 
 use std::collections::BTreeSet;
-use std::fs;
-use std::io;
-use std::path::{Path, PathBuf};
 
 use acan_core::{GateRunId, TaskId, TaskState, World};
 use acan_git::{InstallOutcome, Preparation, Repo};
 use acan_intent::{
-    CommitSha, CoreDerived, EpisodeId, FoldedLedger, GateContext, GateState, ItemId, ItemState,
-    LedgerEvent, LedgerHead, Receipt, RulingStatus, Scope, ScopeConfirmation,
+    CommitSha, EpisodeId, GateContext, GateState, ItemId, ItemState, LedgerEvent, Receipt,
+    RulingStatus, Scope, ScopeConfirmation,
 };
-
-use crate::ledger::{self, LedgerError};
 
 /// One reason a receipt does not pass.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,87 +240,11 @@ impl Delivery {
     }
 }
 
-/// Why the ruling log could not be opened or appended.
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum RulingError {
-    /// The state directory could not be created, so nothing can be appended to it.
-    #[error("cannot create the state directory {}: {source}", path.display())]
-    StateDir {
-        /// The directory.
-        path: PathBuf,
-        /// The cause.
-        #[source]
-        source: io::Error,
-    },
-    /// The log does not verify, fold, or accept the answer.
-    #[error(transparent)]
-    Ledger(#[from] LedgerError),
-}
-
-/// The ruling log in a state directory. Every open verifies and folds the log from disk, so a
-/// restart rebuilds the ruling state from the file, and nothing held in memory survives.
-#[derive(Debug)]
-pub(crate) struct RulingLog {
-    log: PathBuf,
-}
-
-impl RulingLog {
-    /// The ruling log in `state_dir`, named without touching the disk. An absent log is empty.
-    /// Call [`RulingLog::open`] before the first append.
-    pub(crate) fn at(state_dir: &Path) -> Self {
-        Self {
-            log: state_dir.join(ledger::RULINGS_LOG),
-        }
-    }
-
-    /// Creates the state directory and verifies the log, so a start fails on a broken log
-    /// before anything is appended. The directory is created first, so the first append always
-    /// has a place to write.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RulingError::StateDir`] when the directory cannot be created, and
-    /// [`RulingError::Ledger`] when the log does not verify or fold.
-    pub(crate) fn open(&self) -> Result<(), RulingError> {
-        let state_dir = self.log.parent().unwrap_or(Path::new("."));
-        fs::create_dir_all(state_dir).map_err(|source| RulingError::StateDir {
-            path: state_dir.to_path_buf(),
-            source,
-        })?;
-        ledger::load(&self.log)?;
-        Ok(())
-    }
-
-    /// The folded ruling state, read from disk.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RulingError::Ledger`] when the log does not verify or fold.
-    pub(crate) fn folded(&self) -> Result<CoreDerived<FoldedLedger>, RulingError> {
-        Ok(ledger::load(&self.log)?)
-    }
-
-    /// The episodes with an answer in the log. A decision or a note answers the episode it names.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RulingError::Ledger`] when the log does not verify.
-    pub(crate) fn answered(&self) -> Result<BTreeSet<EpisodeId>, RulingError> {
-        Ok(ledger::read(&self.log)?
-            .iter()
-            .filter_map(answered_episode)
-            .collect())
-    }
-
-    /// Appends `event` after the log's current head and returns the new head.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`RulingError::Ledger`] when the log does not verify or the append is refused.
-    pub(crate) fn answer(&self, event: &LedgerEvent) -> Result<LedgerHead, RulingError> {
-        let head = ledger::head(&self.log)?;
-        Ok(ledger::append(&self.log, &head, event)?)
-    }
+/// The episodes with an answer in `events`, the core ledger in log order. A decision or a note
+/// answers the episode it names. The core ledger is the one authority for rulings, so answers are
+/// read from it and never from a file.
+pub(crate) fn answered(events: &[LedgerEvent]) -> BTreeSet<EpisodeId> {
+    events.iter().filter_map(answered_episode).collect()
 }
 
 /// The episode an event answers, when it answers one. Every variant is named, so a new kind of

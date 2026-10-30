@@ -23,11 +23,6 @@ mod jobs;
     reason = "the ruling answer path and its folds have no route yet; intent_api owns the route"
 )]
 mod land;
-#[allow(
-    dead_code,
-    reason = "the ruling answer path and its folds have no route yet; intent_api owns the route"
-)]
-mod ledger;
 mod mcp;
 pub mod model;
 mod models;
@@ -251,11 +246,6 @@ pub async fn start<C: ModelClient + 'static>(
         witness_http_base_url: config.witness_http_base_url.clone(),
         witness_concurrency: config.witness_concurrency,
     });
-    // Before any append: the ruling log's directory exists and its stored log verifies.
-    if let Err(err) = host.open_rulings() {
-        let _ = host.shutdown().await;
-        return Err(err).context("opening the ruling log");
-    }
     if let Err(err) = host.submit(Command::System(SystemCmd::IndexUpdated)).await {
         let _ = host.shutdown().await;
         return Err(err).context("recording the initial code index");
