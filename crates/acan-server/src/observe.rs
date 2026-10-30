@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::future::pending;
+use std::future::{Future, pending};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -31,8 +31,8 @@ use acan_intent::{
     EpisodeState, EpisodeV1, EvaluatorVersion, Fixture, FixtureId, FixtureSetHash,
     FixtureSetManifest, FoldedLedger, GateContext, GateState, InvalidValue, Mask, ObservationHash,
     ObservedRun, PreparedCommit, ProbeCorpus, ProbeHash, ProbeSetHash, ProbeSetManifest, Receipt,
-    RepoPath, RunRole, RunnerBuild, RunnerHash, RunnerManifest, RuntimeId, SandboxPolicyHash,
-    Scope, ScopeConfirmation, ScopeRevision, UnixMillis,
+    RepoPath, RunOutcome, RunRole, RunnerBuild, RunnerHash, RunnerManifest, RuntimeId,
+    SandboxPolicyHash, Scope, ScopeConfirmation, ScopeRevision, UnixMillis,
 };
 use acan_witness::{RunnerConfig, SequenceInput, run_sequence};
 use serde::de::DeserializeOwned;
@@ -55,6 +55,10 @@ const ARTIFACTS_DIR: &str = "artifacts";
 const RUNNER_BUILD: &str = "acan-witness/0.1.0";
 /// The evaluator that classifies the runs: the receipt builder in acan-intent.
 const EVALUATOR: &str = "acan-intent/0.1.0";
+/// How many times one run that did not set up is started again after its first attempt. A run
+/// that never reached a probe step has no evidence, so a second start measures the same thing.
+/// More starts only spend containers, and a run still failing to set up stops the pass.
+const SETUP_RETRIES: u32 = 2;
 /// Why a contrast could not be observed or judged. Every variant stops the candidate.
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -107,6 +111,19 @@ pub(crate) enum ObserveError {
         /// Why the contrast does not check.
         #[source]
         source: CompareError,
+    },
+    /// A run of a probe did not set up on every attempt, and the probe produced no evidence.
+    /// Nothing is judged or installed from it.
+    #[error("probe {probe} did not set up as {role:?} after {attempts} attempts: {detail}")]
+    SetupFailed {
+        /// The probe's label.
+        probe: String,
+        /// The role whose run did not set up.
+        role: RunRole,
+        /// How many times the run was started.
+        attempts: u32,
+        /// What the last attempt reported.
+        detail: String,
     },
     /// The receipt could not be built from these inputs.
     #[error(transparent)]
@@ -275,37 +292,131 @@ pub(crate) fn lockfile_hash(worktree: &Path) -> Result<ArtifactHash, ObserveErro
 }
 
 /// Runs every probe of the corpus: base A, base B, and the candidate, each in its own container
-/// and its own worktree, with the three of one probe at once.
+/// and its own worktree, with the three of one probe at once. A run that does not set up is
+/// started again by [`settle`], up to [`SETUP_RETRIES`] times, and each start is logged.
 ///
 /// # Errors
 ///
-/// Returns [`ObserveError`] when a worktree cannot be written or a record does not admit. A run
-/// that did not complete is not an error: its outcome is in the record.
+/// Returns [`ObserveError`] when a worktree cannot be written, a record does not admit, or a run
+/// still does not set up after its last start. A run that did not complete for any other reason
+/// is not an error: its outcome is in the record.
 pub(crate) async fn observe(plan: &Plan<'_>) -> Result<Vec<ProbeRuns>, ObserveError> {
     let corpus: &ProbeCorpus = plan.corpus;
     let mut runs = Vec::with_capacity(corpus.probes.len());
     for (index, probe) in corpus.probes.iter().enumerate() {
         let fixture = fixture_of(corpus, probe)?;
         let probe_dir = plan.scratch.join(format!("probe-{index}"));
-        let base_a = stage(plan.repo, plan.base, &probe_dir.join("base-a")).await?;
-        let base_b = stage(plan.repo, plan.base, &probe_dir.join("base-b")).await?;
-        let candidate = stage(plan.repo, plan.candidate, &probe_dir.join("candidate")).await?;
-        let input_a = sequence(plan, probe, fixture, &base_a, RunRole::BaseA);
-        let input_b = sequence(plan, probe, fixture, &base_b, RunRole::BaseB);
-        let input_c = sequence(plan, probe, fixture, &candidate, RunRole::Candidate);
-        let (a, b, c) = tokio::join!(
-            run_sequence(&input_a, pending::<()>()),
-            run_sequence(&input_b, pending::<()>()),
-            run_sequence(&input_c, pending::<()>()),
+        let (dir_a, dir_b, dir_c) = (
+            probe_dir.join("base-a"),
+            probe_dir.join("base-b"),
+            probe_dir.join("candidate"),
+        );
+        let (base_a, base_b, candidate) = tokio::join!(
+            settled(plan, probe, fixture, plan.base, &dir_a, RunRole::BaseA),
+            settled(plan, probe, fixture, plan.base, &dir_b, RunRole::BaseB),
+            settled(
+                plan,
+                probe,
+                fixture,
+                plan.candidate,
+                &dir_c,
+                RunRole::Candidate
+            ),
         );
         runs.push(ProbeRuns {
             probe: probe.clone(),
-            base_a: record(plan.observations, a?)?,
-            base_b: record(plan.observations, b?)?,
-            candidate: record(plan.observations, c?)?,
+            base_a: base_a?,
+            base_b: base_b?,
+            candidate: candidate?,
         });
     }
     Ok(runs)
+}
+
+/// Runs one role of `probe` on `preparation` and records it. Every start stages its own worktree
+/// under `dir`, numbered by attempt, so no start reuses another's files.
+async fn settled(
+    plan: &Plan<'_>,
+    probe: &CorpusProbe,
+    fixture: &Fixture,
+    preparation: &Preparation,
+    dir: &Path,
+    role: RunRole,
+) -> Result<RecordedRun, ObserveError> {
+    settle(
+        &probe.label,
+        role,
+        |attempt| async move {
+            let staged = stage(plan.repo, preparation, &dir.join(attempt.to_string())).await?;
+            let input = sequence(plan, probe, fixture, &staged, role);
+            let run = run_sequence(&input, pending::<()>()).await?;
+            record(plan.observations, run)
+        },
+        |run: &RecordedRun| {
+            let evidence = run.observed.observations().any(|(_, observation)| {
+                probe
+                    .spec
+                    .steps
+                    .iter()
+                    .any(|step| step.id() == &observation.step_id)
+            });
+            did_not_set_up(&run.observed.run().outcome, evidence)
+        },
+    )
+    .await
+}
+
+/// Runs `attempt` until its run sets up, starting it again while it does not, at most
+/// [`SETUP_RETRIES`] times after the first start. `setup_failure` returns the reason a run did
+/// not set up, or `None` when it did. Every start that does not set up is logged.
+///
+/// # Errors
+///
+/// Returns [`ObserveError::SetupFailed`] with the start count and the last reason when every start
+/// does not set up, and whatever `attempt` returns otherwise.
+async fn settle<T, Attempt, Fut>(
+    probe: &str,
+    role: RunRole,
+    mut attempt: Attempt,
+    setup_failure: impl Fn(&T) -> Option<String>,
+) -> Result<T, ObserveError>
+where
+    Attempt: FnMut(u32) -> Fut,
+    Fut: Future<Output = Result<T, ObserveError>>,
+{
+    let mut number: u32 = 1;
+    loop {
+        let run = attempt(number).await?;
+        let Some(detail) = setup_failure(&run) else {
+            return Ok(run);
+        };
+        if number > SETUP_RETRIES {
+            tracing::error!(probe, ?role, attempts = number, %detail, "a probe run never set up");
+            return Err(ObserveError::SetupFailed {
+                probe: probe.to_owned(),
+                role,
+                attempts: number,
+                detail,
+            });
+        }
+        tracing::warn!(
+            probe,
+            ?role,
+            attempt = number,
+            %detail,
+            "a probe run did not set up; starting it again"
+        );
+        number += 1;
+    }
+}
+
+/// Why a run did not set up, when that is all it did. Only a `SetupFailed` outcome counts, and
+/// only when no probe step produced an observation: a run with evidence is never started again.
+fn did_not_set_up(outcome: &RunOutcome, evidence: bool) -> Option<String> {
+    match outcome {
+        RunOutcome::SetupFailed { detail, .. } if !evidence => Some(detail.clone()),
+        _ => None,
+    }
 }
 
 /// Derives the masks and the comparison of every probe's runs. The first probe whose runs cannot
@@ -692,6 +803,95 @@ mod tests {
         assert!(
             policy.image.digest.is_some(),
             "the image is pinned by digest"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_setup_failure_is_started_again_and_the_run_that_sets_up_is_taken() {
+        let mut calls = 0;
+        let taken = settle(
+            "login",
+            RunRole::BaseA,
+            |attempt| {
+                calls += 1;
+                async move { Ok::<u32, ObserveError>(attempt) }
+            },
+            |attempt: &u32| (*attempt < 2).then(|| "the app did not become ready".to_owned()),
+        )
+        .await
+        .expect("the second attempt sets up");
+        assert_eq!(taken, 2, "the run taken is the second attempt");
+        assert_eq!(calls, 2, "a setup failure is started again once");
+    }
+
+    #[tokio::test]
+    async fn a_setup_failure_stops_after_two_retries_with_its_reason() {
+        let mut calls = 0;
+        let error = settle(
+            "login",
+            RunRole::Candidate,
+            |attempt| {
+                calls += 1;
+                async move { Ok::<u32, ObserveError>(attempt) }
+            },
+            |_: &u32| Some("the app did not become ready".to_owned()),
+        )
+        .await
+        .expect_err("every attempt fails to set up");
+        assert_eq!(calls, 3, "one attempt and two retries");
+        assert!(
+            matches!(error, ObserveError::SetupFailed { attempts: 3, .. }),
+            "the error counts the attempts: {error:?}"
+        );
+        assert!(
+            error.to_string().contains("did not become ready"),
+            "the error names the reason: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_run_that_is_not_a_setup_failure_is_never_started_again() {
+        let mut calls = 0;
+        let taken = settle(
+            "login",
+            RunRole::BaseB,
+            |attempt| {
+                calls += 1;
+                async move { Ok::<u32, ObserveError>(attempt) }
+            },
+            |_: &u32| None,
+        )
+        .await
+        .expect("the first attempt is taken");
+        assert_eq!(taken, 1);
+        assert_eq!(calls, 1, "a run that set up is not retried");
+    }
+
+    #[test]
+    fn only_a_setup_failure_with_no_probe_observation_is_started_again() {
+        let setup = RunOutcome::SetupFailed {
+            step_id: None,
+            detail: "the app did not become ready".to_owned(),
+        };
+        assert_eq!(
+            did_not_set_up(&setup, false),
+            Some("the app did not become ready".to_owned())
+        );
+        assert_eq!(
+            did_not_set_up(&setup, true),
+            None,
+            "a run that produced a probe observation is never started again"
+        );
+        assert_eq!(did_not_set_up(&RunOutcome::Completed {}, false), None);
+        assert_eq!(
+            did_not_set_up(
+                &RunOutcome::Error {
+                    detail: "a probe step failed".to_owned()
+                },
+                false
+            ),
+            None,
+            "a probe error is not a setup failure"
         );
     }
 
