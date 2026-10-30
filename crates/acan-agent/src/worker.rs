@@ -702,7 +702,7 @@ async fn work<C: ModelClient>(
                         claim.repair_rounds
                     );
                     log(steps, format!("{} went to residue: {reason}", claim.task));
-                    contest_residue(mcp, &claim, &next, &reason, steps).await?;
+                    contest_residue(mcp, &claim, &next, &reason, steps).await;
                     return Ok(Exit::Residue {
                         task: claim.task.clone(),
                         reason,
@@ -721,7 +721,7 @@ async fn work<C: ModelClient>(
             }
             Repair::Residue { reason, given_up } => {
                 log(steps, format!("{} went to residue: {reason}", claim.task));
-                contest_residue(mcp, &claim, &given_up, &reason, steps).await?;
+                contest_residue(mcp, &claim, &given_up, &reason, steps).await;
                 return Ok(Exit::Residue {
                     task: claim.task.clone(),
                     reason,
@@ -732,15 +732,16 @@ async fn work<C: ModelClient>(
 }
 
 /// Files one contest for each item the worker gave up on that has an episode and a contest kind.
-/// A contest asks the human. It never widens the scope and never passes the item. A refused
-/// contest is logged and leaves the residue as it is.
+/// A contest asks the human. It never widens the scope and never passes the item. The residue
+/// stands whatever the contest's fate: a refused contest, one that does not reach the origin, or
+/// one answered in a shape the worker does not read is logged, and the run still ends as residue.
 async fn contest_residue(
     mcp: &McpClient,
     claim: &Claim,
     given_up: &[Reproducer],
     reason: &str,
     steps: &mut Vec<String>,
-) -> anyhow::Result<()> {
+) {
     for reproducer in given_up {
         let (Some(episode), Some(kind)) = (reproducer.episode, contest_kind(reproducer.class))
         else {
@@ -758,30 +759,37 @@ async fn contest_residue(
                     "rationale": reason,
                 }),
             )
-            .await?;
+            .await;
         match reply {
-            Reply::Done(value) => {
-                let filed: ContestResponse = serde_json::from_value(value).with_context(|| {
-                    format!(
-                        "file_contest answered a contest the worker does not read for {}",
-                        claim.task
-                    )
-                })?;
-                log(
+            Ok(Reply::Done(value)) => match serde_json::from_value::<ContestResponse>(value) {
+                Ok(filed) => log(
                     steps,
                     format!(
                         "filed contest {} on {} against episode {episode}",
                         filed.contest_id, claim.task
                     ),
-                );
-            }
-            Reply::Refused(refusal) => log(
+                ),
+                Err(err) => log(
+                    steps,
+                    format!(
+                        "contest on {} answered in a shape the worker does not read: {err}",
+                        claim.task
+                    ),
+                ),
+            },
+            Ok(Reply::Refused(refusal)) => log(
                 steps,
                 format!("contest on {} refused: {refusal}", claim.task),
             ),
+            Err(err) => log(
+                steps,
+                format!(
+                    "contest on {} did not reach the origin: {err:#}",
+                    claim.task
+                ),
+            ),
         }
     }
-    Ok(())
 }
 
 /// The kind of contest an item the worker gave up on files. A ruling the item violates is a spec
@@ -2321,6 +2329,8 @@ mod tests {
         rulings: Value,
         /// The contests the worker filed, as it sent them.
         contests: Vec<Value>,
+        /// Whether the origin refuses every contest, as a test of the residue that stands anyway.
+        refuse_contests: bool,
         /// The worktree and its snapshot, as `get_worktree` names them.
         worktree: String,
         snapshot: String,
@@ -2376,6 +2386,9 @@ mod tests {
             "get_rulings" => Ok(origin.rulings.clone()),
             "file_contest" => {
                 origin.contests.push(args.clone());
+                if origin.refuse_contests {
+                    return Err("the contest was not recorded".to_owned());
+                }
                 Ok(json!({
                     "version": "acan-mcp/1",
                     "contest_id": "k-1",
@@ -2607,6 +2620,16 @@ mod tests {
     /// Runs one worker against the fake origin. The gate answers build `n` with `receipts[n - 1]`,
     /// and the confirmed scope allows `budget` repair rounds.
     async fn run_bounces(repo: &Path, budget: u32, receipts: Vec<Value>) -> Ran {
+        run_bounces_as(repo, budget, receipts, false).await
+    }
+
+    /// As [`run_bounces`], and the origin refuses every contest when `refuse_contests` is set.
+    async fn run_bounces_as(
+        repo: &Path,
+        budget: u32,
+        receipts: Vec<Value>,
+        refuse_contests: bool,
+    ) -> Ran {
         let snapshot = tempfile::tempdir().expect("a protected-head snapshot");
         let mut scope: Value = serde_json::from_str(SCOPE).expect("the scope fixture is JSON");
         scope["budget"]["repair_rounds"] = json!(budget);
@@ -2615,6 +2638,7 @@ mod tests {
             receipts,
             scope,
             rulings: serde_json::from_str(RULINGS).expect("the rulings fixture is JSON"),
+            refuse_contests,
             worktree: repo.display().to_string(),
             snapshot: snapshot.path().display().to_string(),
             ..Origin::default()
@@ -2812,5 +2836,39 @@ mod tests {
         assert_eq!(ran.contests.len(), 1, "{:?}", ran.contests);
         assert_eq!(ran.contests[0]["episode_id"], json!(EPISODE));
         assert_eq!(ran.contests[0]["kind"], json!("blocked"));
+    }
+
+    /// The origin refuses the contest. The run still ends as residue, the refusal is in the step
+    /// log, and the claim is released: a contest never changes what the residue is.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_refused_contest_leaves_the_residue_standing() {
+        let repo = bounce_repo();
+        let ran = run_bounces_as(
+            repo.path(),
+            2,
+            vec![
+                receipt_of("i-retry-after", 1),
+                receipt_of("i-retry-after", 2),
+                receipt_of("i-retry-after", 3),
+            ],
+            true,
+        )
+        .await;
+        assert!(
+            matches!(&ran.outcome.exit, Exit::Residue { task, .. } if task == "t-1"),
+            "{}",
+            ran.outcome.exit
+        );
+        assert_eq!(ran.contests.len(), 1, "{:?}", ran.contests);
+        assert!(
+            ran.outcome
+                .steps
+                .iter()
+                .any(|step| step.starts_with("contest on t-1 refused: ")
+                    && step.contains("the contest was not recorded")),
+            "{:#?}",
+            ran.outcome.steps
+        );
+        assert_eq!(ran.released, vec!["t-1".to_owned()]);
     }
 }
