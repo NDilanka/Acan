@@ -52,6 +52,7 @@ use acan_intent::{
 };
 use acan_llm::{CallRecord, LlmError, ModelClient, Role};
 use acan_witness::RunnerConfig;
+use tokio::sync::Semaphore;
 use tokio::task::{self, JoinHandle, JoinSet};
 
 use crate::STATE_DIR;
@@ -905,6 +906,10 @@ struct Pass {
     runner: RunnerConfig,
     scratch: PathBuf,
     observations: PathBuf,
+    /// The host's container permits, shared with the witness runs.
+    slots: Arc<Semaphore>,
+    /// How many probes of the contrast run at once.
+    probes_at_once: usize,
 }
 
 impl Pass {
@@ -932,6 +937,8 @@ impl Pass {
             runner: RunnerConfig::new(RUNNER_PROGRAM, APP_PORT),
             scratch: dir.join("scratch"),
             observations: state.join(OBSERVATIONS_DIR),
+            slots: host.witness_slots(),
+            probes_at_once: host.probe_concurrency(),
         })
     }
 
@@ -953,6 +960,8 @@ impl Pass {
             corpus: &self.corpus,
             policy: &self.policy,
             runner: &self.runner,
+            slots: self.slots.as_ref(),
+            probes_at_once: self.probes_at_once,
         }
     }
 }
