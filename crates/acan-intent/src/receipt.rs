@@ -605,7 +605,7 @@ impl Claim {
     /// Whether a may-change grant owns the difference. A grant owns the field it names and what
     /// lies below it. A replacement of an ancestor is not owned by a grant on one field of it.
     fn owned_by(&self, selector: &Selector) -> bool {
-        self.covered_with(selector, at_or_below)
+        self.covered_with(selector, compare::at_or_below)
     }
 
     fn covered_with(&self, selector: &Selector, field: impl Fn(&str, &str) -> bool) -> bool {
@@ -712,45 +712,6 @@ fn covers(
                 path.as_str(),
             ),
         }
-}
-
-/// Whether `path` is `pattern` or lies below it: the pattern's tokens are a prefix of the path's.
-fn at_or_below(pattern: &str, path: &str) -> bool {
-    let (pattern, path) = (tokens(pattern), tokens(path));
-    pattern.len() <= path.len()
-        && pattern
-            .iter()
-            .zip(&path)
-            .all(|(wanted, actual)| match (wanted, actual) {
-                (Token::Index("*"), Token::Index(_)) => true,
-                (Token::Key(a), Token::Key(b)) | (Token::Index(a), Token::Index(b)) => a == b,
-                _ => false,
-            })
-}
-
-/// A token of a path or pattern: an object key or a bracketed index.
-#[derive(PartialEq, Eq)]
-enum Token<'a> {
-    Key(&'a str),
-    Index(&'a str),
-}
-
-fn tokens(path: &str) -> Vec<Token<'_>> {
-    let mut out = Vec::new();
-    let mut rest = path;
-    while !rest.is_empty() {
-        if let Some(after) = rest.strip_prefix('[') {
-            let close = after.find(']').unwrap_or(after.len());
-            out.push(Token::Index(&after[..close]));
-            rest = after.get(close + 1..).unwrap_or_default();
-        } else {
-            let key = rest.strip_prefix('.').unwrap_or(rest);
-            let end = key.find(['.', '[']).unwrap_or(key.len());
-            out.push(Token::Key(&key[..end]));
-            rest = &key[end..];
-        }
-    }
-    out
 }
 
 fn channel_pattern(channel: Channel, field: &str) -> String {

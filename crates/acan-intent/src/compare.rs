@@ -824,6 +824,20 @@ pub(crate) fn overlaps(pattern: &str, path: &str) -> bool {
         })
 }
 
+/// Whether `path` is `pattern` or lies below it: the pattern's tokens are a prefix of the path's.
+pub(crate) fn at_or_below(pattern: &str, path: &str) -> bool {
+    let (pattern, path) = (tokens(pattern), tokens(path));
+    pattern.len() <= path.len()
+        && pattern
+            .iter()
+            .zip(&path)
+            .all(|(wanted, actual)| match (wanted, actual) {
+                (Token::Index("*"), Token::Index(_)) => true,
+                (Token::Key(a), Token::Key(b)) | (Token::Index(a), Token::Index(b)) => a == b,
+                _ => false,
+            })
+}
+
 fn maskable(plan: &NormalizationPlan, path: &str) -> bool {
     plan.maskable_paths
         .iter()
