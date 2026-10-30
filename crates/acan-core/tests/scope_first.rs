@@ -66,7 +66,7 @@ fn changed(probe: u8) -> Value {
 }
 
 fn item(class: &str, episode: Option<u8>, probe: u8, outcome: Value, result: Value) -> Value {
-    json!({
+    let mut value = json!({
         "item_id": "i-limit",
         "class": class,
         "state": "open",
@@ -83,7 +83,17 @@ fn item(class: &str, episode: Option<u8>, probe: u8, outcome: Value, result: Val
             "outcome": outcome,
             "obligations": [{"obligation_id": "obl-limit", "result": result}]
         }
-    })
+    });
+    // An item that names an episode names where the difference is, as the judge gives it: the
+    // selector the episode keys on and the step that reproduced it.
+    if episode.is_some() {
+        value["selector"] = narrow_selector();
+        value["sequence"] = json!([{
+            "step_id": "s6", "request": 1, "run_id": "run-1",
+            "role": "candidate", "tint": "differed"
+        }]);
+    }
+    value
 }
 
 fn passing_item() -> Value {
@@ -1067,6 +1077,62 @@ fn a_new_probe_spelling_never_resets_the_budget() {
         )
         .unwrap_err();
     assert_eq!(build, Rejection::BudgetExhausted { order: fx.order });
+    fx.assert_replays();
+}
+
+/// The judge reads each episode with its state and bounce count, so a repeat of one difference is
+/// judged as a repeat: bounced, then, once the budget is spent, stopped.
+#[test]
+fn a_repeat_is_judged_with_its_bounce_count_and_state() {
+    let mut fx = Fx::new();
+    let scope = fx.open_lane();
+    fx.readback(fx.task1, &scope, vec![]);
+    let judged = |fx: &Fx| {
+        fx.origin
+            .world()
+            .judged_episodes(fx.order)
+            .expect("the episodes read")
+    };
+    assert!(
+        judged(&fx).is_empty(),
+        "a first failure has no episode for the judge yet"
+    );
+
+    let (run, prepared) = fx.prepared_run(&scope, fx.task1);
+    let first = fx.failing_receipt(&scope, &prepared, 10, 7);
+    fx.send_receipt(run, first).expect("recorded");
+    let (episode, _) = fx.lane_episode(10);
+    let seen = judged(&fx);
+    assert_eq!(seen.len(), 1, "the failure opened one episode");
+    assert_eq!(
+        (seen[0].id, seen[0].state, seen[0].bounce_count),
+        (episode, EpisodeState::Bounced, 1),
+        "the first round bounced it"
+    );
+    assert!(
+        seen[0].obligation_id.is_some(),
+        "the episode names the obligation that failed"
+    );
+
+    let (run2, prepared2) = fx.prepared_run(&scope, fx.task1);
+    let second = fx.failing_receipt(&scope, &prepared2, 10, 8);
+    fx.send_receipt(run2, second).expect("recorded");
+    let seen = judged(&fx);
+    assert_eq!(
+        (seen[0].state, seen[0].bounce_count),
+        (EpisodeState::Bounced, 2),
+        "the repeat counts as the second bounce"
+    );
+
+    let (run3, prepared3) = fx.prepared_run(&scope, fx.task1);
+    let third = fx.failing_receipt(&scope, &prepared3, 10, 9);
+    fx.send_receipt(run3, third).expect("recorded");
+    let seen = judged(&fx);
+    assert_eq!(
+        (seen[0].state, seen[0].bounce_count),
+        (EpisodeState::Stopped, 2),
+        "the budget stops the third failure, and the judge sees it"
+    );
     fx.assert_replays();
 }
 

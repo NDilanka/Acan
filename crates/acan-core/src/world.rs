@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::{fmt, mem};
 
-use acan_intent::{ContestStatus, EpisodeState, OrderRef, ScopeRevision};
+use acan_intent::{ContestStatus, DiscrepancyEpisode, EpisodeState, OrderRef, ScopeRevision};
 use serde::{Deserialize, Serialize};
 
 use crate::clash::{
@@ -281,6 +281,25 @@ impl World {
                     })
             })
             .collect()
+    }
+
+    /// The episodes of `order`'s lane as the judge reads them, for `Order::episodes`. A repeat of
+    /// a failure is judged with its state and bounce count, not as a first failure. Empty for an
+    /// order without a scope-first lane.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Rejection`] when the order id has no contract spelling.
+    pub fn judged_episodes(&self, order: OrderId) -> Result<Vec<DiscrepancyEpisode>, Rejection> {
+        let Some(lane) = self.lane(order) else {
+            return Ok(Vec::new());
+        };
+        let order_ref = lane::order_ref(order)?;
+        Ok(lane
+            .episodes
+            .values()
+            .map(|episode| episode.judged(&order_ref, &lane.lineage))
+            .collect())
     }
 
     /// Whether `run` belongs to a scope-first lane and has no receipt. Only a re-bind leaves a

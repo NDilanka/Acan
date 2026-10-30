@@ -46,8 +46,8 @@ use acan_core::{
 };
 use acan_git::{Preparation, PrepareOutcome, Repo};
 use acan_intent::{
-    AppContract, CommitSha, ContainerPolicy, GateContext, PreparedCommit, ProbeCorpus, Scope,
-    ScopeConfirmation,
+    AppContract, CommitSha, ContainerPolicy, DiscrepancyEpisode, GateContext, PreparedCommit,
+    ProbeCorpus, Scope, ScopeConfirmation,
 };
 use acan_llm::{CallRecord, LlmError, ModelClient, Role};
 use acan_witness::RunnerConfig;
@@ -843,6 +843,7 @@ fn not_yet_building(world: &World) -> HashMap<TaskId, Generation> {
 
 /// One scope-first run, copied out of the world so no lock is held while it runs.
 struct Contrast {
+    order: OrderId,
     head: CommitId,
     prepared: Option<PreparedCommit>,
     scope: Scope,
@@ -857,6 +858,7 @@ fn contrast_of(world: &World, run: GateRunId) -> Option<Contrast> {
         .find(|pending| pending.run == run)?;
     let lane = world.lane(pending.order)?;
     Some(Contrast {
+        order: pending.order,
         head: pending.head.clone(),
         prepared: pending.prepared.cloned(),
         scope: lane.scope.clone(),
@@ -959,6 +961,20 @@ impl Pass {
     }
 }
 
+/// The episodes of `order` as the judge reads them. A repeat of a failure is judged with the state
+/// and bounce count the repair loop holds, so a second or third bounce counts as a repeat of the
+/// same episode and not as a first failure.
+fn judged_episodes<C: ModelClient>(
+    host: &Host<C>,
+    order: OrderId,
+    run: GateRunId,
+) -> Result<Vec<DiscrepancyEpisode>, JobError> {
+    host.read(|world| world.judged_episodes(order))
+        .map_err(|err| {
+            JobError::Unavailable(format!("the episodes of run {run} do not read: {err:?}"))
+        })
+}
+
 /// Runs one pending scope-first run as far as the origin's state allows.
 ///
 /// A run without a recorded preparation is prepared and its context recorded. A run with one
@@ -982,11 +998,12 @@ async fn contrast<C: ModelClient>(host: &Host<C>, run: GateRunId) -> Result<(), 
     let candidate = prepare_candidate(repo, &pass, &contrast.head).await?;
     tracing::debug!(%run, "the candidate is prepared on the protected head");
     let ledger = host.folded_rulings().map_err(JobError::Rulings)?;
+    let episodes = judged_episodes(host, contrast.order, run)?;
     let order = Order {
         scope: &contrast.scope,
         confirmation: &contrast.confirmation,
         ledger: &ledger,
-        episodes: &[],
+        episodes: &episodes,
     };
     let recorded = match contrast.prepared {
         Some(prepared) => {
@@ -1095,11 +1112,12 @@ async fn gated_land<C: ModelClient>(
     let pass = Pass::new(host, repo, delivery.run).await?;
     let candidate = prepare_candidate(repo, &pass, head).await?;
     let ledger = host.folded_rulings().map_err(JobError::Rulings)?;
+    let episodes = judged_episodes(host, delivery.order, delivery.run)?;
     let order = Order {
         scope: &delivery.scope,
         confirmation: &delivery.confirmation,
         ledger: &ledger,
-        episodes: &[],
+        episodes: &episodes,
     };
     let scratch = pass.scratch.join("land");
     let plan = pass.plan(repo, &candidate, &scratch);
@@ -1141,13 +1159,8 @@ async fn rebind<C: ModelClient>(
     delivery: &Delivery,
     current: &GateContext,
 ) -> Result<Option<Result<CommitId, String>>, JobError> {
-    let order = host
-        .read(|world| world.task(delivery.task).map(|task| task.order))
-        .ok_or_else(|| {
-            JobError::Unavailable(format!("task {} is not in the origin", delivery.task))
-        })?;
     let command = SystemCmd::RebindBase {
-        order,
+        order: delivery.order,
         base: current.protected_head.clone(),
         context: Box::new(current.clone()),
     };

@@ -7,7 +7,7 @@
 
 use std::collections::BTreeSet;
 
-use acan_core::{GateRunId, TaskId, TaskState, World};
+use acan_core::{GateRunId, OrderId, TaskId, TaskState, World};
 use acan_git::{InstallOutcome, Preparation, Repo};
 use acan_intent::{
     CommitSha, EpisodeId, GateContext, GateState, ItemId, ItemState, LedgerEvent, Receipt,
@@ -175,6 +175,8 @@ pub(crate) async fn install(repo: &Repo, clearance: Clearance) -> Result<CommitS
 pub(crate) struct Delivery {
     /// The queued task.
     pub(crate) task: TaskId,
+    /// The order the task belongs to.
+    pub(crate) order: OrderId,
     /// The gate run that passed.
     pub(crate) run: GateRunId,
     /// The receipt the run passed with.
@@ -216,6 +218,7 @@ impl Delivery {
         })?;
         Ok(Self {
             task,
+            order: found.order,
             run: *run,
             receipt,
             scope: lane.scope.clone(),
