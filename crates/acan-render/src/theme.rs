@@ -7,19 +7,27 @@ use crate::model::{Ink, Surface};
 /// Palette slots on the GPU.
 pub const PALETTE_LEN: usize = 21;
 /// Tint slots. Slot 0 is the identity; instances pick a slot to tint what they draw.
-pub const TINT_LEN: usize = 16;
+pub const TINT_LEN: usize = 20;
 /// Agent hues, as `#rrggbb`. An agent's hue comes from its id, so it is the same on every reload.
 pub const AGENT_HUES: [u32; AGENT_SLOTS] =
     [0x1f9e8f, 0x7a5cd6, 0x3d7fd1, 0xc0548c, 0x6a9a2e, 0x9b4d9b];
 pub const AGENT_SLOTS: usize = 6;
 /// The share of an agent's hue a machine's footprint takes, mixed into white.
 pub const FOOTPRINT_MIX: f32 = 0.22;
-/// Tint slot of each agent's body at full hue: `TINT_BODY0 + slot`.
+/// The share of an agent's hue a drone's shell takes, mixed into white. A shell reads as a pale
+/// tint of the hue, and its line art stays dark.
+pub const SHELL_MIX: f32 = 0.28;
+// The shell stays a pale tint, so its strokes and shading read over it.
+const _: () = assert!(SHELL_MIX < 0.3, "the shell stays a pale tint");
+/// Tint slot of each agent's accent at full hue: `TINT_BODY0 + slot`. The drone's eye and lamp, its
+/// beam and its beacon draw with it.
 pub const TINT_BODY0: u32 = 1;
 /// Tint slot of each agent's footprint mix: `TINT_FOOTPRINT0 + slot`.
 pub const TINT_FOOTPRINT0: u32 = 7;
 /// Tint slot for a machine two or more agents touch. The page sets it per frame.
 pub const TINT_SHARED: u32 = 13;
+/// Tint slot of each agent's drone shell mix: `TINT_SHELL0 + slot`.
+pub const TINT_SHELL0: u32 = 14;
 
 pub const SLOT_PAGE: u32 = 0;
 pub const SLOT_LIT: u32 = 1;
@@ -152,6 +160,7 @@ pub fn ink_slot(ink: Ink) -> u32 {
         Ink::Lo => SLOT_LO,
         Ink::Faint => SLOT_FAINT,
         Ink::Edge => SLOT_EDGE,
+        Ink::Shadow => SLOT_SHADOW,
         Ink::Lit => SLOT_LIT,
         Ink::Red => SLOT_RED,
         Ink::Green => SLOT_GREEN,
@@ -192,6 +201,7 @@ pub fn tints() -> [[f32; 4]; TINT_LEN] {
         let hue = agent_colour(slot);
         table[TINT_BODY0 as usize + slot] = hue;
         table[TINT_FOOTPRINT0 as usize + slot] = footprint_mix(hue);
+        table[TINT_SHELL0 as usize + slot] = shell_mix(hue);
     }
     table
 }
@@ -203,7 +213,16 @@ pub fn agent_colour(slot: usize) -> [f32; 4] {
 
 /// A hue mixed into white by [`FOOTPRINT_MIX`], in sRGB.
 pub fn footprint_mix(hue: [f32; 4]) -> [f32; 4] {
-    let mix = |channel: f32| 1.0 + (channel - 1.0) * FOOTPRINT_MIX;
+    mixed_into_white(hue, FOOTPRINT_MIX)
+}
+
+/// A hue mixed into white by [`SHELL_MIX`], in sRGB.
+pub fn shell_mix(hue: [f32; 4]) -> [f32; 4] {
+    mixed_into_white(hue, SHELL_MIX)
+}
+
+fn mixed_into_white(hue: [f32; 4], share: f32) -> [f32; 4] {
+    let mix = |channel: f32| 1.0 + (channel - 1.0) * share;
     [mix(hue[0]), mix(hue[1]), mix(hue[2]), 1.0]
 }
 
@@ -278,8 +297,9 @@ const _: () = assert!(
 const _: () = assert!(
     TINT_BODY0 as usize + AGENT_SLOTS <= TINT_FOOTPRINT0 as usize
         && TINT_FOOTPRINT0 as usize + AGENT_SLOTS <= TINT_SHARED as usize
-        && (TINT_SHARED as usize) < TINT_LEN,
-    "body, footprint and shared tints do not overlap"
+        && TINT_SHARED < TINT_SHELL0
+        && TINT_SHELL0 as usize + AGENT_SLOTS <= TINT_LEN,
+    "body, footprint, shared and shell tints do not overlap"
 );
 const _: () = assert!(GRID_MINOR_ALPHA < GRID_MAJOR_ALPHA);
 const _: () = assert!(PAPER_TOP > 0.0, "a top never matches the page");
@@ -308,6 +328,7 @@ mod tests {
             Ink::Lo,
             Ink::Faint,
             Ink::Edge,
+            Ink::Shadow,
             Ink::Lit,
             Ink::Red,
             Ink::Green,
@@ -317,6 +338,7 @@ mod tests {
         ];
         let slots: Vec<u32> = inks.iter().map(|&ink| ink_slot(ink)).collect();
         assert!(slots.iter().all(|&s| (s as usize) < PALETTE_LEN));
+        assert_eq!(ink_slot(Ink::Shadow), SLOT_SHADOW);
         assert_eq!(ink_slot(Ink::Agent(0)), ink_slot(Ink::Agent(4)));
         assert_eq!(ink_slot(Ink::Agent(3)), SLOT_AGENT0 + 3);
         assert_eq!(dot_slot(Ink::Hi), SLOT_DOT);
@@ -375,6 +397,21 @@ mod tests {
             "belt ink {belt}"
         );
         assert!(ink(PALETTE[SLOT_BELT_EDGE as usize]) > belt);
+    }
+
+    #[test]
+    fn a_shell_is_a_light_tint_of_its_agents_hue() {
+        for slot in 0..AGENT_SLOTS {
+            let hue = agent_colour(slot);
+            let shell = tints()[TINT_SHELL0 as usize + slot];
+            for channel in 0..3 {
+                let share = (1.0 - shell[channel]) / (1.0 - hue[channel]);
+                assert!(
+                    (share - SHELL_MIX).abs() < 1e-5,
+                    "slot {slot} channel {channel} mixes {share}, not {SHELL_MIX}"
+                );
+            }
+        }
     }
 
     #[test]
