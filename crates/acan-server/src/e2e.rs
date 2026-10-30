@@ -1,0 +1,1011 @@
+//! The loop end to end on a real git repository. An order posted over HTTP is split, read back,
+//! reviewed, claimed, built in its task worktree, gated, and landed. The offline models stand in
+//! for the foreman. A scripted agent drives the worker side.
+//!
+//! The agent sends its commands through the writer, because agents cannot send commands over
+//! HTTP yet. Everything else goes through the public surface: member commands over HTTP, the
+//! agent's worktree route over HTTP, and the stored log.
+
+use std::fs;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::process::Command as Process;
+use std::str::FromStr;
+use std::sync::OnceLock;
+use std::time::Duration;
+
+use acan_core::{
+    AgentCmd, AgentId, Check, Command, CommitId, DeclarationInput, Event, Fence, FilePath,
+    GateVerdict, Generation, HumanCmd, LEASE_TTL_MS, Locus, MachineKey, Origin, Settlement, Stage,
+    Stamped, TaskId, TaskState, WitnessOutcome, WitnessSpec, World,
+};
+use acan_llm::{ChatRequest, ChatResponse, LlmError, ModelClient, Role, UsageLedger};
+use serde_json::Value;
+use tokio::time::{sleep, timeout};
+
+use crate::model::{self, Ask};
+use crate::offline::Offline;
+use crate::{DEFAULT_WITNESS_CONCURRENCY, Running, ServerConfig, start};
+
+const OWNER_TOKEN: &str = "acan_owner_e2e";
+const AGENT_TOKEN: &str = "acan_agent_e2e";
+const AGENT: &str = "agent-1";
+const MACHINE: &str = "model";
+const LANDED: &str = "landed.txt";
+const AGENT_CONTENT: &str = "written by the agent\n";
+/// Passes when the built commit carries the file, so it checks the commit rather than the disk.
+const WITNESS_COMMAND: &str = "git cat-file -e HEAD:landed.txt";
+/// The longest one step of a chain may take. Idle, claim to land takes 4.4 to 6.8 seconds. While
+/// another workspace build runs, one witness starts pwsh and git in 2 to 5 seconds, and a chain
+/// has many such steps, so the budget is generous. It stays finite, so a real stall still fails.
+const WAIT: Duration = Duration::from_secs(120);
+const POLL: Duration = Duration::from_millis(20);
+/// A sixth of the lease, so the test agent renews well before a lapse and can miss a few.
+const LEASE_RENEWAL: Duration = Duration::from_millis(LEASE_TTL_MS / 6);
+
+#[tokio::test]
+async fn an_order_is_gated_in_its_worktree_and_lands_on_the_protected_branch() {
+    let repo = user_repo();
+    let root = repo.path();
+    let running = start_plant(root).await;
+    let status_before = git(root, &["status", "--porcelain"]);
+    let task = TaskId::from_str("t-0").expect("valid task id");
+
+    post_order(&running).await;
+    read_back(&running, task).await;
+
+    let before_claim = worktree_route(&running, AGENT_TOKEN, task).await;
+    assert_eq!(
+        before_claim.status(),
+        reqwest::StatusCode::FORBIDDEN,
+        "an agent without the lease is not told where the worktree is"
+    );
+    let fence = claim(&running, task).await;
+    let worktree = worktree_dir(root, task);
+    wait_for_worktree(root, task, fence.generation).await;
+
+    let response = worktree_route(&running, AGENT_TOKEN, task).await;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let body: serde_json::Value = response.json().await.expect("the route answers JSON");
+    let told = PathBuf::from(body["path"].as_str().expect("the route names the path"));
+    assert_eq!(
+        canonical(&told),
+        canonical(&worktree),
+        "the lease holder is told the worktree the loop created"
+    );
+    assert_eq!(body["branch"], "acan/t-0");
+    let owner_view = worktree_route(&running, OWNER_TOKEN, task).await;
+    assert_eq!(
+        owner_view.status(),
+        reqwest::StatusCode::FORBIDDEN,
+        "a member token does not read a worktree"
+    );
+
+    let built = build(&running, root, task, fence, LANDED, AGENT_CONTENT).await;
+    settle(&running, "the task to land", |_, world| {
+        in_state(world, task, |state| {
+            matches!(state, TaskState::Landed { .. })
+        })
+        .then_some(())
+    })
+    .await;
+
+    let (log, _) = snapshot(&running).await;
+    assert!(
+        log.iter().any(|stamped| matches!(
+            &stamped.event,
+            Event::WitnessReported {
+                outcome: WitnessOutcome::Pass,
+                ..
+            }
+        )),
+        "the witness passed on the built commit"
+    );
+    assert_eq!(
+        git(root, &["show", "main:landed.txt"]),
+        AGENT_CONTENT,
+        "the protected branch carries the agent's file"
+    );
+    assert_eq!(
+        git(root, &["rev-parse", "main"]).trim(),
+        built.to_string(),
+        "the task branch fast-forwarded the protected branch"
+    );
+    assert_eq!(
+        git(root, &["status", "--porcelain"]),
+        status_before,
+        "the user's checkout status is unchanged by the land"
+    );
+    assert!(
+        !root.join(LANDED).exists(),
+        "the land never writes the user's working tree"
+    );
+    running.stop().await.expect("the server stops");
+}
+
+#[tokio::test]
+async fn a_failing_witness_sends_the_task_back_to_building_and_lands_nothing() {
+    let repo = user_repo();
+    let root = repo.path();
+    let running = start_plant(root).await;
+    let task = TaskId::from_str("t-0").expect("valid task id");
+    post_order(&running).await;
+    read_back(&running, task).await;
+    let fence = claim(&running, task).await;
+    wait_for_worktree(root, task, fence.generation).await;
+    let protected_before = git(root, &["rev-parse", "main"]);
+
+    build(
+        &running,
+        root,
+        task,
+        fence,
+        "other.txt",
+        "not the file the witness checks\n",
+    )
+    .await;
+    let failing = settle(&running, "the gate to close on a failure", |log, _| {
+        log.iter().find_map(|stamped| match &stamped.event {
+            Event::GateClosed {
+                verdict: GateVerdict::Failed { failing },
+                ..
+            } => Some(failing.clone()),
+            _ => None,
+        })
+    })
+    .await;
+    assert_eq!(failing.len(), 1, "the one witness is named as failing");
+
+    let (log, origin) = snapshot(&running).await;
+    assert!(
+        log.iter().any(|stamped| matches!(
+            &stamped.event,
+            Event::WitnessReported {
+                outcome: WitnessOutcome::Fail { .. },
+                ..
+            }
+        )),
+        "the check ran and failed; it did not error"
+    );
+    assert!(
+        in_state(origin.world(), task, |state| matches!(
+            state,
+            TaskState::Claimed {
+                stage: Stage::Declared { .. } | Stage::Building { .. },
+                ..
+            }
+        )),
+        "a failed gate returns the task to declared or building"
+    );
+    assert!(
+        !log.iter().any(|stamped| matches!(
+            &stamped.event,
+            Event::LandFailed { .. } | Event::Landed { .. }
+        )),
+        "nothing reached the land queue"
+    );
+    assert_eq!(
+        git(root, &["rev-parse", "main"]),
+        protected_before,
+        "the protected branch did not move"
+    );
+    running.stop().await.expect("the server stops");
+}
+
+#[tokio::test]
+async fn a_conflicting_land_reports_the_files_and_reopens_the_task() {
+    let repo = user_repo();
+    let root = repo.path();
+    let running = start_plant(root).await;
+    let task = TaskId::from_str("t-0").expect("valid task id");
+    post_order(&running).await;
+    read_back(&running, task).await;
+    let fence = claim(&running, task).await;
+    wait_for_worktree(root, task, fence.generation).await;
+
+    // The user lands a different version of the same file while the agent works.
+    let user_commit = commit_on_protected(root, LANDED, "written by the user\n");
+    build(&running, root, task, fence, LANDED, AGENT_CONTENT).await;
+
+    let reason = settle(&running, "the land to fail", |log, _| {
+        log.iter().find_map(|stamped| match &stamped.event {
+            Event::LandFailed {
+                task: failed,
+                reason,
+            } if *failed == task => Some(reason.clone()),
+            _ => None,
+        })
+    })
+    .await;
+    assert_eq!(
+        reason, "merge conflict in landed.txt",
+        "the conflict names the file"
+    );
+    settle(&running, "the task to reopen", |_, world| {
+        in_state(world, task, |state| matches!(state, TaskState::Open)).then_some(())
+    })
+    .await;
+    assert_eq!(
+        git(root, &["rev-parse", "main"]).trim(),
+        user_commit.to_string(),
+        "a refused land leaves the protected branch at the user's commit"
+    );
+    running.stop().await.expect("the server stops");
+}
+
+#[tokio::test]
+async fn a_land_onto_a_protected_branch_that_moved_merges_only_the_gated_commit() {
+    let repo = user_repo();
+    let root = repo.path();
+    let running = start_plant(root).await;
+    let task = TaskId::from_str("t-0").expect("valid task id");
+    post_order(&running).await;
+    read_back(&running, task).await;
+    let fence = claim(&running, task).await;
+    wait_for_worktree(root, task, fence.generation).await;
+
+    // The user lands a different file while the agent works, so the land is a real merge.
+    let user_commit = commit_on_protected(root, "user.txt", "written by the user\n");
+    let built = build(&running, root, task, fence, LANDED, AGENT_CONTENT).await;
+    settle(&running, "the task to land", |_, world| {
+        in_state(world, task, |state| {
+            matches!(state, TaskState::Landed { .. })
+        })
+        .then_some(())
+    })
+    .await;
+
+    assert_eq!(
+        git(root, &["rev-parse", "main^1"]).trim(),
+        user_commit.to_string(),
+        "the merge's first parent is the protected head it merged onto"
+    );
+    assert_eq!(
+        git(root, &["rev-parse", "main^2"]).trim(),
+        built.to_string(),
+        "the merge's second parent is the gated commit"
+    );
+    assert_eq!(git(root, &["show", "main:landed.txt"]), AGENT_CONTENT);
+    assert_eq!(
+        git(root, &["show", "main:user.txt"]),
+        "written by the user\n",
+        "the user's file survives the land"
+    );
+    running.stop().await.expect("the server stops");
+}
+
+#[tokio::test]
+async fn a_reclaim_after_a_refused_land_starts_from_the_protected_head_the_user_moved_to() {
+    let repo = user_repo();
+    let root = repo.path();
+    let running = start_plant(root).await;
+    let task = TaskId::from_str("t-0").expect("valid task id");
+    post_order(&running).await;
+    read_back(&running, task).await;
+    let fence = claim(&running, task).await;
+    wait_for_worktree(root, task, fence.generation).await;
+
+    let user_commit = commit_on_protected(root, LANDED, "written by the user\n");
+    build(&running, root, task, fence, LANDED, AGENT_CONTENT).await;
+    settle(&running, "the land to fail", |log, _| {
+        log.iter().find_map(|stamped| match &stamped.event {
+            Event::LandFailed {
+                task: failed,
+                reason,
+            } if *failed == task => Some(reason.clone()),
+            _ => None,
+        })
+    })
+    .await;
+    settle(&running, "the task to reopen", |_, world| {
+        in_state(world, task, |state| matches!(state, TaskState::Open)).then_some(())
+    })
+    .await;
+    // The directory goes first and the branch after it, so both are awaited.
+    settle(
+        &running,
+        "the reopened worktree and branch to be removed",
+        |_, _| {
+            (!worktree_dir(root, task).exists() && !branch_exists(root, "acan/t-0")).then_some(())
+        },
+    )
+    .await;
+
+    let fence = claim(&running, task).await;
+    wait_for_worktree(root, task, fence.generation).await;
+    assert_eq!(
+        git(&worktree_dir(root, task), &["rev-parse", "HEAD"]).trim(),
+        user_commit.to_string(),
+        "the reclaimed worktree starts at the protected head the user moved to"
+    );
+    let built = build(&running, root, task, fence, LANDED, AGENT_CONTENT).await;
+    settle(&running, "the reclaimed task to land", |_, world| {
+        in_state(world, task, |state| {
+            matches!(state, TaskState::Landed { .. })
+        })
+        .then_some(())
+    })
+    .await;
+    assert_eq!(
+        git(root, &["rev-parse", "main"]).trim(),
+        built.to_string(),
+        "the reclaimed task fast-forwards the protected branch"
+    );
+    assert_eq!(git(root, &["show", "main:landed.txt"]), AGENT_CONTENT);
+    running.stop().await.expect("the server stops");
+}
+
+#[tokio::test]
+async fn a_reclaim_without_waiting_for_cleanup_starts_at_the_protected_head() {
+    let repo = user_repo();
+    let root = repo.path();
+    let running = start_plant(root).await;
+    let task = TaskId::from_str("t-0").expect("valid task id");
+    post_order(&running).await;
+    read_back(&running, task).await;
+    let fence = claim(&running, task).await;
+    let worktree = worktree_dir(root, task);
+    wait_for_worktree(root, task, fence.generation).await;
+    let old = commit_file(&worktree, "old.txt", "from the old claim\n");
+    let protected = git(root, &["rev-parse", "main"]);
+
+    agent_command(&running, AgentCmd::Release { fence }).await;
+    settle(&running, "the release to reopen the task", |_, world| {
+        in_state(world, task, |state| matches!(state, TaskState::Open)).then_some(())
+    })
+    .await;
+    // The old worktree must be gone before the route creates the new one, or the test's own git
+    // and the loop's removal share the directory. The route then creates the new generation
+    // without waiting for the loop, which is the cleanup the reclaim does not wait for.
+    settle(&running, "the released worktree to be removed", |_, _| {
+        (!worktree.exists() && !branch_exists(root, "acan/t-0")).then_some(())
+    })
+    .await;
+    let fence = claim(&running, task).await;
+    let response = worktree_route(&running, AGENT_TOKEN, task).await;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let head = git(&worktree, &["rev-parse", "HEAD"]);
+    assert_eq!(
+        head.trim(),
+        protected.trim(),
+        "the reclaimed worktree starts at the protected head"
+    );
+    assert_ne!(
+        head.trim(),
+        old.to_string(),
+        "the old claim's commit is gone"
+    );
+    assert!(
+        !worktree.join("old.txt").exists(),
+        "the old claim's file is gone"
+    );
+    let history = git(&worktree, &["log", "--format=%H"]);
+    assert!(
+        !history.contains(&old.to_string()),
+        "none of the old claim's commits remain"
+    );
+
+    let built = build(&running, root, task, fence, LANDED, AGENT_CONTENT).await;
+    settle(&running, "the reclaimed task to land", |_, world| {
+        in_state(world, task, |state| {
+            matches!(state, TaskState::Landed { .. })
+        })
+        .then_some(())
+    })
+    .await;
+    assert_eq!(
+        git(root, &["rev-parse", "main"]).trim(),
+        built.to_string(),
+        "the reclaimed task fast-forwards the protected branch"
+    );
+    running.stop().await.expect("the server stops");
+}
+
+#[tokio::test]
+async fn a_queued_task_keeps_its_branch_until_it_lands() {
+    let repo = user_repo();
+    let root = repo.path();
+    let running = start_plant(root).await;
+    let task = TaskId::from_str("t-0").expect("valid task id");
+    post_order(&running).await;
+    read_back(&running, task).await;
+    let fence = claim(&running, task).await;
+    wait_for_worktree(root, task, fence.generation).await;
+    let built = build(&running, root, task, fence, LANDED, AGENT_CONTENT).await;
+
+    let generation = settle(&running, "the task to queue", |_, world| {
+        match &world.task(task)?.state {
+            TaskState::Queued { run, .. } => world.gate(*run).map(|gate| gate.generation.get()),
+            _ => None,
+        }
+    })
+    .await;
+    // The branch is still the one the gate passed, not a leftover the loop should remove.
+    settle(
+        &running,
+        "the queued branch to stay at its generation",
+        |_, _| {
+            let stays = worktree_dir(root, task).is_dir() && branch_exists(root, "acan/t-0");
+            let recorded = git_config(root, "branch.acan/t-0.acanGeneration");
+            (stays && recorded.trim() == generation.to_string()).then_some(())
+        },
+    )
+    .await;
+    assert_eq!(
+        git(&worktree_dir(root, task), &["rev-parse", "HEAD"]).trim(),
+        built.to_string(),
+        "the queued branch still holds the gated commit"
+    );
+
+    settle(&running, "the queued task to land", |_, world| {
+        in_state(world, task, |state| {
+            matches!(state, TaskState::Landed { .. })
+        })
+        .then_some(())
+    })
+    .await;
+    settle(&running, "the landed branch to be removed", |_, _| {
+        (!worktree_dir(root, task).exists() && !branch_exists(root, "acan/t-0")).then_some(())
+    })
+    .await;
+    running.stop().await.expect("the server stops");
+}
+
+#[tokio::test]
+async fn a_serialized_waiter_builds_on_its_landed_predecessor_and_lands_cleanly() {
+    let repo = user_repo();
+    let root = repo.path();
+    let running = start_with(root, TwoTasks::default(), UsageLedger::default()).await;
+    let first = TaskId::from_str("t-0").expect("valid task id");
+    let second = TaskId::from_str("t-1").expect("valid task id");
+    post_order(&running).await;
+    read_back(&running, first).await;
+    review(&running, second).await;
+    let first_fence = claim(&running, first).await;
+    let second_fence = claim(&running, second).await;
+    wait_for_worktree(root, first, first_fence.generation).await;
+    wait_for_worktree(root, second, second_fence.generation).await;
+    let cut_at = git(root, &["rev-parse", "main"]);
+
+    declare(&running, first_fence, LANDED).await;
+    declare(&running, second_fence, LANDED).await;
+    let clash = settle(&running, "the two declarations to clash", |_, world| {
+        world.clashes().find(|c| c.blocking()).map(|c| c.id)
+    })
+    .await;
+    let response = client()
+        .post(url(&running, "/api/commands"))
+        .bearer_auth(OWNER_TOKEN)
+        .json(&HumanCmd::SettleClash {
+            clash,
+            choice: Settlement::Serialize {
+                first,
+                then: second,
+            },
+        })
+        .send()
+        .await
+        .expect("the settle request is sent");
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "the clash settles"
+    );
+
+    wait_building(&running, first).await;
+    let first_content = "written by the first task\n";
+    let first_head = commit_file(&worktree_dir(root, first), LANDED, first_content);
+    agent_command(
+        &running,
+        AgentCmd::ReportBuilt {
+            fence: first_fence,
+            head: first_head,
+        },
+    )
+    .await;
+    wait_building(&running, second).await;
+
+    let landed_head = git(root, &["rev-parse", "main"]);
+    assert_ne!(landed_head, cut_at, "the first task landed");
+    let waiter = worktree_dir(root, second);
+    assert_eq!(
+        git(&waiter, &["rev-parse", "HEAD"]),
+        landed_head,
+        "the waiter's worktree starts from the protected head its predecessor landed on"
+    );
+    assert_eq!(
+        // A checkout with core.autocrlf writes CRLF on Windows.
+        fs::read_to_string(waiter.join(LANDED))
+            .expect("the landed file is in the worktree")
+            .replace('\r', ""),
+        first_content,
+        "the waiter sees its predecessor's change before it writes"
+    );
+
+    let second_content = "written by the first task\nand extended by the second\n";
+    let second_head = commit_file(&waiter, LANDED, second_content);
+    agent_command(
+        &running,
+        AgentCmd::ReportBuilt {
+            fence: second_fence,
+            head: second_head.clone(),
+        },
+    )
+    .await;
+    settle(&running, "the waiter to land", |_, world| {
+        in_state(world, second, |state| {
+            matches!(state, TaskState::Landed { .. })
+        })
+        .then_some(())
+    })
+    .await;
+
+    let (log, _) = snapshot(&running).await;
+    assert!(
+        !log.iter()
+            .any(|stamped| matches!(&stamped.event, Event::LandFailed { .. })),
+        "neither land conflicted"
+    );
+    let passes = log
+        .iter()
+        .filter(|stamped| {
+            matches!(
+                &stamped.event,
+                Event::WitnessReported {
+                    outcome: WitnessOutcome::Pass,
+                    ..
+                }
+            )
+        })
+        .count();
+    assert_eq!(passes, 2, "each task's witness passed on its built commit");
+    assert_eq!(
+        git(root, &["rev-parse", "main"]).trim(),
+        second_head.to_string(),
+        "the waiter fast-forwarded the protected branch"
+    );
+    assert_eq!(git(root, &["show", "main:landed.txt"]), second_content);
+    running.stop().await.expect("the server stops");
+}
+
+/// The offline models, except that a split makes two tasks on the order's machine.
+#[derive(Default)]
+struct TwoTasks {
+    offline: Offline,
+}
+
+impl ModelClient for TwoTasks {
+    async fn chat(&self, role: Role, request: ChatRequest) -> Result<ChatResponse, LlmError> {
+        let split = model::ask_of(&request) == Some(Ask::Split);
+        let mut response = self.offline.chat(role, request).await?;
+        if split {
+            let content = response.content.as_deref().unwrap_or_default();
+            let mut reply: Value =
+                serde_json::from_str(content).expect("the offline split is JSON");
+            let tasks = reply["tasks"]
+                .as_array_mut()
+                .expect("the split lists tasks");
+            let mut again = tasks[0].clone();
+            again["title"] = Value::from("the same file again");
+            tasks.push(again);
+            response.content = Some(reply.to_string());
+        }
+        Ok(response)
+    }
+}
+
+/// A repository with `main` as the protected branch and the user's checkout on `user-work`. The
+/// server must never touch that checkout.
+fn user_repo() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().expect("temporary repository");
+    let root = dir.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    git(root, &["config", "user.name", "Test User"]);
+    git(root, &["config", "user.email", "test@example.test"]);
+    fs::create_dir_all(root.join(MACHINE)).expect("machine directory");
+    fs::write(
+        root.join(MACHINE).join("store.ts"),
+        "export function load() { return 1; }\n",
+    )
+    .expect("fixture");
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-q", "-m", "initial"]);
+    git(root, &["switch", "-q", "-c", "user-work"]);
+    dir
+}
+
+/// Runs git in `dir` and returns its stdout. Panics with the exit status, stdout and stderr when
+/// the command fails. Git reports some failures only on stdout, such as `commit` with nothing
+/// staged under `-q`, so stderr alone can be empty.
+///
+/// A lock held by the server's own git is contention, not a failure of the command, so it is
+/// retried. The server and these tests share the repository's index.
+fn git(dir: &Path, args: &[&str]) -> String {
+    for attempt in 1..=5 {
+        let output = Process::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .expect("git runs");
+        if output.status.success() {
+            return String::from_utf8(output.stdout).expect("git prints UTF-8");
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let locked = stderr.contains("index.lock");
+        if !locked || attempt == 5 {
+            panic!(
+                "git {args:?} in {} failed with {}\nstdout: {stdout}\nstderr: {stderr}",
+                dir.display(),
+                output.status
+            );
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    unreachable!("the loop returns or panics")
+}
+
+/// A repository-local config value, empty when unset. `git config --get` exits 1 for an unset key.
+fn git_config(dir: &Path, key: &str) -> String {
+    let output = Process::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["config", "--get", key])
+        .output()
+        .expect("git runs");
+    if output.status.success() {
+        String::from_utf8(output.stdout).expect("git prints UTF-8")
+    } else {
+        String::new()
+    }
+}
+
+/// Whether `branch` exists in the repository that `dir` belongs to.
+fn branch_exists(dir: &Path, branch: &str) -> bool {
+    Process::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(["show-ref", "--verify", "--quiet"])
+        .arg(format!("refs/heads/{branch}"))
+        .status()
+        .expect("git runs")
+        .success()
+}
+
+fn canonical(path: &Path) -> PathBuf {
+    path.canonicalize().expect("the path exists")
+}
+
+fn worktree_dir(root: &Path, task: TaskId) -> PathBuf {
+    root.join(".acan").join("worktrees").join(task.to_string())
+}
+
+/// Writes the token file before the first start, so the test holds an owner and an agent token.
+fn write_tokens(root: &Path) {
+    let state = root.join(".acan");
+    fs::create_dir_all(&state).expect("state directory");
+    fs::write(
+        state.join("tokens.json"),
+        format!(
+            r#"[
+              {{"token": "{OWNER_TOKEN}", "principal": {{"kind": "member", "id": "owner"}}}},
+              {{"token": "{AGENT_TOKEN}", "principal": {{"kind": "agent", "id": "{AGENT}"}}}}
+            ]"#
+        ),
+    )
+    .expect("tokens file");
+}
+
+async fn start_plant(root: &Path) -> Running {
+    let offline = Offline::default();
+    let ledger = offline.ledger().clone();
+    start_with(root, offline, ledger).await
+}
+
+async fn start_with<C: ModelClient + 'static>(
+    root: &Path,
+    client: C,
+    ledger: UsageLedger,
+) -> Running {
+    write_tokens(root);
+    let config = ServerConfig {
+        repo: root.to_path_buf(),
+        addr: SocketAddr::from(([127, 0, 0, 1], 0)),
+        team: false,
+        web: None,
+        protected_branch: Some("main".to_owned()),
+        witness_http_base_url: None,
+        witness_concurrency: DEFAULT_WITNESS_CONCURRENCY,
+    };
+    start(config, client, ledger)
+        .await
+        .expect("the server starts on the test repository")
+}
+
+fn url(running: &Running, path: &str) -> String {
+    format!("http://{}{path}", running.local_addr)
+}
+
+/// One client for every request, so each poll reuses its connection instead of building a client.
+fn client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
+fn agent() -> AgentId {
+    AgentId::from_str(AGENT).expect("valid agent id")
+}
+
+fn machine() -> MachineKey {
+    MachineKey::from_str(MACHINE).expect("valid machine key")
+}
+
+async fn post_order(running: &Running) {
+    let response = client()
+        .post(url(running, "/api/commands"))
+        .bearer_auth(OWNER_TOKEN)
+        .json(&HumanCmd::PostOrder {
+            machine: machine(),
+            sentence: "land the agent's file".to_owned(),
+            witnesses: vec![WitnessSpec {
+                check: Check::Test {
+                    command: WITNESS_COMMAND.to_owned(),
+                },
+                reason: "the built commit carries the file".to_owned(),
+            }],
+        })
+        .send()
+        .await
+        .expect("the order request is sent");
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "the order is posted"
+    );
+}
+
+/// Waits for the offline split, registers the agent, and reads the task back. Returns once the
+/// review has matched the readback, so the task can be claimed.
+async fn read_back(running: &Running, task: TaskId) {
+    settle(running, "the offline split", |_, world| {
+        world.task(task).map(drop)
+    })
+    .await;
+    let response = client()
+        .post(url(running, "/api/commands"))
+        .bearer_auth(OWNER_TOKEN)
+        .json(&HumanCmd::RegisterAgent { agent: agent() })
+        .send()
+        .await
+        .expect("the registration is sent");
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "the agent is registered"
+    );
+    review(running, task).await;
+}
+
+/// Reads `task` back as the registered agent and waits until the review has judged it.
+async fn review(running: &Running, task: TaskId) {
+    agent_command(
+        running,
+        AgentCmd::PostReadback {
+            task,
+            summary: "write the file".to_owned(),
+            touches: vec![Locus::Machine { machine: machine() }],
+        },
+    )
+    .await;
+    settle(running, "the offline review", |_, world| {
+        world
+            .readbacks_of(task)
+            .any(|readback| readback.verdict.is_some())
+            .then_some(())
+    })
+    .await;
+}
+
+/// Claims the task and returns the fence the agent must present. The lease grant creates the
+/// worktree on the job loop; the caller waits for it.
+async fn claim(running: &Running, task: TaskId) -> Fence {
+    agent_command(running, AgentCmd::Claim { task }).await;
+    let fence = settle(running, "the claim", |_, world| {
+        match &world.task(task)?.state {
+            TaskState::Claimed { claim, .. } => Some(claim.fence(task)),
+            _ => None,
+        }
+    })
+    .await;
+    keep_lease(running, fence);
+    fence
+}
+
+/// Renews `fence`'s lease on a timer, as a worker does, until the test's runtime ends. A
+/// lease lapses 60 seconds after its last renewal, and a chain under load can run longer.
+///
+/// A renewal the origin rejects means the claim is over, because the task landed, was released,
+/// or was claimed again. The test's own steps check that outcome, so the rejection is ignored.
+fn keep_lease(running: &Running, fence: Fence) {
+    let writer = running.writer.clone();
+    tokio::spawn(async move {
+        loop {
+            sleep(LEASE_RENEWAL).await;
+            let _ = writer
+                .submit(Command::Agent {
+                    agent: agent(),
+                    cmd: AgentCmd::Renew { fence },
+                })
+                .await;
+        }
+    });
+}
+
+/// The scripted agent's build: declare the file, wait for the build to start, write and commit
+/// the file in its worktree, and report the commit.
+async fn build(
+    running: &Running,
+    root: &Path,
+    task: TaskId,
+    fence: Fence,
+    file: &str,
+    content: &str,
+) -> CommitId {
+    declare(running, fence, file).await;
+    wait_building(running, task).await;
+    let head = commit_file(&worktree_dir(root, task), file, content);
+    agent_command(
+        running,
+        AgentCmd::ReportBuilt {
+            fence,
+            head: head.clone(),
+        },
+    )
+    .await;
+    head
+}
+
+/// Declares a whole-file write of `file`.
+async fn declare(running: &Running, fence: Fence, file: &str) {
+    agent_command(
+        running,
+        AgentCmd::Declare {
+            fence,
+            footprint: DeclarationInput {
+                files: vec![FilePath::from_str(file).expect("valid file path")],
+                ..DeclarationInput::default()
+            },
+        },
+    )
+    .await;
+}
+
+async fn wait_building(running: &Running, task: TaskId) {
+    settle(running, "the build to start", |_, world| {
+        in_state(world, task, |state| {
+            matches!(
+                state,
+                TaskState::Claimed {
+                    stage: Stage::Building { .. },
+                    ..
+                }
+            )
+        })
+        .then_some(())
+    })
+    .await;
+}
+
+async fn agent_command(running: &Running, cmd: AgentCmd) {
+    running
+        .writer
+        .submit(Command::Agent {
+            agent: agent(),
+            cmd,
+        })
+        .await
+        .expect("the origin accepts the agent's command");
+}
+
+/// Writes `file` in `dir`, commits it, and returns the new commit.
+fn commit_file(dir: &Path, file: &str, content: &str) -> CommitId {
+    fs::write(dir.join(file), content).expect("the file is written");
+    git(dir, &["add", "-A"]);
+    git(dir, &["commit", "-q", "-m", &format!("write {file}")]);
+    git(dir, &["rev-parse", "HEAD"])
+        .trim()
+        .parse()
+        .expect("git prints a commit id")
+}
+
+/// Commits `content` to `file` on the protected branch, as the user would. A scratch checkout
+/// does the commit, so the user's own checkout stays put.
+fn commit_on_protected(root: &Path, file: &str, content: &str) -> CommitId {
+    let scratch = tempfile::tempdir().expect("scratch directory");
+    let checkout = scratch.path().join("main");
+    let checkout_arg = checkout.to_str().expect("UTF-8 path");
+    git(root, &["worktree", "add", "-q", checkout_arg, "main"]);
+    let commit = commit_file(&checkout, file, content);
+    git(root, &["worktree", "remove", "--force", checkout_arg]);
+    commit
+}
+
+async fn worktree_route(running: &Running, token: &str, task: TaskId) -> reqwest::Response {
+    client()
+        .get(url(running, &format!("/api/tasks/{task}/worktree")))
+        .bearer_auth(token)
+        .send()
+        .await
+        .expect("the worktree request is sent")
+}
+
+/// Waits until the loop has finished creating `task`'s worktree at `generation`.
+///
+/// The directory appears before `git worktree add` has written the worktree, so a directory check
+/// lets a commit run against the enclosing repository. The generation is recorded last, once the
+/// worktree is complete.
+async fn wait_for_worktree(root: &Path, task: TaskId, generation: Generation) {
+    let key = format!("branch.acan/{task}.acanGeneration");
+    let expected = generation.get().to_string();
+    timeout(WAIT, async {
+        while git_config(root, &key).trim() != expected {
+            sleep(POLL).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!("the worktree of {task} at generation {expected} was never recorded")
+    });
+}
+
+fn in_state(world: &World, task: TaskId, state: impl Fn(&TaskState) -> bool) -> bool {
+    world.task(task).is_some_and(|t| state(&t.state))
+}
+
+/// The stored log and the world it replays to, read through the owner's events route.
+async fn snapshot(running: &Running) -> (Vec<Stamped>, Origin) {
+    let log: Vec<Stamped> = client()
+        .get(url(running, "/api/events"))
+        .bearer_auth(OWNER_TOKEN)
+        .send()
+        .await
+        .expect("the events request is sent")
+        .error_for_status()
+        .expect("the owner may read the log")
+        .json()
+        .await
+        .expect("the log is JSON");
+    let origin = Origin::replay(log.iter().cloned()).expect("the stored log replays");
+    (log, origin)
+}
+
+/// Polls the stored log until `done` accepts it, and returns what it found. A timeout names the
+/// newest events, so a stalled step shows where the chain stopped.
+async fn settle<T>(
+    running: &Running,
+    what: &str,
+    done: impl Fn(&[Stamped], &World) -> Option<T>,
+) -> T {
+    let result = timeout(WAIT, async {
+        loop {
+            let (log, origin) = snapshot(running).await;
+            if let Some(found) = done(&log, origin.world()) {
+                return found;
+            }
+            sleep(POLL).await;
+        }
+    })
+    .await;
+    let Ok(found) = result else {
+        let (log, _) = snapshot(running).await;
+        let newest: Vec<&Event> = log
+            .iter()
+            .rev()
+            .take(4)
+            .map(|stamped| &stamped.event)
+            .collect();
+        panic!("timed out after {WAIT:?} waiting for {what}; newest events first: {newest:?}");
+    };
+    found
+}

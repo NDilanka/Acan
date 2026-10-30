@@ -6,6 +6,8 @@
 //! batch. [`Running::stop`] is a barrier: it returns only when no write can still happen.
 
 mod auth;
+#[cfg(test)]
+mod e2e;
 mod git;
 mod host;
 mod http;
