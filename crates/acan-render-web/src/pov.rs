@@ -52,8 +52,11 @@ pub struct Snapshot {
     pub info: Info,
 }
 
-/// The camera at `scale` times the default distance from `goal`'s target, on the side of its
-/// drone's eye. The viewport, projection and fog bounds come from `base`.
+/// Below this gap the drone's eye sits on the target, so its side has no direction.
+const EYE_ON_TARGET: f32 = 1e-3;
+
+/// The camera at `scale` times the distance that fits the machine's box to half the view height,
+/// on the side of its drone's eye. The viewport, projection and fog bounds come from `base`.
 pub fn pov_camera(base: &Camera, goal: &Goal, scale: f32) -> Camera {
     let eye_drone = [
         goal.at[0] + EYE_DISTANCE * goal.heading.cos(),
@@ -62,10 +65,19 @@ pub fn pov_camera(base: &Camera, goal: &Goal, scale: f32) -> Camera {
     ];
     let rel = sub(eye_drone, goal.target);
     let reach = norm(rel);
-    let dir = [rel[0] / reach, rel[1] / reach, rel[2] / reach];
+    let dir = if reach < EYE_ON_TARGET {
+        let elevation = camera::POV_MIN_ELEVATION.to_radians();
+        [
+            -goal.heading.cos() * elevation.cos(),
+            -goal.heading.sin() * elevation.cos(),
+            elevation.sin(),
+        ]
+    } else {
+        std::array::from_fn(|axis| rel[axis] / reach)
+    };
     let radius = norm(sub(goal.machine.max, goal.machine.min)) * 0.5;
     let fit = radius / (0.5 * (VERTICAL_FOV * 0.5).to_radians().tan());
-    let distance = scale * fit.max(reach);
+    let distance = scale * fit;
     let mut camera = *base;
     camera.look_at(
         std::array::from_fn(|axis| goal.target[axis] + dir[axis] * distance),
@@ -136,8 +148,9 @@ pub fn next_in_order<'a>(
     order.get(usize::try_from(index).ok()?).copied()
 }
 
-/// The chip's words for the drone of `body`: its machine's short name, its activity, the text of
-/// the order its task belongs to, and the first file its task names on that machine.
+/// The chip's words for the drone of `body`: its machine's name as the machine's label shows it,
+/// its activity as its flag shows it, the text of the order its task belongs to, and the first
+/// file its task names on that machine.
 pub fn info(view: &View, plan: &Plan, body: &Body) -> Info {
     let task = view
         .agents
@@ -161,7 +174,7 @@ pub fn info(view: &View, plan: &Plan, body: &Body) -> Info {
         agent: body.agent.clone(),
         hue: marks::hue_css(body.slot),
         waiting: body.waiting,
-        machine: marks::short_name(&plan.machines[body.machine].name).to_owned(),
+        machine: plan.machines[body.machine].name.clone(),
         activity: body.activity.to_owned(),
         task: sentence,
         file,
@@ -486,6 +499,51 @@ mod tests {
         );
         let target = target_on_screen(&camera, goal.target, 1.0).expect("the target is in view");
         assert!((target[0] - 720.0).abs() < 1e-2, "target x {}", target[0]);
+    }
+
+    #[test]
+    fn the_default_distance_does_not_grow_with_the_drone_distance() {
+        let near = pov_camera(&overview(), &goal(), 1.0);
+        let far = Goal {
+            at: [400.0, 0.0, 26.0],
+            ..goal()
+        };
+        let far = pov_camera(&overview(), &far, 1.0);
+        assert!(
+            (far.eye_distance() - near.eye_distance()).abs() < 1e-3,
+            "the far eye sits {} from the target, the near one {}",
+            far.eye_distance(),
+            near.eye_distance()
+        );
+    }
+
+    #[test]
+    fn a_drone_on_its_target_is_viewed_from_behind_at_the_minimum_elevation() {
+        let target = goal().target;
+        let on_target = Goal {
+            at: [target[0] - EYE_DISTANCE, target[1], target[2]],
+            heading: 0.0,
+            ..goal()
+        };
+        let camera = pov_camera(&overview(), &on_target, 1.0);
+        let eye = camera.eye();
+        assert!(eye.iter().all(|value| value.is_finite()), "eye {eye:?}");
+        assert!(
+            (camera.elevation() - camera::POV_MIN_ELEVATION).abs() < 1e-3,
+            "elevation {}",
+            camera.elevation()
+        );
+        assert!(
+            (camera.azimuth() - 180.0).abs() < 1e-3,
+            "azimuth {}",
+            camera.azimuth()
+        );
+        let on_screen = target_on_screen(&camera, target, 1.0).expect("the target is in view");
+        assert!(
+            (on_screen[0] - 720.0).abs() < 1e-2,
+            "target x {}",
+            on_screen[0]
+        );
     }
 
     #[test]

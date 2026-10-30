@@ -109,9 +109,10 @@
   td { color: #3c3c3a; }
   th.num, td.num { text-align: right; padding-right: 0; padding-left: 16px; font-variant-numeric: tabular-nums; }
   #notice { top: 50%; left: 50%; transform: translate(-50%, -50%); color: #57575a; }
-  /* The point of view. Riding shows these; each fades over --pov-fade. */
-  #pov-vignette, #pov-frame, #pov-reticle, #pov-chip { opacity: 0; transition: opacity var(--pov-fade) var(--pov-ease); }
-  #pov-vignette.on, #pov-frame.on, #pov-reticle.on, #pov-chip.on { opacity: 1; }
+  /* The point of view. Riding shows these, and the order island fades out with them; each fades
+     over --pov-fade. */
+  #order, #pov-vignette, #pov-frame, #pov-reticle, #pov-chip { opacity: 0; transition: opacity var(--pov-fade) var(--pov-ease); }
+  #order.on, #pov-vignette.on, #pov-frame.on, #pov-reticle.on, #pov-chip.on { opacity: 1; }
   #pov-vignette { position: fixed; inset: 0; pointer-events: none;
     background: radial-gradient(ellipse 75% 75% at 50% 50%, rgba(31, 31, 29, 0) 60%, rgba(31, 31, 29, 0.07) 100%); }
   #pov-frame { position: fixed; inset: 8px; box-sizing: border-box; border: 2px solid var(--pov); border-radius: 14px; pointer-events: none; }

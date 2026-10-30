@@ -89,6 +89,8 @@ let press = null;
 let altDown = false;
 // The agent the page rides, or "" when it does not ride.
 let ridden = "";
+// Whether the view holds an order to show in the order island.
+let hasOrder = false;
 let labelGeneration = 0;
 const labels = new Map();
 
@@ -155,6 +157,9 @@ function rideToggled(riding) {
     if (riding) showPov(el);
     else hidePov(el);
   }
+  // The order island fades out with the point of view, and comes back when the ride ends.
+  if (riding && !orderEl.hidden) hidePov(orderEl);
+  if (!riding && hasOrder) showPov(orderEl);
   hintEl.innerHTML = riding ? RIDE_HINT : hintRest;
 }
 
@@ -394,13 +399,18 @@ function paint() {
 function paintOrderLine() {
   const order = view.orders.find((item) => item.phase !== "cancelled" && item.phase !== "landed")
     ?? view.orders.at(-1);
-  if (!order) {
-    orderEl.hidden = true;
-    orderLine.textContent = "";
-    return;
-  }
-  orderEl.hidden = false;
-  orderLine.textContent = `${label("order", order.id)} · ${order.machine} · ${order.phase.replace("_", " ")} · ${order.sentence}`;
+  hasOrder = order !== undefined;
+  orderLine.textContent = hasOrder
+    ? `${label("order", order.id)} · ${order.machine} · ${order.phase.replace("_", " ")} · ${order.sentence}`
+    : "";
+  paintOrderShown();
+}
+
+// A ride holds the island: it fades with the point of view, so rideToggled shows and hides it.
+function paintOrderShown() {
+  if (ridden !== "") return;
+  orderEl.hidden = !hasOrder;
+  orderEl.classList.toggle("on", hasOrder);
 }
 
 // The marks come from the wasm side: each agent with its activity, the active order, each open
