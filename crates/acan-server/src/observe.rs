@@ -314,6 +314,10 @@ pub(crate) fn lockfile_hash(worktree: &Path) -> Result<ArtifactHash, ObserveErro
 /// Returns [`ObserveError`] when a worktree cannot be written, a record does not admit, or a run
 /// still does not set up after its last start. A run that did not complete for any other reason
 /// is not an error: its outcome is in the record.
+///
+/// # Panics
+///
+/// Panics when `plan.probes_at_once` is zero, because no probe could ever start.
 pub(crate) async fn observe(plan: &Plan<'_>) -> Result<Vec<ProbeRuns>, ObserveError> {
     assert!(
         plan.probes_at_once > 0,
