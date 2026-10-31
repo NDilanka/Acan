@@ -1544,6 +1544,24 @@ impl Replica {
         Ok(())
     }
 
+    /// Passes over an event the reader cannot apply, so the events after it can fold. The state
+    /// does not include what the passed event did; the caller must say so. A position already
+    /// passed (seq below `next_seq`) is ignored.
+    ///
+    /// # Errors
+    /// Returns [`ReplayError::SeqGap`] if `seq` is past the next event.
+    pub fn skip(&mut self, seq: Seq) -> Result<(), ReplayError> {
+        let expected = self.world.next_seq;
+        if seq < expected {
+            return Ok(());
+        }
+        if seq > expected {
+            return Err(ReplayError::SeqGap { expected, got: seq });
+        }
+        self.world.next_seq = seq.next();
+        Ok(())
+    }
+
     /// The seq to resume the stream from.
     #[must_use]
     pub fn next_seq(&self) -> Seq {
