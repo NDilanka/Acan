@@ -266,6 +266,41 @@ mod tests {
         assert_eq!(view.examples[0].run, "r-1");
     }
 
+    /// The unit/d02 samples. Each draft and example body is a unit/d02 fixture, and each wrapper
+    /// has the keys of the handler's response struct in unit/d02 `http.rs`. The hashes in the
+    /// ruling draft are placeholders of the right shape; the live check is the server's e2e test.
+    const SCOPE_DRAFT_DRAFTED: &str = include_str!("../fixtures/d02/scope-draft-drafted.json");
+    const SCOPE_DRAFT_FAILED: &str = include_str!("../fixtures/d02/scope-draft-failed.json");
+    const RULING_DRAFT: &str = include_str!("../fixtures/d02/ruling-draft.json");
+
+    #[test]
+    fn the_d02_scope_draft_samples_decode_into_the_mirror() {
+        let drafted = scope_draft(SCOPE_DRAFT_DRAFTED).expect("the drafted sample decodes");
+        assert_eq!(drafted.order, "o-3");
+        assert_eq!(drafted.rev, 2);
+        assert!(matches!(drafted.outcome, ScopeDraftOutcome::Drafted { .. }));
+
+        let failed = scope_draft(SCOPE_DRAFT_FAILED).expect("the failed sample decodes");
+        assert_eq!(
+            failed.outcome,
+            ScopeDraftOutcome::Failed {
+                reason: "the reply did not parse as a scope draft".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn the_d02_ruling_draft_sample_decodes_into_the_mirror() {
+        let view = ruling_draft(RULING_DRAFT).expect("the ruling draft sample decodes");
+        assert_eq!(view.order, "o-3");
+        assert_eq!(view.examples.len(), 1);
+        assert_eq!(view.examples[0].run, "r-1");
+        assert_eq!(
+            view.examples[0].normalization_version.to_string(),
+            "acan-normalization/1"
+        );
+    }
+
     #[test]
     fn usage_rows_decode_and_ignore_latency() {
         let text = r#"[{

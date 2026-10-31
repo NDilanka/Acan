@@ -52,6 +52,7 @@ const flagsEl = $("flags");
 const card = $("card");
 const gate = $("gate");
 const link = $("link");
+const stale = $("stale");
 const orderEl = $("order");
 const orderLine = $("order-line");
 const usagePanel = $("usage");
@@ -394,6 +395,16 @@ function paint() {
   paintOrderLine();
   paintMarks();
   paintUsage();
+  paintStale();
+}
+
+// A page older than the origin passes over the events it cannot read, and says so here.
+function paintStale() {
+  const passed = app.not_shown();
+  stale.hidden = passed === 0;
+  stale.textContent = passed === 0
+    ? ""
+    : `this page is older than the server: ${passed} ${passed === 1 ? "event" : "events"} not shown, rebuild the UI`;
 }
 
 function paintOrderLine() {
