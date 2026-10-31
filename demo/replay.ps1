@@ -3,7 +3,7 @@
 # It checks each receipt against receipts/SHA256SUMS, then prints the receipts. It reads no keys and
 # makes no network calls, so a judge can run it on a machine with no provider accounts.
 #
-# Runs on PowerShell 7 on Windows, Linux and macOS: pwsh -File demo/replay.ps1
+# Runs on PowerShell 7 on Windows and Linux (macOS not tested): pwsh -File demo/replay.ps1
 # Exit code 0 when every receipt matches its checksum, 1 otherwise.
 
 [CmdletBinding()]

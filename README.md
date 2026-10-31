@@ -61,7 +61,7 @@ The demo app that the live take runs against is a separate public repository: ht
 - For the UI bundle: the `wasm32-unknown-unknown` target and the `wasm-bindgen` CLI.
 - For `cargo test --workspace`: Docker, and a clone of the demo repo with `ACAN_DEMO_DIR` set to its path. The witness tests read that checkout.
 - For a live take: provider keys (see step 2 below).
-- For the replay: PowerShell 7 on Windows, Linux or macOS. No keys are needed.
+- For the replay: PowerShell 7 on Windows or Linux. No keys are needed. macOS is not tested.
 
 ### Replay without keys
 
@@ -69,7 +69,7 @@ The demo app that the live take runs against is a separate public repository: ht
 pwsh demo/replay.ps1
 ```
 
-This checks each receipt in `receipts/` against `receipts/SHA256SUMS`, then prints it. It reads no keys and makes no network calls. So far it has been run on Windows only.
+This checks each receipt in `receipts/` against `receipts/SHA256SUMS`, then prints it. It reads no keys and makes no network calls. It has run on Windows and on Linux (PowerShell 7.4 in a container). macOS has not been tested.
 
 ### Live take (needs your keys)
 
