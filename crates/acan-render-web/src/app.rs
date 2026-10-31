@@ -20,6 +20,7 @@ use crate::marks::{self, AgentSlots, Marks, Motion, Stand};
 use crate::mirror::{Mirror, View};
 use crate::plan::Plan;
 use crate::plant::{Plant, PlantMachine, from_scan_json, rest_labels, stress};
+use crate::plant_view;
 use crate::pov::{self, Ride};
 use crate::scene;
 use crate::stand;
@@ -202,6 +203,19 @@ impl App {
     pub fn set_plant(&mut self, json: &str) -> Result<u32, JsError> {
         let plant = from_scan_json(json).map_err(js_err)?;
         Ok(self.load(plant))
+    }
+
+    /// Checks one `plant-view/1` view, as `GET /api/orders/{order}/plant-view` answers it, and
+    /// returns its summary as JSON. The page takes its numbers from the summary only after this
+    /// passes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the JSON is not a `plant-view/1` view, or when its counts do not match
+    /// its items.
+    pub fn plant_view_summary(&self, json: &str) -> Result<String, JsError> {
+        let view = plant_view::decode(json).map_err(js_err)?;
+        Ok(plant_view::summarize(&view).to_string())
     }
 
     /// Holds the marks still, as `?freeze=1` asks. Call it before the plant loads: every ease then
